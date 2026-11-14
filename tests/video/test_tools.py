@@ -1,186 +1,960 @@
-"""The tools that edit video, as a model calls them: ``columbina.video``."""
+"""Agent tools and the desktop share the engine project and its undo history."""
 
 import json
-import shutil
+from collections.abc import AsyncIterator
+from itertools import pairwise
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
-import columbina.fs
-import columbina.sandbox
-import columbina.session
 import columbina.tools
 import columbina.video
-from columbina.builtin_tools import edit, read
-from columbina.fs import FS
 from columbina.kernel import Context
-from columbina.sandbox import SANDBOX
-from columbina.session import SESSIONS
 from columbina.tools import TOOLS
-from columbina.video import VIDEOS, Config, Videos
-from columbina.video.transcribe import Scripted, Whisper
+from columbina.video import VIDEOS, Config, Videos, edits
+from columbina.video.transcribe import Whisper
 from support.desk import Desk
-from support.media import made, real
+from support.fake_engine import Fake, served
+from support.studio_tools import desk_of, result
 
-WORDS = [
-    (200_000, 800_000, "one"),
-    (900_000, 1_600_000, "two."),
-    (2_400_000, 3_000_000, "three"),
-    (3_100_000, 3_600_000, "four."),
-]
-
-
-async def desk_of(ctx: Context, tmp_path: Path, **config: object) -> Desk:
-    work = tmp_path / "work"
-    work.mkdir()
-    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
-    await ctx.plugin(columbina.tools)
-    await ctx.plugin(columbina.fs)
-    await ctx.plugin(columbina.sandbox)
-    await ctx.plugin(read)
-    await ctx.plugin(edit)
-    await ctx.plugin(columbina.video, {"enabled": True, **config})
-    session = ctx.use(SESSIONS).create(ctx, work)
-    return Desk(ctx, ctx.use(TOOLS), ctx.use(FS), ctx.use(SANDBOX), session, work)
+# The studio's own platforms are tested in tests/video/test_platform.py.
+pytestmark = pytest.mark.usefixtures("studio_here")
 
 
 @pytest.fixture
-async def desk(ctx: Context, tmp_path: Path) -> Desk:
-    """A working directory with a talk in it, and the tools that edit video."""
-    real()
-    made_desk = await desk_of(ctx, tmp_path)
-    tone = "+".join(f"between(t,{start / 1e6},{end / 1e6})" for start, end, _ in WORDS)
-    made(
-        made_desk.work / "raw", "talk.mp4",
-        "-f", "lavfi", "-i", "color=c=red:s=160x120:r=25:d=4",
-        "-f", "lavfi", "-i", f"aevalsrc='0.5*sin(440*2*PI*t)*({tone})':d=4:s=48000",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
-    )  # fmt: skip
-    written = [{"start_us": start, "end_us": end, "text": text} for start, end, text in WORDS]
-    (tmp_path / "words.json").write_text(json.dumps(written), encoding="utf-8")
-    ctx.use(VIDEOS).transcriber = Scripted(tmp_path / "words.json")
-    return made_desk
+async def studio(ctx: Context, tmp_path: Path) -> AsyncIterator[tuple[Desk, Fake]]:
+    desk = await desk_of(ctx, tmp_path)
+    async with served(desk.work / ".columbina" / "studio") as fake:
+        yield desk, fake
 
 
-async def test_a_model_cuts_a_talk_with_the_tools_and_the_files_of_the_project(desk: Desk) -> None:
-    imported = await desk.call("video_import", project="film", paths=["raw/talk.mp4"])
-    heard = await desk.call("video_transcribe", project="film", source="talk", language="en")
-    await desk.have_read("film/story.md")
-    cut = await desk.call("edit", path="film/story.md", old="three four.", new="~~three four.~~")
-    dry = await desk.call("video_apply", project="film", dry=True)
-    applied = await desk.call("video_apply", project="film", pause_most_ms=300)
-
-    assert imported.error is None, imported.text
-    assert "Taken in: talk (video, 0:04.0, 160x120)" in imported.text
-    assert heard.text.startswith("talk was transcribed: 2 sentences and 4 words")
-    assert cut.error is None, cut.text
-    assert dry.text.startswith("Not committed.")
-    assert applied.text.startswith("Committed.\nSentences cut: 1. Words cut: 2.")
-
-    title = await desk.call(
-        "video_overlay",
-        project="film",
-        action="add",
-        kind="title",
-        text="Hi",
-        sentence="talk.0",
-        words="two",
-    )
-    styled = await desk.call(
-        "video_overlay", project="film", action="style", captions=False, duck=False
-    )
-    crossed = await desk.call(
-        "video_overlay", project="film", action="style", sentence="talk.0", crossfade_frames=3
-    )
-    lonely = await desk.call("video_overlay", project="film", action="style", crossfade_frames=3)
-    changed = await desk.call(
-        "video_overlay", project="film", action="change", layer="title-1", position="top-left"
-    )
-    corrected = await desk.call(
-        "video_correct", project="film", sentence="talk.0", wrong="two", right="2."
-    )
-    rendered = await desk.call("video_render", project="film")
-    undone = await desk.call("video_undo", project="film")
-    redone = await desk.call("video_undo", project="film", redo=True)
-    removed = await desk.call("video_overlay", project="film", action="remove", layer="title-1")
-    told = await desk.call("video_info", project="film")
-
-    assert title.text.startswith("The layer title-1 (title) was added. It begins at 0:00.")
-    assert styled.text == "Changed: captions off, ducking off."
-    assert crossed.text == "Changed: talk.0 crosses 3 frames into the next sentence."
-    assert lonely.error is not None
-    assert lonely.error.code == "VIDEO_PROJECT"
-    assert "a crossfade names the sentence" in lonely.text
-    assert changed.text == "The layer title-1 (title) was changed. It begins at 0:00.8."
-    assert corrected.text.startswith('In talk.0, "two" is shown as "2." from now on.')
-    assert rendered.error is None, rendered.text
-    assert (desk.work / "film" / "out" / "preview.mp4").exists()
-    assert undone.text.startswith("Taken back.")
-    assert redone.text.startswith("Done again.")
-    assert removed.text == "The layer title-1 was taken away."
-    assert "The main line has 1 sentences" in told.text
+async def test_edit_batch_and_human_undo_share_one_project(studio: tuple[Desk, Fake]) -> None:
+    desk, fake = studio
+    batch = [edits.add_timeline("Cut", edits.Rate(num=25, den=1), id="$film")]
+    changed = result(await desk.call("video_edit", edits=batch))
+    assert changed["names"]["$film"] == "t1"
+    assert fake.asked.count("transaction.apply") == 1
+    assert len(fake.steps) == 1
+    assert not (desk.work / ".columbina/studio/timeline.json").exists()
+    fake.change_by("desktop")
+    result(await desk.call("video_undo"))
+    assert len(fake.project["timelines"]) == 1
+    result(await desk.call("video_undo"))
+    assert fake.project["timelines"] == []
+    result(await desk.call("video_undo", redo=True))
+    assert fake.project["timelines"][0]["name"] == "Cut"
 
 
-async def test_a_source_outside_the_working_directory_is_not_read(
-    desk: Desk, tmp_path: Path
+async def test_first_default_studio_call_migrates_once_and_returns_its_report(
+    studio: tuple[Desk, Fake],
 ) -> None:
-    shutil.copy(desk.work / "raw" / "talk.mp4", tmp_path / "elsewhere.mp4")
+    from columbina.video.legacy import Manifest, Timeline
 
-    outcome = await desk.call(
-        "video_import", project="film", paths=[str(tmp_path / "elsewhere.mp4")]
+    desk, fake = studio
+    old = desk.work / "Old Film"
+    old.mkdir()
+    (old / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (old / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+    info = result(await desk.call("video_info"))
+    assert len(info["migrations"]) == 1
+    assert info["timelines"][0]["name"] == "Old Film"
+    assert len(fake.steps) == 1
+    again = result(await desk.call("video_info"))
+    assert "migrations" not in again
+    assert len(fake.steps) == 1
+    result(await desk.call("video_undo"))
+    assert fake.project["timelines"] == []
+    assert result(await desk.call("video_info"))["timelines"] == []
+
+
+async def test_an_old_project_that_cannot_be_migrated_stands_in_the_way_of_no_call(
+    studio: tuple[Desk, Fake], tmp_path: Path
+) -> None:
+    from columbina.video.legacy import Asset, Manifest, Timeline
+    from columbina.video.project import Identity
+
+    desk, fake = studio
+    broken = desk.work / "Broken"
+    broken.mkdir()
+    (broken / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (broken / "timeline.json").write_text("{not json", encoding="utf-8")
+    # A source outside the workspace is not read without asking, and the session may not.
+    outside = desk.work / "Outside"
+    outside.mkdir()
+    elsewhere = tmp_path / "elsewhere.wav"
+    elsewhere.write_bytes(b"sound")
+    asset = Asset(
+        id="talk",
+        path=str(elsewhere),
+        kind="audio",
+        format="wav",
+        duration_us=1_000_000,
+        identity=Identity(size=5, modified_ns=0, digest="0" * 64),
+    )
+    (outside / "project.json").write_text(
+        Manifest(assets=(asset,)).model_dump_json(), encoding="utf-8"
+    )
+    (outside / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+    good = desk.work / "Good"
+    good.mkdir()
+    (good / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (good / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+
+    first = result(await desk.call("video_info"))
+    second = result(await desk.call("video_info"))
+    edited = result(
+        await desk.call(
+            "video_edit", edits=[edits.add_timeline("Cut", edits.Rate(num=25, den=1), id="$f")]
+        )
     )
 
-    assert outcome.error is not None
-    assert outcome.error.code == "OUTSIDE_WORKING_DIRECTORY"
+    told = {Path(one["source"]).name: one for one in first["migrations"]}
+    assert set(told) == {"Broken", "Good", "Outside"}
+    assert "Broken" in told["Broken"]["error"]
+    assert "OUTSIDE_WORKING_DIRECTORY" in told["Outside"]["error"]
+    assert "error" not in told["Good"]
+    assert [one["name"] for one in first["timelines"]] == ["Good"]
+    assert "migrations" not in second
+    assert edited["names"]["$f"]
+    assert not (broken / "migrated.json").exists()
+    assert (good / "migrated.json").exists()
+    assert len(fake.steps) == 2
 
 
-async def test_what_cannot_be_done_is_said_with_a_code(
-    desk: Desk, monkeypatch: pytest.MonkeyPatch
+async def test_a_migration_that_takes_too_long_is_left_for_the_command(
+    studio: tuple[Desk, Fake], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls = {
-        "video_transcribe": {"source": "talk"},
-        "video_apply": {},
-        "video_correct": {"sentence": "talk.0", "wrong": "a", "right": "b"},
-        "video_overlay": {"action": "remove", "layer": "x"},
-        "video_render": {"quality": "final"},
-        "video_undo": {},
-        "video_import": {"paths": ["raw/nothing.mp4"]},
-    }
-    for name, arguments in calls.items():
-        outcome = await desk.call(name, project="film", **arguments)
-        assert outcome.error is not None, name
-        assert outcome.error.code.startswith("VIDEO_"), (name, outcome.error.code)
-    told = await desk.call("video_info", project="film")
-    assert told.text.startswith("The project ")
-    (desk.work / "film").mkdir(exist_ok=True)
-    (desk.work / "film" / "project.json").write_text("{", encoding="utf-8")
-    broken = await desk.call("video_info", project="film")
-    assert broken.error is not None
-    assert broken.error.code == "VIDEO_PROJECT"
+    import asyncio
 
+    import columbina.video.migrate
+    from columbina.video.legacy import Manifest, Timeline
+
+    desk, _fake = studio
+    old = desk.work / "Old Film"
+    old.mkdir()
+    (old / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (old / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+
+    async def slow(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        await asyncio.sleep(30)
+        return []
+
+    monkeypatch.setattr(columbina.video.migrate, "migrate", slow)
+    monkeypatch.setattr(columbina.video, "_MIGRATION_SECONDS", 0.2)
+
+    told = result(await desk.call("video_info"))
+
+    assert "columbina video migrate" in told["migrations"][0]["error"]
+    assert told["timelines"] == []
+
+
+async def test_import_bin_is_one_step_and_invalid_bin_has_no_partial_import(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    added = result(await desk.call("video_edit", edits=[edits.add_bin("Rushes", id="$rushes")]))
+    bin = added["names"]["$rushes"]
+    (desk.work / "take.wav").write_bytes(b"fake media")
+    imported = result(await desk.call("video_import", paths=["take.wav"], bin=bin))
+    assert imported["added"] == [fake.project["media"][0]["id"]]
+    assert fake.project["media"][0]["bin"] == bin
+    assert len(fake.steps) == 2
+    result(await desk.call("video_undo"))
+    assert fake.project["media"] == []
+    refused = await desk.call("video_import", paths=["take.wav"], bin="missing")
+    assert refused.error is not None
+    assert refused.error.code == "VIDEO_MISSING"
+    assert fake.project["media"] == []
+
+
+async def test_info_needs_no_ffmpeg_and_names_all_timelines(
+    studio: tuple[Desk, Fake],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desk, _fake = studio
     monkeypatch.setenv("PATH", "")
-    fresh = Videos(Config(enabled=True), None)
-    desk.ctx.use(VIDEOS)._tools = None  # pyright: ignore[reportPrivateUsage]
-    outcome = await desk.call("video_info", project="other")
-    assert outcome.error is not None
-    assert outcome.error.code == "NO_FFMPEG"
-    assert fresh.transcriber is None
+    told = result(await desk.call("video_info"))
+    assert told["media"] == []
+    assert told["timelines"] == []
+    assert "video_overlay" not in desk.tools.registry
+    assert {"video_story", "video_edit"} <= set(desk.tools.registry)
 
 
-async def test_the_tools_are_given_only_where_the_config_says_so(
-    ctx: Context, tmp_path: Path
+@pytest.mark.parametrize("reason", ["locked", "ripple_blocked", "missing", "too_large"])
+async def test_engine_refusals_preserve_the_reason(studio: tuple[Desk, Fake], reason: str) -> None:
+    desk, fake = studio
+    fake.refusals["transaction.apply"] = {
+        "code": -32001,
+        "message": "refused",
+        "data": {"reason": reason, "index": 0},
+    }
+    failed = await desk.call(
+        "video_edit", edits=[edits.add_timeline("Cut", edits.Rate(num=25, den=1))]
+    )
+    assert failed.error is not None
+    assert failed.error.code == f"VIDEO_{reason.upper()}"
+    assert fake.steps == []
+
+
+async def test_paths_outside_workspace_are_checked_before_engine_mutation(
+    studio: tuple[Desk, Fake],
+    tmp_path: Path,
 ) -> None:
+    desk, fake = studio
+    path = tmp_path / "elsewhere.wav"
+    path.write_bytes(b"sound")
+    failed = await desk.call("video_import", paths=[str(path)])
+    assert failed.error is not None
+    assert failed.error.code == "OUTSIDE_WORKING_DIRECTORY"
+    assert "media.import" not in fake.asked
+    failed = await desk.call("video_render", path=str(tmp_path / "elsewhere.mp4"))
+    assert failed.error is not None
+    assert failed.error.code == "OUTSIDE_WORKING_DIRECTORY"
+    assert "render.start" not in fake.asked
+
+
+async def test_the_tools_are_given_only_where_the_config_says_so(ctx: Context) -> None:
     await ctx.plugin(columbina.tools)
     await ctx.plugin(columbina.video, {"enabled": False})
-
     assert not [name for name in ctx.use(TOOLS).registry if name.startswith("video_")]
     assert ctx.get(VIDEOS) is None
 
 
 def test_a_model_of_faster_whisper_is_what_transcribes() -> None:
-    told = Config.model_validate({"enabled": "1", "whisper_model": "", "whisper_python": ""})
+    told = Config.model_validate(
+        {"enabled": "1", "whisper_model": "", "whisper_python": "", "engine": ""}
+    )
     given = Videos(Config(whisper_model=Path("/models/small"), device="cpu"), None)
-
-    assert (told.enabled, told.whisper_model, told.whisper_python) == (True, None, None)
+    assert (told.enabled, told.whisper_model, told.whisper_python, told.engine) == (
+        True,
+        None,
+        None,
+        None,
+    )
     assert isinstance(given.transcriber, Whisper)
     assert (given.transcriber.model, given.transcriber.device) == (Path("/models/small"), "cpu")
+
+
+async def seed_story(desk: Desk, fake: Fake) -> str:
+    from columbina.video.transcribe import transcript_of
+    from columbina.video.transcript import Word
+    from columbina.video.words import Words, keep_words
+    from support.studio import clip_of, timeline_of, track_of
+
+    (desk.work / "talk.wav").write_bytes(b"fake audio")
+    imported = result(await desk.call("video_import", paths=["talk.wav"]))
+    media_id = imported["added"][0]
+    fake.project["timelines"] = [
+        timeline_of(
+            track_of("A1", [clip_of("c20", 0, 50, media=media_id)]),
+            edits.track("subtitle", id="S1"),
+        )
+    ]
+    transcript = transcript_of(
+        media_id,
+        "0" * 64,
+        [
+            Word(start_us=0, end_us=400_000, text="Hello"),
+            Word(start_us=400_000, end_us=800_000, text="filler"),
+            Word(start_us=800_000, end_us=2_000_000, text="world."),
+        ],
+        [],
+        2_000_000,
+    )
+    keep_words(fake.directory, Words.of(transcript))
+    return media_id
+
+
+async def test_story_file_edit_dry_apply_and_undo(studio: tuple[Desk, Fake]) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    told = result(await desk.call("video_story"))
+    assert Path(told["path"]) == fake.directory / "story/t1.md"
+    await desk.have_read(told["path"])
+    changed = await desk.call("edit", path=told["path"], old="filler", new="~~filler~~")
+    assert changed.error is None, changed.text
+    steps = len(fake.steps)
+    dry = result(await desk.call("video_apply", dry=True))
+    assert dry["removed_frames"] == 10
+    assert len(fake.steps) == steps
+    applied = result(await desk.call("video_apply"))
+    assert applied["removed_frames"] == 10
+    assert len(fake.steps) == steps + 1
+    assert fake.edits[-1] == edits.ripple_delete_range("t1", 10, 20)
+    assert "filler" not in Path(told["path"]).read_text(encoding="utf-8")
+    result(await desk.call("video_undo"))
+    assert fake.project["timelines"][0]["tracks"][0]["clips"][0]["length"] == 50
+
+
+async def test_cached_transcript_subtitles_and_correction(studio: tuple[Desk, Fake]) -> None:
+    desk, fake = studio
+    media_id = await seed_story(desk, fake)
+    told = result(await desk.call("video_transcribe", media=media_id, subtitles="S1"))
+    assert told["reused"] is True
+    assert fake.edits[-1] == {
+        "edit": "cues_from",
+        "timeline": "t1",
+        "track": "S1",
+        "items": [{"start": 0, "length": 50, "text": "Hello filler world."}],
+    }
+    steps = len(fake.steps)
+    changed = result(
+        await desk.call("video_correct", media=media_id, sentence=0, wrong="world", right="WORLD")
+    )
+    assert changed["shown"] == {"2": "WORLD"}
+    assert len(fake.steps) == steps
+    await desk.call("video_story")
+    text = (fake.directory / "story/t1.md").read_text(encoding="utf-8")
+    assert "Hello filler WORLD" in text
+
+
+async def test_subtitles_tell_every_transcribed_media_of_the_dialogue_and_never_overlap(
+    studio: tuple[Desk, Fake],
+) -> None:
+    from columbina.video.transcribe import transcript_of
+    from columbina.video.transcript import Word
+    from columbina.video.words import Words, keep_words
+    from support.studio import clip_of, timeline_of, track_of
+
+    desk, fake = studio
+    for name in ("one.wav", "two.wav"):
+        (desk.work / name).write_bytes(name.encode())
+    first, second = result(await desk.call("video_import", paths=["one.wav", "two.wav"]))["added"]
+    fake.project["timelines"] = [
+        timeline_of(
+            track_of(
+                "A1",
+                [
+                    clip_of("c1", 0, 50, media=first),
+                    # The second media plays backward, from 1 s of it.
+                    clip_of("c2", 50, 25, media=second, ticks=12800, reverse=True),
+                ],
+            ),
+            edits.track("subtitle", id="S1"),
+        )
+    ]
+    # The fake engine gives every file one digest; the analysis of each is kept by its own.
+    fake.project["media"][1]["identity"]["digest"] = "1" * 64
+    digests = {item["id"]: item["identity"]["digest"] for item in fake.project["media"]}
+    # A transcriber times words that overlap: each long word here begins before the last ends.
+    overlapping = [
+        Word(start_us=at * 300_000, end_us=at * 300_000 + 360_000, text="abcdefghijkl")
+        for at in range(6)
+    ]
+    keep_words(
+        fake.directory,
+        Words.of(transcript_of(first, digests[first], overlapping, [], 2_000_000)),
+    )
+    keep_words(
+        fake.directory,
+        Words.of(
+            transcript_of(
+                second,
+                digests[second],
+                [Word(start_us=1_200_000, end_us=1_800_000, text="Other.")],
+                [],
+                3_000_000,
+            )
+        ),
+    )
+
+    told = result(await desk.call("video_transcribe", media=first, subtitles="S1"))
+
+    items = fake.edits[-1]["items"]
+    assert told["cues"] == len(items)
+    assert [one["text"] for one in items] == [
+        "abcdefghijkl abcdefghijkl abcdefghijkl",
+        "abcdefghijkl abcdefghijkl abcdefghijkl",
+        "Other.",
+    ]
+    assert all(one["length"] > 0 for one in items)
+    assert all(a["start"] + a["length"] <= b["start"] for a, b in pairwise(items))
+    # The first cue ends where the second begins, though its last word ends 60 ms later.
+    assert (items[0]["start"], items[0]["start"] + items[0]["length"]) == (0, 23)
+    # "Other." is said 1.2 s to 1.8 s into the second media, of which c2 plays 1 s to 2 s
+    # backward, from frame 50: frames 55 to 70.
+    assert (items[2]["start"], items[2]["length"]) == (55, 15)
+
+
+async def test_default_render_path_progress_and_no_history_step(studio: tuple[Desk, Fake]) -> None:
+    from columbina.video import VIDEO_PROGRESS, RenderProgress
+
+    desk, fake = studio
+    await seed_story(desk, fake)
+    progress: list[RenderProgress] = []
+    desk.ctx.on(VIDEO_PROGRESS, progress.append)
+    steps = len(fake.steps)
+    rendered = result(await desk.call("video_render", codec="prores", quality="small"))
+    assert Path(rendered["path"]) == desk.work / "out/Cut.mov"
+    assert fake.rendered[-1]["quality"] == "small"
+    # The subtitle track that the timeline shows is written beside the film.
+    assert fake.rendered[-1]["subtitle_tracks"] == ["S1"]
+    assert progress[-1].progress.state == "done"
+    assert progress[0].progress.state == "running"
+    assert len(fake.steps) == steps
+
+
+async def test_ambiguous_timeline_requires_a_choice_and_batch_reports_clamping(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    result(
+        await desk.call(
+            "video_edit",
+            edits=[
+                edits.add_timeline("A", edits.Rate(num=25, den=1)),
+                edits.add_timeline("B", edits.Rate(num=25, den=1)),
+            ],
+        )
+    )
+    failed = await desk.call("video_story")
+    assert failed.error is not None
+    assert failed.error.code == "VIDEO_AMBIGUOUS"
+    fake.clamped = [0]
+    told = result(await desk.call("video_edit", timeline="t1", edits=[{"edit": "blade", "at": 5}]))
+    assert told["clamped"] == [0]
+    assert fake.edits[-1] == {"edit": "blade", "at": 5, "timeline": "t1"}
+
+
+async def test_explicit_project_and_missing_engine(ctx: Context, tmp_path: Path) -> None:
+    desk = await desk_of(ctx, tmp_path)
+    async with served(desk.work / "Another") as fake:
+        told = result(await desk.call("video_info", project="Another"))
+        assert Path(told["project"]) == fake.directory
+    desk.ctx.use(VIDEOS)._program = str(tmp_path / "missing-engine.exe")  # pyright: ignore[reportPrivateUsage]
+    failed = await desk.call("video_info", project="missing")
+    assert failed.error is not None
+    assert failed.error.code == "NO_ENGINE"
+
+
+async def test_real_engine_tool_workflow(ctx: Context, tmp_path: Path) -> None:
+    from columbina.video.media import located, probed
+    from columbina.video.transcribe import Scripted
+    from support.media import made, real, real_engine
+
+    desk = await desk_of(ctx, tmp_path, engine=real_engine())
+    source = made(
+        desk.work,
+        "talk.mp4",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=red:s=160x120:r=25:d=4",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=4",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-shortest",
+    )
+    transcript_path = desk.work / "words.json"
+    transcript_path.write_text(
+        json.dumps(
+            [
+                {"start_us": 400_000, "end_us": 800_000, "text": "Hello"},
+                {"start_us": 800_000, "end_us": 1_600_000, "text": "world."},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    desk.ctx.use(VIDEOS).transcriber = Scripted(transcript_path)
+    media_id = result(await desk.call("video_import", paths=[str(source)]))["added"][0]
+    info = result(await desk.call("video_info"))
+    scale = info["media"][0]["facts"]["duration"]["scale"]
+    source_range = edits.of_media(
+        media_id, start=edits.Time(ticks=scale // 5, scale=scale), length=40
+    )
+    batch = [
+        edits.add_timeline(
+            "Cut",
+            edits.Rate(num=25, den=1),
+            id="$film",
+            width=160,
+            height=120,
+            tracks=[
+                edits.track("video", id="$v"),
+                edits.track("audio", id="$a"),
+                edits.track("subtitle", id="$s"),
+            ],
+        ),
+        edits.insert("$film", source_range, 0),
+        edits.insert("$film", source_range, 40),
+    ]
+    names = result(await desk.call("video_edit", edits=batch))["names"]
+    timeline = names["$film"]
+    heard = result(
+        await desk.call(
+            "video_transcribe", media=media_id, subtitles=names["$s"], timeline=timeline
+        )
+    )
+    assert heard["words"] == 2
+    assert heard["cues"] == 2
+    info = result(await desk.call("video_info", timeline=timeline))
+    assert len(info["timelines"][0]["tracks"][2]["cues"]) == 2
+    result(await desk.call("video_edit", timeline=timeline, edits=[{"edit": "blade", "at": 20}]))
+    result(await desk.call("video_edit", edits=[edits.ripple_delete_range(timeline, 20, 30)]))
+    info = result(await desk.call("video_info", timeline=timeline))
+    clips = info["timelines"][0]["tracks"][0]["clips"]
+    result(
+        await desk.call(
+            "video_edit",
+            edits=[
+                edits.add_transition(timeline, clips[-2]["id"], clips[-1]["id"], 4, kind="dissolve")
+            ],
+        )
+    )
+    rendered = result(await desk.call("video_render", timeline=timeline, codec="prores"))
+    assert Path(rendered["path"]).exists()
+    assert (desk.work / "out/Cut.srt").exists()
+    tools = await located(str(Path(real()).parent), [], cwd=tmp_path)
+    facts = await probed(tools, Path(rendered["path"]), place=tmp_path)
+    assert abs(facts.duration_us - 2_800_000) <= 45_000
+    assert facts.video is not None
+    assert (facts.video.width, facts.video.height) == (160, 120)
+    assert facts.audio is not None
+    assert not (desk.work / ".columbina/studio/timeline.json").exists()
+
+
+async def test_concurrent_desktop_change_refuses_precomputed_text_cut(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    told = result(await desk.call("video_story"))
+    path = Path(told["path"])
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("filler", "~~filler~~"), encoding="utf-8"
+    )
+    steps = len(fake.steps)
+    fake.then["project.get"] = lambda: fake.change_by("desktop")
+    failed = await desk.call("video_apply", timeline="t1")
+    assert failed.error is not None
+    assert failed.error.code == "VIDEO_STALE_REVISION"
+    assert len(fake.steps) == steps + 1  # Only the person's change.
+    assert "~~filler~~" in path.read_text(encoding="utf-8")
+    assert fake.project["timelines"][0]["tracks"][0]["clips"][0]["length"] == 50
+
+
+async def test_info_does_not_create_a_project_in_read_only_mode(
+    ctx: Context, tmp_path: Path
+) -> None:
+    desk = await desk_of(ctx, tmp_path)
+    desk.sandbox.set_mode(desk.session, "read-only")
+    failed = await desk.call("video_info")
+    assert failed.error is not None
+    assert failed.error.code == "READ_ONLY"
+    assert not (desk.work / ".columbina/studio").exists()
+
+
+async def test_committed_cut_is_reported_even_if_story_refresh_loses_its_track(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    told = result(await desk.call("video_story"))
+    path = Path(told["path"])
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("filler", "~~filler~~"), encoding="utf-8"
+    )
+    fake.then["transaction.apply"] = lambda: fake.project["timelines"].clear()
+    changed = result(await desk.call("video_apply"))
+    assert changed["removed_frames"] == 10
+    assert "story_refresh_error" in changed
+    assert changed["revision"] == 2
+
+
+async def test_render_failure_and_cancellation_do_not_change_timeline(
+    studio: tuple[Desk, Fake],
+) -> None:
+    import asyncio
+
+    from columbina.tools import ToolRun
+
+    desk, fake = studio
+    await seed_story(desk, fake)
+    fake.render_end = "failed"
+    failed = await desk.call("video_render")
+    assert failed.error is not None
+    assert failed.error.code == "VIDEO_FAILED"
+    fake.render_hold = True
+    ready = asyncio.Event()
+    editor = await desk.ctx.use(VIDEOS).editor(
+        ToolRun("cancel", desk.work, desk.session), "video_render"
+    )
+    # Cancelled once the render is followed: its first progress has been heard.
+    pending = asyncio.create_task(
+        editor.rendered(
+            "t1",
+            desk.work / "out/stop.mp4",
+            codec="h264",
+            quality="small",
+            subtitle_tracks=[],
+            replace=False,
+            told=lambda _: ready.set(),
+        )
+    )
+    await asyncio.wait_for(ready.wait(), 5)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert "render.cancel" in fake.asked
+    assert "cancelled" in fake.jobs.values()
+    assert len(fake.steps) == 1
+
+
+async def test_a_render_given_up_on_before_its_start_is_answered_is_still_cancelled(
+    studio: tuple[Desk, Fake],
+) -> None:
+    import asyncio
+
+    from columbina.tools import ToolRun
+
+    desk, fake = studio
+    await seed_story(desk, fake)
+    fake.render_hold = True
+    editor = await desk.ctx.use(VIDEOS).editor(
+        ToolRun("cancel", desk.work, desk.session), "video_render"
+    )
+    pending = asyncio.create_task(
+        editor.rendered(
+            "t1",
+            desk.work / "out/stop.mp4",
+            codec="h264",
+            quality="small",
+            subtitle_tracks=[],
+            replace=False,
+        )
+    )
+
+    # The engine has begun the render and answered, and the answer is not yet read when the
+    # call is cancelled: the render it began is stopped all the same, not left running.
+    def given_up() -> None:
+        pending.cancel()
+
+    fake.then["render.start"] = given_up
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending, 5)
+    assert fake.asked[-2:] == ["render.start", "render.cancel"]
+    assert list(fake.jobs.values()) == ["cancelled"]
+    assert len(fake.steps) == 1
+
+
+async def test_a_long_talk_is_told_and_cut_within_the_time_of_a_call(
+    studio: tuple[Desk, Fake],
+) -> None:
+    import time
+
+    from columbina.video.transcribe import transcript_of
+    from columbina.video.transcript import Word
+    from columbina.video.words import Words, keep_words
+    from support.studio import clip_of, timeline_of, track_of
+
+    desk, fake = studio
+    (desk.work / "talk.wav").write_bytes(b"fake audio")
+    media_id = result(await desk.call("video_import", paths=["talk.wav"]))["added"][0]
+    each = 8000 * 300_000 * 25 // 1_000_000 // 200
+    fake.project["timelines"] = [
+        timeline_of(
+            track_of(
+                "A1",
+                [
+                    clip_of(f"c{at}", at * each, each - 1, ticks=at * each * 512, media=media_id)
+                    for at in range(200)
+                ],
+            )
+        )
+    ]
+    said = [
+        Word(
+            start_us=at * 300_000 + 10_000,
+            end_us=at * 300_000 + 250_000,
+            text=f"w{at}{'.' if at % 12 == 11 else ''}",
+        )
+        for at in range(8000)
+    ]
+    keep_words(
+        fake.directory,
+        Words.of(transcript_of(media_id, "0" * 64, said, [], 8000 * 300_000 + 1_000_000)),
+    )
+
+    began = time.perf_counter()
+    path = Path(result(await desk.call("video_story"))["path"])
+    text = path.read_text(encoding="utf-8")
+    for at in range(5, 8000, 400):
+        text = text.replace(f" w{at} ", f" ~~w{at}~~ ", 1)
+    path.write_text(text, encoding="utf-8")
+    applied = result(await desk.call("video_apply"))
+    took = time.perf_counter() - began
+
+    assert len(applied["ranges"]) == 20
+    assert "story_refresh_error" not in applied
+    # A second or so; a call has 30 seconds.
+    assert took < 15, took
+
+
+async def test_applying_before_a_story_is_written_says_to_write_it_first(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    failed = await desk.call("video_apply")
+    assert failed.error is not None
+    assert failed.error.code == "VIDEO_STORY"
+    assert "video_story" in failed.text
+    assert "Errno" not in failed.text
+
+
+async def test_the_engine_takes_subtitles_of_words_timed_to_overlap(
+    ctx: Context, tmp_path: Path
+) -> None:
+    from columbina.video.transcribe import Scripted
+    from support.media import made, real_engine
+
+    desk = await desk_of(ctx, tmp_path, engine=real_engine())
+    source = made(
+        desk.work,
+        "talk.wav",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=3",
+        "-c:a",
+        "pcm_s16le",
+    )
+    words = desk.work / "words.json"
+    words.write_text(
+        json.dumps(
+            [
+                {"start_us": at * 300_000, "end_us": at * 300_000 + 360_000, "text": "abcdefghijkl"}
+                for at in range(6)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    desk.ctx.use(VIDEOS).transcriber = Scripted(words)
+    media_id = result(await desk.call("video_import", paths=[str(source)]))["added"][0]
+    names = result(
+        await desk.call(
+            "video_edit",
+            edits=[
+                edits.add_timeline(
+                    "Cut",
+                    edits.Rate(num=25, den=1),
+                    id="$film",
+                    tracks=[edits.track("audio", id="$a"), edits.track("subtitle", id="$s")],
+                ),
+                edits.insert("$film", edits.of_media(media_id, length=60), 0),
+            ],
+        )
+    )["names"]
+
+    heard = result(await desk.call("video_transcribe", media=media_id, subtitles=names["$s"]))
+
+    assert heard["cues"] == 2
+    info = result(await desk.call("video_info", timeline=names["$film"]))
+    cues = info["timelines"][0]["tracks"][1]["cues"]
+    assert [(one["start"], one["length"]) for one in cues] == [(0, 23), (23, 24)]
+    assert not list((desk.work / ".columbina/studio/analysis").glob("audio-*.wav"))
+
+
+async def test_media_added_by_an_edit_is_read_only_where_allowed_and_by_its_whole_path(
+    studio: tuple[Desk, Fake], tmp_path: Path
+) -> None:
+    desk, fake = studio
+    (desk.work / "take.wav").write_bytes(b"sound")
+    outside = tmp_path / "elsewhere.wav"
+    outside.write_bytes(b"sound")
+
+    refused = await desk.call(
+        "video_edit", edits=[{"op": "add_media", "media": {"id": "$m", "path": str(outside)}}]
+    )
+    wrong = await desk.call("video_edit", edits=[{"op": "add_media", "media": "take.wav"}])
+    added = result(
+        await desk.call(
+            "video_edit", edits=[{"op": "add_media", "media": {"id": "$m", "path": "take.wav"}}]
+        )
+    )
+
+    assert refused.error is not None
+    assert refused.error.code == "OUTSIDE_WORKING_DIRECTORY"
+    assert wrong.error is not None
+    assert wrong.error.code == "VIDEO_INVALID"
+    assert added["names"]["$m"]
+    # The engine reads a path from where it runs, so it is given the whole one.
+    assert [item["path"] for item in fake.project["media"]] == [
+        str((desk.work / "take.wav").resolve())
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tracks", "chosen", "asked", "named"),
+    [
+        ([("en", "S1")], "visible", ["S0"], ["cut.srt"]),
+        # The timeline shows S0 alone; a hidden track is written when it is chosen.
+        ([("en", "S1"), ("fr", "S2")], ["S1"], ["S1"], ["cut.srt"]),
+        (
+            [("en", "S1"), ("", "中文 字幕"), ("EN", "S3")],
+            "all",
+            ["S0", "S1", "S2"],
+            ["cut.en.srt", "cut.中文 字幕.srt", "cut.EN-2.srt"],
+        ),
+        (
+            [("en", "S1"), ("", "中文 字幕"), ("EN", "S3")],
+            ["S2", "S0"],
+            ["S2", "S0"],
+            ["cut.en.srt", "cut.EN-2.srt"],
+        ),
+    ],
+)
+async def test_subtitles_written_beside_an_export_are_asked_for_as_the_film_is(
+    studio: tuple[Desk, Fake],
+    monkeypatch: pytest.MonkeyPatch,
+    tracks: list[tuple[str, str]],
+    chosen: str | list[str],
+    asked: list[str],
+    named: list[str],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    timeline = fake.project["timelines"][0]
+    timeline["tracks"] = [
+        timeline["tracks"][0],
+        *(
+            {
+                **edits.track("subtitle", id=f"S{at}", name=name, enabled=at == 0),
+                "language": language,
+            }
+            for at, (language, name) in enumerate(tracks)
+        ),
+    ]
+    videos = desk.ctx.use(VIDEOS)
+    checks: list[tuple[str, str]] = []
+    checking = videos.checked
+
+    def checked(run: object, tool: str, path: str, kind: Literal["read", "write"]) -> Path:
+        checks.append((Path(path).name, kind))
+        return checking(run, tool, path, kind)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(videos, "checked", checked)
+    result(await desk.call("video_render", path="out/cut.mp4", subtitles=chosen))
+    sent = fake.rendered[-1]["subtitle_tracks"]
+    unasked = await desk.call("video_render", path="out/other.mp4", subtitles=[])
+
+    assert sent == asked
+    assert all((name, "write") in checks for name in named)
+    written = [name for name, _ in checks if name.startswith("cut.") and name.endswith(".srt")]
+    assert set(written) == set(named)
+    assert unasked.error is None
+    assert fake.rendered[-1]["subtitle_tracks"] == []
+    assert not [name for name, _ in checks if name.startswith("other.") and name.endswith(".srt")]
+
+
+async def test_a_subtitle_track_that_is_not_one_of_the_timeline_is_not_exported(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    refused = await desk.call("video_render", path="out/cut.mp4", subtitles=["A1"])
+
+    assert refused.error is not None
+    assert refused.error.code == "VIDEO_SUBTITLE_TRACK"
+    assert not (desk.work / "out/cut.mp4").exists()
+
+
+async def test_a_text_cut_read_before_the_engine_was_reached_again_is_refused(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    path = Path(result(await desk.call("video_story"))["path"])
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("filler", "~~filler~~"), encoding="utf-8"
+    )
+    steps = len(fake.steps)
+
+    def restarted() -> None:
+        # As an engine that ends once the project was read: the next is reached anew, and
+        # counts its revisions from 0 again, so the revision read says nothing of it.
+        for one in list(fake.connections):
+            assert one.transport is not None
+            one.transport.close()
+
+    fake.then["project.get"] = restarted
+    failed = await desk.call("video_apply")
+
+    assert failed.error is not None
+    assert failed.error.code == "VIDEO_STALE_REVISION"
+    assert len(fake.steps) == steps
+    assert "~~filler~~" in path.read_text(encoding="utf-8")
+
+
+async def test_a_migration_the_engine_refuses_leaves_nothing_to_find_later(
+    studio: tuple[Desk, Fake],
+) -> None:
+    from columbina.video.legacy import Manifest, Timeline
+
+    desk, fake = studio
+    old = desk.work / "Old Film"
+    old.mkdir()
+    (old / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (old / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+    fake.refusals["transaction.apply"] = {
+        "code": -32001,
+        "message": "refused",
+        "data": {"reason": "locked", "index": 0},
+    }
+
+    told = result(await desk.call("video_info"))
+
+    assert "refused" in told["migrations"][0]["error"]
+    assert not list((fake.directory / "analysis/migrations").glob("pending-*.json"))
+
+
+async def test_a_migration_that_fails_as_a_whole_is_reported_and_the_call_goes_on(
+    studio: tuple[Desk, Fake], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import columbina.video.migrate
+    from columbina.video.project import ProjectError
+
+    desk, _fake = studio
+
+    async def held(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        raise ProjectError("another client is migrating this Studio project; try again later")
+
+    monkeypatch.setattr(columbina.video.migrate, "migrate", held)
+
+    told = result(await desk.call("video_info"))
+
+    assert "another client is migrating" in told["migrations"][0]["error"]
+    assert told["timelines"] == []
+
+
+async def test_an_operation_of_sound_is_given_the_timeline_of_the_tool(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    batch = [
+        edits.add_timeline("Cut", edits.Rate(num=25, den=1), tracks=[edits.track("audio", id="A1")])
+    ]
+    result(await desk.call("video_edit", edits=batch))
+    patch = {"strip": {"fader_db": -6}, "mute": True}
+    result(
+        await desk.call(
+            "video_edit", edits=[{"op": "set_track_audio", "track": "A1", "patch": patch}]
+        )
+    )
+    (track,) = fake.project["timelines"][0]["tracks"]
+    assert track["strip"] == {"fader_db": -6}
+    assert track["mute"] is True
+    # So is an operation of automation (T14).
+    lane = {"points": [{"at": {"ticks": 0, "scale": 48000}, "value": -10.0}]}
+    set_lane = {"op": "set_lane", "of": {"track": "A1"}, "path": "fader_db", "lane": lane}
+    result(await desk.call("video_edit", edits=[set_lane]))
+    (track,) = fake.project["timelines"][0]["tracks"]
+    assert track["lanes"] == {"fader_db": lane}

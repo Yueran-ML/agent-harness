@@ -1,0 +1,126 @@
+/*
+ * The Qualifier and Key palettes of the Color page (Reference Manual 20, pp. 3157–3184,
+ * 3358–3363): the Selection Range tools, the bars of the ranges, Matte Finesse, the key's groups.
+ */
+
+.color-qualifier,
+.color-key {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.color-qualifier-tools {
+  display: inline-flex;
+  gap: 1px;
+}
+
+.color-qualifier-tool[aria-checked='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Softness is shown as a softer mark than the range itself. */
+.color-qualifier-tool[data-soft] svg {
+  opacity: 0.7;
+  stroke-dasharray: 3 2;
+}
+
+.color-qualifier-hint {
+  padding: 0 var(--s2);
+}
+
+.color-qualifier-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s1) var(--s2);
+}
+
+.color-qualifier-row {
+  display: grid;
+  grid-template-columns: 14px 5ch minmax(80px, 1fr) auto;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.color-qualifier-name {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.color-qualifier-switch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid var(--moon-3, var(--moon-2));
+  background: transparent;
+}
+
+.color-qualifier-switch[aria-checked='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.color-qualifier-bar {
+  position: relative;
+  height: 14px;
+  overflow: hidden;
+  border-radius: var(--r1);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.color-qualifier-bar[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.color-qualifier-core,
+.color-qualifier-soft {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.color-qualifier-core {
+  border: 1px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.color-qualifier-soft[data-side='low'] {
+  background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.35));
+}
+
+.color-qualifier-soft[data-side='high'] {
+  background: linear-gradient(to left, transparent, rgba(255, 255, 255, 0.35));
+}
+
+.color-qualifier-numbers {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.color-qualifier-finesse,
+.color-key-group {
+  padding: var(--s1) var(--s2);
+  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+
+.color-qualifier-morph {
+  height: 22px;
+  font-size: var(--text-caption);
+}
+
+.color-key-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.color-key-group .color-settings {
+  flex-wrap: wrap;
+}

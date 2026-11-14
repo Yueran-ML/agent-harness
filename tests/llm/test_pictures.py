@@ -89,6 +89,16 @@ def test_pictures_of_the_last_results_go_last() -> None:
     assert [message["role"] for message in messages] == ["user", "assistant", "tool", "user"]
 
 
+def test_of_the_models_of_a_service_only_those_that_take_pictures_are_shown_them() -> None:
+    some = {"pictures": True, "pictures_only": ("m", "n")}
+    others = {"pictures": True, "pictures_only": ("n",)}
+    none_at_all = {"pictures": False, "pictures_only": ("m",)}
+
+    assert openai_body(**some) == openai_body(pictures=True)
+    assert openai_body(**others) == openai_body()
+    assert openai_body(**none_at_all) == openai_body()
+
+
 def test_a_model_that_takes_no_pictures_is_told_so_in_their_place() -> None:
     messages = openai_body()
 

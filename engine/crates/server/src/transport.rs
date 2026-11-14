@@ -13,8 +13,11 @@
 //!   clients, a moment at a time. If it panics, a guard tells everyone that nothing is loaded,
 //!   and the methods of the transport are refused from then on.
 //! - **The converter** (`columbina-convert`) makes the frames that the decoder gives
-//!   ([`Decoded`], on the graphics card or in memory) into [`Picture`]s, while the decoder
-//!   decodes the next: copying a frame of 4K from the card takes 5–12 ms, decoding it 7–11 ms.
+//!   ([`Decoded`], on the graphics card or in memory) into [`NativePicture`]s, while the
+//!   decoder decodes the next: copying a frame of 4K from the card takes 5–12 ms, decoding it
+//!   7–11 ms. A picture keeps the sampling of chroma of its file (4:2:2 and 4:4:4 in 16 bits),
+//!   and says its matrix and range, which the view draws it by, as the compositor draws it in
+//!   the timeline monitor and an export.
 //!   It writes into a **pool** of pictures, each used again once neither the transport nor the
 //!   view holds it (the view lets a picture go when the next one is drawn); when every one is
 //!   held, a new picture is made and let go after it is shown.
@@ -25,8 +28,10 @@
 //! The pictures held at once while playing are those decoded ahead, the two that the view may
 //! hold (the one it drew and the one it is to draw), and the few last shown: [`Limits`] sizes
 //! them to the pictures of the media so that they take at most [`POOL_BYTES`] (12 pictures
-//! up to 4K, 4 of 8K), and the pool lets the pictures that no one holds go when media is
-//! unloaded.
+//! up to 4K of 4:2:0 or 4:2:2, 8 of 4K of 4:4:4, 4 of 8K), and the pool lets the pictures that no one
+//! holds go when media is unloaded. The limits are first made for pictures of 4:2:0, as a file
+//! does not say how its chroma is sampled until a frame is decoded; a picture that comes
+//! larger (of 4:2:2 or 4:4:4) makes them again for its size ([`Video::fit`]).
 //!
 //! # Playing
 //!
@@ -71,7 +76,7 @@
 //!
 //! Everything that decodes goes through [`Loaded::show`] (a frame sought or stepped to) and
 //! the playback loops of [`Worker::forward`] and [`Worker::backward`], on the one [`VideoDecoder`] of
-//! [`Picture`]s of [`Loaded`] (`video`), while the sound is read from `sound_path`, the media
+//! [`NativePicture`]s of [`Loaded`] (`video`), while the sound is read from `sound_path`, the media
 //! itself. Where the media has a proxy ([`crate::proxy`]) and proxies are used
 //! (`transport.proxies`, on at first), the decoder is of the proxy: its frames are those of the
 //! media, numbered alike, at the same rate, and the sound is laid by the start of the picture
@@ -82,10 +87,10 @@
 //! the frame shown stays.
 
 pub(crate) mod clock;
+mod source_audio;
 
 #[cfg(test)]
-#[path = "../../media/tests/support/mod.rs"]
-mod test_media;
+use crate::test_media;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -94,7 +99,7 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use columbina_media::{
-    AudioDecoder, Converter, Decoded, Facts, Hardware, MediaError, Picture, Rate, Time,
+    AudioDecoder, Converter, Decoded, Facts, Hardware, MediaError, NativePicture, Rate, Time,
     VideoDecoder, VideoFacts,
 };
 use columbina_model::Project;
@@ -106,7 +111,8 @@ use tokio::sync::oneshot;
 use crate::audio::{self, Output};
 use crate::log::log;
 use crate::rpc::{self, Fault};
-use crate::view::ViewSlot;
+use crate::scopes::{Scopes, Shown};
+use crate::view::{Monitor, ViewSlot};
 use clock::{Clock, First, NANOS};
 
 /// The most that the pictures held at once while playing may take.
@@ -161,7 +167,21 @@ impl Limits {
         }
     }
 
-    /// The bytes of a picture of `width` × `height` of `bits`, as [`Picture`] lays it out.
+    /// The limits made again for pictures of the size of `picture`, where it is larger than
+    /// `bytes`, those they were made for (which become its): the pictures that the converter may
+    /// keep from now on.
+    fn fit(&mut self, bytes: &mut u64, picture: &NativePicture) -> Option<usize> {
+        let size = u64::try_from(picture.bytes()).unwrap_or(u64::MAX);
+        if size <= *bytes {
+            return None;
+        }
+        *bytes = size;
+        *self = Limits::of(size);
+        Some(self.pool)
+    }
+
+    /// The bytes of a picture of 4:2:0 of `width` × `height` of `bits`, as [`NativePicture`] lays
+    /// it out (NV12 or P010).
     pub fn picture_bytes(width: u32, height: u32, bits: u8) -> u64 {
         let bytes = if bits > 8 { 2 } else { 1 };
         let stride = (u64::from(width).div_ceil(2) * 2 * bytes).next_multiple_of(64);
@@ -172,10 +192,11 @@ impl Limits {
 /// How the transport is made, beside the engine: what plays its sound, and, for the tests, a
 /// frame from which on the first frame on the card that the converter is given fails to be
 /// copied (`--fail-card-at`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Setup {
     pub sound: audio::Kind,
     pub fail_card_at: Option<i64>,
+    pub test_hooks: bool,
 }
 
 /// The transport, as the engine's methods reach it. It is cheap to clone: the transport's own
@@ -250,6 +271,8 @@ pub enum Source {
     Original,
     /// Its proxy.
     Proxy,
+    /// A timeline contains both original pictures and proxies.
+    Mixed,
 }
 
 impl Source {
@@ -257,6 +280,7 @@ impl Source {
         match self {
             Source::Original => "original",
             Source::Proxy => "proxy",
+            Source::Mixed => "mixed",
         }
     }
 }
@@ -296,10 +320,13 @@ enum Inbox {
 enum Command {
     Load {
         media: String,
+        sound_media: Option<Arc<columbina_model::Media>>,
         path: PathBuf,
         /// Its proxy, if it has one that may be used.
         proxy: Option<PathBuf>,
-        facts: Facts,
+        /// Boxed: the facts of a picture, with what it says of its colours, are larger than
+        /// every other command together.
+        facts: Box<Facts>,
         /// The rate of the first timeline of the project, for media that is sound alone.
         grid: Option<Rate>,
         reply: oneshot::Sender<Result<Status, Fault>>,
@@ -308,10 +335,16 @@ enum Command {
     Unload {
         media: String,
     },
+    AudioConfig {
+        media: Arc<columbina_model::Media>,
+    },
     Play {
         speed: i32,
     },
     Pause,
+    PauseAndReply(oneshot::Sender<()>),
+    Snapshot(oneshot::Sender<Option<Snapshot>>),
+    Stop,
     Seek {
         frame: i64,
         scrubbing: bool,
@@ -350,14 +383,12 @@ struct Job {
 struct Converted {
     generation: u64,
     frame: i64,
-    picture: Result<Arc<Picture>, MediaError>,
+    picture: Result<Arc<NativePicture>, MediaError>,
 }
 
-/// The params of `transport.load`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Load {
-    pub media: String,
+pub struct Snapshot {
+    pub picture: Arc<NativePicture>,
+    pub rotation: i16,
 }
 
 /// The params of `transport.play`.
@@ -443,6 +474,7 @@ impl Transport {
         view: ViewSlot,
         notify: Notify,
         again: Again,
+        scopes: Scopes,
     ) -> Transport {
         let shared = Arc::new(Mutex::new(Shared {
             status: Status::unloaded(),
@@ -494,6 +526,7 @@ impl Transport {
                                 shared,
                                 notify,
                                 view,
+                                scopes,
                                 epoch: Instant::now(),
                                 told: None,
                             },
@@ -559,6 +592,26 @@ impl Transport {
         lock(&self.shared).status.clone()
     }
 
+    /// A switch to the other monitor waits until the worker has stopped its audio output.
+    pub async fn pause_for_switch(&self) -> Result<(), Fault> {
+        let (reply, received) = oneshot::channel();
+        self.send(Command::PauseAndReply(reply))?;
+        received.await.map_err(|_| stopped())
+    }
+
+    pub async fn snapshot(&self) -> Result<Snapshot, Fault> {
+        let (reply, received) = oneshot::channel();
+        self.send(Command::Snapshot(reply))?;
+        received.await.map_err(|_| stopped())?.ok_or_else(|| {
+            Fault::new(rpc::TRANSPORT_FAILED, "the source monitor has no picture")
+                .with_data(json!({"reason":"not_loaded"}))
+        })
+    }
+
+    pub fn stop(&self) {
+        let _ = self.send(Command::Stop);
+    }
+
     fn send(&self, command: Command) -> Result<(), Fault> {
         if lock(&self.shared).stopped {
             return Err(stopped());
@@ -578,23 +631,22 @@ impl Transport {
     /// The transport has stopped.
     pub fn begin_load(
         &self,
-        media: &str,
-        path: PathBuf,
+        media: &columbina_model::Media,
         proxy: Option<PathBuf>,
-        facts: Facts,
         grid: Option<Rate>,
     ) -> Result<Loading, Fault> {
         let (reply, replied) = oneshot::channel();
         {
             let mut shared = lock(&self.shared);
-            shared.loading.push(media.to_owned());
-            shared.proxy_sent = Some((media.to_owned(), proxy.clone()));
+            shared.loading.push(media.id.clone());
+            shared.proxy_sent = Some((media.id.clone(), proxy.clone()));
         }
         let sent = self.send(Command::Load {
-            media: media.to_owned(),
-            path,
+            media: media.id.clone(),
+            sound_media: media.audio_config.as_ref().map(|_| Arc::new(media.clone())),
+            path: PathBuf::from(&media.path),
             proxy,
-            facts,
+            facts: Box::new(media.facts.clone()),
             grid,
             reply,
         });
@@ -603,7 +655,7 @@ impl Transport {
             if let Some(index) = shared
                 .loading
                 .iter()
-                .position(|loading| **loading == *media)
+                .position(|loading| *loading == media.id)
             {
                 shared.loading.remove(index);
             }
@@ -647,7 +699,7 @@ impl Transport {
         let command = match method {
             "transport.play" => {
                 let play: Play = rpc::params(method, r#"{"speed": 1}"#, params)?;
-                if play.speed == 0 || play.speed.abs() > FASTEST {
+                if play.speed == 0 || !(-FASTEST..=FASTEST).contains(&play.speed) {
                     return Err(Fault::params(format!(
                         "the speed of transport.play is a whole number from -{FASTEST} to \
                          {FASTEST}, not 0, and {} is not one",
@@ -715,6 +767,20 @@ impl Transport {
         };
         for media in gone {
             let _ = self.send(Command::Unload { media });
+        }
+        let audio: Vec<_> = {
+            let shared = lock(&self.shared);
+            shared
+                .status
+                .media
+                .iter()
+                .chain(&shared.loading)
+                .filter_map(|id| project.media.iter().find(|media| media.id == *id))
+                .map(|media| Arc::new(media.clone()))
+                .collect()
+        };
+        for media in audio {
+            let _ = self.send(Command::AudioConfig { media });
         }
         // A proxy made, made again or taken away while its media is loaded.
         let changed = {
@@ -836,7 +902,7 @@ fn convert_all(
     mut fail_card_at: Option<i64>,
 ) {
     let mut converter = Converter::new();
-    let mut pool: Vec<Arc<Picture>> = Vec::new();
+    let mut pool: Vec<Arc<NativePicture>> = Vec::new();
     for work in work {
         let job = match work {
             Work::Convert(job) => job,
@@ -878,10 +944,10 @@ fn convert_all(
 /// in the pool, or, when the pool has `most` and all are held, a new one that is not kept.
 fn make(
     converter: &mut Converter,
-    pool: &mut Vec<Arc<Picture>>,
+    pool: &mut Vec<Arc<NativePicture>>,
     most: usize,
     decoded: &Decoded,
-) -> Result<Arc<Picture>, MediaError> {
+) -> Result<Arc<NativePicture>, MediaError> {
     if pool.len() > most {
         // The limits are lower than they were: the pictures that no one holds beyond them go.
         let mut free = pool.len() - most;
@@ -897,17 +963,17 @@ fn make(
     let index = match free {
         Some(index) => index,
         None if pool.len() < most => {
-            pool.push(Arc::new(Picture::default()));
+            pool.push(Arc::new(NativePicture::default()));
             pool.len() - 1
         }
         None => {
-            let mut picture = Picture::default();
-            converter.picture_into(decoded, &mut picture)?;
+            let mut picture = NativePicture::default();
+            converter.native_into(decoded, &mut picture)?;
             return Ok(Arc::new(picture));
         }
     };
     let slot = Arc::get_mut(&mut pool[index]).expect("a free picture is held by no one else");
-    converter.picture_into(decoded, slot)?;
+    converter.native_into(decoded, slot)?;
     Ok(Arc::clone(&pool[index]))
 }
 
@@ -951,7 +1017,7 @@ impl Pipe {
 
     /// A frame made a picture now, by the converter, while what is at it is let go. Commands
     /// that come meanwhile are kept for later.
-    fn convert_now(&mut self, decoded: Decoded) -> Result<Arc<Picture>, MediaError> {
+    fn convert_now(&mut self, decoded: Decoded) -> Result<Arc<NativePicture>, MediaError> {
         let generation = self.flush();
         self.send(decoded);
         loop {
@@ -977,6 +1043,8 @@ struct World {
     shared: Arc<Mutex<Shared>>,
     notify: Notify,
     view: ViewSlot,
+    /// The scopes of the source monitor, told each picture shown.
+    scopes: Scopes,
     /// The start of the monotonic clock.
     epoch: Instant,
     /// What was told last, and when.
@@ -989,17 +1057,25 @@ impl World {
         i128::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(i128::MAX)
     }
 
-    /// Hand a picture to the view, if one is attached.
-    fn present(&self, picture: &Arc<Picture>, rotation: i16) {
+    /// Hand a picture to the view, if one is attached, and to the scopes.
+    fn present(&self, picture: &Arc<NativePicture>, rotation: i16) {
         if let Some(view) = lock(&self.view).as_ref() {
             view.present(Arc::clone(picture), rotation);
         }
+        self.scopes.shown(
+            Monitor::Source,
+            Shown::Picture {
+                picture: Arc::clone(picture),
+                rotation,
+            },
+        );
     }
 
     fn clear(&self) {
         if let Some(view) = lock(&self.view).as_ref() {
             view.clear();
         }
+        self.scopes.cleared(Monitor::Source);
     }
 
     /// The proxy of media at `path` could not be read: it is not read again, nor sent again by
@@ -1043,16 +1119,19 @@ impl World {
 }
 
 /// The output of the sound, opened when it is first needed and again after it failed.
-struct SoundSlot {
+pub(crate) struct SoundSlot {
     kind: audio::Kind,
     /// The output, or why there is none.
     output: Option<Result<Output, String>>,
 }
 
 impl SoundSlot {
+    pub fn new(kind: audio::Kind) -> Self {
+        Self { kind, output: None }
+    }
     /// The output to play on: the one opened, unless it failed or the default device of the
     /// system is another now; then it is opened anew (and told in the log).
-    fn ready(&mut self) -> Option<&mut Output> {
+    pub fn ready(&mut self) -> Option<&mut Output> {
         let again = match &self.output {
             None | Some(Err(_)) => true,
             Some(Ok(output)) => output.failed().is_some() || !output.current(),
@@ -1060,7 +1139,7 @@ impl SoundSlot {
         if again {
             // The old one is closed before another is opened.
             self.output = None;
-            let output = Output::open(self.kind);
+            let output = Output::open(&self.kind);
             match &output {
                 Ok(output) => log(
                     "sound_ready",
@@ -1078,7 +1157,7 @@ impl SoundSlot {
     }
 
     /// The output, if one is open and has not failed.
-    fn working(&self) -> Option<&Output> {
+    pub fn working(&self) -> Option<&Output> {
         match &self.output {
             Some(Ok(output)) if output.failed().is_none() => Some(output),
             _ => None,
@@ -1086,7 +1165,7 @@ impl SoundSlot {
     }
 
     /// Stop what plays, and end its feeder.
-    fn stop(&mut self) {
+    pub fn stop(&mut self) {
         if let Some(Ok(output)) = &mut self.output {
             output.stop();
         }
@@ -1098,11 +1177,24 @@ struct Video {
     decoder: VideoDecoder,
     rotation: i16,
     limits: Limits,
+    /// The bytes of a picture that the limits were made for.
+    bytes: u64,
+}
+
+impl Video {
+    /// Make the limits again for pictures of the size of `picture`, where it is larger than
+    /// those they were made for (a picture of 4:2:2 or 4:4:4, which a file does not say it
+    /// makes until one is made): the pictures that the converter may keep from now on, to be
+    /// told to it.
+    fn fit(&mut self, picture: &NativePicture) -> Option<usize> {
+        self.limits.fit(&mut self.bytes, picture)
+    }
 }
 
 /// The media loaded, and what the transport does with it.
 struct Loaded {
     media: String,
+    sound_media: Option<Arc<columbina_model::Media>>,
     /// The file whose sound is played: the media itself.
     sound_path: PathBuf,
     /// The proxy of the media, if it has one that may be used.
@@ -1125,9 +1217,9 @@ struct Loaded {
     last: i64,
     has_sound: bool,
     /// The picture shown, and so its frame.
-    picture: Option<Arc<Picture>>,
+    picture: Option<Arc<NativePicture>>,
     /// The pictures shown last, and those that were ready when playing stopped.
-    recent: VecDeque<Arc<Picture>>,
+    recent: VecDeque<Arc<NativePicture>>,
     playhead: i64,
     exact: bool,
     speed: i32,
@@ -1157,7 +1249,7 @@ struct Playing {
     /// Fine timers of the system, while it plays.
     _fine: crate::timer::Fine,
     /// Pictures ready to be shown, in playback order; at most one while playing backward.
-    ready: VecDeque<Arc<Picture>>,
+    ready: VecDeque<Arc<NativePicture>>,
     /// How many frames are at the converter; at most one while playing backward.
     in_flight: usize,
     /// Forward: the decoder gave every frame up to the end. Backward: conversion failed.
@@ -1397,6 +1489,7 @@ impl Worker {
         match command {
             Command::Load {
                 media,
+                sound_media,
                 path,
                 proxy,
                 facts,
@@ -1404,7 +1497,14 @@ impl Worker {
                 reply,
             } => {
                 self.unload();
+                // The view shows HDR media as HDR, as its file says it is.
+                if let Some(view) = lock(&self.world.view).as_ref() {
+                    view.set_content(crate::managed::content_of_media(&facts));
+                }
                 let opened = self.open(media.clone(), path, proxy, &facts, grid);
+                if let Some(loaded) = &mut self.loaded {
+                    loaded.sound_media = sound_media;
+                }
                 if opened.is_err() {
                     self.world.clear();
                 }
@@ -1424,10 +1524,32 @@ impl Worker {
                     self.tell(true);
                 }
             }
+            Command::AudioConfig { media } => self.audio_config(media),
             Command::Play { speed } => self.play(speed),
             Command::Pause => {
                 self.pause();
                 self.tell(true);
+            }
+            Command::PauseAndReply(reply) => {
+                self.pause();
+                if self.loaded.is_some() {
+                    self.tell(true);
+                }
+                let _ = reply.send(());
+            }
+            Command::Snapshot(reply) => {
+                let picture = self.loaded.as_ref().and_then(|loaded| {
+                    Some(Snapshot {
+                        picture: Arc::clone(loaded.picture.as_ref()?),
+                        rotation: loaded.video.as_ref()?.rotation,
+                    })
+                });
+                let _ = reply.send(picture);
+            }
+            Command::Stop => {
+                self.unload();
+                self.world.clear();
+                self.pipe.gone = true;
             }
             Command::Seek {
                 frame,
@@ -1461,6 +1583,31 @@ impl Worker {
             self.tell(true);
         }
         self.recover();
+    }
+
+    /// Apply pool audio settings to the loaded source, keeping ordinary metadata changes silent.
+    fn audio_config(&mut self, media: Arc<columbina_model::Media>) {
+        let Some(loaded) = &self.loaded else {
+            return;
+        };
+        if loaded.media != media.id {
+            return;
+        }
+        let configured = media.audio_config.is_some().then_some(media);
+        if source_audio::same(loaded.sound_media.as_deref(), configured.as_deref()) {
+            return;
+        }
+        let speed = match &loaded.mode {
+            Mode::Playing(playing) => Some(playing.clock.speed()),
+            _ => None,
+        };
+        if speed.is_some() {
+            self.pause();
+        }
+        self.loaded.as_mut().expect("checked above").sound_media = configured;
+        if let Some(speed) = speed {
+            self.play(speed);
+        }
     }
 
     /// Let go of a proxy that failed to decode: the picture is read from the media itself from
@@ -1639,6 +1786,7 @@ impl Worker {
         }
         let mut loaded = Loaded {
             media,
+            sound_media: None,
             sound_path: path,
             proxy,
             facts_video: facts.video.clone(),
@@ -1689,6 +1837,7 @@ impl Worker {
                         && loaded.has_sound
                         && start_sound(
                             &mut self.sound,
+                            loaded.sound_media.as_deref(),
                             &loaded.sound_path,
                             loaded.start,
                             place,
@@ -1754,6 +1903,7 @@ impl Worker {
             && loaded.has_sound
             && start_sound(
                 &mut self.sound,
+                loaded.sound_media.as_deref(),
                 &loaded.sound_path,
                 loaded.start,
                 place,
@@ -1905,7 +2055,12 @@ impl Worker {
         };
         playing.in_flight = playing.in_flight.saturating_sub(1);
         match converted.picture {
-            Ok(picture) => playing.ready.push_back(picture),
+            Ok(picture) => {
+                if let Some(pool) = video.fit(&picture) {
+                    self.pipe.trim(pool);
+                }
+                playing.ready.push_back(picture);
+            }
             Err(MediaError::Device(why)) => {
                 // The card failed: the decoder goes on on the processor, from this frame.
                 log(
@@ -2041,7 +2196,7 @@ impl Worker {
         let now = clock_time(playing, &self.world);
         let target = playing.clock.frame(now);
         // The newest ready frame at or before the clock; those before it are dropped.
-        let mut chosen: Option<Arc<Picture>> = None;
+        let mut chosen: Option<Arc<NativePicture>> = None;
         while playing
             .ready
             .front()
@@ -2229,8 +2384,10 @@ fn open_picture(
         } else {
             (width, height)
         };
+        let bytes = Limits::picture_bytes(width, height, bits.max(8));
         Video {
-            limits: Limits::of(Limits::picture_bytes(width, height, bits.max(8))),
+            limits: Limits::of(bytes),
+            bytes,
             decoder,
             rotation: facts.rotation,
         }
@@ -2287,6 +2444,7 @@ fn open_picture(
 /// opened anew if it failed or the default device changed. Whether it plays.
 fn start_sound(
     slot: &mut SoundSlot,
+    media_layout: Option<&columbina_model::Media>,
     path: &std::path::Path,
     start: Time,
     place: i128,
@@ -2297,7 +2455,17 @@ fn start_sound(
     };
     let media = Clock::at(place, 1, rate, 0).media_nanos(0);
     let from = clock::sample_at(start, media, output.format().rate);
-    match output.start(path, from) {
+    let source = match media_layout {
+        None => audio::file(path, output.format(), from),
+        Some(media) => match source_audio::source(media, rate, place, output.format()) {
+            Ok(source) => source,
+            Err(message) => {
+                log("sound_failed", &json!({ "message": message }));
+                return false;
+            }
+        },
+    };
+    match output.start(source) {
         Ok(()) => true,
         Err(message) => {
             log("sound_failed", &json!({ "message": message }));
@@ -2409,7 +2577,7 @@ impl Loaded {
 
     /// Keep a picture to be shown again at once; past the most that is kept, the one furthest
     /// from the playhead goes, so that those just shown stay.
-    fn remember(&mut self, picture: Arc<Picture>) {
+    fn remember(&mut self, picture: Arc<NativePicture>) {
         let most = self
             .video
             .as_ref()
@@ -2483,11 +2651,14 @@ impl Loaded {
             }
             other => other?,
         };
+        if let Some(pool) = video.fit(&picture) {
+            pipe.trim(pool);
+        }
         self.present(picture, world);
         Ok(())
     }
 
-    fn present(&mut self, picture: Arc<Picture>, world: &World) {
+    fn present(&mut self, picture: Arc<NativePicture>, world: &World) {
         if let Some(video) = &self.video {
             world.present(&picture, video.rotation);
         }
@@ -2506,10 +2677,17 @@ mod tests {
     fn backward_worker() -> Option<(Worker, mpsc::Receiver<Work>, mpsc::Sender<Inbox>)> {
         let made = test_media::media(test_media::Sample::Prores)?;
         let mut decoder = VideoDecoder::open(&made.path, Hardware::Off).unwrap();
-        let picture = Arc::new(decoder.frame_at(10).unwrap());
+        let picture = Arc::new(
+            Converter::new()
+                .native(&decoder.decoded_at(10).unwrap())
+                .unwrap(),
+        );
         let start = decoder.start();
         let rate = Rate { num: 25, den: 1 };
-        let limits = Limits::of(Limits::picture_bytes(1920, 1080, 10));
+        // ProRes 422: pictures of P216, the limits made for them already.
+        let bytes = u64::try_from(picture.luma.len() + picture.chroma.len()).unwrap();
+        assert!(bytes > Limits::picture_bytes(1920, 1080, 10));
+        let limits = Limits::of(bytes);
         let (inbox, received) = mpsc::channel();
         let (work, taken) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared {
@@ -2533,6 +2711,7 @@ mod tests {
                     shared,
                     notify: Arc::new(|_| {}),
                     view: Arc::new(Mutex::new(None)),
+                    scopes: Scopes::new(true, crate::gpu::Graphics::new()),
                     epoch: Instant::now(),
                     told: None,
                 },
@@ -2542,6 +2721,7 @@ mod tests {
                 },
                 loaded: Some(Loaded {
                     media: "m1".into(),
+                    sound_media: None,
                     sound_path: made.path.clone(),
                     proxy: None,
                     facts_video: None,
@@ -2552,6 +2732,7 @@ mod tests {
                         decoder,
                         rotation: 0,
                         limits,
+                        bytes,
                     }),
                     rate,
                     start,
@@ -2580,7 +2761,7 @@ mod tests {
         Converted {
             generation: job.generation,
             frame: job.decoded.frame(),
-            picture: Converter::new().picture(&job.decoded).map(Arc::new),
+            picture: Converter::new().native(&job.decoded).map(Arc::new),
         }
     }
 
@@ -2726,9 +2907,13 @@ mod tests {
                 Command::Step { frames } => format!("step {frames}"),
                 Command::Play { speed } => format!("play {speed}"),
                 Command::Pause => "pause".into(),
+                Command::PauseAndReply(_) => "pause and reply".into(),
+                Command::Snapshot(_) => "snapshot".into(),
+                Command::Stop => "stop".into(),
                 Command::Unload { media } => format!("unload {media}"),
                 Command::Redraw => "redraw".into(),
                 Command::Load { media, .. } => format!("load {media}"),
+                Command::AudioConfig { media } => format!("audio config {}", media.id),
                 Command::Source { media, .. } => format!("source {media}"),
                 Command::Proxies { on } => format!("proxies {on}"),
             })
@@ -2825,8 +3010,53 @@ mod tests {
     }
 
     #[test]
+    fn pictures_larger_than_the_limits_were_made_for_make_them_again() {
+        let mut bytes = Limits::picture_bytes(3840, 2160, 10);
+        let mut limits = Limits::of(bytes);
+        assert_eq!(limits.pool, 12);
+        let picture =
+            |format: columbina_media::PictureFormat, luma: usize, chroma: usize| NativePicture {
+                width: 3840,
+                height: 2160,
+                format,
+                luma: vec![0; luma],
+                chroma: vec![0; chroma],
+                ..NativePicture::default()
+            };
+        // 4:2:0 of 10 bits, as the limits were made for: nothing changes.
+        let p010 = picture(
+            columbina_media::PictureFormat::P010,
+            7680 * 2160,
+            7680 * 1080,
+        );
+        assert_eq!(limits.fit(&mut bytes, &p010), None);
+        // 4:2:2 of 10 bits: 33 MB a picture, still 12.
+        let p216 = picture(
+            columbina_media::PictureFormat::P216,
+            7680 * 2160,
+            7680 * 2160,
+        );
+        assert_eq!(limits.fit(&mut bytes, &p216), Some(12));
+        // 4:4:4: 50 MB a picture, 8 of them within 384 MiB; and not again for the same size.
+        let p416 = picture(
+            columbina_media::PictureFormat::P416,
+            7680 * 2160,
+            15360 * 2160,
+        );
+        assert_eq!(limits.fit(&mut bytes, &p416), Some(8));
+        assert_eq!(bytes, 49_766_400);
+        assert!(bytes * 8 <= POOL_BYTES);
+        assert_eq!(limits, Limits::of(bytes));
+        assert_eq!(limits.fit(&mut bytes, &p416), None);
+        // A smaller picture after it does not loosen them.
+        assert_eq!(limits.fit(&mut bytes, &p010), None);
+        assert_eq!(limits.pool, 8);
+    }
+
+    #[test]
     fn a_picture_of_the_pool_is_used_again_once_no_one_holds_it() {
-        let mut pool: Vec<Arc<Picture>> = (0..3).map(|_| Arc::new(Picture::default())).collect();
+        let mut pool: Vec<Arc<NativePicture>> =
+            (0..3).map(|_| Arc::new(NativePicture::default())).collect();
         let held = Arc::clone(&pool[0]);
         assert_eq!(
             pool.iter_mut()

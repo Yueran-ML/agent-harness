@@ -1,0 +1,238 @@
+/* The LUT browser of the Color page (Reference Manual 20, pp. 2970–2971): its folders at the left, its LUTs at the right. */
+.color-side[data-panel='luts'] {
+  padding: 0;
+}
+
+.color-luts {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.color-luts-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: var(--s2) var(--s2) var(--s1) var(--s3);
+}
+
+.color-lut-search {
+  margin: 0 var(--s2) var(--s1);
+  height: 26px;
+  font-size: 12px;
+}
+
+.color-lut-problem {
+  margin: 0 var(--s3) var(--s1);
+  color: var(--bad);
+  overflow-wrap: anywhere;
+}
+
+.color-luts-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  border-top: 1px solid var(--line);
+}
+
+.color-lut-folders {
+  flex: none;
+  width: 42%;
+  max-width: 160px;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  padding: var(--s1);
+}
+
+.color-lut-folders ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.color-lut-folder {
+  width: 100%;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 4px;
+  border-radius: var(--r1);
+  font-size: 12px;
+  color: var(--moon-2);
+  text-align: left;
+}
+
+.color-lut-folder span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-lut-folder svg {
+  flex: none;
+}
+
+.color-lut-folder:hover {
+  background: var(--ink-2);
+}
+
+.color-lut-folder[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--moon-1);
+}
+
+.color-lut-folder[data-missing] {
+  color: var(--bad);
+}
+
+.color-lut-list-area {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.color-lut-list {
+  margin: 0;
+  padding: var(--s1);
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: var(--s1);
+  align-content: start;
+}
+
+.color-lut {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--r1);
+  cursor: grab;
+}
+
+.color-lut:hover {
+  background: var(--ink-2);
+}
+
+.color-lut[aria-selected='true'] {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.color-lut[data-shadowed] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* A LUT the engine could not parse: it cannot be used, and why is said under the pointer. */
+.color-lut[data-broken] {
+  cursor: not-allowed;
+}
+
+.color-lut[data-broken] .color-lut-picture,
+.color-lut[data-broken] .color-lut-name {
+  color: var(--bad);
+}
+
+/* 1D or 3D, at the upper left of the picture (the star is at the right), as the Type of Resolve's LUTs. */
+.color-lut-kind {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #0008;
+  color: var(--moon-2);
+  font-size: 9px;
+  line-height: 14px;
+  pointer-events: none;
+}
+
+/* The LUT on the engine's test image, or on the current clip in Live Preview (pp. 3410–3411); a mark of a LUT until it is drawn. */
+.color-lut-picture {
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--ink-0);
+  color: var(--moon-3);
+}
+
+.color-lut-picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+/* Live Preview is on: the pointer scrubs across the thumbnail. */
+.color-lut-picture[data-live] {
+  cursor: ew-resize;
+}
+
+/* The option menu, marked while Live Preview is on. */
+.color-luts-head [data-live] {
+  color: var(--accent);
+}
+
+.color-lut-name {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The star shows at the upper right of a LUT under the pointer, and stays on a favorite (p. 2971). */
+.color-lut-star {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: #0008;
+  color: var(--moon-1);
+}
+
+.color-lut:hover .color-lut-star,
+.color-lut-star:focus-visible,
+.color-lut-star[data-liked] {
+  display: inline-flex;
+}
+
+.color-lut-star[data-liked] {
+  color: var(--accent);
+}
+
+.color-lut-missing {
+  padding: var(--s2);
+  font-size: 12px;
+}
+
+.color-lut-missing table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.color-lut-missing th,
+.color-lut-missing td {
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+/* A node that a LUT dragged over it would go on. */
+.color-nodes-canvas[data-lut-over] {
+  cursor: copy;
+}

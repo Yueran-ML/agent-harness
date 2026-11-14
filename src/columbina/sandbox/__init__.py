@@ -144,7 +144,8 @@ _MODES: dict[Mode, str] = {
     "read-only": "read-only. No file can be written.",
     "workspace-write": (
         "workspace-write. Files in the working directory can be written, except in .git and "
-        ".columbina. Outside it no file can be read or written."
+        ".columbina. Studio video tools may manage .columbina/studio, and edit/write may change "
+        "its story/t<N>.md files. Outside the working directory no file can be read or written."
     ),
     "danger-full-access": "danger-full-access. Files anywhere can be read and written.",
 }
@@ -185,6 +186,54 @@ def _protected(access: Access) -> str | None:
         if led == where.path or led in where.path.parents:
             return name
     return None
+
+
+def _studio_file(access: Access) -> bool:
+    """Allow Studio's project tools and editable stories, without exposing agent settings.
+
+    The resolved destination must still have the literal workspace/studio location: a link
+    to permissions, Git data or another project does not get this exception.
+    """
+    root = access.where.root
+    if any(part.casefold() in PROTECTED for part in root.parts):
+        return False
+    studio = root / ".columbina" / "studio"
+    if Path(os.path.realpath(studio)) != studio:
+        return False
+    path = access.where.path
+    if path == studio and access.tool in {
+        "video_import",
+        "video_transcribe",
+        "video_story",
+        "video_apply",
+        "video_correct",
+        "video_edit",
+        "video_render",
+        "video_loudness",
+        "video_duck",
+        "video_undo",
+        "video_info",
+        "video_grade_info",
+        "video_grade_set",
+        "video_grade_keys",
+        "video_grade_node",
+        "video_grade_copy",
+        "video_grade_lut",
+        "video_grade_group",
+        "video_grade_scopes",
+        "video_color_settings",
+        "video_media_color",
+        "video_shot_match",
+    }:
+        return True
+    return (
+        access.tool in {"edit", "write"}
+        and path.parent == studio / "story"
+        and path.suffix == ".md"
+        and path.stem.startswith("t")
+        and path.stem[1:].isascii()
+        and path.stem[1:].isdigit()
+    )
 
 
 class Config(BaseModel):
@@ -337,7 +386,7 @@ class Sandbox:
         if mode == "read-only":
             return Refuse(f"The session is read-only, so {written} cannot be written.", "READ_ONLY")
         protected = _protected(access) if mode == "workspace-write" else None
-        if protected is not None:
+        if protected is not None and not _studio_file(access):
             return Refuse(
                 f"{written} is in {protected}, which is not written in this mode.", "PROTECTED"
             )

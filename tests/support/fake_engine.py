@@ -1,10 +1,28 @@
 """An engine of video for the tests: in the process of a test, or as a program of its own.
 
-It speaks the protocol of ``engine/PROTOCOL.md`` over a named pipe of Windows or a socket of
+It speaks protocol 2 of ``engine/PROTOCOL.md`` over a named pipe of Windows or a socket of
 Unix, one message a line: ``hello``, ``project.get``, ``transaction.apply`` (with names of the
-form ``$name``), ``history.undo``, ``history.redo`` and ``media.import``. Every change is told to
-every connection that said hello before it is answered, as the engine does. A test makes it
-misbehave through the attributes of :class:`Fake`.
+form ``$name``, and edits beside operations), ``history.undo``, ``history.redo``,
+``media.import``, ``timeline.duration``, ``render.start`` (with the ``audio`` of the sound of an
+export, or the sound alone with ``video`` ``null``) and ``render.cancel``. Every change is
+told to every connection that said hello before it is answered, as the engine does. A test makes
+it misbehave through the attributes of :class:`Fake`.
+
+Its project is of schema 2. Of the rules of the engine it has few: an edit is answered with
+operations only, as the engine answers it, but they are made up simply. An edit that puts a
+source on a timeline becomes one ``insert_clip`` and nothing moves; ``lift`` and
+``ripple_delete`` take their clips away; ``ripple_delete_range`` cuts the frames out of every
+track that is not locked, as the engine does for clips that play forward; ``add_track`` and
+``remove_track`` do what they say; any other edit is answered with a ``set_timeline`` that changes
+nothing. An edit that names a locked track, or a clip on one, is refused with ``locked``. A
+render writes a few bytes where it is told to, and tells its progress to every connection.
+
+Grades (schema 3) are kept as simply: the operations of grades and groups do what they say, an
+edit that adds a corrector becomes one ``add_node`` linked as the engine links it (beside a node,
+only its input is linked), a corrector that it adds has no settings but ``lut`` and
+``shot_match``, ``copy_grade`` and ``paste_*`` copy, ``reset_node`` takes the settings away,
+``collapse_group_grades`` only takes the clips out of their groups, and ``append_node_graph``
+changes nothing.
 
 In a test, :func:`served` serves a project in the loop of the test. As a program, run it the way
 the engine is run, ``python fake_engine.py --project DIR --headless [--idle-seconds N]``, and with
@@ -97,8 +115,74 @@ class RefusedError(Exception):
             self.error["data"] = data
 
 
-_KINDS = {"add_media": "media", "add_timeline": "timeline", "add_track": "track"}
-_LETTERS = {"media": "m", "timeline": "t", "clip": "c"}
+_AUDIO_FIELDS = {"bus", "rate", "codec", "bitrate", "normalize"}
+"""What the ``audio`` of ``render.start`` takes (``PROTOCOL.md``, The sound of an export)."""
+
+_KINDS = {"add_media": "media", "add_timeline": "timeline", "add_track": "track", "add_bin": "bin"}
+_LETTERS = {"media": "m", "timeline": "t", "clip": "c", "bin": "b"}
+_TRACK_LETTERS = {"video": "V", "audio": "A", "subtitle": "S"}
+_GRADE_OPS = {
+    "add_node",
+    "remove_node",
+    "connect",
+    "disconnect",
+    "set_node",
+    "set_keys",
+    "splice_keys",
+    "set_grade",
+    "add_group",
+    "remove_group",
+    "set_group",
+    "set_clip_group",
+}
+_GRADE_EDITS = {
+    "append_node",
+    "add_serial",
+    "add_serial_before",
+    "add_parallel",
+    "add_layer",
+    "add_outside",
+    "extract_node",
+    "reset_node",
+    "copy_grade",
+    "append_node_graph",
+    "append_grade",
+    "collapse_group_grades",
+    "paste_value",
+    "paste_node",
+}
+_PLACING = {
+    "insert",
+    "overwrite",
+    "replace",
+    "smart_insert",
+    "ripple_overwrite",
+    "place_on_top",
+    "append",
+}
+_EDITS = _PLACING | {
+    "lift",
+    "ripple_delete",
+    "ripple_delete_range",
+    "close_gap",
+    "blade",
+    "move",
+    "insert_move",
+    "trim",
+    "roll",
+    "slip",
+    "slide",
+    "add_transition",
+    "set_transition",
+    "remove_transition",
+    "set_speed",
+    "add_cue",
+    "set_cue",
+    "remove_cue",
+    "cues_from",
+    "add_track",
+    "remove_track",
+}
 
 
 class Fake:
@@ -119,13 +203,36 @@ class Fake:
         project_dir: The directory that hello names, if not the one of the project.
         headless: Whether hello says that it is headless; nothing, if ``None``.
         asked: Every method that was asked, in order.
+        edits: Every edit of every transaction that was applied, as it was sent.
+        clamped: The places that the next transaction is answered as clamped at.
+        render_frames: How many frames a render writes, if not as many as its timeline lasts.
+        render_end: How a render ends, unless it is cancelled: ``done`` or ``failed``.
+        render_hold: Whether a render holds on after it begins, until it is cancelled.
+        jobs: The state of each render, and of each analysis of sound, by its job.
+        sounds: What each ``audio.analyze``, ``audio.normalize`` and ``audio.level_match`` was
+            asked, in order.
+        sound_end: How an analysis of sound ends, unless it is cancelled: ``done`` or ``failed``.
+        sound_hold: Whether an analysis of sound holds on after it begins, until it is cancelled.
+        sound_found: What an analysis of sound that is done tells besides its job and state.
+        rendered: What each ``render.start`` was asked, in order.
+        looked: What each ``scopes.statistics`` and ``luts.list`` was asked, in order.
+        transactions: The operations and edits of every ``transaction.apply``, as they were sent.
+        gestures: The ``gesture`` of every ``transaction.apply``, or ``None``, in order.
+        measure: What ``scopes.statistics`` of a frame drawn off screen answers, from its
+            params and the project; a grey frame unless a test says.
     """
 
     def __init__(self, directory: Path, address: str) -> None:
         self.directory = directory
         self.address = address
         self.revision = 0
-        self.project: dict[str, Any] = {"schema": 1, "next_id": 1, "media": [], "timelines": []}
+        self.project: dict[str, Any] = {
+            "schema": 2,
+            "next_id": 1,
+            "bins": [],
+            "media": [],
+            "timelines": [],
+        }
         self.steps: list[Step] = []
         self.undone: list[Step] = []
         self.connections: list[Connection] = []
@@ -142,6 +249,25 @@ class Fake:
         self.project_dir: str | None = None
         self.headless: bool | None = True
         self.asked: list[str] = []
+        self.edits: list[dict[str, Any]] = []
+        self.clamped: list[int] = []
+        self.render_frames: int | None = None
+        self.render_end = "done"
+        self.render_hold = False
+        self.jobs: dict[str, str] = {}
+        self.sounds: list[tuple[str, dict[str, Any]]] = []
+        self.sound_end = "done"
+        self.sound_hold = False
+        self.sound_found: dict[str, Any] = {}
+        self.standards: list[dict[str, Any]] = []
+        self.rendered: list[dict[str, Any]] = []
+        self.looked: list[tuple[str, dict[str, Any]]] = []
+        self.transactions: list[list[dict[str, Any]]] = []
+        self.gestures: list[dict[str, Any] | None] = []
+        self.gesture: tuple[str, int] | None = None
+        self.measure: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] = (
+            lambda params, project: grey_frame(int(params.get("bins", 256)))
+        )
         self.last_left = time.monotonic()
         self.log: Callable[[dict[str, Any]], None] = lambda line: None
 
@@ -176,9 +302,12 @@ class Fake:
             "id": "",
             "name": "Other",
             "rate": {"num": 25, "den": 1},
+            "width": 1920,
+            "height": 1080,
+            "sample_rate": 48000,
             "tracks": [],
         }
-        done, _ = self._applied([{"op": "add_timeline", "timeline": timeline}])
+        done, _, _ = self._applied([{"op": "add_timeline", "timeline": timeline}])
         self.changed(client, done, before)
 
     def _told(self, by: str, made_by: str, done: list[dict[str, Any]]) -> None:
@@ -198,12 +327,14 @@ class Fake:
     def hello(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         if asking.client is not None:
             raise RefusedError(-32600, "hello was said before")
-        if params.get("protocol") != 1:
-            raise RefusedError(-32602, "protocol 1 is spoken", {"protocol": 1})
+        if params.get("protocol") != 2:
+            raise RefusedError(
+                -32600, "protocol 2 is spoken", {"reason": "protocol", "supported": [2]}
+            )
         asking.client = str(params.get("client"))
         said: dict[str, Any] = {
             "engine": "0.1.0-fake",
-            "protocol": 1,
+            "protocol": 2,
             "revision": self.revision,
             "project": self.project_dir or str(self.directory),
             "pid": os.getpid(),
@@ -211,6 +342,19 @@ class Fake:
         if self.headless is not None:
             said["headless"] = self.headless
         return said
+
+    def automation_playback(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """Wire-only session flag. No fake DSP or project edits."""
+        self.looked.append(("automation.playback", copy.deepcopy(params)))
+        self.automation_playback_on = params["on"]
+        return {"on": params["on"]}
+
+    def automation_parameters(
+        self, _asking: "Connection", params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Tests can inject a model catalogue through Fake.results; no second catalogue."""
+        self.looked.append(("automation.parameters", copy.deepcopy(params)))
+        return {"revision": self.revision, "of": copy.deepcopy(params["of"]), "parameters": []}
 
     def project_get(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -220,31 +364,84 @@ class Fake:
         }
 
     def transaction_apply(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        given = cast("dict[str, Any] | None", params.get("gesture"))
+        self.gestures.append(copy.deepcopy(given))
+        key = None if given is None else f"{id(asking)}:{given['id']}"
+        going = self.gesture is not None and key == self.gesture[0]
+        if going and self.steps and self.gesture is not None:
+            fresh = self.gesture[1] <= params.get("revision", self.revision) <= self.revision
+        else:
+            fresh = params.get("revision", self.revision) == self.revision
+        if not fresh:
+            if given is not None and given.get("end"):
+                self.gesture = None
+            raise RefusedError(-32001, "the project changed", {"reason": "stale_revision"})
+        if not going:
+            self.gesture = None
         ops = cast("list[dict[str, Any]]", params.get("ops") or [])
+        self.transactions.append(copy.deepcopy(ops))
         if not ops:
             message = "the transaction has no operations"
             raise RefusedError(-32001, message, {"reason": "empty", "message": message})
         before = copy.deepcopy(self.project)
         try:
-            done, names = self._applied(copy.deepcopy(ops))
+            done, names, clamped = self._applied(copy.deepcopy(ops))
         except RefusedError:
             self.project = before
+            if given is not None and given.get("end"):
+                self.gesture = None
             raise
-        self.changed(str(asking.client), done, before)
+        self.edits.extend(copy.deepcopy(op) for op in ops if "edit" in op)
+        if going and self.gesture is not None:
+            step = self.steps[-1]
+            self.revision += 1
+            self.steps[-1] = Step(
+                step.before, copy.deepcopy(self.project), step.done + done, step.made_by
+            )
+            self._told(str(asking.client), str(asking.client), done)
+        else:
+            self.changed(str(asking.client), done, before)
+            if key is not None:
+                self.gesture = (key, self.revision - 1)
+        if given is not None and given.get("end"):
+            self.gesture = None
+            last = self.steps[-1]
+            if _same_project(last.before, self.project):
+                self.steps.pop()
         return {
             "revision": self.revision,
             "done": done,
             "next_id": self.project["next_id"],
             "names": names,
+            "clamped": clamped,
         }
 
     def history_undo(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        self.gesture = None
         return self._stepped(asking, self.steps, self.undone, back=True)
 
     def history_redo(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        self.gesture = None
         return self._stepped(asking, self.undone, self.steps, back=False)
 
     def media_import(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        items = self.media_inspect(asking, params)["media"]
+        ops: list[dict[str, Any]] = [{"op": "add_media", "media": item} for item in items]
+        bin = params.get("bin")
+        if bin is not None and not any(one["id"] == bin for one in self.project["bins"]):
+            raise RefusedError(-32001, "no such bin", {"reason": "missing"})
+        for op in ops:
+            op["media"]["bin"] = bin
+        before = copy.deepcopy(self.project)
+        done, _, _ = self._applied(ops)
+        self.changed(str(asking.client), done, before)
+        return {
+            "revision": self.revision,
+            "added": [one["media"]["id"] for one in done],
+            "next_id": self.project["next_id"],
+        }
+
+    def media_inspect(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         paths = cast("list[str]", params.get("paths") or [])
         for index, path in enumerate(paths):
             if not Path(path).is_absolute():
@@ -261,15 +458,7 @@ class Fake:
                     f"a file cannot be read: {path}: {message}",
                     {"path": path, "reason": "not_found", "message": message},
                 )
-        ops = [{"op": "add_media", "media": _media(Path(path))} for path in paths]
-        before = copy.deepcopy(self.project)
-        done, _ = self._applied(ops)
-        self.changed(str(asking.client), done, before)
-        return {
-            "revision": self.revision,
-            "added": [one["media"]["id"] for one in done],
-            "next_id": self.project["next_id"],
-        }
+        return {"media": [_media(Path(path)) for path in paths]}
 
     def _stepped(
         self, asking: "Connection", taken: list["Step"], given: list["Step"], *, back: bool
@@ -286,33 +475,624 @@ class Fake:
         self._told(str(asking.client), step.made_by, undone)
         return {"revision": self.revision, "done": undone, "next_id": next_id}
 
-    def _applied(self, ops: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    def timeline_duration(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        timeline = self._timeline(str(params.get("timeline")), 0, code=-32602)
+        return {"frames": _duration(timeline)}
+
+    def render_start(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        self.rendered.append(copy.deepcopy(params))
+        timeline = self._timeline(str(params.get("timeline")), 0, code=-32602)
+        if params.get("revision", self.revision) != self.revision:
+            told = {"reason": "stale_revision", "expected": params["revision"]}
+            raise RefusedError(-32001, "the project changed", {**told, "actual": self.revision})
+        path = Path(str(params.get("path")))
+        if not path.is_absolute():
+            message = f"render.start takes an absolute path, and {path} is not one"
+            raise RefusedError(-32602, message, {"path": str(path), "reason": "relative"})
+        if path.exists() and not params.get("replace"):
+            message = f"{path} is there already"
+            raise RefusedError(-32002, message, {"path": str(path), "reason": "exists"})
+        if "subtitles" in params:
+            raise RefusedError(-32602, "render.start takes no subtitles", {"reason": "params"})
+        alone = "video" in params
+        if alone and (params["video"] is not None or {"codec", "quality"} & set(params)):
+            message = "the sound alone is rendered with video null, and no codec or quality"
+            raise RefusedError(-32602, message, {"reason": "params"})
+        audio: object = params.get("audio", {})
+        if not isinstance(audio, dict) or set(cast("dict[str, Any]", audio)) - _AUDIO_FIELDS:
+            message = "render.start: audio is not as it is taken"
+            raise RefusedError(-32602, message, {"reason": "params"})
+        chosen = cast("list[str]", params.get("subtitle_tracks") or [])
+        subtitles = {one["id"] for one in timeline["tracks"] if one["kind"] == "subtitle"}
+        for at, track in enumerate(chosen):
+            if track not in subtitles or track in chosen[:at]:
+                message = f"subtitle_tracks: track {track} is not one subtitle track to write"
+                raise RefusedError(-32602, message, {"reason": "subtitle_track", "track": track})
+        job = f"r{len(self.rendered)}"
+        frames = self.render_frames if self.render_frames is not None else _duration(timeline)
+        self.jobs[job] = "running"
+        asyncio.get_running_loop().call_soon(self._progress, job, path, frames, 0)
+        return {"job": job}
+
+    def scopes_statistics(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """The figures of a grey frame of 4 x 2, as a monitor of the desktop's engine shows it."""
+        self.looked.append(("scopes.statistics", copy.deepcopy(params)))
+        if "timeline" in params:
+            said = self.measure(copy.deepcopy(params), copy.deepcopy(self.project))
+            said.update(timeline=params["timeline"], frame=params["frame"])
+            if "node" in params:
+                said["node"] = {
+                    "grade": params["grade"],
+                    "node": params["node"],
+                    "at": params.get("at", "output"),
+                }
+            return said
+        if self.headless is not False:
+            raise RefusedError(-32601, "there is no method scopes.statistics in a headless engine")
+        bins = params.get("bins", 256)
+        grey = 128 / 255
+        channel = {"min": grey, "max": grey, "mean": grey}
+        level = round(grey * (bins - 1))
+        counts = [8 if each == level else 0 for each in range(bins)]
+        names = ("red", "green", "blue", "luma")
+        return {
+            "view": params["view"],
+            "frame": 12,
+            "width": 4,
+            "height": 2,
+            "samples": 8,
+            **dict.fromkeys(names, channel),
+            "chroma": {
+                "centroid": [0.0, 0.0],
+                "spread": [0.0, 0.0],
+                "radius": 0.0,
+                "saturation": 0.0,
+                "hue": 0.0,
+            },
+            "percentiles": {name: {"1": grey, "50": grey, "99": grey} for name in names},
+            "histogram": {"bins": bins, **dict.fromkeys(names, counts)},
+        }
+
+    def luts_list(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """One LUT in the folder of the project, and a library that is not there."""
+        self.looked.append(("luts.list", copy.deepcopy(params)))
+        folder = params.get("folder")
+        if isinstance(folder, str) and ".." in folder.replace("\\", "/").split("/"):
+            raise RefusedError(
+                -32602,
+                f"the folder {folder} is not a path within the folders of LUTs",
+                {"reason": "outside_roots", "folder": folder},
+            )
+        return {
+            "roots": [
+                {"place": "project", "path": str(self.directory), "exists": True},
+                {"place": "library", "path": str(self.directory / "library"), "exists": False},
+            ],
+            "luts": [
+                {
+                    "name": "LUTs/film.cube",
+                    "root": 0,
+                    "size": 120,
+                    "modified_us": 1_790_000_000_000_000,
+                    "shadowed": False,
+                    "kind": "3d",
+                    "status": "ok",
+                }
+            ],
+            "truncated": False,
+        }
+
+    def render_cancel(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        job = str(params.get("job"))
+        if job not in self.jobs:
+            message = f"there is no render {job}"
+            raise RefusedError(-32602, message, {"reason": "missing", "what": "job", "id": job})
+        if self.jobs[job] == "running":
+            self.jobs[job] = "cancelled"
+            told = {"job": job, "state": "cancelled", "frame": 0, "frames": 0, "fps": 0.0}
+            self.tell("render.progress", told)
+        return {}
+
+    def audio_standards(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return {"standards": copy.deepcopy(self.standards)}
+
+    def audio_eq_response(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.eq_response", params)
+
+    def audio_dynamics_curve(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.dynamics_curve", params)
+
+    def _processor_curve(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Use an explicit reply fixture; the fake never implements a second DSP formula."""
+        self.sounds.append((method, copy.deepcopy(params)))
+        if method not in self.results:
+            raise RefusedError(-32000, f"no static curve fixture configured for {method}")
+        return copy.deepcopy(self.results[method])
+
+    def audio_fx_meters(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.fx_meters", params)
+
+    def audio_soft_clip_curve(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.soft_clip_curve", params)
+
+    def audio_level_profile(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.level_profile", params)
+
+    def audio_noise_learn(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.noise_learn", params)
+
+    def audio_presets_list(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.list", params)
+
+    def audio_presets_save(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.save", params)
+
+    def audio_presets_update(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.update", params)
+
+    def audio_presets_delete(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.delete", params)
+
+    def audio_analyze(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.analyze", params)
+
+    def audio_normalize(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.normalize", params)
+
+    def audio_level_match(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.level_match", params)
+
+    def audio_cancel(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        job = str(params.get("job"))
+        if self.jobs.get(job) != "running":
+            raise RefusedError(
+                -32602, f"there is no analysis {job} running", {"reason": "missing", "job": job}
+            )
+        self.jobs[job] = "cancelled"
+        self.tell("audio.analysis", {"job": job, "state": "cancelled"})
+        return {}
+
+    def _sound(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Echo analysis requests, including sum targets/candidates; never emulate their DSP."""
+        self.sounds.append((method, copy.deepcopy(params)))
+        job = f"audio-{len(self.sounds)}"
+        self.jobs[job] = "running"
+        asyncio.get_running_loop().call_later(0.01, self._measured, job, method)
+        return {"job": job}
+
+    def _measured(self, job: str, method: str) -> None:
+        if self.jobs.get(job) != "running":
+            return
+        self.tell("audio.analysis", {"job": job, "state": "running", "done": 1.0, "total": 2.0})
+        if self.sound_hold:
+            return
+        self.jobs[job] = self.sound_end
+        told: dict[str, Any] = {"job": job, "state": self.sound_end}
+        if self.sound_end == "done":
+            told.update(method=method, **self.sound_found)
+        else:
+            told["message"] = "a clip cannot be read"
+        self.tell("audio.analysis", told)
+
+    def _progress(self, job: str, path: Path, frames: int, frame: int) -> None:
+        """Tell how far a render has come, and go on with it a moment later."""
+        if self.jobs.get(job) != "running":
+            return
+        told: dict[str, Any] = {"job": job, "frame": frame, "frames": frames, "fps": 50.0}
+        held = self.render_hold and frame == 0
+        if frame < frames or held:
+            self.tell("render.progress", {**told, "state": "running"})
+            if not held:
+                later = min(frames, frame + max(1, frames // 2))
+                asyncio.get_running_loop().call_later(
+                    0.01, self._progress, job, path, frames, later
+                )
+            return
+        self.jobs[job] = self.render_end
+        if self.render_end == "done":
+            path.write_bytes(b"a film of the fake engine")
+            told.update(path=str(path), encoder="h264_fake")
+        else:
+            told["message"] = "the encoder failed"
+        self.tell("render.progress", {**told, "state": self.render_end})
+
+    def _applied(
+        self, ops: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, str], list[int]]:
         names: dict[str, str] = {}
+        done: list[dict[str, Any]] = []
+        clamped, self.clamped = self.clamped, []
         for index, op in enumerate(ops):
-            kind = _KINDS.get(op["op"], "clip" if op["op"] == "insert_clip" else None)
-            for key in ("timeline", "track", "id"):
-                if key in op and key != kind:
-                    op[key] = self._named(op[key], names, index)
-            clip = op.get("clip")
-            if isinstance(clip, dict):
-                clip = cast("dict[str, Any]", clip)
-                clip["media"] = self._named(clip.get("media"), names, index)
-            thing = cast("dict[str, Any] | None", op.get(kind) if kind else None)
-            if kind is None or thing is None:
-                self._removed(op)
-                continue
-            given = str(thing.get("id", ""))
-            if not given or given.startswith("$"):
-                if kind == "track":
-                    timeline = self._timeline(str(op["timeline"]), index)
-                    thing["id"] = f"V{len(timeline['tracks']) + 1}"
-                else:
-                    thing["id"] = f"{_LETTERS[kind]}{self.project['next_id']}"
+            worked = self._worked(op, names, index) if "edit" in op else [op]
+            for one in worked:
+                self._one(one, names, index)
+                done.append(one)
+        return done, names, clamped
+
+    def _one(self, op: dict[str, Any], names: dict[str, str], index: int) -> None:
+        """Apply an operation."""
+        if op["op"] in _GRADE_OPS:
+            self._graded(op, names, index)
+            return
+        kind = _KINDS.get(op["op"], "clip" if op["op"] == "insert_clip" else None)
+        for key in ("timeline", "track", "id"):
+            if key in op and key != kind:
+                op[key] = self._named(op[key], names, index)
+        clip = op.get("clip")
+        if isinstance(clip, dict):
+            source = cast("dict[str, Any]", clip).get("source")
+            if isinstance(source, dict) and "media" in source:
+                source = cast("dict[str, Any]", source)
+                source["media"] = self._named(source["media"], names, index)
+        thing = cast("dict[str, Any] | None", op.get(kind) if kind else None)
+        if kind is None or thing is None:
+            self._changed(op, index)
+            return
+        given = str(thing.get("id", ""))
+        if not given or given.startswith("$"):
+            if kind == "track":
+                tracks = self._timeline(str(op["timeline"]), index)["tracks"]
+                letter = _TRACK_LETTERS[str(thing.get("kind", "video"))]
+                count = sum(1 for one in tracks if one["id"].startswith(letter))
+                thing["id"] = f"{letter}{count + 1}"
+            else:
+                # Fixtures may supply ids inside a whole timeline. New ids must not reuse
+                # those explicit ids when the fake expands a later edit into inserted clips.
+                used = {str(one["id"]) for one in self.project["media"]}
+                for timeline in self.project["timelines"]:
+                    used.add(str(timeline["id"]))
+                    for track in timeline["tracks"]:
+                        used.add(str(track["id"]))
+                        used.update(str(clip["id"]) for clip in track.get("clips", []))
+                while f"{_LETTERS[kind]}{self.project['next_id']}" in used:
                     self.project["next_id"] += 1
+                thing["id"] = f"{_LETTERS[kind]}{self.project['next_id']}"
+                self.project["next_id"] += 1
+            if given:
+                names[given] = thing["id"]
+        self._added(op, kind, thing, index)
+
+    def _worked(
+        self, edit: dict[str, Any], names: dict[str, str], index: int
+    ) -> list[dict[str, Any]]:
+        """Work an edit out into operations, simply."""
+        name = edit.get("edit")
+        if name in _GRADE_EDITS:
+            return self._grade_worked(edit, names, index)
+        if name not in _EDITS:
+            message = f"there is no edit {name}"
+            raise RefusedError(-32602, message, {"index": index, "reason": "unknown_edit"})
+        edit = {key: self._named(value, names, index) for key, value in edit.items()}
+        timeline = self._timeline(str(edit.get("timeline")), index)
+        self._unlocked(timeline, edit, index)
+        on = timeline["id"]
+        if name in _PLACING:
+            return [self._placed(timeline, edit, index)]
+        if name in ("lift", "ripple_delete"):
+            return [{"op": "remove_clip", "timeline": on, "id": one} for one in edit["clips"]]
+        if name == "ripple_delete_range":
+            return self._cut_out(timeline, int(edit["from"]), int(edit["to"]), edit.get("tracks"))
+        if name == "add_track":
+            kind = str(edit["kind"])
+            # A timeline shows one subtitle track at a time: a new one is hidden while one is.
+            shown = kind == "subtitle" and _shown(timeline) is not None
+            track: dict[str, Any] = {
+                "id": "",
+                "kind": kind,
+                "name": edit.get("name", ""),
+                "enabled": not shown,
+                "locked": False,
+            }
+            if kind == "subtitle":
+                track.update(language=edit.get("language", ""), cues=[])
+            else:
+                track.update(clips=[], transitions=[])
+            return [{"op": "add_track", "timeline": on, "track": track}]
+        if name == "remove_track":
+            return [{"op": "remove_track", "timeline": on, "id": edit["track"]}]
+        return [{"op": "set_timeline", "id": on, "name": timeline["name"]}]
+
+    def _unlocked(self, timeline: dict[str, Any], edit: dict[str, Any], index: int) -> None:
+        """Refuse an edit that names a locked track, or a clip on one."""
+        keys = ("track", "video_track", "audio_track", "to_track")
+        named: list[object] = [edit.get(key) for key in keys]
+        named += cast("list[object]", edit.get("tracks") or [])
+        clips: set[object] = {edit.get(key) for key in ("clip", "left", "right")}
+        clips |= set(cast("list[object]", edit.get("clips") or []))
+        for track in timeline["tracks"]:
+            on = {clip["id"] for clip in track.get("clips", [])}
+            if track["locked"] and (track["id"] in named or on & clips):
+                message = f"track {track['id']} is locked"
+                data = {"index": index, "reason": "locked", "track": track["id"]}
+                raise RefusedError(-32001, message, {**data, "message": message})
+
+    def _placed(self, timeline: dict[str, Any], edit: dict[str, Any], index: int) -> dict[str, Any]:
+        """The clip that an edit puts on a timeline: on one track, and nothing moves."""
+        source = cast("dict[str, Any]", edit["source"])
+        kinds = ["video", "audio"] if source["kind"] == "media" else ["video"]
+        usable = [
+            one
+            for one in timeline["tracks"]
+            if one["kind"] in kinds and edit.get(f"{one['kind']}_track", "") is not None
+        ]
+        wanted = [edit.get(f"{kind}_track") for kind in kinds]
+        track = next((one for one in usable if one["id"] in wanted), None)
+        track = track or next(iter(usable), None)
+        if track is None:
+            message = f"there is no {kinds[0]} track to put it on"
+            data = {"index": index, "reason": "no_track", "kind": kinds[0]}
+            raise RefusedError(-32001, message, {**data, "message": message})
+        length = int(source.get("length") or 25)
+        at = edit.get("at")
+        if at is None:
+            at = max((clip["start"] + clip["length"] for clip in track["clips"]), default=0)
+        if source["kind"] == "media":
+            begins = source.get("from") or {"ticks": 0, "scale": 25}
+            given: dict[str, Any] = {"kind": "media", "media": source["media"], "in": begins}
+        else:
+            given = {key: value for key, value in source.items() if key != "length"}
+        clip = _clip(given, int(at), length)
+        return {"op": "insert_clip", "timeline": timeline["id"], "track": track["id"], "clip": clip}
+
+    def _cut_out(
+        self, timeline: dict[str, Any], start: int, end: int, tracks: object
+    ) -> list[dict[str, Any]]:
+        """Cut frames out of tracks, and close the gap, for clips that play forward."""
+        cut = end - start
+        rate = timeline["rate"]
+        on = timeline["id"]
+        ops: list[dict[str, Any]] = []
+        for track in timeline["tracks"]:
+            chosen = tracks is None or track["id"] in cast("list[str]", tracks)
+            if track["kind"] == "subtitle" or track["locked"] or not chosen:
+                continue
+            for clip in track["clips"]:
+                first, last = clip["start"], clip["start"] + clip["length"]
+                where = {"timeline": on, "id": clip["id"]}
+                if last <= start:
+                    continue
+                if first >= end:
+                    ops.append(
+                        {"op": "move_clip", **where, "track": track["id"], "start": first - cut}
+                    )
+                elif start <= first and last <= end:
+                    ops.append({"op": "remove_clip", **where})
+                elif first < start and last > end:
+                    ops.append(
+                        {"op": "trim_clip", **where, "start": first, "length": start - first}
+                    )
+                    tail = _clip(_later(clip, end - first, rate), start, last - end)
+                    tail.update(speed=clip["speed"], reverse=clip["reverse"])
+                    ops.append(
+                        {"op": "insert_clip", "timeline": on, "track": track["id"], "clip": tail}
+                    )
+                elif first < start:
+                    ops.append(
+                        {"op": "trim_clip", **where, "start": first, "length": start - first}
+                    )
+                else:
+                    begins = _later(clip, end - first, rate).get("in")
+                    trimmed = {"source_in": begins, "start": start, "length": last - end}
+                    ops.append({"op": "trim_clip", **where, **trimmed})
+        return ops
+
+    # Grades
+
+    def _refused(self, index: int, reason: str, message: str, **data: object) -> RefusedError:
+        return RefusedError(
+            -32001, message, {"index": index, "reason": reason, **data, "message": message}
+        )
+
+    def _target(self, target: dict[str, Any], names: dict[str, str], index: int) -> dict[str, Any]:
+        return {key: self._named(value, names, index) for key, value in target.items()}
+
+    def _group(self, id: object, index: int) -> dict[str, Any]:
+        for group in self.project.setdefault("groups", []):
+            if group["id"] == id:
+                return cast("dict[str, Any]", group)
+        raise self._refused(index, "missing", f"there is no group {id}", what="group", id=id)
+
+    def _found_clip(self, timeline: object, id: object, index: int) -> dict[str, Any]:
+        for track in self._timeline(str(timeline), index)["tracks"]:
+            for clip in track.get("clips", []):
+                if clip["id"] == id:
+                    return cast("dict[str, Any]", clip)
+        raise self._refused(index, "missing", f"there is no clip {id}", what="clip", id=id)
+
+    def _grade_of(self, target: dict[str, Any], index: int) -> dict[str, Any]:
+        """The grade that a target names, in the project."""
+        level = target.get("level")
+        if level in ("pre_clip", "post_clip"):
+            group = self._group(target.get("group"), index)
+            return cast("dict[str, Any]", group["pre" if level == "pre_clip" else "post"])
+        if level == "timeline":
+            timeline = self._timeline(str(target.get("timeline")), index)
+            return cast("dict[str, Any]", timeline.setdefault("grade", _empty_grade()))
+        clip = self._found_clip(target.get("timeline"), target.get("clip"), index)
+        return cast("dict[str, Any]", clip.setdefault("grade", _empty_grade()))
+
+    def _graded(self, op: dict[str, Any], names: dict[str, str], index: int) -> None:
+        """Apply an operation of grades or groups."""
+        name = op["op"]
+        if name == "add_group":
+            group = op["group"]
+            given = str(group.get("id", ""))
+            if not given or given.startswith("$"):
+                group["id"] = f"k{self.project['next_id']}"
+                self.project["next_id"] += 1
                 if given:
-                    names[given] = thing["id"]
-            self._added(op, kind, thing, index)
-        return ops, names
+                    names[given] = group["id"]
+            groups = self.project.setdefault("groups", [])
+            op.setdefault("index", len(groups))
+            groups.insert(op["index"], group)
+            return
+        if name in ("remove_group", "set_group"):
+            op["id"] = self._named(op["id"], names, index)
+            group = self._group(op["id"], index)
+            if name == "set_group":
+                group.update({k: v for k, v in op.items() if k not in ("op", "id")})
+                return
+            for timeline in self.project["timelines"]:
+                for track in timeline["tracks"]:
+                    for clip in track.get("clips", []):
+                        if clip.get("group") == op["id"]:
+                            message = f"clip {clip['id']} is in group {op['id']}"
+                            raise self._refused(
+                                index, "grouped", message, group=op["id"], clip=clip["id"]
+                            )
+            self.project["groups"].remove(group)
+            return
+        if name == "set_clip_group":
+            for key in ("timeline", "clip", "group"):
+                op[key] = self._named(op[key], names, index)
+            if op["group"] is not None:
+                self._group(op["group"], index)
+            self._found_clip(op["timeline"], op["clip"], index)["group"] = op["group"]
+            return
+        op["grade"] = self._target(op["grade"], names, index)
+        grade = self._grade_of(op["grade"], index)
+        nodes: list[dict[str, Any]] = grade["nodes"]
+        if name == "set_grade":
+            grade.clear()
+            grade.update(copy.deepcopy(op["value"]))
+            return
+        if name == "add_node":
+            node = op["node"]
+            given = str(node.get("id", ""))
+            if not given or given.startswith("$"):
+                node["id"] = f"n{self.project['next_id']}"
+                self.project["next_id"] += 1
+                if given:
+                    names[given] = node["id"]
+            op.setdefault("index", len(nodes))
+            nodes.insert(op["index"], node)
+            links = [
+                {**link, **{end: node["id"] for end in ("from", "to") if link[end] in ("", given)}}
+                for link in op.get("links", [])
+            ]
+            for link in links:
+                _linked(grade, link)
+            op["links"] = links
+            return
+        if name in ("connect", "disconnect"):
+            if name == "connect":
+                _linked(grade, op["link"])
+            else:
+                grade["links"] = [one for one in grade["links"] if not _into(one, op)]
+            return
+        id = op["id"] = self._named(op["id"], names, index)
+        found = [one for one in nodes if one["id"] == id]
+        if not found:
+            raise self._refused(index, "missing", f"there is no node {id}", what="node", id=id)
+        if name == "set_node":
+            found[0].update({k: op[k] for k in ("label", "enabled") if k in op})
+            if "params" in op:
+                found[0]["params"] = _patched(found[0].get("params", {}), op["params"])
+            return
+        if name in ("set_keys", "splice_keys"):
+            place: Any = found[0]["params"]
+            *heads, last = (
+                int(part) if part.isdecimal() else part for part in op["path"].split(".")
+            )
+            for head in heads:
+                place = place[head]
+            if name == "set_keys":
+                place[last] = op["param"]
+                return
+            now = place[last]
+            keys: list[Any] = (
+                list(cast("dict[str, Any]", now)["keys"]) if isinstance(now, dict) else []
+            )
+            keys[op["at"] : op["at"] + op["remove"]] = op["keys"]
+            if not keys:
+                raise self._refused(
+                    index, "out_of_range", "a setting keeps one key at least", what="params"
+                )
+            place[last] = {"keys": keys}
+            return
+        # remove_node: what came into it goes where it went, unless links are given.
+        up = next((one["from"] for one in grade["links"] if _into(one, {"to": id})), None)
+        went = [one for one in grade["links"] if one["from"] == id]
+        grade["links"] = [one for one in grade["links"] if id not in (one["from"], one["to"])]
+        bridged = op.get("links")
+        if bridged is None:
+            bridged = [{**one, "from": up} for one in went] if up is not None else []
+        for link in bridged:
+            _linked(grade, link)
+        op["links"] = bridged
+        nodes.remove(found[0])
+
+    def _grade_worked(
+        self, edit: dict[str, Any], names: dict[str, str], index: int
+    ) -> list[dict[str, Any]]:
+        """Work an edit of grades out into operations, simply."""
+        name = edit["edit"]
+        if name == "collapse_group_grades":
+            on = self._named(edit["timeline"], names, index)
+            return [
+                {"op": "set_clip_group", "timeline": on, "clip": clip, "group": None}
+                for clip in edit["clips"]
+            ]
+        if name in ("copy_grade", "append_node_graph", "append_grade", "paste_node", "paste_value"):
+            source = self._target(edit["from"], names, index)
+            into: list[dict[str, Any]] = edit["to"] if "from_node" not in edit else [edit["to"]]
+            targets = [self._target(one, names, index) for one in into]
+            copied = copy.deepcopy(self._grade_of(source, index))
+            if name == "copy_grade":
+                return [{"op": "set_grade", "grade": one, "value": copied} for one in targets]
+            if name in ("append_node_graph", "append_grade"):
+                kept = [copy.deepcopy(self._grade_of(one, index)) for one in targets]
+                return [
+                    {"op": "set_grade", "grade": one, "value": value}
+                    for one, value in zip(targets, kept, strict=True)
+                ]
+            node = next(one for one in copied["nodes"] if one["id"] == edit["from_node"])
+            params: dict[str, Any] = node["params"]
+            if name == "paste_value":
+                parts = edit["param"].split(".")
+                patch: dict[str, Any] = {}
+                place, value = patch, params
+                for part in parts[:-1]:
+                    place, value = place.setdefault(part, {}), value[part]
+                place[parts[-1]] = value[parts[-1]]
+                params = patch
+            to_node = edit["to_node"]
+            return [{"op": "set_node", "grade": targets[0], "id": to_node, "params": params}]
+        target = self._target(edit["grade"], names, index)
+        grade = self._grade_of(target, index)
+        node = edit.get("node", "output")
+        ids = {one["id"] for one in grade["nodes"]} | {"source", "output"}
+        if node not in ids:
+            raise self._refused(index, "missing", f"there is no node {node}", what="node", id=node)
+        up = next((one["from"] for one in grade["links"] if _into(one, {"to": node})), None)
+        if name == "reset_node":
+            params = {"lut": None, "shot_match": None}
+            return [{"op": "set_node", "grade": target, "id": node, "params": params}]
+        if name == "extract_node":
+            kept = copy.deepcopy(next(one for one in grade["nodes"] if one["id"] == node))
+            return [
+                {"op": "remove_node", "grade": target, "id": node},
+                {"op": "add_node", "grade": target, "node": kept, "links": []},
+            ]
+        if name == "add_serial":
+            links = [_link(node, "")] + [
+                {**one, "from": ""} for one in grade["links"] if one["from"] == node
+            ]
+        elif name == "add_outside":
+            links = [_link(node, ""), {"from": node, "to": "", "kind": "key", "input": 0}]
+            links += [{**one, "from": ""} for one in grade["links"] if one["from"] == node]
+        elif name in ("append_node", "add_serial_before"):
+            links = [_link("", node)] + ([_link(up, "")] if up is not None else [])
+        else:
+            links = [_link(up, "")] if up is not None else []
+        corrector = {
+            "id": "",
+            "kind": "corrector",
+            "label": "",
+            "enabled": True,
+            "params": {"lut": None, "shot_match": None},
+        }
+        return [{"op": "add_node", "grade": target, "node": corrector, "links": links}]
 
     def _named(self, value: object, names: dict[str, str], index: int) -> object:
         if isinstance(value, str) and value.startswith("$"):
@@ -325,37 +1105,295 @@ class Fake:
             return names[value]
         return value
 
-    def _timeline(self, id: str, index: int) -> dict[str, Any]:
+    def _timeline(self, id: str, index: int, *, code: int = -32001) -> dict[str, Any]:
         for timeline in self.project["timelines"]:
             if timeline["id"] == id:
                 return timeline
         message = f"there is no timeline {id}"
         raise RefusedError(
-            -32001,
+            code,
             message,
             {"index": index, "reason": "missing", "what": "timeline", "id": id, "message": message},
         )
 
     def _added(self, op: dict[str, Any], kind: str, thing: dict[str, Any], index: int) -> None:
-        if kind == "media":
+        if kind == "bin":
+            places = self.project["bins"]
+        elif kind == "media":
             places = self.project["media"]
         elif kind == "timeline":
             places = self.project["timelines"]
+            tracks = cast("list[dict[str, Any]]", thing.get("tracks", []))
+            for at, track in enumerate(tracks):
+                if track["kind"] == "subtitle" and track.get("enabled", True):
+                    _one_shown({"tracks": tracks[:at]}, track, index)
         elif kind == "track":
-            places = self._timeline(str(op["timeline"]), index)["tracks"]
+            timeline = self._timeline(str(op["timeline"]), index)
+            places = timeline["tracks"]
+            if thing["kind"] == "subtitle" and thing.get("enabled", True):
+                _one_shown(timeline, thing, index)
         else:
-            tracks = self._timeline(str(op["timeline"]), index)["tracks"]
-            places = next(one for one in tracks if one["id"] == op["track"])["clips"]
-        op.setdefault("index", len(places))
+            places = self._track(str(op["timeline"]), str(op["track"]), index)["clips"]
+        if kind != "clip":
+            op.setdefault("index", len(places))
         places.append(thing)
+        if kind == "clip":
+            places.sort(key=_start)
 
-    def _removed(self, op: dict[str, Any]) -> None:
-        if op["op"] == "remove_media":
+    def _changed(self, op: dict[str, Any], index: int) -> None:
+        """Apply an operation that adds nothing."""
+        name = op["op"]
+        if name == "remove_media":
             self.project["media"] = [m for m in self.project["media"] if m["id"] != op["id"]]
-        elif op["op"] == "remove_timeline":
+        elif name == "remove_timeline":
             self.project["timelines"] = [
                 t for t in self.project["timelines"] if t["id"] != op["id"]
             ]
+        elif name == "set_timeline":
+            timeline = self._timeline(str(op["id"]), index)
+            timeline.update({key: value for key, value in op.items() if key not in ("op", "id")})
+        elif name == "remove_track":
+            timeline = self._timeline(str(op["timeline"]), index)
+            timeline["tracks"] = [one for one in timeline["tracks"] if one["id"] != op["id"]]
+        elif name == "set_track":
+            track = self._track(str(op["timeline"]), str(op["id"]), index)
+            if track["kind"] == "subtitle" and op.get("enabled") is True:
+                _one_shown(self._timeline(str(op["timeline"]), index), track, index)
+            track.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
+        elif name in (
+            "remove_clip", "move_clip", "trim_clip", "set_clip", "set_clip_keys",
+            "splice_clip_keys",
+        ):  # fmt: skip
+            self._clip_changed(op, index)
+        elif name == "set_track_audio":
+            # Only the patch is put in: the engine's checks of sound are not copied here.
+            track = self._track(str(op["timeline"]), str(op["track"]), index)
+            track.update(_patched(track, op["patch"]))
+        elif name == "set_lane" and "track" in op["of"]:
+            # A lane of a track, put in or taken away; the engine's checks are not copied here.
+            track = self._track(str(op["timeline"]), str(op["of"]["track"]), index)
+            lanes = track.setdefault("lanes", {})
+            if op["lane"] is None:
+                lanes.pop(str(op["path"]), None)
+            else:
+                lanes[str(op["path"])] = op["lane"]
+        elif name == "set_color_settings":
+            self.project["color"] = _patched(self.project.get("color", {}), op["settings"])
+        elif name == "set_media_color":
+            media = next((m for m in self.project["media"] if m["id"] == op["id"]), None)
+            if media is None:
+                raise self._refused(index, "missing", "no such media", what="media", id=op["id"])
+            told = media.setdefault("color_override", {"input": None, "levels": "auto"})
+            told.update({key: op[key] for key in ("input", "levels") if key in op})
+
+    def _track(self, timeline: str, id: str, index: int) -> dict[str, Any]:
+        found = [one for one in self._timeline(timeline, index)["tracks"] if one["id"] == id]
+        if not found:
+            message = f"there is no track {id}"
+            data = {"index": index, "reason": "missing", "what": "track", "id": id}
+            raise RefusedError(-32001, message, {**data, "message": message})
+        return found[0]
+
+    def _clip_changed(self, op: dict[str, Any], index: int) -> None:
+        timeline = self._timeline(str(op["timeline"]), index)
+        for track in timeline["tracks"]:
+            for clip in list(track.get("clips", [])):
+                if clip["id"] != op["id"]:
+                    continue
+                if op["op"] == "remove_clip":
+                    track["clips"].remove(clip)
+                elif op["op"] == "move_clip":
+                    clip["start"] = op["start"]
+                    if op["track"] != track["id"]:
+                        track["clips"].remove(clip)
+                        self._track(timeline["id"], str(op["track"]), index)["clips"].append(clip)
+                elif op["op"] == "trim_clip":
+                    clip.update(start=op["start"], length=op["length"])
+                    if op.get("source_in") is not None:
+                        clip["source"]["in"] = op["source_in"]
+                elif op["op"] in ("set_clip_keys", "splice_clip_keys"):
+                    self._clip_keys(clip, op, index)
+                else:
+                    clip.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
+                for one in timeline["tracks"]:
+                    one.get("clips", []).sort(key=_start)
+                return
+        message = f"there is no clip {op['id']}"
+        data = {"index": index, "reason": "missing", "what": "clip", "id": op["id"]}
+        raise RefusedError(-32001, message, {**data, "message": message})
+
+    def _clip_keys(self, clip: dict[str, Any], op: dict[str, Any], index: int) -> None:
+        """Set the keys of a setting of a clip; the engine's checks of values are not copied."""
+        path = str(op["path"])
+        if path not in _CLIP_KEYED:
+            message = f"there is no setting {path}"
+            data = {"index": index, "reason": "missing", "what": "setting", "id": path}
+            raise RefusedError(-32001, message, {**data, "message": message})
+        of, name = path.split(".")
+        if op["op"] == "set_clip_keys":
+            clip[of][name] = op["param"]
+            return
+        now = clip[of][name]
+        keys: list[Any] = list(cast("dict[str, Any]", now)["keys"]) if isinstance(now, dict) else []
+        keys[op["at"] : op["at"] + op["remove"]] = op["keys"]
+        if not keys:
+            message = "a setting keeps one key at least"
+            data = {"index": index, "reason": "out_of_range", "what": "keys"}
+            raise RefusedError(-32001, message, {**data, "message": message})
+        clip[of][name] = {"keys": keys}
+
+
+_CLIP_KEYED = frozenset(
+    [f"transform.{name}" for name in ("x", "y", "scale", "rotation", "opacity")]
+    + [f"crop.{name}" for name in ("left", "right", "top", "bottom", "softness")]
+)
+"""The settings of a clip that take keys, as the engine's catalog lists them."""
+
+
+def _clip(source: dict[str, Any], start: int, length: int) -> dict[str, Any]:
+    """A clip of schema 2, as it is put on a track, with no id."""
+    return {
+        "id": "",
+        "start": start,
+        "length": length,
+        "source": source,
+        "enabled": True,
+        "speed": {"num": 1, "den": 1},
+        "reverse": False,
+        "link": None,
+        "transform": {"x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0},
+        "crop": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0},
+        "composite": "normal",
+        "gain_db": 0.0,
+        "pan": 0.0,
+        "fade_in": 0,
+        "fade_out": 0,
+    }
+
+
+def _later(clip: dict[str, Any], frames: int, rate: dict[str, int]) -> dict[str, Any]:
+    """The source of a clip that plays forward, ``frames`` frames into it, as the engine counts."""
+    source = copy.deepcopy(cast("dict[str, Any]", clip["source"]))
+    if source["kind"] == "media":
+        begins, speed = source["in"], clip["speed"]
+        whole = frames * rate["den"] * begins["scale"] * speed["num"]
+        ticks = whole // (speed["den"] * rate["num"])
+        source["in"] = {"ticks": begins["ticks"] + ticks, "scale": begins["scale"]}
+    return source
+
+
+def _start(thing: dict[str, Any]) -> int:
+    return thing["start"]
+
+
+def _shown(timeline: dict[str, Any]) -> dict[str, Any] | None:
+    """The subtitle track that a timeline shows, if any: it shows one at a time."""
+    return next(
+        (one for one in timeline["tracks"] if one["kind"] == "subtitle" and one["enabled"]), None
+    )
+
+
+def _one_shown(timeline: dict[str, Any], track: dict[str, Any], index: int) -> None:
+    """Refuse to show ``track`` while another subtitle track of the timeline is shown."""
+    shown = _shown({"tracks": [one for one in timeline["tracks"] if one is not track]})
+    if shown is not None:
+        message = (
+            f"subtitle track {shown['id']} is shown, and a timeline shows one subtitle track "
+            "at a time"
+        )
+        data = {"index": index, "reason": "subtitle_shown", "track": shown["id"]}
+        raise RefusedError(-32001, message, {**data, "message": message})
+
+
+def _empty_grade() -> dict[str, Any]:
+    return {"nodes": [], "links": [_link("source", "output")]}
+
+
+def _link(source: str, to: str) -> dict[str, Any]:
+    return {"from": source, "to": to, "kind": "rgb", "input": 0}
+
+
+def _into(link: dict[str, Any], end: dict[str, Any]) -> bool:
+    """Whether a link goes into the input that ``end`` names: its first RGB one, unless said."""
+    return (
+        link["to"] == end["to"]
+        and link["kind"] == end.get("kind", "rgb")
+        and link["input"] == end.get("input", 0)
+    )
+
+
+def _linked(grade: dict[str, Any], link: dict[str, Any]) -> None:
+    """Put a link in place of the one into its input, keeping the links in the engine's order."""
+    grade["links"] = [one for one in grade["links"] if not _into(one, link)] + [link]
+    grade["links"].sort(key=lambda one: (one["to"], one["kind"] != "rgb", one["input"]))
+
+
+def _patched(params: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """The params with a patch put in: objects into objects, other values in place."""
+    out = copy.deepcopy(params)
+    for key, value in patch.items():
+        if isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = _patched(out[key], cast("dict[str, Any]", value))
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def grey_frame(bins: int, value: float = 128 / 255) -> dict[str, Any]:
+    """The figures of a frame of 4 x 2 pixels all of one grey, as ``scopes.statistics``."""
+    return frame_of([(value, value, value)] * 8, bins)
+
+
+def frame_of(pixels: list[tuple[float, float, float]], bins: int) -> dict[str, Any]:
+    """The figures of pixels of R', G' and B' as ``scopes.statistics`` answers them."""
+    names = ("red", "green", "blue", "luma")
+    values = [(r, g, b, 0.2126 * r + 0.7152 * g + 0.0722 * b) for r, g, b in pixels]
+    counts = {name: [0] * bins for name in names}
+    for value in values:
+        for name, one in zip(names, value, strict=True):
+            counts[name][round(min(max(one, 0.0), 1.0) * (bins - 1))] += 1
+    figures: dict[str, Any] = {}
+    for at, name in enumerate(names):
+        each = [value[at] for value in values]
+        figures[name] = {"min": min(each), "max": max(each), "mean": sum(each) / len(each)}
+    return {
+        "frame": 0,
+        "width": len(pixels),
+        "height": 1,
+        "samples": len(pixels),
+        **figures,
+        "chroma": {
+            "centroid": [0.0, 0.0],
+            "spread": [0.0, 0.0],
+            "radius": 0.0,
+            "saturation": 0.0,
+            "hue": 0.0,
+        },
+        "percentiles": {
+            name: {
+                "1": figures[name]["min"],
+                "50": figures[name]["mean"],
+                "99": figures[name]["max"],
+            }
+            for name in names
+        },
+        "histogram": {"bins": bins, **counts},
+    }
+
+
+def _same_project(one: dict[str, Any], other: dict[str, Any]) -> bool:
+    """Whether two projects are alike but for ``next_id``, which a gesture does not take back."""
+    return {**one, "next_id": 0} == {**other, "next_id": 0}
+
+
+def _duration(timeline: dict[str, Any]) -> int:
+    """How many frames a timeline lasts: to the end of the last thing on it."""
+    ends = [
+        one["start"] + one["length"]
+        for track in timeline["tracks"]
+        for one in [*track.get("clips", []), *track.get("cues", [])]
+    ]
+    return max(ends, default=0)
 
 
 @dataclass
@@ -372,6 +1410,10 @@ def _media(path: Path) -> dict[str, Any]:
     return {
         "id": "",
         "path": str(path),
+        "name": path.name,
+        "bin": None,
+        "mark_in": None,
+        "mark_out": None,
         "identity": {"size": path.stat().st_size, "modified_us": 0, "digest": "0" * 64},
         "facts": {
             "duration": {"ticks": 25, "scale": 25},
@@ -559,7 +1601,7 @@ async def _engine(directory: Path, idle_seconds: int) -> None:
     fake.log = _say
     close = await _listening(fake)
     _locked(fake)
-    _say({"listening": fake.address, "pid": os.getpid(), "protocol": 1}, to=sys.stdout)
+    _say({"listening": fake.address, "pid": os.getpid(), "protocol": 2}, to=sys.stdout)
     # Where it would look for libraries, for a test to see.
     looks = ("PATH", "LD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
     _say({"event": "listening", "environment": {name: os.environ.get(name) for name in looks}})
@@ -607,7 +1649,7 @@ def main(argv: list[str]) -> int:
         os._exit(-1073741515)
     if mode in ("babble", "elsewhere"):
         elsewhere = r"\\.\pipe\elsewhere" if sys.platform == "win32" else "/tmp/elsewhere.sock"
-        said = {"listening": elsewhere, "pid": os.getpid(), "protocol": 1}
+        said = {"listening": elsewhere, "pid": os.getpid(), "protocol": 2}
         print("hello there" if mode == "babble" else json.dumps(said), flush=True)
         time.sleep(60)
         return 0

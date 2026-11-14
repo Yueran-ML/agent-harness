@@ -9,3 +9,5 @@
 *.mp4 binary
 *.ico binary
 *.icns binary
+# License texts copied unchanged from the sources that they come with, trailing spaces and all.
+desktop/licenses/ocio/** -whitespace

@@ -140,13 +140,29 @@ const samples: Record<string, unknown[][]> = {
   'label.studio.fps': [['25'], ['29.97'], ['23.976']],
   'label.studio.bits': [[8], [10]],
   'label.studio.proxy.making': [[0], [42], [100]],
+  'label.studio.media.selected': [[1], [3], [1000]],
+  'label.studio.inspector.useLongest': [[1], [24]],
+  'hint.studio.inspector.longest': [[1], [24]],
+  'label.studio.render.frames': [[0, 250], [36, 250]],
+  'label.studio.colorPage.missingLut': [['film.cube'], ['Kodak 2383.cube'], ['胶片.cube']],
+  'label.studio.monitor.colorFailed': [['OCIO: no such space'], ['ColorSpace not found']],
+  'label.studio.colorPage.keyPalette.mixerInput': [[1], [2]],
+  'label.studio.colorPage.lutSize': [[17], [33], [65]],
+  'hint.studio.colorPage.lutGenerated': [['C:/LUT/Day.cube', 0], ['C:/LUT/Day.cube', 1], ['D:/看片/日景.cube', 3]],
+  'hint.studio.colorPage.lutFailed': [['Day.cube is there already.']],
+  'hint.studio.migration.done': [[['film'], 1], [['film', 'trip', 'talk'], 3], [['旅行', '会议'], 2], [['film', 'trip', 'talk'], 12]],
+  'hint.studio.migration.failed': [[1], [3]],
+  'hint.studio.colorPage.shotMatch.done': [[1], [3]],
+  'label.studio.colorPage.trackerPalette.crosshair': [[1], [12]],
+  'hint.studio.colorPage.tracker.tracking': [[20, 9, 88], [0, 1, 1]],
+  'hint.studio.colorPage.tracker.done': [[1], [240]],
 };
 
 type Said = { path: string; text: string };
 
 // What is written in every language as it is: the names of the platforms, and the names of the
 // fields of an app or a bot, as their consoles write them.
-const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret']);
+const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret', 'Fairlight']);
 // What is written with the units of an editor, as editors write them in every language: 29.97 fps, 10 bit.
 const UNITS = new Set(['label.studio.fps', 'label.studio.bits']);
 // What the Chinese one keeps in English, as the terms of the trade are said there: a label that is
@@ -255,7 +271,9 @@ describe('the catalogues', () => {
     // In the row of a call, `what` is a few words. The name of an action is the
     // face of a button, and so is a label. A duration and the time that a turn took
     // are parts of a line.
-    const isSentence = (path: string) => path.endsWith('.why') || !(
+    // Fairlight shares labels and hints in one catalogue; its sentence keys are full English sentences.
+    const isSentence = (path: string) => path.endsWith('.why')
+      || (path.startsWith('label.studio.fairlightPage.') && path.endsWith('.')) || !(
       path.startsWith('tool.') || path.startsWith('actions.') || path.startsWith('label.')
       || path === 'duration' || path === 'turn.took'
     );

@@ -133,7 +133,7 @@
 /* --- The media pool. */
 .pool {
   flex: none;
-  width: clamp(220px, 30%, 340px);
+  width: clamp(300px, 40%, 520px);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -275,9 +275,41 @@
 
 .pool-foot {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
   padding: var(--s2);
   border-top: 1px solid var(--line);
 }
+
+.pool-toolbar, .pool-bin-tools { display: flex; align-items: center; gap: 2px; }
+.pool-toolbar .icon-btn[aria-pressed='true'] { color: var(--accent); background: var(--accent-soft); }
+.pool-browser { display: flex; flex: 1; min-height: 0; }
+.pool-clips { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.pool-bins { width: 120px; flex: none; overflow: auto; border-right: 1px solid var(--line); padding: var(--s1); }
+.pool-bin-tools { margin-bottom: var(--s2); }
+.pool-bin { display: flex; align-items: center; min-height: 28px; gap: 4px; padding-right: 4px; border-radius: var(--r1); cursor: default; }
+.pool-bin[aria-selected='true'] { background: var(--accent-soft); color: var(--moon-1); }
+.pool-bin:hover { background: var(--ink-2); }
+.pool-bin:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.pool-bin svg { flex: none; }
+.pool-bin-expand { flex: none; width: 12px; display: flex; }
+.pool-bin-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+.pool-name-field { width: 100%; min-width: 0; border: 1px solid var(--accent); background: var(--ink-1); color: var(--moon-1); padding: 3px; font: inherit; }
+.pool-problem { display: flex; align-items: flex-start; gap: var(--s1); padding: var(--s2); border-bottom: 1px solid var(--line); }
+.pool-problem p { flex: 1; margin: 0; font-size: 12px; }
+.pool-problem .caption { display: block; overflow-wrap: anywhere; margin-top: 3px; }
+.pool-list[data-layout='grid'] { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: var(--s1); align-content: start; }
+.pool-list[data-layout='grid'] .pool-item { flex-direction: column; min-width: 0; }
+.pool-list[data-layout='grid'] .pool-words { width: 100%; }
+.pool-thumbnail { display: flex; width: 100%; aspect-ratio: 16 / 9; align-items: center; justify-content: center; background: var(--ink-0); }
+.pool-thumbnail img { width: 100%; height: 100%; object-fit: contain; }
+.pool-details { flex: 0 1 auto; max-height: 35%; overflow: auto; border-top: 1px solid var(--line); padding: var(--s2) var(--s3); }
+.pool-details h3 { margin: 0 0 var(--s2); font-size: 12px; overflow-wrap: anywhere; }
+.pool-details dl { margin: 0; font-size: 11px; }
+.pool-details dl > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: var(--s2); margin: 4px 0; }
+.pool-details dt { color: var(--moon-3); }
+.pool-details dd { margin: 0; overflow-wrap: anywhere; user-select: text; }
 
 /* --- The source monitor. */
 .monitor {
@@ -335,6 +367,19 @@
   flex: none;
   padding: 0 var(--s4);
   text-align: center;
+}
+
+/* The colour management being made, or not made: one line under the picture. */
+.monitor-colour {
+  flex: none;
+  margin: 0;
+  padding: 2px var(--s4);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.monitor-colour[role='alert'] {
+  color: var(--bad);
 }
 
 .transport {
@@ -527,6 +572,644 @@
   pointer-events: none;
 }
 
+/* --- A monitor's name, or the switch between the two where only one is shown. */
+.monitor[hidden] {
+  display: none;
+}
+
+.monitor-head {
+  flex: none;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s3);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.monitor-loaded {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--moon-1);
+}
+
+/* The timeline monitor's Bypass Color, at the right of its title bar (Reference Manual 20, p. 672). */
+.monitor-tools {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.monitor-tools button {
+  height: 22px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  white-space: nowrap;
+}
+
+.monitor-tools button[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.monitor-tools button:disabled {
+  opacity: 0.5;
+}
+
+/* The monitor that the keys go to. */
+.monitor[data-focused='true'] .monitor-head {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.monitor-switch {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.monitor-switch button {
+  height: 22px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.monitor-switch button[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* --- The Edit page: the pool, the two monitors and the inspector above, the timeline beneath. */
+.edit-page {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(200px, 1fr) minmax(180px, 1fr);
+  grid-template-areas:
+    "bar bar bar"
+    "pool monitors inspector"
+    "timeline timeline timeline";
+}
+
+.edit-bar {
+  grid-area: bar;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2);
+  background: var(--ink-1);
+}
+
+.edit-bar .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.edit-timelines {
+  width: auto;
+  min-width: 120px;
+  max-width: 240px;
+}
+
+.edit-bar-gap {
+  flex: 1;
+}
+
+.edit-left {
+  grid-area: pool;
+  width: clamp(280px, 26cqi, 400px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.edit-left > .pool {
+  flex: 1 1 60%;
+  width: auto;
+  max-height: none;
+}
+
+.edit-left > .effects {
+  flex: 1 1 40%;
+}
+
+.edit-monitors {
+  grid-area: monitors;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  gap: 1px;
+}
+
+.edit-inspector {
+  grid-area: inspector;
+  width: 300px;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s2) var(--s3);
+  background: var(--ink-1);
+}
+
+.edit-timeline {
+  grid-area: timeline;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.edit-timeline > .timeline {
+  flex: 1;
+}
+
+/* --- The Curve Editor: the keys of the settings of a clip as curves, beneath the timeline. */
+.curve-panel {
+  flex: none;
+  height: 260px;
+  /* The timeline above keeps the larger part of a low page. */
+  max-height: 55%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: var(--ink-1);
+}
+
+.curve-panel > .caption {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+}
+
+.curve-panel > .inspector-problem {
+  margin: var(--s1) var(--s2);
+}
+
+.curve-panel > .curve-editor {
+  flex: 1;
+}
+
+.curve-editor {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  font-size: var(--text-caption);
+  outline: none;
+}
+
+.curve-editor:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+.curve-editor-bar {
+  grid-column: 1 / -1;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px var(--s2);
+  border-bottom: 1px solid var(--line);
+}
+
+.curve-editor-bar strong {
+  margin-right: var(--s2);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.curve-editor-bar [aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.curve-editor-tools {
+  display: flex;
+  gap: 2px;
+  margin-right: var(--s2);
+}
+
+.curve-editor-gap {
+  flex: 1;
+}
+
+.curve-editor-list {
+  margin: 0;
+  padding: var(--s1) 0;
+  list-style: none;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+}
+
+.curve-editor-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px var(--s2);
+}
+
+.curve-editor-list li[data-active] {
+  background: var(--accent-soft);
+}
+
+.curve-editor-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.curve-editor-name {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--moon-1);
+}
+
+.curve-editor-name[aria-pressed='true'] {
+  color: var(--moon-0);
+}
+
+.curve-editor-keyed {
+  flex: none;
+  font-size: 9px;
+  color: #f49a38;
+}
+
+.curve-editor-graph {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  touch-action: none;
+  user-select: none;
+}
+
+.curve-editor-ruler {
+  fill: var(--ink-2);
+  cursor: ew-resize;
+}
+
+.curve-editor-plot {
+  fill: var(--ink-0);
+}
+
+.curve-editor-outside {
+  fill: var(--ink-3);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.curve-editor-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.curve-editor-tick {
+  stroke: var(--moon-3);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.curve-editor-frame,
+.curve-editor-value,
+.curve-editor-tip {
+  fill: var(--moon-2);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.curve-editor-tip {
+  fill: var(--moon-0);
+}
+
+.curve-line {
+  stroke-width: 1.5;
+}
+
+.curve-line[data-active='false'] {
+  opacity: 0.4;
+}
+
+.curve-keys[data-active='false'] {
+  opacity: 0.5;
+}
+
+.curve-key {
+  fill: var(--ink-0);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  cursor: grab;
+}
+
+.curve-key[data-selected='true'] {
+  fill: currentColor;
+  stroke: var(--moon-0);
+}
+
+.curve-handle line {
+  stroke: currentColor;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+.curve-handle circle {
+  fill: var(--ink-0);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  cursor: grab;
+}
+
+.curve-editor[data-disabled] .curve-key,
+.curve-editor[data-disabled] .curve-handle circle {
+  cursor: default;
+}
+
+.curve-editor-box {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.curve-editor-playhead {
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.inspector-curves {
+  align-self: flex-start;
+}
+
+/* A studio too narrow for anything beside the monitor stacks the pool above it. */
+@container studio (max-width: 760px) {
+  .edit-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(200px, 1fr) auto minmax(180px, 1fr);
+    grid-template-areas: "bar" "pool" "monitors" "inspector" "timeline";
+  }
+
+  .edit-left {
+    width: auto;
+    max-height: 220px;
+  }
+
+  .edit-inspector {
+    width: auto;
+    max-height: 160px;
+  }
+}
+
+.new-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.new-timeline-problem .caption {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+/* --- The Cut page: the pool and the one viewer with its edit buttons above, the two timelines beneath. */
+.cut-page {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(220px, 1.1fr) minmax(220px, 1fr);
+  grid-template-areas:
+    "bar bar"
+    "pool viewer"
+    "timelines timelines";
+}
+
+.cut-page[data-inspector] {
+  grid-template-columns: auto minmax(0, 1fr) 280px;
+  grid-template-areas: "bar bar bar" "pool viewer inspector" "timelines timelines inspector";
+}
+.cut-inspector { grid-area: inspector; width: auto; min-height: 0; max-height: none; overflow: auto; }
+.audio-param-keys { display: flex; align-items: center; gap: 4px; padding: 0 0 8px; }
+.audio-param-keys select { min-width: 0; flex: 1; }
+.audio-param-keys [data-hit] { color: #f49a38; }
+.clip-eq .processor-panel { min-width: 0; padding: 4px 0; }
+.clip-eq .eq-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.clip-eq .processor-toolbar { flex-wrap: wrap; }
+.audio-config fieldset { min-width: 0; margin: 8px 0; padding: 6px; }
+.audio-config label { display: flex; align-items: center; gap: 4px; margin: 5px 0; }
+.audio-config select { min-width: 0; flex: 1; }
+.audio-config input[type=number] { width: 72px; }
+.audio-config > button { margin: 4px 4px 4px 0; }
+.file-waveforms { display: grid; gap: 4px; min-width: 0; }
+.media-file { min-width: 0; }
+.media-file-controls { display: flex; flex-wrap: wrap; gap: 6px; border: 0; padding: 4px 0; margin: 0; min-width: 0; }
+.media-file-controls label { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.media-file-controls select { min-width: 0; max-width: 100%; }
+.file-channel-waveform { position: relative; display: block; width: 100%; height: 54px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); padding: 0; }
+.file-channel-waveform[aria-pressed=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.file-channel-waveform:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.file-channel-name { position: absolute; z-index: 1; top: 2px; left: 4px; font-size: 11px; pointer-events: none; }
+.file-channel-waveform .timeline-waveform { top: 0; height: 100%; }
+.file-audition-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent); pointer-events: none; z-index: 2; }
+.file-audition > [role=group] { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-block: 6px; }
+.file-audition output { font-variant-numeric: tabular-nums; }
+.file-channel-waveform .timeline-wave-tiles { position: absolute; inset: 0; }
+
+.cut-bar {
+  grid-area: bar;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2);
+  background: var(--ink-1);
+}
+
+.cut-bar .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cut-left {
+  grid-area: pool;
+  width: clamp(280px, 30cqi, 440px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cut-left > .pool {
+  flex: 1;
+  width: auto;
+  max-height: none;
+}
+
+.cut-viewer {
+  grid-area: viewer;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-1);
+}
+
+.cut-viewer > .monitor {
+  flex: 1;
+  min-height: 0;
+}
+
+.cut-buttons {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s3);
+  padding: var(--s1) var(--s2);
+  box-shadow: inset 0 1px 0 var(--line);
+}
+
+.cut-button-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.cut-button {
+  height: 28px;
+  font-size: var(--text-caption);
+}
+
+/* A button that cannot be pressed here, held so that its hint still shows on hover. */
+.cut-button-off {
+  display: inline-flex;
+}
+
+/* Narrow, the buttons keep their icons and give their names to their tooltips. */
+.cut-page[data-narrow] .cut-button span {
+  display: none;
+}
+
+.cut-page[data-narrow] .cut-left {
+  width: clamp(220px, 28cqi, 300px);
+}
+
+/* The source tape: the media of the bin end to end, each with its marks. */
+.source-tape {
+  position: relative;
+  flex: none;
+  height: 30px;
+  margin: var(--s1) var(--s2) 0;
+  border-radius: var(--r1);
+  background: var(--ink-0);
+  cursor: ew-resize;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.source-tape-media {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-shadow: inset -1px 0 0 var(--moon-3);
+  overflow: hidden;
+}
+
+.source-tape-media[data-current] {
+  background: var(--accent-soft);
+}
+
+.source-tape-name {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 2px;
+  font-size: 11px;
+  color: var(--moon-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.source-tape-mark {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 10px;
+  background: var(--moon-0);
+  pointer-events: none;
+}
+
+.source-tape-range {
+  position: absolute;
+  bottom: 0;
+  height: 4px;
+  background: var(--accent);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.source-tape-head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--warn);
+  pointer-events: none;
+}
+
+.source-tape-none {
+  margin: var(--s1) var(--s2) 0;
+}
+
+.cut-timelines {
+  grid-area: timelines;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(90px, 0.8fr) minmax(140px, 1.2fr);
+  gap: 1px;
+}
+
+.cut-timelines > .timeline {
+  min-height: 0;
+}
+
+@container studio (max-width: 760px) {
+  .cut-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(220px, 1fr) minmax(220px, 1fr);
+    grid-template-areas: "bar" "pool" "viewer" "timelines";
+  }
+
+  .cut-page[data-inspector] {
+    grid-template-columns: minmax(0, 1fr) 240px;
+    grid-template-rows: auto auto minmax(220px, 1fr) minmax(220px, 1fr);
+    grid-template-areas: "bar bar" "pool pool" "viewer inspector" "timelines inspector";
+  }
+
+  .cut-left {
+    width: auto;
+    max-height: 200px;
+  }
+}
+
 /* --- The pages, at the foot. */
 .studio-pages {
   flex: none;
@@ -568,3 +1251,383 @@
 .shell[data-studio] .status-context {
   white-space: nowrap;
 }
+
+/* --- The effects library, beside or beneath the pool. */
+.effects {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-1);
+}
+
+.effects-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--s2) var(--s2);
+}
+
+.effects-name {
+  margin: var(--s2) 0 2px;
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--moon-2);
+}
+
+.effects-group ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.effects-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 4px var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-ui);
+  color: var(--moon-1);
+  cursor: grab;
+  user-select: none;
+}
+
+.effects-item:hover {
+  background: var(--hover);
+}
+
+.effects-item svg {
+  flex: none;
+  color: var(--moon-2);
+}
+
+.effects-hint {
+  margin-top: var(--s3);
+}
+
+/* --- The inspector. */
+.inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--text-caption);
+}
+
+.inspector-what {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 2px 0;
+  color: var(--moon-1);
+}
+
+.inspector-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.inspector-tabs {
+  display: flex;
+  gap: 2px;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.inspector-tabs button {
+  height: 26px;
+  padding: 0 var(--s2);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.inspector-tabs button[aria-selected='true'] {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.inspector-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inspector-section {
+  margin: var(--s2) 0 0;
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--moon-2);
+}
+
+.inspector-row {
+  display: grid;
+  grid-template-columns: minmax(84px, 40%) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--s2);
+  row-gap: 2px;
+}
+
+.inspector-row-wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.inspector-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--moon-2);
+  cursor: ew-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.inspector-label[data-disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+span.inspector-label,
+.inspector-row-wide .inspector-label {
+  cursor: default;
+}
+
+.inspector-value {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.inspector-number,
+.inspector-select,
+.inspector-text {
+  width: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.inspector-text {
+  resize: vertical;
+}
+
+/* A number box not being written in is a virtual slider: dragged sideways, it changes its number. */
+.inspector-number:not(:focus):not(:disabled) {
+  cursor: ew-resize;
+}
+
+.inspector-unit {
+  flex: none;
+  color: var(--moon-3);
+}
+
+.inspector-slider {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.inspector-color {
+  width: 36px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: none;
+}
+
+.inspector-segments {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.inspector-segments [aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.inspector-note {
+  margin: 0;
+}
+
+.inspector-actions {
+  margin-top: var(--s2);
+}
+
+.inspector-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inspector-problem {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  padding: var(--s2);
+  border-radius: var(--r1);
+  background: var(--warn-wash);
+}
+
+.inspector-problem p {
+  flex: 1 1 160px;
+  margin: 0;
+}
+
+/* --- The dialog of speed. */
+.speed-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.speed-percent {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.speed-percent .field {
+  width: 120px;
+}
+
+.speed-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.speed-problem {
+  margin: 0;
+  color: var(--bad);
+}
+
+/* --- The export: its dialog, and the strip that tells how it goes while the user edits on. */
+.render-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.render-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.render-choice label,
+.render-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.render-choice label .caption {
+  margin-left: var(--s2);
+}
+
+.render-problem {
+  margin: 0;
+  color: var(--bad);
+}
+
+.render-problem .caption {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.render-progress,
+.studio-migration {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 var(--s3) var(--s2);
+  padding: var(--s1) var(--s1) var(--s1) var(--s3);
+  border-radius: var(--r1);
+  background: var(--ink-1);
+  color: var(--text);
+}
+
+.render-progress-words,
+.studio-migration-words {
+  flex: 1;
+  min-width: 0;
+}
+
+.render-progress-words p,
+.studio-migration-words p {
+  margin: 2px 0;
+}
+
+.render-progress-words .caption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.render-progress-name {
+  margin-left: var(--s2);
+  color: var(--moon-2);
+}
+
+.render-progress[data-state='failed'],
+.render-progress[data-state='stopped'] {
+  background: var(--warn-wash);
+}
+
+.render-bar {
+  height: 4px;
+  margin: var(--s1) 0;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.render-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.studio-migration {
+  align-items: flex-start;
+}
+
+.studio-migration-details {
+  max-height: 220px;
+  overflow: auto;
+  margin: var(--s1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-migration-details > li {
+  padding: var(--s1) 0;
+  border-top: 1px solid var(--line);
+}
+
+.studio-migration-details ul {
+  margin: 0;
+  padding-left: var(--s4);
+}
+
+.studio-migration-details .caption {
+  overflow-wrap: anywhere;
+}
+
+/* Normalize shares the modal shell and native-view isolation with the other inspectors. */
+.normalize-dialog { display: flex; flex-direction: column; gap: var(--s3); }
+.normalize-dialog > label { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr); align-items: center; gap: var(--s3); }
+.normalize-dialog .field { width: 100%; min-width: 0; }
+.normalize-dialog p { margin: 0; }
+.normalize-dialog [role="alert"] { color: var(--bad); }
+.normalize-dialog table { width: 100%; border-collapse: collapse; margin-top: var(--s3); }
+.normalize-dialog th, .normalize-dialog td { padding: var(--s2); border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }

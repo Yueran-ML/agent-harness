@@ -15,6 +15,7 @@
  * - Short, calm and concrete, without exclamation marks.
  * - A sentence that takes a number is a function.
  */
+import { fairlightEn } from './fairlight';
 import { splitDuration } from './duration';
 
 function duration(seconds: number): string {
@@ -788,11 +789,287 @@ export const en = {
 
     /** The studio: a workspace for editing the media of the project. */
     studio: {
+      fairlightPage: fairlightEn,
+      timeline: {
+        select: 'Selection mode', trim: 'Trim edit mode', blade: 'Blade edit mode', snap: 'Snapping', linked: 'Linked selection', target: 'Target track',
+        title: 'Timeline', position: 'Timeline position',
+        zoomIn: 'Zoom in', zoomOut: 'Zoom out', fit: 'Fit timeline', follow: 'Follow playhead',
+        lock: 'Lock', unlock: 'Unlock', mute: 'Mute', unmute: 'Unmute', hide: 'Hide track', show: 'Show track', height: 'Track height',
+        color: 'Solid color', wavePending: 'Preparing waveform…', waveFailed: 'Waveform unavailable',
+        dissolve: 'Dissolve', dip_black: 'Dip to black', dip_white: 'Dip to white', crossfade: 'Crossfade',
+        addTrack: 'Add track', addSubtitleTrack: 'Add subtitle track', addCue: 'Add subtitle', trackMenu: 'Track menu', language: 'Language', noLanguage: 'Unspecified',
+        hideSubtitles: 'Hide in the viewer', showSubtitles: 'Show in the viewer, in place of the subtitle track shown', newCue: 'Subtitle',
+      },
+      media: {
+        bins: 'Bins', master: 'Master', newBin: 'New bin', name: 'Name', rename: 'Rename', remove: 'Remove from pool', removeBin: 'Remove empty bin',
+        list: 'List view', thumbnails: 'Thumbnail view', details: 'Media details', path: 'Path', videoCodec: 'Video codec', audioCodec: 'Audio codec',
+        dimensions: 'Dimensions', duration: 'Duration', frameRate: 'Frame rate', depth: 'Bit depth', sampleRate: 'Sample rate', channels: 'Channels',
+        markIn: 'In', markOut: 'Out', noProxy: 'No proxy', selected: (count: number) => `${count} selected`,
+        /** The right-click menu of media (Reference Manual 20, pp. 221–222, 230, 245). */
+        menu: 'Media menu', inputColorSpace: 'Input Color Space', inputGamma: 'Input Gamma', acesInput: 'ACES Input Transform',
+        projectDefault: 'Project Default', bypass: 'Bypass', dataLevels: 'Data Levels', levels: { auto: 'Auto', video: 'Video', full: 'Full' },
+        /** The clip's own switch of the project's inverse DRT (p. 233), in DaVinci Resolve's words. */
+        inverseDrt: 'Inverse DRT for SDR to HDR Conversion',
+      },
       /** Its way in, beside the tasks, and its name. */
       open: 'Studio',
       close: 'Close the studio',
       pages: 'Pages of the studio',
-      page: { media: 'Media', edit: 'Edit' },
+      page: { media: 'Media', cut: 'Cut', edit: 'Edit', color: 'Color', fairlight: 'Fairlight' },
+      /** The two viewers of the Edit page, as DaVinci Resolve names them. */
+      monitor: {
+        source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
+        /** While a change of the colour management is made, the colour before it still shown (`color_pending`); and where it cannot be made. */
+        colorPending: 'Applying color management…',
+        colorFailed: (message: string) => `Color management could not be applied; the viewer shows the color before the change. ${message}`,
+      },
+      editPage: { inspector: 'Inspector', newTimeline: 'New timeline', create: 'Create', noTimeline: 'No timeline' },
+      /** The Project Settings window (Reference Manual 20, pp. 19–20, 149–156), in DaVinci Resolve's words. */
+      settings: {
+        title: 'Project Settings', panels: 'Panels', colorManagement: 'Color Management', generalOptions: 'General Options',
+        spaces: 'Color Space & Transforms', lookupTables: 'Lookup Tables', color: 'Color',
+        science: 'Color science', automatic: 'Automatic color management', processingMode: 'Color processing mode',
+        preset: 'Resolve color management preset', custom: 'Custom', output: 'Output color space', separateGamma: 'Use Separate Color Space and Gamma',
+        input: 'Input color space', timeline: 'Timeline color space', inputGamma: 'Input gamma', timelineGamma: 'Timeline gamma', outputGamma: 'Output gamma',
+        bypass: 'Bypass', workingLuminance: 'Timeline working luminance', nits: 'Nits', hdr203: 'Use 203 nits reference for Rec.2100 HDR',
+        limitGamut: 'Limit output gamut to', none: 'None', inputDrt: 'Input DRT', outputDrt: 'Output DRT',
+        drts: { none: 'None', simple: 'Simple', luminance: 'Luminance Mapping', saturation_preserving: 'Saturation Preserving' },
+        rolloffStart: 'Sat. Rolloff Start', rolloffLimit: 'Sat. Rolloff Limit',
+        inverseDrt: 'Use inverse DRT for SDR to HDR conversion', whitePoint: 'Use white point adaptation', aware: 'Use color space aware grading tools',
+        resizeIn: 'Apply resize transformations in',
+        resizes: { timeline: 'Timeline', linear: 'Linear', linear_mapped: 'Linear Mapped', gamma: 'Gamma', gamma_mapped: 'Gamma Mapped' },
+        graphicsWhite: 'Graphics white level', displayHdr: 'Display HDR On Viewers If Available',
+        acesVersion: 'ACES version', idt: 'ACES Input Device Transform', odt: 'ACES Output Device Transform',
+        gamutCompress: 'Apply ACES reference gamut compress', nodeLuts: 'Process Node LUTs in',
+        inputLut: 'Input Lookup Table', outputLut: 'Output Lookup Table', viewerLut: 'Color Viewer Lookup Table',
+        lut1d: '1D lookup table', lut3d: '3D lookup table', noLut: 'No LUT selected', missing: 'missing',
+        interpolation: '3D Lookup Table Interpolation', trilinear: 'Trilinear', tetrahedral: 'Tetrahedral', updateLists: 'Update Lists',
+        openLutFolder: 'Open LUT Folder', sCurve: 'Use S-curve for contrast', save: 'Save',
+      },
+      /** Exporting a timeline: DaVinci Resolve's Quick Export, with the settings of its render. */
+      render: {
+        quickExport: 'Quick export', title: 'Export timeline', timeline: 'Timeline', range: 'Range', whole: 'Entire timeline', marked: 'In to out',
+        codec: 'Codec', quality: 'Quality', high: 'High', medium: 'Medium', low: 'Low', subtitles: 'Subtitle tracks to save as SRT',
+        exportTo: 'Export to…', exporting: 'Exporting', cancelling: 'Cancelling', encoder: 'Encoder', reveal: 'Show in folder',
+        frames: (done: number, total: number) => `${done} of ${total} frames`,
+      },
+      /** The old projects of the folder that became timelines as the studio was opened. */
+      migration: { duckYes: "Add ducking", duckNo: "No thanks", duckPending: "Applying…", details: 'Details', hideDetails: 'Hide details', timeline: 'Timeline', dropped: 'Left out', notes: 'Notes', failed: 'Not migrated' },
+      /** The Cut page, in DaVinci Resolve's words. */
+      cutPage: {
+        viewerMode: 'Viewer mode', source: 'Source clip', tape: 'Source tape', timeline: 'Timeline',
+        edits: 'Edits', smartInsert: 'Smart insert', append: 'Append', rippleOverwrite: 'Ripple overwrite', placeOnTop: 'Place on top',
+        sourceOverwrite: 'Source overwrite', transitions: 'Transitions', dissolve: 'Dissolve', dipBlack: 'Dip to black',
+        overview: 'Whole timeline', detail: 'Timeline around the playhead', tapeStrip: 'Source tape of the bin',
+      },
+      /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
+      colorPage: {
+        viewerZoom: 'Viewer zoom', viewerFit: 'Fit', matching: 'Matching the selected clips…',
+        windowControls: {
+          addGradient: 'Add Gradient Window', addLinear: 'Add Linear Window', addPolygon: 'Add Polygon Window', addCurve: 'Add Curve Window',
+          fields: { size: 'Size', aspect: 'Aspect', pan: 'Pan', tilt: 'Tilt', rotate: 'Rotate', opacity: 'Opacity', softness: 'Soft 1',
+            soft1: 'Soft 1', soft2: 'Soft 2', soft3: 'Soft 3', soft4: 'Soft 4', inside: 'Inside Softness', outside: 'Outside Softness' },
+          point: 'Point', inserted: 'New point', handleIn: 'in handle', handleOut: 'out handle',
+          /** A Curve's Shift-selected points (RM20 p. 3195). */
+          selectedPoints: 'Selected points: {count}',
+          /** The parts of a refused point edit's explanation: the points and the key interval it names. */
+          topology: {
+            one: 'point {point}', two: 'points {first} and {second}',
+            frames: '{clock} frames {from}–{to}', allFrames: 'every frame',
+          },
+          osc: 'On-screen controls', none: 'Off', qualifier: 'Qualifier', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
+          list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
+          /** The switches of each row of the Window list (RM20 p. 3189): Mask on adds the window, off subtracts it. */
+          invert: 'Invert', mask: 'Mask',
+          /** A row's shape button, which turns the window on and off, and its name field (RM20 p. 3189). */
+          onOff: 'On/Off', layerName: 'Layer Name',
+          clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },
+          shapes: { circular: 'Circular', linear: 'Linear', polygon: 'Polygon', curve: 'Curve', gradient: 'Gradient' },
+          /** While a window is dragged; nothing is said while none is. */
+          status: { arming: 'Preparing window drag…', armed: 'Dragging window · Esc to cancel' }
+        },
+        toolbar: 'Interface toolbar', gallery: 'Gallery', luts: 'LUTs', clips: 'Clips', clipFilter: 'Clip filter', timeline: 'Timeline', nodes: 'Nodes',
+        filter: { all: 'All Clips', graded: 'Graded Clips', ungraded: 'Ungraded Clips', grouped: 'Grouped Clips', matched: 'Shot Matched Clips' },
+        viewer: 'Viewer', lutBrowser: 'LUT browser', nodeEditor: 'Node editor', thumbnails: 'Thumbnail timeline', miniTimeline: 'Mini-timeline',
+        videoTracks: 'Video tracks', level: 'Node graph shown',
+        levels: { pre_clip: 'Group Pre-Clip', clip: 'Clip', post_clip: 'Group Post-Clip', timeline: 'Timeline' },
+        nodeSource: 'Source', nodeOutput: 'Output',
+        kinds: { corrector: 'Corrector', parallel_mixer: 'Parallel Mixer', layer_mixer: 'Layer Mixer', key_mixer: 'Key Mixer' },
+        /** The node editor as it is edited, and its right-click menus (Reference Manual 20, pp. 3310–3322). */
+        nodeMenu: {
+          nodeMenu: 'Node menu', graphMenu: 'Node graph menu', link: 'Link', thumbMenu: 'Clip menu', tools: 'Node editor tools',
+          selectTool: 'Selection tool', panTool: 'Hand tool', zoom: 'Zoom', labelField: 'Node label',
+          addNode: 'Add Node', serial: 'Add Serial', before: 'Add Before Current', parallel: 'Add Parallel', layer: 'Add Layer', outside: 'Add Outside Node',
+          /** A serial node with a window already turned on (RM20 p. 3187). */
+          serialWindow: { circular: 'Add Serial Node + CPW', linear: 'Add Serial Node + LPW', polygon: 'Add Serial Node + PPW', curve: 'Add Serial Node + PCW' },
+          label: 'Change Label', deleteNode: 'Delete Node', reset: 'Reset Node Grade', resetShotMatch: 'Reset Shot Match', shotMatch: 'Shot Match to This Clip',
+          addInput: 'Add One Input', toLayer: 'Morph Into Layer Mixer Node', toParallel: 'Morph Into Parallel Node', composite: 'Composite Mode',
+          deleteLink: 'Delete Link', resetAll: 'Reset All Grades and Nodes', cleanup: 'Cleanup Node Graph',
+          zoomIn: 'Zoom In', zoomOut: 'Zoom Out', zoomToWindow: 'Zoom to Window', originalSize: 'Original Size', collapse: 'Collapse Group Grades',
+          revealLut: 'Reveal Selected LUT', lock: 'Lock Node',
+        },
+        /** The composite modes of a Layer Mixer, as DaVinci Resolve names them (pp. 1055–1058). */
+        composites: {
+          normal: 'Normal', add: 'Add', color: 'Color', color_burn: 'Color Burn', color_dodge: 'Color Dodge', darken: 'Darken', darker_color: 'Darker Color',
+          difference: 'Difference', divide: 'Divide', exclusion: 'Exclusion', hard_mix: 'Hard Mix', hardlight: 'Hardlight', hue: 'Hue', lighten: 'Lighten',
+          lighter_color: 'Lighter Color', linear_burn: 'Linear Burn', linear_dodge: 'Linear Dodge', linear_light: 'Linear Light', luminosity: 'Luminosity',
+          multiply: 'Multiply', overlay: 'Overlay', pin_light: 'Pin Light', saturation: 'Saturation', screen: 'Screen', softlight: 'Softlight',
+          subtract: 'Subtract', vivid_light: 'Vivid Light',
+        },
+        disabled: 'Disabled', locked: 'Locked', matched: 'Shot matched', graded: 'Graded', grouped: 'Group', solidColor: 'Solid color', title: 'Title',
+        palettes: 'Palettes', leftPalettes: 'Left palettes', centerPalettes: 'Center palettes', rightPanel: 'Keyframes and scopes',
+        palette: {
+          primaries: 'Primaries', curves: 'Curves', qualifier: 'Qualifier', window: 'Window', tracker: 'Tracker', blur: 'Blur', key: 'Key',
+          keyframes: 'Keyframes', scopes: 'Scopes',
+        },
+        timecode: 'Viewer timecode',
+        timecodes: { source: 'Source Timecode', record: 'Timeline Timecode', sourceFrame: 'Source Frame', recordFrame: 'Timeline Frame' },
+        realtime: 'Playing in real time', dropping: 'Dropping frames', stopped: 'Not playing',
+        enhanced: 'Enhanced viewer', full: 'Full page viewer', cinema: 'Cinema viewer', exitCinema: 'Exit cinema viewer',
+        missingLut: (name: string) => `Missing LUT: ${name}`, missingLuts: 'Multiple LUTs missing',
+        /** The LUT browser (Reference Manual 20, pp. 2970–2971, 3410–3413), in DaVinci Resolve's words. */
+        lutPanel: {
+          folders: 'LUT folders', list: 'LUTs', project: 'Project LUTs', library: 'LUT library', favorites: 'Favorites', missing: 'Missing LUTs',
+          search: 'Search', refresh: 'Refresh', menu: 'LUT menu', apply: 'Apply LUT to Current Node', addFavorite: 'Add to Favorites',
+          removeFavorite: 'Remove from Favorites', name: 'LUT name', clips: 'Clips', none: 'None',
+          broken: 'cannot be read',
+          /** The option menu of the LUT browser (pp. 3259, 3411), in DaVinci Resolve's words. */
+          options: 'LUT browser options', livePreview: 'Live Preview', hoverScrub: 'Hover Scrub Preview',
+          scrubs: { both: 'Thumbnail and Viewer', thumbnail: 'Thumbnail Only', off: 'Off' },
+        },
+        /** The options menu of the viewer (p. 2986) with what the plan adds to it (p. 244). */
+        viewerOptions: 'Viewer options', displayHdr: 'Display HDR On Viewers If Available', viewerLut: 'Viewer LUT',
+        /** The Gallery, its stills and memories (Reference Manual 20, ch. 141–142), in DaVinci Resolve's words. */
+        galleryPanel: {
+          albums: 'Albums', memories: 'Memories', stills: 'Stills', stillSize: 'Still size', search: 'Search',
+          albumMenu: 'Album menu', stillMenu: 'Still menu', galleryMenu: 'Gallery menu', memoryMenu: 'Memory menu', viewerMenu: 'Viewer menu',
+          addStillAlbum: 'Add Still Album', addPowerGradeAlbum: 'Add PowerGrade Album', removeAlbum: 'Remove Current Album', renameAlbum: 'Album name',
+          applyGrade: 'Apply Grade', appendNodeGraph: 'Append Node Graph', deleteSelected: 'Delete Selected', properties: 'Properties',
+          changeLabel: 'Change Label', export: 'Export', import: 'Import', grabStill: 'Grab Still',
+          applyGradesUsing: 'Apply Grades Using',
+          keyframes: { none: 'No Keyframes', source_timecode: 'Keyframes Aligning Source Timecode', start_frame: 'Keyframes Aligning Start Frames' },
+          preserveNodes: 'Copy Grade: Preserve number of nodes',
+          memory: 'Memory', clearMemory: 'Clear', memoriesAlbum: 'Memories',
+          appendToSelected: 'Append Node to Selected Clips', wipeTimelineClip: 'Wipe Timeline Clip',
+          propertiesTitle: 'Still Properties', stillId: 'Still ID', labelField: 'Label', created: 'Created', timeline: 'Timeline', clip: 'Clip',
+          recordTimecode: 'Record TC', sourceTimecode: 'Source TC', size: 'Size', imported: 'Imported from', ok: 'OK', delete: 'Delete',
+        },
+        /** Wipes and split screens of the viewer (pp. 2999–3006), in DaVinci Resolve's words. */
+        compare: {
+          modes: 'Viewer modes', imageWipe: 'Image Wipe', splitScreen: 'Split Screen', wipeOnOff: 'Wipe On/Off', wipeStyle: 'Wipe Style',
+          styles: {
+            horizontal: 'Horizontal', vertical: 'Vertical', diagonal: 'Diagonal', mix: 'Mix', difference: 'Difference', box: 'Box',
+            venetian_blind: 'Venetian Blind', checkerboard: 'Checkerboard',
+          },
+          invert: 'Invert Wipe', referenceMode: 'Reference Wipe Mode', referenceModes: { gallery: 'Gallery', timeline: 'Timeline' },
+          gang: 'Gang Timeline Wipe With Current Clip', splitMode: 'Split screen mode',
+          splitModes: { current_group: 'Current Group', neighbor_clips: 'Neighbor Clips', selected_clips: 'Selected Clips', selected_stills: 'Selected Still Images' },
+          showOutline: 'Show Outline', reference: 'Wipe reference clip',
+        },
+        /** The Qualifier palette (Reference Manual 20, pp. 3157–3184), in DaVinci Resolve's words. */
+        qualifierPalette: {
+          modes: 'Qualifier mode', hsl: 'HSL', rgb: 'RGB', lum: 'LUM', reset: 'Reset', invert: 'Invert', selectionRange: 'Selection Range',
+          tools: { pick: 'Sample Eyedropper', subtract: 'Subtract Color Range', add: 'Add Color Range', harden: 'Subtract Softness', soften: 'Add Softness' },
+          components: { hue: 'Hue', sat: 'Sat', lum: 'Lum', red: 'Red', green: 'Green', blue: 'Blue' },
+          center: 'Center', width: 'Width', soft: 'Soft', symmetry: 'Sym', low: 'Low', high: 'High', lowSoft: 'L. Soft', highSoft: 'H. Soft',
+          finesse: {
+            title: 'Matte Finesse', pre_filter: 'Pre-Filter', clean_black: 'Clean Black', black_clip: 'Black Clip', clean_white: 'Clean White',
+            white_clip: 'White Clip', blur_radius: 'Blur Radius', in_out_ratio: 'In/Out Ratio', morph: 'Morph Operation', morph_radius: 'Morph Radius',
+            morphs: { shrink: 'Shrink', grow: 'Grow', opening: 'Opening', closing: 'Closing' },
+          },
+        },
+        /** The Key palette (Reference Manual 20, pp. 3358–3363), in DaVinci Resolve's words. */
+        keyPalette: {
+          input: 'Key Input', output: 'Key Output', qualifier: 'Qualifier', invert: 'Invert', matte: 'Matte', mask: 'Mask', gain: 'Gain', offset: 'Offset',
+          blurRadius: 'Blur Radius', blurRatio: 'Blur H/V Ratio', reset: 'Reset', mixerInput: (number: number) => `Input ${number}`,
+        },
+        /** Highlight (pp. 2986, 3170–3171), Bypass Color (p. 2987), Generate LUT (p. 3413) and Update All Thumbnails (p. 3026). */
+        highlight: { menu: 'Highlight', off: 'Off', highlight: 'Highlight', bw: 'Highlight B/W' },
+        bypass: 'Bypass Color Grades', generateLut: 'Generate LUT', lutSize: (size: number) => `Generate 3D LUT (${size} Point Cube)`,
+        updateThumbnails: 'Update All Thumbnails',
+        /** The orange dot of a palette's button: the current node is adjusted there. */
+        changed: 'Adjusted',
+        /** The Primaries palette (Reference Manual 20, Chapter 131), in DaVinci Resolve's words. */
+        primariesPalette: {
+          modes: 'Primaries mode', wheels: 'Color Wheels', bars: 'Color Bars', log: 'Log Wheels', reset: 'Reset',
+          wheel: { lift: 'Lift', gamma: 'Gamma', gain: 'Gain', offset: 'Offset', shadow: 'Shadow', midtone: 'Midtone', highlight: 'Highlight' },
+          resetWheel: 'Reset the wheel', master: 'Master wheel', balance: 'Color balance',
+          settings: {
+            temperature: 'Temp', tint: 'Tint', contrast: 'Contrast', pivot: 'Pivot', midtone_detail: 'Mid/Detail', color_boost: 'Col Boost',
+            shadows: 'Shad', highlights: 'Hi/Light', saturation: 'Sat', hue: 'Hue', lum_mix: 'L. Mix', low_range: 'Low Range', high_range: 'High Range',
+          },
+          auto: 'Auto Color', blackPoint: 'Pick Black Point', whitePoint: 'Pick White Point',
+        },
+        /** The Curves palette (Reference Manual 20, Chapter 134), in DaVinci Resolve's words. */
+        curvesPalette: {
+          modes: 'Curve', custom: 'Custom', hue_vs_hue: 'Hue vs Hue', hue_vs_sat: 'Hue vs Sat', hue_vs_lum: 'Hue vs Lum',
+          lum_vs_sat: 'Lum vs Sat', sat_vs_sat: 'Sat vs Sat', sat_vs_lum: 'Sat vs Lum',
+          editor: 'Curve editor', point: 'Control point', resetCustom: 'Reset Custom Curve', reset: 'Reset',
+          gang: 'Gang Custom Curves', channels: { y: 'Luma', r: 'Red', g: 'Green', b: 'Blue' }, intensity: 'Intensity', resetChannel: 'Reset the curve',
+          options: 'Options', defaultAnchors: 'Default Anchors', copyToRed: 'Copy to Red', copyToGreen: 'Copy to Green', copyToBlue: 'Copy to Blue',
+          softClip: 'Soft Clip', gangSoftClip: 'Gang Soft Clip', low: 'Low', lowSoft: 'Low Soft', high: 'High', highSoft: 'High Soft',
+          input: 'Input', hueRotate: 'Hue Rotate', saturation: 'Saturation', lum: 'Lum',
+          vectors: { red: 'Red', yellow: 'Yellow', green: 'Green', cyan: 'Cyan', blue: 'Blue', magenta: 'Magenta' },
+          picker: 'Sample in the viewer',
+        },
+        /** The Blur palette (Reference Manual 20, pp. 3454–3456), in DaVinci Resolve's words. */
+        /** The Window palette's option menu: its window presets (Reference Manual 20, pp. 3198–3199). */
+        windowPresets: {
+          options: 'Window options', saveNew: 'Save as New Preset', update: 'Update Preset', delete: 'Delete Preset',
+          presets: 'Presets', none: 'No presets', name: 'Preset name', ok: 'OK',
+        },
+        blurPalette: {
+          modes: 'Mode', blur: 'Blur', sharpen: 'Sharpen', mist: 'Mist',
+          radius: 'Radius', ratio: 'H/V Ratio', scaling: 'Scaling', coring_softness: 'Coring Softness', level: 'Level', mix: 'Mix',
+          gang: 'Gang the red, green and blue sliders', reset: 'Reset', resetColumn: 'Reset',
+        },
+        /** The Tracker palette in Window mode (Reference Manual 20, pp. 3234–3238), in DaVinci Resolve's words. */
+        trackerPalette: {
+          transforms: 'Transforms to track', analyze: 'Analyze',
+          trackOneReverse: 'Track One Frame Reverse', trackReverse: 'Track Reverse', stop: 'Stop Tracking', trackForward: 'Track Forward',
+          trackForwardBack: 'Track Forward and Back', trackOneForward: 'Track One Frame Forward',
+          pan: 'Pan', tilt: 'Tilt', zoom: 'Zoom', rotate: 'Rotate', perspective: 'Perspective 3D',
+          mode: 'Clip or Frame', clip: 'Clip', frame: 'Frame', graph: 'Tracker graph', scale: 'Graph height',
+          tracker: 'Tracker type', cloud: 'Cloud Tracker', point: 'Point Tracker',
+          addTracker: 'Add Tracker', deleteTracker: 'Delete Tracker', crosshair: (number: number) => `Tracker ${number}`, x: 'X %', y: 'Y %',
+          options: 'Options', reset: 'Reset Track Data on Active Window', clearSelected: 'Clear Selected Track Data',
+          addKey: 'Add Keyframe', deleteKey: 'Delete Keyframe', copy: 'Copy Track Data', paste: 'Paste Track Data',
+        },
+        /** The video scopes (Reference Manual 20, pp. 3007–3022), in DaVinci Resolve's words. */
+        scopes: {
+          kinds: { waveform: 'Waveform', parade: 'Parade', vectorscope: 'Vectorscope', histogram: 'Histogram', chromaticity: 'CIE Chromaticity' },
+          scope: 'Scope', controls: 'Scope settings', menu: 'Video scope options', expand: 'Open in a floating window', close: 'Close',
+          window: 'Video Scopes', layout: 'Scope layout', layouts: { one: '1 Up', two: '2 Up', four: '4 Up', nine: '9 Up' },
+          waveformScale: 'Waveform Scale Style', tenBit: '10-bit', percent: 'Percentage',
+          vectorscopeScale: 'Vectorscope Scale Style', off: 'Off', standard: 'Standard', both: 'Both', hueLabels: 'Show Labels',
+          mode: 'Mode', tones: { all: 'ALL', low: 'Low', mid: 'Mid', high: 'High' }, lowRange: 'Low Range', highRange: 'High Range',
+          zoom2x: 'Show 2X Zoom', skinTone: 'Show Skin Tone Indicator', showGraticule: 'Show Graticule', graticule: 'Graticule', gain: 'Gain',
+          reference: 'Show Reference Levels', low: 'Low', high: 'High', extraGamut: 'Additional Gamut', none: 'None',
+        },
+      },
+      /** The fields of the inspector, as DaVinci Resolve names them. */
+      inspector: {
+        video: 'Video', audio: 'Audio', title: 'Title', generator: 'Generator', transition: 'Transition', settings: 'Timeline settings',
+        transform: 'Transform', composite: 'Composite', fades: 'Fades', compositeMode: 'Composite mode',
+        cropping: 'Cropping', cropLeft: 'Crop left', cropRight: 'Crop right', cropTop: 'Crop top', cropBottom: 'Crop bottom', softness: 'Softness',
+        zoom: 'Zoom', positionX: 'Position X', positionY: 'Position Y', rotation: 'Rotation angle', opacity: 'Opacity',
+        fadeIn: 'Fade in (frames)', fadeOut: 'Fade out (frames)', volume: 'Volume', pan: 'Pan',
+        text: 'Text', size: 'Size', color: 'Color', align: 'Alignment', alignLeft: 'Align left', alignCenter: 'Align center', alignRight: 'Align right',
+        kind: 'Type', length: 'Duration (frames)', start: 'Start on edit', middle: 'Center on edit', end: 'End on edit', removeTransition: 'Delete transition',
+        name: 'Name', resolution: 'Resolution', width: 'Width', height: 'Height', custom: 'Custom', frameRate: 'Frame rate', sampleRate: 'Audio sample rate',
+        changeSpeed: 'Change clip speed', titleText: 'Title', useLongest: (frames: number) => `Use ${frames} frames`,
+        subtitle: 'Subtitle', cueStart: 'Start (frame)', removeCue: 'Delete subtitle',
+      },
+      /** The Curve Editor of the Edit page, as DaVinci Resolve names its controls (Reference Manual 20, pp. 1119–1120). */
+      curves: {
+        title: 'Curve Editor', parameters: 'Parameters', graph: 'Curves', interpolation: 'Keyframe interpolation',
+        linear: 'Linear', easeIn: 'Ease In', easeOut: 'Ease Out', easeInOut: 'Ease In and Out', hold: 'Hold',
+        fit: 'Full Extent Zoom', copy: 'Copy Keyframes', paste: 'Paste Keyframes', close: 'Close Curve Editor',
+      },
+      /** DaVinci Resolve's Change Clip Speed. */
+      speed: { title: 'Change clip speed', percent: 'Speed', reverse: 'Reverse speed', ripple: 'Ripple sequence', duration: 'Duration', apply: 'Change' },
+      /** The effects library, as DaVinci Resolve's toolbox. */
+      effects: { title: 'Effects library', videoTransitions: 'Video transitions', audioTransitions: 'Audio transitions', titles: 'Titles', generators: 'Generators', text: 'Text' },
       pool: 'Media pool',
       import: 'Import',
       /** A rate of frames as an editor writes it: 25, 29.97. */
@@ -818,7 +1095,7 @@ export const en = {
       forward: 'Next frame',
       position: 'Position',
       useProxies: 'Use proxies',
-      source: { proxy: 'Proxy', original: 'Original' },
+      source: { proxy: 'Proxy', original: 'Original', mixed: 'Mixed' },
       sound: { on: 'Sound on', off: 'Sound off', unavailable: 'Sound unavailable', none: 'No sound' },
       retry: 'Try again',
     },
@@ -1328,7 +1605,250 @@ export const en = {
 
     /** What the studio says: in its viewer, under its tools, and when something did not work. */
     studio: {
-      browser: 'The preview appears in the desktop app.',
+      emptyBin: 'This bin is empty.', mediaUsed: 'This media is used on a timeline. Remove its clips first.', binUsed: 'This bin contains media or other bins. Move them out first.', mediaEditFailed: 'The media pool could not be changed.', thumbnailFailed: 'The thumbnail could not be read.',
+      edit: {
+        failed: "The edit could not be completed.",
+        locked: "A track affected by this edit is locked.",
+        ripple_blocked: "A clip on another track prevents this ripple edit.",
+        no_room: "There is not enough room on the target track.",
+        no_handles: "The source does not have enough frames for this edit.",
+        empty_range: "Choose a range containing at least one frame.",
+        nothing_at: "There is no clip at this position.",
+        no_track: "Choose a track for this media.",
+        stale_revision: "The project changed during this edit; try again.",
+        pending: "The edit before is still being applied; try again in a moment.",
+        no_edit_point: "No two clips meet on a video track near the playhead.",
+        no_edit_at_playhead: "No two clips meet at the playhead on the target tracks.",
+        no_edit_chosen: "The clips chosen meet no other clip.",
+        missing: "An item used by this edit is no longer in the project.",
+        taken: "Another item already uses this name.",
+        out_of_list: "This position is outside the track list.",
+        no_stream: "This media does not have the stream required by this track.",
+        wrong_kind: "Move clips to a track of the same kind.",
+        wrong_track: "This track cannot hold the selected item.",
+        out_of_source: "The chosen range extends beyond the source.",
+        scale: "The source time could not be converted.",
+        overlap: "Another clip occupies these frames.",
+        cue_overlap: "Another subtitle occupies these frames.",
+        copy_locked: "A copy would go on a locked track, so nothing was copied.",
+        copy_no_track: "There is no track there for every copy, so nothing was copied.",
+        move_no_track: "There is no track there for every clip and its linked clips, so nothing was moved.",
+        subtitle_shown: "Another subtitle track is shown. A timeline shows one subtitle track at a time.",
+        out_of_timeline: "A clip cannot start before the timeline.",
+        in_use: "This item is still used by the project.",
+        too_large: "This edit exceeds the supported size.",
+        out_of_range: "A setting is outside its allowed range.",
+        zero_rate: "The frame rate must be greater than zero.",
+        negative_duration: "The duration cannot be negative.",
+        reserved: "This identifier is reserved.",
+        ids_exhausted: "The project cannot create more identifiers.",
+        dollar: "This item reference could not be resolved.",
+        no_id: "The edit is missing an item reference.",
+        not_absolute: "Choose a file with an absolute path.",
+        not_a_proxy_path: "The proxy path is outside the project cache.",
+        has_transition: "Remove the existing transition before this edit.",
+        not_adjacent: "The clips must meet at the same edit point.",
+        cut_taken: "This edit point already has a transition.",
+        too_long: "The transition is longer than the available clip.",
+        source: "The source cannot be changed by this edit.",
+        cycle: "A bin cannot be placed inside itself.",
+        fade_at_transition: "A fade and a transition cannot share the same clip edge.",
+        not_empty: "The bin still contains items.",
+        no_port: "That node has no such input or output.",
+        input_taken: "That input already has a link.",
+        loop: "This link would make the grade loop back on itself.",
+        grouped: "A clip is still in this group. Take it out of the group first.",
+        ungrouped: "This clip is not in a group.",
+        params: "These settings do not fit this kind of node.",
+        wrong_node: "This cannot be done with the chosen node.",
+        camera_raw: "The color space of camera raw media comes from its camera and cannot be set.",
+        node_locked: "This node is locked. Unlock it to change its settings.",
+        unknown_space: "That color space or transform is not one that the engine knows.",
+        inapplicable: "This setting does not apply to the current color management.",
+        color_settings: "These color settings could not be read.",
+      },
+      timeline: { empty: 'Choose or create a timeline to begin editing.' },
+      settings: {
+        applied: 'Changes are made when you click Save, as one step that can be undone. Alt+click Save to keep this window open.',
+        changedElsewhere: 'The settings of the project were changed elsewhere. What you have not changed here shows the new values.',
+        folderAbsent: 'This folder does not exist yet.',
+        folderFailed: 'The folder could not be opened.',
+        noProject: 'Open the project in the studio to change its settings.',
+        regrade: 'Changing this after grading has begun changes how every grade looks.',
+        displayHdr: 'This is kept on this computer for every project. The viewers show HDR only where HDR is on in the display settings of Windows.',
+        hdrOff: 'Windows has HDR off for the display of the viewer, so it shows SDR.',
+        notYet: 'Not in effect yet: kept with the project, it does not change the picture in this version.',
+        lutFolders: 'A LUT is looked for in these folders, in this order.',
+      },
+      loadSource: 'Double-click media in the media pool to see it here.',
+      newTimeline: 'The timeline takes the size of the first video in the media pool, and its frame rate unless you choose another. It starts with one video track and one audio track. Once it has content, its frame rate is locked.',
+      newTimelineFailed: 'The timeline could not be created.',
+      inspectorEmpty: 'Select a clip on the timeline.',
+      curvesEmpty: 'Select one video clip on the timeline to edit its keyframes.',
+      inspector: {
+        longest: (frames: number) => `The longest that fits is ${frames === 1 ? '1 frame' : `${frames} frames`}.`,
+        rate: 'The frame rate is locked because the timeline has content. A new timeline can use another rate.',
+        rateRefused: 'At this frame rate, a clip would run past the end of its media.',
+        fadeAtTransition: 'A transition is at this edge, so a fade cannot be set here.',
+        locked: 'These clips are on locked tracks. Unlock the track to change them.',
+        speedMedia: 'Only clips of media can change speed.',
+        speedRange: 'The speed is from 1% to 10000%.',
+        library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
+        addCue: 'Double-click empty space on a subtitle track to add a subtitle at the playhead, or right-click it and choose Add subtitle to add one where you clicked.',
+      },
+      render: {
+        marks: 'Mark an In and an Out point on the timeline to export only the part between them.',
+        codec: 'H.264 and HEVC are encoded on the graphics card. Where it has no encoder for them, ProRes is written into a .mov file instead.',
+        subtitles: 'Each subtitle track checked, shown in the viewer or not, is saved beside the film as an SRT file.',
+        running: 'An export is running. Wait for it to finish, or cancel it.',
+        noTimeline: 'There is no timeline to export yet.',
+        done: 'The export is finished.',
+        failed: 'The export failed.',
+        cancelled: 'The export was cancelled, and nothing was written.',
+        stopped: 'The engine of the studio stopped during the export.',
+        fallback: 'This computer has no hardware encoder for H.264 or HEVC, so the film was written as ProRes into a .mov file.',
+        refused: {
+          busy: 'Another export of this project is running, maybe one that the agent started. Try again when it has finished.',
+          exists: 'Files that this export writes beside the film are there already, such as an SRT or a .mov file. Choose another name, or move them away.',
+          part_exists: 'A partial file of an export that did not finish is there. Delete it, or choose another name.',
+          source: 'That file is media of this project, and is not written over. Choose another name.',
+          invalid: 'The engine did not take these settings.',
+          other: 'The export could not start.',
+        },
+      },
+      migration: {
+        duck: "This old project lowered music while someone spoke. Choose whether to restore that behavior.",
+        duckFailed: "Ducking was not completed. You can try again.",
+        /** `names` are those of the first few of `count`; the rest are counted. */
+        done: (names: readonly string[], count: number) => (count === 1
+          ? `An old project became a timeline: ${names[0]}. Its files are kept as they were.`
+          : `${count} old projects became timelines: ${names.join(', ')}${count > names.length ? `, and ${count - names.length} more` : ''}. Their files are kept as they were.`),
+        failed: (count: number) => (count === 1
+          ? 'An old project could not be migrated. Its files are untouched.'
+          : `${count} old projects could not be migrated. Their files are untouched.`),
+        checkFailed: 'The old projects in this folder could not be looked at.',
+      },
+      cutPage: {
+        smartInsert: 'Inserts the source at the edit point nearest the playhead, which the timeline marks.',
+        append: 'Puts the source after the last clip of the timeline.',
+        rippleOverwrite: 'Replaces the clip at the playhead with the source, and moves what follows by the difference in length.',
+        placeOnTop: 'Puts the source at the playhead on the first free track above.',
+        sourceOverwrite: 'Puts the source on the track above, in sync by timecode. The studio does not read the timecode of media yet, so there is nothing to line up by: as in DaVinci Resolve without overlapping timecode, this edit does nothing.',
+        transition: 'Adds the transition at the edit point nearest the playhead.',
+        emptyBin: 'This bin has no media for the source tape.',
+        noTimeline: 'Create a timeline on the Edit page to begin.',
+      },
+      colorPage: {
+        noClip: 'There is no clip at the playhead.',
+        noClips: 'There are no clips on the video tracks shown.',
+        noNodes: 'This grade has no nodes yet.',
+        incomplete: 'The grade is off: a node is not connected.',
+        gallery: {
+          empty: 'There are no stills in this album. Press Ctrl+Alt+G to grab one.',
+          noneFound: 'No still here has a label like this.',
+          failed: 'The Gallery could not be read.',
+          deleted: 'Deleted. Press Ctrl+Z in the Gallery to bring them back.',
+          confirmRemoveAlbum: 'The album will be removed with all its stills. This cannot be undone.',
+          /** Why the engine refused a change of the Gallery, or of grades from it, by its reason. */
+          refusals: {
+            last_album: 'The last album cannot be removed.',
+            exists: 'Files of these names are there already. Choose another name or place.',
+            no_grade: 'This still holds no grade for the mode of the node editor.',
+            not_a_still: 'This file cannot be read as a still.',
+            missing: 'This still or album is not in the Gallery any more.',
+            link: 'The folder of the Gallery is a link, so it is not used.',
+            gallery: 'The folder of the Gallery could not be read or written.',
+            write: 'The stills could not be written there.',
+            not_loaded: 'Open a timeline in the viewer to grab a still.',
+            draw: 'The frame could not be read from the viewer.',
+          },
+        },
+        lutsFailed: 'The LUTs could not be listed.',
+        lutsTruncated: 'There are too many LUTs to list them all.',
+        noLuts: 'No LUTs were found. Put .cube files in the folder of the project or in the LUT library, then refresh.',
+        noLutsHere: 'There are no LUTs here.',
+        noFavorites: 'Point at a LUT and click its star to add it to the favorites.',
+        lutShadowed: 'A LUT of the same name in the folder of the project is used instead.',
+        lutBroken: 'This LUT cannot be read, so it cannot be used.',
+        missingLuts: 'These LUTs could not be read. The nodes that use them are graded without them.',
+        palette: 'The controls of this palette come in a later version.',
+        noCorrector: 'Choose a corrector node in the node editor to adjust it.',
+        autoFlat: 'Auto Color found too little range in this frame to balance it.',
+        /** The Tracker palette (pp. 3229–3238). */
+        tracker: {
+          noWindow: 'Select a window in the Window palette to track it.',
+          tracking: (frame: number, done: number, total: number) => `Tracking frame ${frame} (${done} of ${total}).`,
+          done: (frames: number) => `Tracked ${frames} frames.`,
+          stopped: 'Tracking stopped. The frames already tracked are kept.',
+          changed: 'Tracking stopped because the project changed.',
+          copied: 'Track data copied. Select another window of this node and paste it.',
+          failed: {
+            no_features: 'Nothing inside the window can be tracked. Place it over a feature with detail.',
+            no_points: 'Add a tracker first.',
+            missing_frame: 'A frame could not be read. The frames already tracked are kept.',
+            cannot_read: 'The media of this clip could not be read.',
+            untrackable: 'This window cannot be tracked here. Only the windows of a clip of moving pictures can be.',
+            frame: 'The playhead is outside the clip.',
+            busy: 'Another track is going on.',
+            untracked: 'Only the windows of a clip of moving pictures can be keyframed here.',
+            nothing_to_paste: 'The copied window has no track data.',
+            stale_revision: 'The project changed. Try again.',
+            other: 'Tracking failed.',
+          },
+        },
+        windowControls: {
+          refused: 'Window controls are unavailable for this frame. Select the window again to retry.',
+          /** What a Curve's selected points take (RM20 p. 3195). */
+          selectedPoints: 'Drag inside the box to move them, a corner to scale them, a side to stretch them, or just beside a corner to rotate them. Backspace deletes them; Esc deselects them.',
+          /** Why a Polygon point was not added or deleted; nothing was changed. */
+          topology: {
+            maximum: 'A polygon window holds at most {most} points, so no point was added.',
+            minimum: 'A polygon window keeps at least {least} points, so the point was not deleted.',
+            minimumCurve: 'A closed curve window keeps at least {least} points, so the point was not deleted.',
+            minimumCurvePoints: 'A closed curve window keeps at least {least} points, so the selected points were not deleted.',
+            unsupported: 'This point cannot be added or deleted.',
+            jump: 'No point was added: the {axis} of {points} mixes a held jump with a continuous change ({frames}), so a new point would change the shape between keyframes. Give those keyframes the same times and interpolation (for example Linear), then add the point. The animation was not changed.',
+            timing: 'No point was added: the {axis} of {points} uses different easing curves ({frames}), so a new point would change the shape between keyframes. Give those fields the same easing, then add the point. The animation was not changed.',
+            overshoot: 'No point was added: the {axis} curve of {points} overshoots the coordinate range and is clipped ({frames}). Reduce that overshoot, or use an interpolation without overshoot, then add the point. The animation was not changed.',
+            range: 'No point was added: the new point would lie outside the coordinate range ({frames}). Adjust the window shape or click elsewhere on this edge. The animation was not changed.',
+            encoding: 'No point was added: splitting the easing of the {axis} of {points} ({frames}) needs a keyframe handle that keyframes cannot store. Ask the agent to align those keyframes, or adjust that easing, then add the point. The animation was not changed.',
+          },
+        },
+        shotMatch: {
+          done: (count: number) => `Matched ${count} ${count === 1 ? 'clip' : 'clips'}.`,
+          changed: 'A selected clip or the reference is no longer available. Choose the clips again.',
+          wrongNode: 'Choose a corrector node in each clip to match.', locked: 'Unlock the selected nodes before matching.',
+          animated: 'The existing Shot Match has keyframes. Reset Shot Match before matching again.',
+          cleanup: 'Matching did not finish, and the temporary nodes could not be safely restored. Added default nodes may remain; your other edits were preserved.',
+          graded: 'Some clips already had adjustments; these can affect the match.',
+          space: 'Shot Match is designed for Rec.709 Gamma 2.4 and measures each node in the timeline working space.',
+        },
+        picker: 'Click on the viewer to take the color of a pixel, or drag to take the colors of a range.',
+        qualifierEmpty: 'Choose the Sample Eyedropper and click or drag on the viewer to pick the colors to key.',
+        noKeyNode: 'Choose a corrector or a Key Mixer in the node editor to adjust its key.',
+        lutGenerated: (path: string, ignored: number) => (ignored === 0 ? `The LUT was saved as ${path}.`
+          : `The LUT was saved as ${path}. ${ignored === 1 ? 'A node' : `${ignored} nodes`} with qualifiers, windows or filters ${ignored === 1 ? 'was' : 'were'} left out of it.`),
+        lutFailed: (message: string) => `The LUT could not be generated. ${message}`,
+        keyed: 'This setting has keyframes: a change goes into the keyframe at the playhead or to its left.',
+        /** Why a window preset was not saved, recalled or deleted. */
+        windowPresets: {
+          nameTaken: 'A preset named “{name}” already exists. Choose another name.',
+          noWindows: 'This node has no window to save as a preset.',
+          missing: 'This preset is no longer in the library.',
+          library: 'The window presets could not be read or written.',
+        },
+        scopes: {
+          preparing: 'The scope is being prepared. The first time takes a while.',
+          empty: 'There is nothing in the viewer to measure.',
+          failed: 'The scope could not be shown.',
+          tooMany: 'No more scopes can be open at once.',
+          unavailable: 'This engine has no viewer, so it has no scopes.',
+          floating: 'The scopes are shown in their floating window.',
+          browser: 'The scopes appear only in the desktop app.',
+        },
+      },
+      windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',
+      browser: 'The viewers appear only in the desktop app.',
       opening: 'The project is being opened in the studio.',
       takingOver: 'The project is being taken over from the agent.',
       stopped: 'The engine of the studio has stopped.',
@@ -1349,6 +1869,7 @@ export const en = {
       source: {
         proxy: 'The picture is read from the proxy.',
         original: 'The picture is read from the media itself.',
+        mixed: 'The picture of some clips is read from their proxies, and of the others from the media itself.',
       },
       sound: {
         on: 'The sound plays.',

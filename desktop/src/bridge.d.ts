@@ -1,4 +1,6 @@
-import type { EngineAnswer, EngineEvent, EngineOpened, Imported, PageMethod, ViewRect } from './studio/engine';
+import type {
+  EngineAnswer, EngineEvent, EngineOpened, Imported, LutExported, Monitor, PageMethod, RenderOptions, RenderStarted, StillsExported, StillsImported, ViewRect,
+} from './studio/engine';
 
 export interface ColumbinaBridge {
   /** The system that the application runs on, as Node names it: `win32`, `darwin` or `linux`. */
@@ -18,6 +20,12 @@ export interface ColumbinaBridge {
   onShutdown(listener: () => void): () => void;
   /** Hear when the window goes into full screen, and out of it. Told of on macOS only. */
   onFullScreen(listener: (full: boolean) => void): () => void;
+  /**
+   * A key that the page did not take, of those that the menu of the window had (Ctrl with plus,
+   * minus or 0, F11, and from source F12): the shell does what the menu did. Not on macOS, where
+   * the menu keeps its keys. Whether it did anything.
+   */
+  leftKey(key: { key: string; code: string; control: boolean; shift: boolean; alt: boolean; meta: boolean }): Promise<boolean>;
   stop(): Promise<void>;
   setTheme(theme: 'moonveil' | 'moonwhite'): Promise<void>;
   /** Tell the shell the language of the page, in which the menu of the tray speaks. */
@@ -259,12 +267,17 @@ export interface ColumbinaBridge {
   engine: EngineBridge;
 }
 
+/** Renderer ownership of a call; carried by IPC, never passed to an engine method. */
+export interface EngineCallContext { expectedSession: number }
+
 /**
  * The engine of the studio, as the shell lets the page reach it. The page names no path to the
  * engine (media comes from the dialog of the system) and never attaches the view itself: it says
  * where the viewer lies, and the shell, which holds the handle of the window, makes the view there.
  */
 export interface EngineBridge {
+  /** Answer only a legacy receipt in the current open Studio workspace. */
+  migrationDuck?(asked: {session: number; timeline: string; accept: boolean}): Promise<EngineAnswer<{timeline: string; duck_prompted: boolean; warnings?: string[]}>>;
   /**
    * Open a folder that was chosen in the dialog in the studio: its project is `.columbina/studio`
    * there. The engine is started, or the one that has the project open (an agent's) is reached;
@@ -276,19 +289,58 @@ export interface EngineBridge {
    * Call a method of the engine that the page may call (not `view.attach`, `view.detach` or
    * `media.import`). The answer holds the result, or the error as the engine gave it.
    */
-  call(method: PageMethod, params?: Record<string, unknown>): Promise<EngineAnswer>;
+  call(method: PageMethod, params?: Record<string, unknown>, context?: EngineCallContext): Promise<EngineAnswer>;
   /**
    * Let the user choose media in the dialog of the system, titled in the language that is named,
    * and import it into the project. The result is null where nothing was chosen.
    */
-  importFiles(asked?: { language: string }): Promise<EngineAnswer<Imported | null>>;
+  importFiles(asked?: { language: string; bin?: string }): Promise<EngineAnswer<Imported | null>>;
+  /**
+   * Import (Reference Manual 20, p. 3270): let the user choose pictures in the dialog of the system,
+   * titled in the language that is named, and make each a still of the album named (`still.import`).
+   * The result is null where nothing was chosen.
+   */
+  importStills(asked: { language: string; album?: string }): Promise<EngineAnswer<StillsImported | null>>;
+  /**
+   * Export (p. 3271): let the user choose a place and type a name in Save As, and write each still
+   * named there, its picture and its grade, prefixed by that name (`still.export`). Files that are
+   * there already are not replaced. The result is null where nothing was chosen.
+   */
+  exportStills(asked: { language: string; stills: string[] }): Promise<EngineAnswer<StillsExported | null>>;
+  /**
+   * Generate LUT (Reference Manual 20, p. 3413): let the user choose a file in Save As, `name`
+   * suggested, and bake the grade named (or its node) into a cube of `size` points there
+   * (`grade.export_lut`). The result is null where nothing was chosen.
+   */
+  exportLut(asked: { language: string; grade: Record<string, string>; size: 17 | 33 | 65; node?: string; frame?: number; name?: string }): Promise<EngineAnswer<LutExported | null>>;
+  /** Choose an export destination in Save As and start rendering. Existing outputs are not replaced. */
+  render(options: RenderOptions): Promise<EngineAnswer<RenderStarted>>;
+  /**
+   * Show the file that an export of this window wrote in the folder that holds it, in the file
+   * manager of the system. False where the shell knows of no such file.
+   */
+  reveal(job: string): Promise<boolean>;
+  /**
+   * Open LUT Folder (Reference Manual 20, p. 3409): show a root of LUTs that `luts.list` gave in
+   * the file manager of the system. The shell asks the engine for its roots again and opens the
+   * folder only where it is one of them and is there; false where it is not.
+   */
+  openLutFolder(folder: string): Promise<boolean>;
   /**
    * Say where the viewer lies, in device pixels from the corner of the client area. The view is
    * made there once an engine is open, and moved there as it changes.
    */
-  viewRect(rect: ViewRect): Promise<void>;
+  viewRect(rect: ViewRect, monitor: Monitor): Promise<void>;
   /** Hide the view while something of the page lies over the viewer, and show it again after. */
-  viewShow(shown: boolean): Promise<void>;
+  viewShow(shown: boolean, monitor: Monitor): Promise<void>;
+  /**
+   * The floating window of the video scopes of the Color page (Reference Manual 20, pp. 3007–3008,
+   * 3018–3019): opened where `open`, at `bounds` where they are on a display, and told whether the
+   * timeline viewer has something loaded and the language to speak; closed otherwise. The window
+   * reaches the engine for its own scopes alone. As it is closed by itself, the page is told
+   * `scopes-window` with `open: false`.
+   */
+  scopesWindow(asked: { open: boolean; loaded?: boolean; language?: string; bounds?: { x: number; y: number; width: number; height: number } | null }): Promise<{ open: boolean }>;
   /** Close the engine of the studio. One that this application started ends. */
   close(): Promise<void>;
   /** Hear what the engine tells, and how it stands, in order. */

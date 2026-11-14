@@ -3,7 +3,7 @@
 
 mod support;
 
-use columbina_media::{AudioDecoder, AudioFormat, MediaError, Samples};
+use columbina_media::{AudioDecoder, AudioFormat, AudioStreams, MediaError, Samples};
 use support::{media, Sample};
 
 /// Every sample from where the decoder is to the end, interleaved; checked to come in runs that
@@ -262,4 +262,403 @@ fn a_file_without_sound_has_no_sound_to_decode() {
     };
     let error = AudioDecoder::open(&made.path, None).err().unwrap();
     assert!(matches!(error, MediaError::NoStreams), "{error}");
+}
+
+/// How strong a frequency is in a run of samples at 48 kHz: the amplitude of the sine of
+/// `hertz` that it holds, by the Goertzel filter (a bin of the DFT at any frequency).
+#[allow(clippy::cast_precision_loss)]
+fn amplitude(wave: &[f32], hertz: f64) -> f64 {
+    let step = std::f64::consts::TAU * hertz / 48000.0;
+    let coefficient = 2.0 * step.cos();
+    let (mut before, mut last) = (0.0_f64, 0.0_f64);
+    for &sample in wave {
+        let next = f64::from(sample) + coefficient * last - before;
+        before = last;
+        last = next;
+    }
+    let power = last * last + before * before - coefficient * last * before;
+    2.0 * power.max(0.0).sqrt() / wave.len() as f64
+}
+
+/// The frequency, in whole hertz from 20 to 1000, that is strongest in a second of samples at
+/// 48 kHz: on a second, a whole number of hertz is a bin of its own.
+fn strongest(wave: &[f32]) -> u32 {
+    (20..=1000)
+        .max_by(|&a, &b| amplitude(wave, f64::from(a)).total_cmp(&amplitude(wave, f64::from(b))))
+        .unwrap()
+}
+
+/// A channel of samples interleaved `channels` an instant: a second of it, from 0.5 s.
+fn second_of(data: &[f32], channels: usize, channel: usize) -> Vec<f32> {
+    data.iter()
+        .skip(channel)
+        .step_by(channels)
+        .skip(24000)
+        .take(48000)
+        .copied()
+        .collect()
+}
+
+#[test]
+fn the_six_channels_of_a_wav_in_5_1_are_given_each_as_it_is() {
+    let Some(made) = media(Sample::SixSines) else {
+        return;
+    };
+    let source = AudioDecoder::open(&made.path, None).unwrap();
+    assert_eq!(
+        source.format(),
+        AudioFormat {
+            rate: 48000,
+            channels: 6
+        }
+    );
+    // As the stream has them, mixed into the default layout of six (5.1) or not mixed at all.
+    for mut decoder in [
+        source,
+        AudioDecoder::open_unmixed(&made.path, 0, None).unwrap(),
+    ] {
+        assert_eq!(decoder.format().channels, 6);
+        let (start, data) = all(&mut decoder);
+        assert_eq!(start, 0);
+        assert_eq!(data.len(), 6 * 96000);
+        for channel in 0..6 {
+            let wave = second_of(&data, 6, channel);
+            let hertz = 100 * (u32::try_from(channel).unwrap() + 1);
+            assert_eq!(strongest(&wave), hertz, "channel {channel}");
+            // -20 dBFS, in 16 bits.
+            let level = amplitude(&wave, f64::from(hertz));
+            assert!((level - 0.1).abs() < 1e-3, "channel {channel}: {level}");
+        }
+    }
+}
+
+#[test]
+fn a_layout_that_is_not_the_default_of_its_count_is_given_unmixed() {
+    let Some(made) = media(Sample::ThreeZero) else {
+        return;
+    };
+    let mut decoder = AudioDecoder::open_unmixed(&made.path, 0, None).unwrap();
+    assert_eq!(
+        decoder.format(),
+        AudioFormat {
+            rate: 48000,
+            channels: 3
+        }
+    );
+    let (_, data) = all(&mut decoder);
+    // L, R and C, each alone in its channel, as the file has them.
+    for (channel, hertz) in [(0, 440), (1, 660), (2, 300)] {
+        let wave = second_of(&data, 3, channel);
+        let level = amplitude(&wave, f64::from(hertz));
+        assert!((level - 0.25).abs() < 1e-3, "channel {channel}: {level}");
+        for other in [440, 660, 300] {
+            if other != hertz {
+                let leak = amplitude(&wave, f64::from(other));
+                assert!(leak < 1e-5, "{other} Hz in channel {channel}: {leak}");
+            }
+        }
+    }
+}
+
+#[test]
+fn unmixed_sound_is_converted_to_another_rate_and_seeks_to_its_samples() {
+    let Some(made) = media(Sample::ThreeZero) else {
+        return;
+    };
+    let mut decoder = AudioDecoder::open_unmixed(&made.path, 0, Some(44100)).unwrap();
+    assert_eq!(
+        decoder.format(),
+        AudioFormat {
+            rate: 44100,
+            channels: 3
+        }
+    );
+    let (_, whole) = all(&mut decoder);
+    assert!(
+        (whole.len() / 3).abs_diff(88200) <= 64,
+        "{}",
+        whole.len() / 3
+    );
+    decoder.seek(44_100).unwrap();
+    let (start, data) = all(&mut decoder);
+    assert_eq!(start, 44_100);
+    let apart = most_apart(&data[..3 * 4410], &whole[3 * 44_100..3 * (44_100 + 4410)]);
+    assert!(apart <= 1e-6, "{apart}");
+}
+
+#[test]
+fn a_stream_of_sound_is_opened_by_its_index() {
+    let Some(made) = media(Sample::TwoMonoStreams) else {
+        return;
+    };
+    let mono = AudioFormat {
+        rate: 48000,
+        channels: 1,
+    };
+    // The best stream is the first; each is opened as it is, or unmixed.
+    let tone = |decoder: &mut AudioDecoder| {
+        let (start, data) = all(decoder);
+        assert_eq!(start, 0);
+        assert_eq!(data.len(), 96000);
+        strongest(&second_of(&data, 1, 0))
+    };
+    assert_eq!(
+        tone(&mut AudioDecoder::open(&made.path, None).unwrap()),
+        440
+    );
+    for stream in [0, 1] {
+        let hertz = 440 * (u32::try_from(stream).unwrap() + 1);
+        let mut decoder = AudioDecoder::open_stream(&made.path, stream, None).unwrap();
+        assert_eq!(decoder.source(), mono);
+        assert_eq!(tone(&mut decoder), hertz, "stream {stream}");
+        let mut unmixed = AudioDecoder::open_unmixed(&made.path, stream, None).unwrap();
+        assert_eq!(unmixed.format(), mono);
+        assert_eq!(tone(&mut unmixed), hertz, "stream {stream}, unmixed");
+    }
+    // In stereo, the second stream is laid on both sides.
+    let stereo = AudioFormat {
+        rate: 48000,
+        channels: 2,
+    };
+    let mut decoder = AudioDecoder::open_stream(&made.path, 1, Some(stereo)).unwrap();
+    assert_eq!(decoder.format(), stereo);
+    let (_, data) = all(&mut decoder);
+    assert_eq!(strongest(&second_of(&data, 2, 1)), 880);
+    // A seek in the second stream lands where it does in the first.
+    let mut decoder = AudioDecoder::open_stream(&made.path, 1, None).unwrap();
+    let (_, whole) = all(&mut decoder);
+    for sought in [48_123, 7, 0, 90_000] {
+        decoder.seek(sought).unwrap();
+        let (start, data) = all(&mut decoder);
+        assert_eq!(start, sought);
+        assert_eq!(
+            data,
+            whole[usize::try_from(sought).unwrap()..],
+            "from {sought}"
+        );
+    }
+    // There is no third stream.
+    for stream in [2, 99] {
+        let error = AudioDecoder::open_stream(&made.path, stream, None)
+            .err()
+            .unwrap();
+        assert!(matches!(error, MediaError::NoStreams), "{error}");
+        let error = AudioDecoder::open_unmixed(&made.path, stream, None)
+            .err()
+            .unwrap();
+        assert!(matches!(error, MediaError::NoStreams), "{error}");
+    }
+}
+
+#[test]
+fn a_stream_of_pictures_is_not_opened_as_sound() {
+    let Some(made) = media(Sample::Fhd) else {
+        return;
+    };
+    let error = AudioDecoder::open_stream(&made.path, 0, None)
+        .err()
+        .unwrap();
+    assert!(matches!(error, MediaError::NoStreams), "{error}");
+    assert!(AudioDecoder::open_stream(&made.path, 1, None).is_ok());
+}
+
+#[test]
+fn mono_made_stereo_by_swresample_is_3_db_down_on_each_side() {
+    let Some(made) = media(Sample::Mono) else {
+        return;
+    };
+    let mut mono = AudioDecoder::open(&made.path, None).unwrap();
+    assert_eq!(mono.format().channels, 1);
+    let (_, alone) = all(&mut mono);
+    let mut stereo = AudioDecoder::open(
+        &made.path,
+        Some(AudioFormat {
+            rate: 48000,
+            channels: 2,
+        }),
+    )
+    .unwrap();
+    let (_, both) = all(&mut stereo);
+    let level = amplitude(&second_of(&alone, 1, 0), 440.0);
+    for side in 0..2 {
+        let made = amplitude(&second_of(&both, 2, side), 440.0);
+        let db = 20.0 * (made / level).log10();
+        assert!((db + 3.0103).abs() < 0.01, "side {side}: {db} dB");
+    }
+}
+
+#[test]
+fn the_sound_of_a_file_starts_where_its_decoder_says() {
+    for sample in [
+        Sample::Wav,
+        Sample::Fhd,
+        Sample::MkvLateStart,
+        Sample::TwoMonoStreams,
+    ] {
+        let Some(made) = media(sample) else {
+            continue;
+        };
+        let decoder = AudioDecoder::open(&made.path, None).unwrap();
+        assert_eq!(
+            columbina_media::sound_start(&made.path).unwrap(),
+            decoder.start(),
+            "{sample:?}"
+        );
+    }
+    if let Some(made) = media(Sample::Uhd) {
+        let error = columbina_media::sound_start(&made.path).err().unwrap();
+        assert!(matches!(error, MediaError::NoStreams), "{error}");
+    }
+}
+
+/// Every sample of the stream at `place` of `streams` from where it is to the end, as [`all`]
+/// takes them from a decoder.
+fn all_of(streams: &mut AudioStreams, place: usize) -> (i64, Vec<f32>) {
+    let channels = usize::from(streams.format(place).channels);
+    let mut first = None;
+    let mut data = Vec::new();
+    while let Some(Samples { start, data: run }) = streams.next(place).unwrap() {
+        assert_eq!(run.len() % channels, 0);
+        first.get_or_insert(start);
+        data.extend(run);
+    }
+    (first.unwrap(), data)
+}
+
+#[test]
+fn several_streams_are_read_from_one_reading_of_the_file_as_each_is_alone() {
+    let Some(made) = media(Sample::TwoMonoStreams) else {
+        return;
+    };
+    let alone = |stream| all(&mut AudioDecoder::open_unmixed(&made.path, stream, None).unwrap());
+    let (first, second) = (alone(0), alone(1));
+    // Asked in any order, twice, and with a stream the file does not have.
+    let mut streams = AudioStreams::open_unmixed(&made.path, &[1, 0, 7, 1], None).unwrap();
+    assert_eq!(streams.len(), 2);
+    assert_eq!(
+        (streams.place(0), streams.place(1), streams.place(7)),
+        (Some(0), Some(1), None)
+    );
+    assert_eq!(
+        streams.start(),
+        AudioDecoder::open(&made.path, None).unwrap().start()
+    );
+    // Read side by side, a run of each in turn, each is as it is alone.
+    let mut runs = [Vec::new(), Vec::new()];
+    let mut ended = [false, false];
+    while !ended.iter().all(|&ended| ended) {
+        for place in 0..2 {
+            match streams.next(place).unwrap() {
+                Some(run) => runs[place].extend(run.data),
+                None => ended[place] = true,
+            }
+        }
+    }
+    assert_eq!(runs[0], first.1);
+    assert_eq!(runs[1], second.1);
+    // Read one after the other: the packets of the second are kept while the first is read.
+    let mut streams = AudioStreams::open_unmixed(&made.path, &[0, 1], None).unwrap();
+    assert_eq!(all_of(&mut streams, 0), first);
+    assert_eq!(all_of(&mut streams, 1), second);
+    // One seek for both lands each on the sample sought.
+    for sought in [48_123, 7, 0, 90_000] {
+        streams.seek(sought).unwrap();
+        let at = usize::try_from(sought).unwrap();
+        for (place, whole) in [(1, &second.1), (0, &first.1)] {
+            let (start, data) = all_of(&mut streams, place);
+            assert_eq!(start, sought);
+            assert_eq!(data, whole[at..], "stream {place} from {sought}");
+        }
+    }
+}
+
+#[test]
+fn a_stream_that_starts_later_is_placed_where_it_starts() {
+    let Some(made) = media(Sample::LateStream) else {
+        return;
+    };
+    // The sound of the file starts with its first stream, at 0; the second 24000 samples on.
+    assert_eq!(columbina_media::sound_start(&made.path).unwrap().ticks, 0);
+    let (start, data) = all(&mut AudioDecoder::open_unmixed(&made.path, 1, None).unwrap());
+    assert_eq!(start, 24000);
+    assert_eq!(data.len(), 72000);
+    assert!((amplitude(&data[..48000], 880.0) - 0.5).abs() < 1e-3);
+    let mut streams = AudioStreams::open_unmixed(&made.path, &[0, 1], None).unwrap();
+    assert_eq!(streams.start().ticks, 0);
+    assert_eq!(all_of(&mut streams, 1), (24000, data.clone()));
+    // Sought before it starts: silence up to it.
+    streams.seek(12000).unwrap();
+    let (start, from) = all_of(&mut streams, 1);
+    assert_eq!(start, 12000);
+    assert!(from[..12000].iter().all(|&sample| sample == 0.0));
+    assert_eq!(from[12000..], data[..]);
+}
+
+/// Raw AAC (ADTS) whose layout changes within the stream: 1 s in 3.0 (L, R and C sines of 440,
+/// 660 and 300 Hz at amplitude 0.25), then 1 s in 5.1 of the C alone (300 Hz at 0.25), as
+/// two files of ADTS laid one after the other make it. None without an ffmpeg.
+fn layout_changing(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let program = support::ffmpeg_program()?;
+    let part = |name: &str, exprs: &str, layout: &str| {
+        let path = dir.join(name);
+        let status = std::process::Command::new(program)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg(format!(
+                "aevalsrc=exprs='{exprs}':s=48000:d=1:channel_layout={layout}"
+            ))
+            .args(["-c:a", "aac", "-b:a", "384k", "-f", "adts"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::read(path).unwrap()
+    };
+    let mut bytes = part(
+        "a.aac",
+        "0.25*sin(2*PI*440*t)|0.25*sin(2*PI*660*t)|0.25*sin(2*PI*300*t)",
+        "3.0",
+    );
+    bytes.extend(part("b.aac", "0|0|0.25*sin(2*PI*300*t)|0|0|0", "5.1"));
+    let path = dir.join("change.aac");
+    std::fs::write(&path, bytes).unwrap();
+    Some(path)
+}
+
+#[test]
+fn unmixed_frames_of_another_layout_within_a_stream_are_mixed_into_the_layout_of_the_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(path) = layout_changing(dir.path()) else {
+        return;
+    };
+    let mut decoder = AudioDecoder::open_unmixed(&path, 0, None).unwrap();
+    assert_eq!(decoder.format().channels, 3);
+    let (_, data) = all(&mut decoder);
+    let channel = |channel: usize, range: std::ops::Range<usize>| -> Vec<f32> {
+        data.iter()
+            .skip(channel)
+            .step_by(3)
+            .skip(range.start)
+            .take(range.len())
+            .copied()
+            .collect()
+    };
+    // The first second, in 3.0: C is the third channel.
+    let level = amplitude(&channel(2, 12000..36000), 300.0);
+    assert!((level - 0.25).abs() < 0.02, "{level}");
+    // The second, in 5.1: its C is laid on the C of 3.0 still, not on the low frequencies of
+    // 2.1, the default of three channels, nor mixed into the left and right.
+    let level = amplitude(&channel(2, 60000..84000), 300.0);
+    assert!((level - 0.25).abs() < 0.02, "{level}");
+    for side in 0..2 {
+        let leak = amplitude(&channel(side, 60000..84000), 300.0);
+        assert!(leak < 0.01, "channel {side}: {leak}");
+    }
 }

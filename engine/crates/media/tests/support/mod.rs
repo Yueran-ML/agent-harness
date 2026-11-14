@@ -54,6 +54,9 @@ pub enum Sample {
     MkvLongSound,
     /// Matroska: 4 s of picture (100 frames) from 1 s on, and 5 s of sound from 0.
     MkvLateStart,
+    /// As `MkvLateStart`, with PCM stereo whose levels change at 1 s: audio before and after
+    /// the first picture is distinguishable when testing waveform and mix alignment.
+    MkvOffsetAudio,
     /// MP4 of H.264 whose frames come at changing times: frame `n` at `(n ± 0.3) / 25` s,
     /// in a time base of milliseconds; 100 frames.
     Vfr,
@@ -75,6 +78,127 @@ pub enum Sample {
     /// B-frames) without coding it again (`-ss 1.3 -c copy`): an edit list starts it after its
     /// first key frame, whose frames before 1.3 s are decoded and dropped.
     EditList,
+    /// MP4 of H.264 at 30 frames a second in a time base of 1/600, as a phone writes it, with
+    /// B-frames: 121 numbers of frames (4.033 s), and frame 60 dropped, so that no frame has the
+    /// number 60 and the picture has 120 frames, one fewer than its duration makes room for.
+    Dropped,
+    /// Sound only: WAV, 16 bits in stereo at 48 kHz, 4 s, silent but for a beep of 10 ms at
+    /// 1 kHz, half of full scale, starting at each whole second (0, 1, 2 and 3 s), at its
+    /// peak from its first sample: where a beep is heard tells where the sound is.
+    Clicks,
+    /// 640×360 H.264, 8 bits 4:2:0, 25 frames a second, 1 s, of `testsrc2`, said to be BT.709
+    /// (primaries, transfer and matrix 1-1-1) of limited range.
+    Bt709Limited,
+    /// As [`Sample::Bt709Limited`], said to be of full range (its frames are `yuvj420p`).
+    Bt709Full,
+    /// 640×360 HEVC Main 10, 1 s, said to be BT.2020 and PQ (9-16-9) of limited range, with
+    /// a mastering display and light levels in SEI (in its frames, not its container):
+    /// `G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)`, `MaxCLL` 1000 and
+    /// `MaxFALL` 400.
+    Pq,
+    /// 640×360 HEVC Main 10, 1 s, said to be BT.2020 and HLG (9-18-9).
+    Hlg,
+    /// 640×360 H.264 High 4:2:2, 10 bits, 1 s, of `testsrc2` made in 4:2:2.
+    H264High422,
+    /// 640×360 `DNxHR` HQX, 10 bits 4:2:2, in `QuickTime`, 1 s.
+    Dnxhr,
+    /// 640×360 HEVC of 4:4:4 in 12 bits (Main 4:4:4 12), 1 s, of `testsrc2` made in 4:4:4.
+    Hevc444,
+    /// 640×360 `ProRes` 4444, 1 s, made of 10 bits 4:4:4 (decoded as 12 bits).
+    Prores4444,
+    /// A still PNG of 64×48 in R'G'B' of 8 bits, every pixel pure red.
+    RedPng,
+    /// A still PNG of 256×4 in R'G'B' of 8 bits, of every code: row 0 red (R' = x, G' = B' =
+    /// 0, x from 0 to 255 across), row 1 green, row 2 blue, row 3 grey (R' = G' = B' = x); pure
+    /// red, green, blue and white at x = 255. See [`ramp`].
+    RampPng,
+    /// As [`Sample::RampPng`], a TIFF.
+    RampTiff,
+    /// A still PNG of 256×2 of grey of 8 bits (`gray`): the code x across.
+    GreyPng,
+    /// A still PNG of 256×2 in R'G'B' of 16 bits (`rgb48be`): R' = 256·x + 255·y, G' = 65535 −
+    /// 256·x, B' = 16·x.
+    Rgb48Png,
+    /// A still PNG of 256×2 in R'G'B'A of 8 bits: R' 200, G' 100, B' 50, alpha x (straight, as
+    /// PNG has it).
+    AlphaPng,
+    /// A still PNG of a palette (`pal8`) of 64×48, of `testsrc2`, every entry opaque.
+    PalettePng,
+    /// A still `OpenEXR` of 64×48 of floats (`gbrpf32le`): `testsrc2` four times as bright
+    /// (exposure +2), up to 4.0.
+    HotExr,
+    /// A still `OpenEXR` of 64×48 of floats with alpha (`gbrapf32le`): red, alpha about a half,
+    /// premultiplied (as `OpenEXR` has it, and as libav makes it for the encoder).
+    AlphaExr,
+    /// 256×64 `ProRes` 4444 with alpha, 1 s at 25 frames a second, made of `yuva444p10le` and
+    /// decoded as 12 bits: the colour 0x3080C0, its alpha `x · 1023 / 255` of 10 bits, from 0 at
+    /// the left to 1023 at the right.
+    ProresAlpha,
+    /// 64×32 H.264, lossless 4:2:0 of 8 bits, one frame, its chroma said (in its VUI) to be
+    /// sited as libav numbers it (`AVChromaLocation`, 1 left to 6 bottom): luma 128, Cb a
+    /// checkerboard of its samples (192 where x + y of the sample is even, else 64), Cr
+    /// stripes across (160 where x of the sample is even, else 96). See [`checkerboard`].
+    Sited420(u8),
+    /// As [`Sample::Sited420`], 4:2:2 in FFV1 in Matroska, said to be sited left (1) or center
+    /// (2).
+    Sited422(u8),
+    /// MXF (`OP1a`) of `DNxHR` HQX, 10 bits 4:2:2, 640×360 at 25 frames a second, 1 s, of
+    /// `testsrc2`, said by MXF (not by its stream, which has no word of it) to be BT.2020 and
+    /// HLG (9-18-9) of limited range.
+    Mxf,
+    /// Sound only: WAV, 16 bits in 5.1 (L R C LFE Ls Rs) at 48 kHz, 2 s; channel `k` (from 0) a
+    /// sine of `100·(k + 1)` Hz at -20 dBFS (amplitude 0.1).
+    SixSines,
+    /// Sound only: WAV, 16 bits in 3.0 (L R C), whose three channels are not the default layout
+    /// of three (2.1, L R LFE), at 48 kHz, 2 s: sines of 440, 660 and 300 Hz at amplitude
+    /// 0.25.
+    ThreeZero,
+    /// Sound only: `QuickTime` of two streams of PCM of 16 bits in mono at 48 kHz, 2 s each, as a
+    /// camera with two microphones writes one stream for each: stream 0 a sine of 440 Hz at
+    /// amplitude 0.25, stream 1 of 880 Hz at amplitude 0.5.
+    TwoMonoStreams,
+    /// Sound only: WAV, 16 bits in stereo at 48 kHz, 2 s: the left a sine of 440 Hz, the right
+    /// of 880 Hz, at amplitude 0.25.
+    LeftRight,
+    /// Sound only: WAV, 16 bits in mono at 48 kHz, 2 s: a sine of 440 Hz at amplitude 0.25.
+    Mono,
+    /// Sound only: `QuickTime` of two streams of PCM of 16 bits in mono at 48 kHz: stream 0 a sine
+    /// of 440 Hz at amplitude 0.25 for 2 s from 0, stream 1 a sine of 880 Hz at amplitude 0.5
+    /// for 1.5 s from 0.5 s, as a microphone that started late.
+    LateStream,
+}
+
+/// The codes of R', G' and B' of [`Sample::RampPng`] (and [`Sample::RampTiff`]) at `(x, y)`.
+pub fn ramp(x: u32, y: u32) -> [u8; 3] {
+    let code = u8::try_from(x).unwrap();
+    match y {
+        0 => [code, 0, 0],
+        1 => [0, code, 0],
+        2 => [0, 0, code],
+        _ => [code; 3],
+    }
+}
+
+/// The codes of Cb and Cr of a sample of chroma at `(x, y)` of the plane of chroma of
+/// [`Sample::Sited420`] and [`Sample::Sited422`].
+pub fn checkerboard(x: u32, y: u32) -> [u8; 2] {
+    [
+        if (x + y).is_multiple_of(2) { 192 } else { 64 },
+        if x.is_multiple_of(2) { 160 } else { 96 },
+    ]
+}
+
+/// The name of a siting of chroma, as `ffmpeg` names it (`-chroma_sample_location`).
+fn siting(location: u8) -> &'static str {
+    match location {
+        1 => "left",
+        2 => "center",
+        3 => "topleft",
+        4 => "top",
+        5 => "bottomleft",
+        6 => "bottom",
+        _ => panic!("no siting {location}"),
+    }
 }
 
 impl Sample {
@@ -107,14 +231,46 @@ impl Sample {
             | Sample::M2ts
             | Sample::MkvLongSound
             | Sample::MkvLateStart
+            | Sample::MkvOffsetAudio
             | Sample::Vfr
             | Sample::SameTimes => Some(100),
             Sample::Uhd => Some(180),
-            Sample::Collide => Some(120),
+            Sample::Collide | Sample::Dropped => Some(120),
             Sample::Prores | Sample::Webm => Some(50),
             Sample::Portrait => Some(60),
-            Sample::Fhd10 => Some(25),
-            Sample::Wav | Sample::Evc | Sample::Noise | Sample::EditList => None,
+            Sample::Fhd10
+            | Sample::Bt709Limited
+            | Sample::Bt709Full
+            | Sample::Pq
+            | Sample::Hlg
+            | Sample::H264High422
+            | Sample::Dnxhr
+            | Sample::Hevc444
+            | Sample::Prores4444
+            | Sample::ProresAlpha
+            | Sample::Mxf => Some(25),
+            Sample::RedPng
+            | Sample::RampPng
+            | Sample::RampTiff
+            | Sample::GreyPng
+            | Sample::Rgb48Png
+            | Sample::AlphaPng
+            | Sample::PalettePng
+            | Sample::HotExr
+            | Sample::AlphaExr
+            | Sample::Sited420(_)
+            | Sample::Sited422(_) => Some(1),
+            Sample::Wav
+            | Sample::Evc
+            | Sample::Noise
+            | Sample::EditList
+            | Sample::Clicks
+            | Sample::SixSines
+            | Sample::ThreeZero
+            | Sample::TwoMonoStreams
+            | Sample::LeftRight
+            | Sample::Mono
+            | Sample::LateStream => None,
         }
     }
 
@@ -138,6 +294,7 @@ impl Sample {
             Sample::M2ts => "v1-avchd-h264.m2ts",
             Sample::MkvLongSound => "v1-mkv-sound-longer.mkv",
             Sample::MkvLateStart => "v1-mkv-picture-from-1s.mkv",
+            Sample::MkvOffsetAudio => "v1-mkv-waveform-from-1s.mkv",
             Sample::Vfr => "v1-vfr-jitter.mp4",
             Sample::SameTimes => "v1-same-timestamps.mkv",
             Sample::Evc => "v1-evc-aac.mp4",
@@ -145,6 +302,47 @@ impl Sample {
             Sample::Noise => "v1-noise-aac.m4a",
             Sample::Collide => "v1-collide-h264.mp4",
             Sample::EditList => "v1-editlist-h264.mp4",
+            Sample::Dropped => "v1-dropped-h264.mp4",
+            Sample::Clicks => "v1-clicks.wav",
+            Sample::Bt709Limited => "v1-bt709-limited-h264.mp4",
+            Sample::Bt709Full => "v1-bt709-full-h264.mp4",
+            Sample::Pq => "v1-pq-hevc-main10.mp4",
+            Sample::Hlg => "v1-hlg-hevc-main10.mp4",
+            Sample::H264High422 => "v1-h264-high422-10bit.mp4",
+            Sample::Dnxhr => "v1-dnxhr-hqx.mov",
+            Sample::Hevc444 => "v1-hevc-444-12bit.mp4",
+            Sample::Prores4444 => "v1-prores-4444.mov",
+            Sample::RedPng => "v2-red.png",
+            Sample::RampPng => "v1-ramp.png",
+            Sample::RampTiff => "v1-ramp.tiff",
+            Sample::GreyPng => "v1-grey.png",
+            Sample::Rgb48Png => "v1-rgb48.png",
+            Sample::AlphaPng => "v1-alpha.png",
+            Sample::PalettePng => "v1-palette.png",
+            Sample::HotExr => "v1-hot.exr",
+            Sample::AlphaExr => "v1-alpha.exr",
+            Sample::ProresAlpha => "v1-prores-4444-alpha.mov",
+            Sample::Sited420(location) => match location {
+                1 => "v1-sited-420-left.mp4",
+                2 => "v1-sited-420-center.mp4",
+                3 => "v1-sited-420-topleft.mp4",
+                4 => "v1-sited-420-top.mp4",
+                5 => "v1-sited-420-bottomleft.mp4",
+                6 => "v1-sited-420-bottom.mp4",
+                _ => panic!("no siting {location}"),
+            },
+            Sample::Sited422(location) => match location {
+                1 => "v1-sited-422-left.mkv",
+                2 => "v1-sited-422-center.mkv",
+                _ => panic!("no siting {location} of 4:2:2 here"),
+            },
+            Sample::Mxf => "v1-dnxhr-hqx-hlg.mxf",
+            Sample::SixSines => "v1-six-sines-5.1.wav",
+            Sample::ThreeZero => "v1-sines-3.0.wav",
+            Sample::TwoMonoStreams => "v1-two-mono-streams.mov",
+            Sample::LeftRight => "v1-left-440-right-880.wav",
+            Sample::Mono => "v1-mono-440.wav",
+            Sample::LateStream => "v1-stream-from-0.5s.mov",
         }
     }
 }
@@ -322,6 +520,23 @@ fn numbered(
     )
 }
 
+/// A WAV of PCM of 16 bits at 48 kHz, 2 s, of a channel for each of the expressions of
+/// `aevalsrc` (split by `|`), laid out as `layout` names it.
+fn pcm(expressions: &str, layout: &str) -> Vec<Recipe> {
+    vec![Recipe {
+        encoder: "pcm_s16le".into(),
+        steps: vec![strings(&[
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("aevalsrc=exprs='{expressions}':s=48000:d=2:channel_layout={layout}"),
+            "-c:a",
+            "pcm_s16le",
+            "{out}",
+        ])],
+    }]
+}
+
 fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|&arg| arg.to_owned()).collect()
 }
@@ -420,6 +635,47 @@ fn hevc10(encoders: &str, gop: u32) -> Vec<(String, Vec<String>)> {
     found
 }
 
+/// The ffmpeg that makes the media, if there is one: its program.
+pub fn ffmpeg_program() -> Option<&'static str> {
+    ffmpeg().map(|found| found.program.as_str())
+}
+
+/// The first frame of the picture of a file, decoded by the ffmpeg of the command line into
+/// raw planes of `pixel_format` (as `yuv422p10le`): what a decoder of libav should give. None
+/// where there is no ffmpeg.
+///
+/// # Panics
+/// If ffmpeg cannot decode it.
+pub fn first_frame_raw(path: &Path, pixel_format: &str) -> Option<Vec<u8>> {
+    let program = ffmpeg_program()?;
+    let output = Command::new(program)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            pixel_format,
+            "-",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(output.stdout)
+}
+
+/// `testsrc2` of 640×360 at 25 frames a second for 1 s, made in `format`, its frames said to be
+/// of the colours `params` (of the filter `setparams`), as `[v]`.
+fn tagged(format: &str, params: &str) -> String {
+    format!("testsrc2=size=640x360:rate=25:duration=1,format={format},setparams={params}[v]")
+}
+
 /// A recipe of one step for each encoder: `graph` (whose picture is `[v]`, and whose sound, if
 /// it has any, `[a]`), the encoder's arguments, and `after` them.
 fn one_step(
@@ -444,6 +700,16 @@ fn one_step(
             }
         })
         .collect()
+}
+
+/// A still: the first frame of `graph` (whose picture is `[v]`) by `encoder`, in `format`.
+fn still(encoders: &str, encoder: &str, graph: &str, format: &str) -> Vec<Recipe> {
+    one_step(
+        named(encoders, encoder, &["-pix_fmt", format, "-frames:v", "1"]),
+        graph,
+        false,
+        &[],
+    )
 }
 
 /// The encoder of its own name, with its arguments, if ffmpeg has it.
@@ -529,6 +795,20 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 }
             })
             .collect(),
+        Sample::Clicks => vec![Recipe {
+            encoder: "pcm_s16le".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs='if(lt(mod(t,1),0.01),0.5*cos(2*PI*1000*t),0)':s=48000:d=4",
+                "-ac",
+                "2",
+                "-c:a",
+                "pcm_s16le",
+                "{out}",
+            ])],
+        }],
         Sample::Wav => vec![Recipe {
             encoder: "pcm_s16le".into(),
             steps: vec![strings(&[
@@ -538,6 +818,59 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 "sine=frequency=440:sample_rate=48000:duration=2",
                 "-ac",
                 "2",
+                "-c:a",
+                "pcm_s16le",
+                "{out}",
+            ])],
+        }],
+        Sample::SixSines => pcm(
+            "0.1*sin(2*PI*100*t)|0.1*sin(2*PI*200*t)|0.1*sin(2*PI*300*t)|\
+             0.1*sin(2*PI*400*t)|0.1*sin(2*PI*500*t)|0.1*sin(2*PI*600*t)",
+            "5.1",
+        ),
+        Sample::ThreeZero => pcm(
+            "0.25*sin(2*PI*440*t)|0.25*sin(2*PI*660*t)|0.25*sin(2*PI*300*t)",
+            "3.0",
+        ),
+        Sample::LeftRight => pcm("0.25*sin(2*PI*440*t)|0.25*sin(2*PI*880*t)", "stereo"),
+        Sample::Mono => pcm("0.25*sin(2*PI*440*t)", "mono"),
+        Sample::LateStream => vec![Recipe {
+            encoder: "pcm_s16le".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.25*sin(2*PI*440*t):s=48000:d=2",
+                "-itsoffset",
+                "0.5",
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.5*sin(2*PI*880*t):s=48000:d=1.5",
+                "-map",
+                "0:a",
+                "-map",
+                "1:a",
+                "-c:a",
+                "pcm_s16le",
+                "{out}",
+            ])],
+        }],
+        Sample::TwoMonoStreams => vec![Recipe {
+            encoder: "pcm_s16le".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.25*sin(2*PI*440*t):s=48000:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.5*sin(2*PI*880*t):s=48000:d=2",
+                "-map",
+                "0:a",
+                "-map",
+                "1:a",
                 "-c:a",
                 "pcm_s16le",
                 "{out}",
@@ -582,6 +915,15 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
             &format!("{};{}", small(",setpts=PTS+1/TB"), sound(5)),
             true,
             &["-c:a", "aac"],
+        ),
+        Sample::MkvOffsetAudio => one_step(
+            h264(encoders, 25),
+            &format!(
+                "{};aevalsrc=exprs='if(lt(t,1),0.75,0.25)|if(lt(t,1),-0.25,-0.75)':s=48000:d=5[a]",
+                small(",setpts=PTS+1/TB")
+            ),
+            true,
+            &["-c:a", "pcm_f32le"],
         ),
         Sample::Vfr => one_step(
             h264(encoders, 25),
@@ -629,6 +971,27 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 "90000",
             ],
         ),
+        Sample::Dropped => one_step(
+            h264(encoders, 30),
+            &numbered(
+                640,
+                360,
+                30,
+                5,
+                8,
+                "420",
+                ",trim=end_frame=121,select='not(eq(n\\,60))',settb=1/600",
+            ),
+            false,
+            &[
+                "-fps_mode",
+                "passthrough",
+                "-enc_time_base:v",
+                "1/600",
+                "-video_track_timescale",
+                "600",
+            ],
+        ),
         Sample::EditList => h264(encoders, 50)
             .into_iter()
             .map(|(encoder, codec)| {
@@ -647,6 +1010,215 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 }
             })
             .collect(),
+        Sample::Bt709Limited | Sample::Bt709Full => one_step(
+            h264(encoders, 25),
+            &tagged(
+                "yuv420p",
+                &format!(
+                    "color_primaries=bt709:color_trc=bt709:colorspace=bt709:range={}",
+                    if sample == Sample::Bt709Full {
+                        "pc"
+                    } else {
+                        "tv"
+                    }
+                ),
+            ),
+            false,
+            &[],
+        ),
+        Sample::Pq | Sample::Hlg => {
+            let (transfer, extra) = if sample == Sample::Pq {
+                (
+                    "smpte2084",
+                    "master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):\
+                     max-cll=1000,400:",
+                )
+            } else {
+                ("arib-std-b67", "")
+            };
+            one_step(
+                named(
+                    encoders,
+                    "libx265",
+                    &[
+                        "-preset",
+                        "ultrafast",
+                        "-crf",
+                        "20",
+                        "-x265-params",
+                        &format!("{extra}log-level=error"),
+                    ],
+                ),
+                &tagged(
+                    "yuv420p10le",
+                    &format!(
+                        "color_primaries=bt2020:color_trc={transfer}:colorspace=bt2020nc:range=tv"
+                    ),
+                ),
+                false,
+                &[],
+            )
+        }
+        Sample::H264High422 => one_step(
+            named(
+                encoders,
+                "libx264",
+                &[
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "10",
+                    "-profile:v",
+                    "high422",
+                ],
+            ),
+            &tagged("yuv422p10le", "range=tv"),
+            false,
+            &[],
+        ),
+        Sample::Dnxhr => one_step(
+            named(encoders, "dnxhd", &["-profile:v", "dnxhr_hqx"]),
+            &tagged("yuv422p10le", "range=tv"),
+            false,
+            &[],
+        ),
+        Sample::Hevc444 => one_step(
+            named(
+                encoders,
+                "libx265",
+                &[
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "10",
+                    "-x265-params",
+                    "log-level=error",
+                ],
+            ),
+            &tagged("yuv444p12le", "range=tv"),
+            false,
+            &[],
+        ),
+        Sample::Prores4444 => one_step(
+            named(encoders, "prores_ks", &["-profile:v", "4"]),
+            &tagged("yuv444p10le", "range=tv"),
+            false,
+            &[],
+        ),
+        // Made R'G'B' by the filter itself: `color` makes Y'CbCr unless it is asked for R'G'B',
+        // and red made Y'CbCr and back is 253 (as `v1-red.png`, made so, was).
+        Sample::RedPng => still(
+            encoders,
+            "png",
+            "color=c=red:size=64x48,format=rgb24[v]",
+            "rgb24",
+        ),
+        Sample::RampPng | Sample::RampTiff => still(
+            encoders,
+            if sample == Sample::RampPng {
+                "png"
+            } else {
+                "tiff"
+            },
+            "color=c=black:size=256x4,format=gbrp,geq=r='X*(eq(Y,0)+eq(Y,3))':\
+             g='X*(eq(Y,1)+eq(Y,3))':b='X*(eq(Y,2)+eq(Y,3))'[v]",
+            "rgb24",
+        ),
+        Sample::GreyPng => still(
+            encoders,
+            "png",
+            "color=c=black:size=256x2,format=gray,geq=lum='X'[v]",
+            "gray",
+        ),
+        Sample::Rgb48Png => still(
+            encoders,
+            "png",
+            "color=c=black:size=256x2,format=gbrp16le,\
+             geq=r='256*X+255*Y':g='65535-256*X':b='16*X'[v]",
+            "rgb48be",
+        ),
+        Sample::AlphaPng => still(
+            encoders,
+            "png",
+            "color=c=black:size=256x2,format=gbrap,geq=r=200:g=100:b=50:a='X'[v]",
+            "rgba",
+        ),
+        Sample::PalettePng => still(
+            encoders,
+            "png",
+            "testsrc2=size=64x48,format=pal8[v]",
+            "pal8",
+        ),
+        Sample::HotExr => still(
+            encoders,
+            "exr",
+            "testsrc2=size=64x48,format=gbrpf32le,exposure=exposure=2[v]",
+            "gbrpf32le",
+        ),
+        Sample::AlphaExr => still(
+            encoders,
+            "exr",
+            "color=c=red@0.5:size=64x48,format=rgba,format=gbrapf32le[v]",
+            "gbrapf32le",
+        ),
+        Sample::ProresAlpha => one_step(
+            named(
+                encoders,
+                "prores_ks",
+                &["-profile:v", "4", "-alpha_bits", "16"],
+            ),
+            "color=c=0x3080C0:size=256x64:rate=25:duration=1,format=yuva444p10le,\
+             geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='X*1023/255'[v]",
+            false,
+            &[],
+        ),
+        Sample::Sited420(location) => one_step(
+            named(
+                encoders,
+                "libx264",
+                &[
+                    "-qp",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-chroma_sample_location",
+                    siting(location),
+                    "-frames:v",
+                    "1",
+                ],
+            ),
+            "color=c=gray:size=64x32,format=yuv420p,\
+             geq=lum='128':cb='if(mod(X+Y,2),64,192)':cr='if(mod(X,2),96,160)'[v]",
+            false,
+            &[],
+        ),
+        Sample::Sited422(location) => one_step(
+            named(
+                encoders,
+                "ffv1",
+                &[
+                    "-pix_fmt",
+                    "yuv422p",
+                    "-chroma_sample_location",
+                    siting(location),
+                    "-frames:v",
+                    "1",
+                ],
+            ),
+            "color=c=gray:size=64x32,format=yuv422p,\
+             geq=lum='128':cb='if(mod(X+Y,2),64,192)':cr='if(mod(X,2),96,160)'[v]",
+            false,
+            &[],
+        ),
+        Sample::Mxf => one_step(
+            named(encoders, "dnxhd", &["-profile:v", "dnxhr_hqx"]),
+            &tagged(
+                "yuv422p10le",
+                "color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv",
+            ),
+            false,
+            &["-f", "mxf"],
+        ),
         Sample::Webm => one_step(
             named(
                 encoders,

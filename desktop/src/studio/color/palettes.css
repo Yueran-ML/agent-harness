@@ -1,0 +1,441 @@
+/*
+ * The Primaries and Curves palettes of the Color page (Reference Manual 20, Chapters 131 and 134):
+ * the orange dot of a palette's button, the number controls, the wheels and bars, the curve editor.
+ */
+
+/* The orange dot of a palette whose settings the current node has changed (p. 2976). */
+.color-palette-tabs button {
+  position: relative;
+}
+
+.color-palette-dot {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ff8a1f;
+}
+
+.color-palette-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) var(--s2);
+  flex-wrap: wrap;
+}
+
+.color-modes {
+  display: inline-flex;
+  gap: 1px;
+}
+
+.color-mode {
+  height: 22px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  white-space: nowrap;
+}
+
+.color-mode[aria-checked='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.color-reset {
+  height: 22px;
+  gap: 4px;
+  font-size: var(--text-caption);
+}
+
+.color-status {
+  padding: 0 var(--s2) var(--s2);
+}
+
+/* --- A number of a palette: a name and a box, both of which drag sideways (pp. 62, 3062). */
+.color-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.color-number-name {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  cursor: ew-resize;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.color-number-box {
+  width: 6ch;
+  min-width: 0;
+  padding: 1px 3px;
+  border: 1px solid transparent;
+  border-radius: var(--r1);
+  background: var(--ink-0, transparent);
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+  text-align: right;
+  cursor: ew-resize;
+}
+
+.color-number-box:not([readonly]) {
+  border-color: var(--accent);
+  cursor: text;
+}
+
+.color-number[data-changed] .color-number-box {
+  color: var(--accent);
+}
+
+.color-keyed {
+  font-size: 8px;
+  color: var(--moon-2);
+}
+
+.color-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1) var(--s3);
+  padding: var(--s1) var(--s2);
+}
+
+.color-palette-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding-left: var(--s2);
+}
+
+.color-auto {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  font-weight: 600;
+}
+
+/* --- The wheels (pp. 3061–3062). */
+.color-wheels {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s2);
+  padding: var(--s1) var(--s2);
+}
+
+.color-wheel, .color-bars {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.color-wheel-head {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 2px;
+}
+
+.color-wheel-head .icon-btn {
+  width: 18px;
+  height: 18px;
+}
+
+.color-wheel-spacer {
+  width: 18px;
+}
+
+.color-wheel-title {
+  flex: 1;
+  text-align: center;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+/* The colour ring: the hues where the vectorscope has them, red up and a little left (103°). */
+.color-ring {
+  position: relative;
+  width: min(100%, 96px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, var(--ink-1) 0 58%, transparent 60%),
+    conic-gradient(from 347deg, #c33 0deg, #c3c 42deg, #33c 116deg, #3cc 180deg, #3c3 222deg, #cc3 296deg, #c33 360deg);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.color-ring::after {
+  content: '';
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px;
+  border-radius: 50%;
+  background: var(--moon-2);
+}
+
+.color-ring-indicator {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+/* A master wheel: ridges that turn as it is dragged left or right (p. 3062). */
+.color-master {
+  width: min(100%, 96px);
+  height: 12px;
+  border-radius: 6px;
+  background-color: var(--ink-2, #333);
+  background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 1px, transparent 1px 6px);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.color-wheel-numbers {
+  display: flex;
+  gap: 2px;
+}
+
+.color-wheel-numbers .color-number-box {
+  width: 5ch;
+  text-align: center;
+}
+
+.color-wheel-letters {
+  display: flex;
+  justify-content: space-around;
+  width: 100%;
+  font-size: 10px;
+  user-select: none;
+}
+
+[data-channel='y'] { color: var(--moon-1); }
+[data-channel='r'] { color: #e5534b; }
+[data-channel='g'] { color: #57ab5a; }
+[data-channel='b'] { color: #539bf5; }
+
+/* --- The Bars mode (p. 3068). */
+.color-bars-row {
+  display: flex;
+  gap: var(--s1);
+}
+
+.color-bar-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.color-bar-slider {
+  position: relative;
+  width: 10px;
+  height: 80px;
+  border-radius: 3px;
+  background: var(--ink-2, #333);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.color-bar-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: currentColor;
+  opacity: 0.8;
+}
+
+.color-bar-mark {
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  height: 1px;
+  background: var(--moon-2);
+}
+
+.color-bar-column .color-number-box {
+  width: 5ch;
+  text-align: center;
+}
+
+.color-bar-letter {
+  font-size: 10px;
+  user-select: none;
+}
+
+/* --- The curves (pp. 3108–3126). */
+.color-curves-body {
+  display: flex;
+  gap: var(--s2);
+  padding: var(--s1) var(--s2);
+  min-height: 0;
+}
+
+.color-curve-column {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.color-curve-area {
+  position: relative;
+  flex: none;
+  width: min(100%, 220px);
+  aspect-ratio: 1;
+  background: var(--ink-0, #111);
+  border: 1px solid var(--line);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.color-curve-area:not([data-kind='custom']) {
+  width: 100%;
+  aspect-ratio: 3;
+}
+
+.color-curve-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.color-curve-neutral, .color-curve-guide {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.color-curve-guide {
+  stroke: var(--accent);
+  stroke-dasharray: 3 3;
+}
+
+.color-curve-line {
+  fill: none;
+  stroke: var(--moon-2);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+.color-curve-line[data-active] {
+  stroke-width: 1.5;
+  opacity: 1;
+}
+
+.color-curve-line[data-curve='y'] { stroke: var(--moon-1); }
+.color-curve-line[data-curve='r'] { stroke: #e5534b; }
+.color-curve-line[data-curve='g'] { stroke: #57ab5a; }
+.color-curve-line[data-curve='b'] { stroke: #539bf5; }
+
+.color-curve-point {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px;
+  border: 1px solid var(--moon-1);
+  border-radius: 50%;
+  background: var(--ink-1);
+  pointer-events: none;
+}
+
+.color-curve-point[data-chosen] {
+  background: var(--accent);
+}
+
+.color-hue-strip {
+  height: 6px;
+  background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+
+.color-curves-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.color-curve-channels {
+  display: flex;
+  gap: 2px;
+}
+
+.color-channel {
+  width: 22px;
+  height: 20px;
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+}
+
+.color-channel[aria-pressed='true'] {
+  background: var(--accent-soft);
+}
+
+.color-intensities, .color-soft-clip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.color-intensity, .color-soft-clip-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.color-intensity .icon-btn, .color-soft-clip-head .icon-btn {
+  width: 18px;
+  height: 18px;
+}
+
+.color-curve-options {
+  height: 22px;
+  font-size: var(--text-caption);
+}
+
+.color-vectors {
+  display: flex;
+  gap: 3px;
+}
+
+.color-vector {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.color-vector[data-vector='red'] { background: #d33; }
+.color-vector[data-vector='yellow'] { background: #dd3; }
+.color-vector[data-vector='green'] { background: #3d3; }
+.color-vector[data-vector='cyan'] { background: #3dd; }
+.color-vector[data-vector='blue'] { background: #33d; }
+.color-vector[data-vector='magenta'] { background: #d3d; }
+
+.color-channel-letter {
+  font-size: 10px;
+  width: 1.2em;
+}
+
+.color-window-palette { padding: 10px; overflow: auto; height: 100%; }
+.color-window-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.color-window-list [aria-selected="true"] { outline: 1px solid var(--accent); }
+.color-window-row { display: inline-flex; gap: 2px; align-items: center; }
+.color-window-switch[aria-pressed='true'] { color: var(--accent); background: var(--accent-soft); }
+.color-window-name { width: 9em; min-width: 0; }
+.color-window-palette p { margin: 5px 0; }

@@ -14,6 +14,13 @@ pub const PROJECT_FILE: &str = "project.json";
 /// The name of the file that a project is written to before it takes the place of the last one.
 pub const PROJECT_TMP: &str = "project.json.tmp";
 
+/// The name of the file that a project of schema 1 is kept in, as it was, when it is first
+/// opened by an engine that writes a later schema (see [`old_schema_file`]).
+pub const SCHEMA_1_FILE: &str = "project.schema1.json";
+
+/// A project as it is read, and where it was of an earlier schema, that schema and its file.
+type Opened = (Project, Option<(u32, Vec<u8>)>);
+
 /// The name of the directory that holds what the engine has found out about the media.
 pub const CACHE_DIR: &str = "cache";
 
@@ -85,7 +92,7 @@ pub enum StoreError {
         /// The file.
         path: PathBuf,
         /// What is wrong with it.
-        source: ReadError,
+        source: Box<ReadError>,
     },
     /// The project cannot be written, because there is a directory where it is written first.
     /// It has to be taken away by hand. The project that was saved last is still there as it was.
@@ -96,6 +103,15 @@ pub enum StoreError {
     Blocked {
         /// `project.json.tmp`.
         path: PathBuf,
+    },
+    /// A project of schema 1 cannot be kept as it was before it is upgraded, and so is not
+    /// opened. It is left as it was.
+    #[error("cannot keep the project of schema 1 in {}: {source}", path.display())]
+    Keep {
+        /// The file that it is to be kept in.
+        path: PathBuf,
+        /// What the system said.
+        source: io::Error,
     },
     /// The project cannot be written. The project that was saved last is still there as it was.
     #[error("cannot write {}: {source}", path.display())]
@@ -131,8 +147,17 @@ impl Store {
     /// The directory and its `cache/` are made if they are not there. Where there is no
     /// `project.json`, the project is a new one with nothing in it, which is not written until it
     /// is first saved. Otherwise the file is read as JSON and then as a project by
-    /// [`Project::from_value`], which checks it; a file that is not a project that this engine
+    /// [`Project::from_value_upgrading`], which checks it; a file that is not a project that this engine
     /// can open is refused, and left as it is.
+    ///
+    /// A project of an earlier schema, 1, 2 or 3, is read into the schema of this engine (see
+    /// `columbina_model::upgrade`), and is written in it when it is first saved. Before that,
+    /// the first time that it is opened, its file is copied as it is to
+    /// `project.schema<N>.json`, where `N` is its schema, written whole or not at all, so that
+    /// an engine of that schema can still open it. Where that file holds another project of that
+    /// schema, as when one was put in the place of another, the file is copied to
+    /// `project.schema<N>-<digest>.json` instead (see [`old_schema_file_of`]); a file that is
+    /// kept already is never written again. A project that cannot be kept so is not opened.
     ///
     /// A `project.json.tmp` that a save left when the engine ended in the middle of it is taken
     /// away once the project has been read, where it is a file; until then it is kept, as the
@@ -141,13 +166,31 @@ impl Store {
     ///
     /// # Errors
     /// A directory cannot be made, the file cannot be read, or what it holds is not JSON or not
-    /// a project that this engine can open. Each error names the file.
+    /// a project that this engine can open, or a project of an earlier schema cannot be kept.
+    /// Each error names the file.
     pub fn open(dir: impl Into<PathBuf>) -> Result<(Store, Project), StoreError> {
+        Self::open_with(dir, |_| {})
+    }
+
+    /// Open a store as [`Store::open`] does, letting `prepare` change what the file holds, as
+    /// JSON, before it is read as a project: the engine takes away there what it does not take
+    /// from a project written by hand or by another program, before that could make the project
+    /// one that cannot be read.
+    ///
+    /// # Errors
+    /// As [`Store::open`].
+    pub fn open_with(
+        dir: impl Into<PathBuf>,
+        prepare: impl FnOnce(&mut serde_json::Value),
+    ) -> Result<(Store, Project), StoreError> {
         let store = Store { dir: dir.into() };
         for path in [store.dir.clone(), store.cache_dir()] {
             fs::create_dir_all(&path).map_err(|source| StoreError::CreateDir { path, source })?;
         }
-        let project = store.read()?;
+        let (project, old) = store.read(prepare)?;
+        if let Some((schema, bytes)) = old {
+            store.keep_old(schema, &bytes)?;
+        }
         let tmp = store.dir.join(PROJECT_TMP);
         if fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_file()) {
             // The next save writes over it anyway, so it does not matter if this fails.
@@ -156,12 +199,15 @@ impl Store {
         Ok((store, project))
     }
 
-    /// Read the project from its file, or make a new one where there is no file.
-    fn read(&self) -> Result<Project, StoreError> {
+    /// Read the project from its file, or make a new one where there is no file. Gives back the
+    /// schema and the file too where the project was of an earlier schema.
+    fn read(&self, prepare: impl FnOnce(&mut serde_json::Value)) -> Result<Opened, StoreError> {
         let path = self.project_path();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Project::new()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok((Project::new(), None))
+            }
             Err(source) => return Err(StoreError::Read { path, source }),
         };
         if bytes.iter().all(u8::is_ascii_whitespace) {
@@ -169,11 +215,53 @@ impl Store {
             let tmp = tmp.is_file().then_some(tmp);
             return Err(StoreError::Empty { path, tmp });
         }
-        let value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(value) => value,
             Err(source) => return Err(StoreError::NotJson { path, source }),
         };
-        Project::from_value(value).map_err(|source| StoreError::NotAProject { path, source })
+        prepare(&mut value);
+        match Project::from_value_upgrading(value) {
+            Ok((project, upgraded)) => Ok((project, upgraded.map(|schema| (schema, bytes)))),
+            Err(source) => Err(StoreError::NotAProject {
+                path,
+                source: Box::new(source),
+            }),
+        }
+    }
+
+    /// Keep the file of a project of an earlier schema as it was, unless it was kept before: in
+    /// `project.schema<N>.json`, or where that holds another project of that schema, in
+    /// `project.schema<N>-<digest>.json`.
+    fn keep_old(&self, schema: u32, bytes: &[u8]) -> Result<(), StoreError> {
+        let first = self.dir.join(old_schema_file(schema));
+        let path = match fs::read(&first) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => first,
+            Ok(kept) if kept == bytes => return Ok(()),
+            // Another project, or what cannot be read and so is not written over either.
+            _ => {
+                let other = self.dir.join(old_schema_file_of(schema, bytes));
+                if fs::symlink_metadata(&other).is_ok() {
+                    return Ok(());
+                }
+                other
+            }
+        };
+        let tmp = self.dir.join(format!(
+            "{}.tmp",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let kept = File::create(&tmp)
+            .and_then(|mut file| {
+                file.write_all(bytes)?;
+                file.sync_all()
+            })
+            .and_then(|()| replace(&tmp, &path));
+        kept.map_err(|source| {
+            if fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_file()) {
+                let _ = fs::remove_file(&tmp);
+            }
+            StoreError::Keep { path, source }
+        })
     }
 
     /// The directory of the project.
@@ -257,6 +345,35 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// The name of the file that a project of schema 1 is kept in where `project.schema1.json` holds
+/// another: `project.schema1-<digest>.json` (see [`old_schema_file_of`]).
+#[must_use]
+pub fn schema_1_file_of(bytes: &[u8]) -> String {
+    old_schema_file_of(1, bytes)
+}
+
+/// The name of the file that a project of an earlier schema is kept in, as it was, when it is
+/// first opened by this engine: `project.schema<N>.json`.
+#[must_use]
+pub fn old_schema_file(schema: u32) -> String {
+    format!("project.schema{schema}.json")
+}
+
+/// The name of the file that a project of an earlier schema is kept in where
+/// `project.schema<N>.json` holds another: `project.schema<N>-<digest>.json`, where the digest
+/// is the first 12 hexadecimal digits of the SHA-256 of the file.
+#[must_use]
+pub fn old_schema_file_of(schema: u32, bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    use sha2::{Digest, Sha256};
+    let mut name = format!("project.schema{schema}-");
+    for byte in &Sha256::digest(bytes)[..6] {
+        let _ = write!(name, "{byte:02x}");
+    }
+    name + ".json"
 }
 
 /// Put the file `from` in the place of the file `to`, in one step.

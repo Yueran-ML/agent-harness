@@ -41,7 +41,7 @@ function bridgeOf(file: string, platform = 'win32') {
 /** The calls and the values that an interface declares, by their names. */
 function declared(file: string, name: string): string[] {
   const body = new RegExp(`export interface ${name} \\{\\n([\\s\\S]*?)\\n\\}`).exec(read(file))?.[1] ?? '';
-  return [...body.matchAll(/^  (\w+)(?:\(|: )/gm)].map(found => found[1]);
+  return [...body.matchAll(/^  (\w+)\??(?:\(|: )/gm)].map(found => found[1]);
 }
 
 const shell = read('electron/main.cjs');
@@ -164,6 +164,8 @@ describe('the bridge of the main window', () => {
     expect(handed('feishuThinking')).toEqual(['columbina:feishu-thinking', { model: null, effort: null }]);
     expect(handed('wecomThinking', { effort: 'low' })).toEqual(['columbina:wecom-thinking', { model: null, effort: 'low' }]);
     expect(handed('setLoginItem', true)).toEqual(['columbina:set-login-item', true]);
+    expect(handed('leftKey', { key: 'F11', code: 'F11', control: 1, shift: false, alt: 'yes', meta: true, more: 1 }))
+      .toEqual(['columbina:left-key', { key: 'F11', code: 'F11', control: false, shift: false, alt: false, meta: true }]);
     expect(handed('setPet', { on: true, chosen: 'builtin/cat', share: false, more: 1 }))
       .toEqual(['columbina:set-pet', { on: true, chosen: 'builtin/cat' }]);
     expect(handed('setPet')).toEqual(['columbina:set-pet', { on: undefined, chosen: undefined }]);
@@ -195,7 +197,7 @@ describe('the bridge of the main window', () => {
     const { exposed } = bridgeOf('electron/preload.cjs');
     const engine = exposed.columbina.engine as unknown as Record<string, Call>;
     expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
-    expect(Object.keys(engine)).toHaveLength(7);
+    expect(Object.keys(engine)).toHaveLength(15);
   });
 
   it('hands the engine what a call names, and nothing else that came with it', () => {
@@ -209,13 +211,34 @@ describe('the bridge of the main window', () => {
     expect(handed('open', 'C:/work', more)).toEqual(['columbina:engine-open', { cwd: 'C:/work' }]);
     expect(handed('call', 'transaction.apply', { ops: [] }, more))
       .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] } }]);
+    expect(handed('call', 'transaction.apply', { ops: [] }, { expectedSession: 7, ...more }))
+      .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] }, expectedSession: 7 }]);
+    expect(handed('migrationDuck', {session:7,timeline:'t3',accept:true,path:'C:/secret',workspace:'C:/elsewhere'})).toEqual(['columbina:migration-duck',{session:7,timeline:'t3',accept:true}]);
     expect(handed('importFiles', more)).toEqual(['columbina:engine-import', { language: 'ja' }]);
+    expect(handed('importFiles', { ...more, bin: 'b3', paths: ['secret.mp4'] }))
+      .toEqual(['columbina:engine-import', { language: 'ja', bin: 'b3' }]);
     expect(handed('importFiles')).toEqual(['columbina:engine-import', { language: undefined }]);
-    expect(handed('viewRect', { x: 1, y: 2, width: 3, height: 4, ...more }))
-      .toEqual(['columbina:engine-view-rect', { x: 1, y: 2, width: 3, height: 4 }]);
+    expect(handed('importStills', { language: 'zh-CN', album: 'a2', paths: ['C:/secret.png'] }, more))
+      .toEqual(['columbina:engine-still-import', { language: 'zh-CN', album: 'a2' }]);
+    expect(handed('importStills', { language: 'en' })).toEqual(['columbina:engine-still-import', { language: 'en' }]);
+    expect(handed('exportStills', { language: 'ja', stills: ['s1', 'ps2'], dir: 'C:/elsewhere' }, more))
+      .toEqual(['columbina:engine-still-export', { language: 'ja', stills: ['s1', 'ps2'] }]);
+    // Generate LUT: the grade, the size, the node and the frame, and the name Save As suggests; no path.
+    expect(handed('exportLut', { language: 'zh-CN', grade: { level: 'clip', timeline: 't1', clip: 'c2' }, size: 33, name: 'Day', path: 'C:/secret.cube' }, more))
+      .toEqual(['columbina:engine-export-lut', { language: 'zh-CN', grade: { level: 'clip', timeline: 't1', clip: 'c2' }, size: 33, node: undefined, frame: undefined, name: 'Day' }]);
+    expect(handed('viewRect', { x: 1, y: 2, width: 3, height: 4, ...more }, 'timeline'))
+      .toEqual(['columbina:engine-view-rect', { monitor: 'timeline', x: 1, y: 2, width: 3, height: 4 }]);
     // Shown only where the page says so in so many words.
-    expect(handed('viewShow', true)).toEqual(['columbina:engine-view-show', { shown: true }]);
-    for (const asked of ['true', 1, {}, undefined]) expect(handed('viewShow', asked)).toEqual(['columbina:engine-view-show', { shown: false }]);
+    expect(handed('viewShow', true, 'source')).toEqual(['columbina:engine-view-show', { monitor: 'source', shown: true }]);
+    for (const asked of ['true', 1, {}, undefined]) expect(handed('viewShow', asked, 'timeline')).toEqual(['columbina:engine-view-show', { monitor: 'timeline', shown: false }]);
+    expect(handed('render', { timeline: 't1', codec: 'prores', quality: 'high', subtitle_tracks: ['S2', 'S1'], subtitles: true, range: { from: 0, to: 25, path: 'secret' }, path: 'secret', replace: true, ...more }))
+      .toEqual(['columbina:engine-render', { timeline: 't1', codec: 'prores', quality: 'high', subtitle_tracks: ['S2', 'S1'], range: { from: 0, to: 25 }, language: 'ja' }]);
+    // The name of the timeline goes over, for Save As to suggest a file named after it.
+    expect(handed('render', { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: [], name: 'Main', ...more })![1]).toMatchObject({ name: 'Main' });
+    // The page names the job of an export to have its file shown, and no path.
+    expect(handed('reveal', 'render-1', more)).toEqual(['columbina:engine-reveal', { job: 'render-1' }]);
+    // The page names a root of LUTs, and nothing else goes over.
+    expect(handed('openLutFolder', 'C:\luts', more)).toEqual(['columbina:engine-open-lut-folder', { path: 'C:\luts' }]);
     expect(handed('close', more)).toEqual(['columbina:engine-close']);
   });
 
@@ -387,7 +410,7 @@ describe('the bridge of the window of the pet', () => {
   });
 });
 
-describe('the six bridges', () => {
+describe('the seven bridges', () => {
   it('reach every call that the shell answers between them', () => {
     const main = reached('electron/preload.cjs', 'columbina');
     const key = reached('electron/key-preload.cjs', 'columbinaKey');
@@ -395,11 +418,44 @@ describe('the six bridges', () => {
     const wecom = reached('electron/wecom-preload.cjs', 'columbinaWecom');
     const qq = reached('electron/qq-preload.cjs', 'columbinaQq');
     const pet = reached('electron/pet-preload.cjs', 'columbinaPet');
-    const all = [main, key, feishu, wecom, qq, pet];
+    const scopes = reached('electron/scopes-preload.cjs', 'columbinaScopes');
+    const all = [main, key, feishu, wecom, qq, pet, scopes];
     expect(all.flatMap(bridge => bridge.asked).sort()).toEqual([...answered].sort());
     expect(all.flatMap(bridge => bridge.said)).toEqual(taken);
     // No channel is asked by two of them.
     const asked = all.flatMap(bridge => [...new Set(bridge.asked)]);
     expect(asked.filter((channel, index) => asked.indexOf(channel) !== index)).toEqual([]);
+  });
+});
+
+describe('the bridge of the window of the scopes', () => {
+  it('asks for its own scopes, what it measures and to be closed, and hears its pictures and what it measures', () => {
+    const { exposed, invoked, listening } = bridgeOf('electron/scopes-preload.cjs');
+    const scopes = exposed.columbinaScopes;
+    expect(Object.keys(scopes).sort()).toEqual(['call', 'close', 'context', 'onContext', 'onEvent']);
+    void scopes.call('scopes.subscribe', { view: 'timeline' }, { expectedSession: 3 });
+    expect(invoked.at(-1)).toEqual(['columbina-scopes:call', { method: 'scopes.subscribe', params: { view: 'timeline' } }]);
+    void scopes.context('more');
+    expect(invoked.at(-1)).toEqual(['columbina-scopes:context']);
+    void scopes.close('more');
+    expect(invoked.at(-1)).toEqual(['columbina-scopes:close']);
+    const heard: unknown[] = [];
+    const stop = scopes.onEvent((value: unknown) => heard.push(value)) as unknown as () => void;
+    scopes.onContext((value: unknown) => heard.push(value));
+    expect([...listening.keys()].sort()).toEqual(['columbina-scopes:context', 'columbina-scopes:event']);
+    for (const listener of listening.get('columbina-scopes:event')!) listener({}, { kind: 'notification' });
+    expect(heard).toEqual([{ kind: 'notification' }]);
+    stop();
+    expect(listening.get('columbina-scopes:event')!.size).toBe(0);
+  });
+
+  it('is opened by the page with what it measures, its place where the page kept one, and nothing else', () => {
+    const { exposed, invoked } = bridgeOf('electron/preload.cjs');
+    const engine = exposed.columbina.engine as unknown as Record<string, Call>;
+    void engine.scopesWindow({ open: true, loaded: true, language: 'ja', bounds: { x: 1, y: 2, width: 300, height: 200, more: 1 }, then: 'more' });
+    expect(invoked.at(-1)).toEqual(['columbina:engine-scopes-window',
+      { open: true, loaded: true, language: 'ja', bounds: { x: 1, y: 2, width: 300, height: 200 } }]);
+    void engine.scopesWindow({ open: 'yes' });
+    expect(invoked.at(-1)).toEqual(['columbina:engine-scopes-window', { open: false, loaded: false, language: undefined, bounds: undefined }]);
   });
 });

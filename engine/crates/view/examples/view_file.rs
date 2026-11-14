@@ -35,7 +35,7 @@ mod windows_main {
     use std::sync::{mpsc, Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
-    use columbina_media::{Hardware, VideoDecoder};
+    use columbina_media::{Converter, Hardware, VideoDecoder};
     use columbina_view::{RawParent, Rect, View};
     use windows::core::w;
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -240,6 +240,7 @@ mod windows_main {
         let rotation = video.rotation;
         let mut decoder = VideoDecoder::open(&options.file, options.hardware)
             .map_err(|error| error.to_string())?;
+        let mut converter = Converter::new();
         let rate = decoder.rate();
         let frame_time = Duration::from_secs_f64(f64::from(rate.den) / f64::from(rate.num));
 
@@ -247,9 +248,12 @@ mod windows_main {
         TELL.set(Mutex::new(told)).ok();
         let window = open_window();
         let (width, height) = client_size(window);
+        let gpu = columbina_compose::Gpu::new(columbina_compose::Preference::HighPerformance)
+            .map_err(|error| error.to_string())?;
         let view = View::attach_reporting(
             RawParent::Windows(window),
             view_rect(width, height),
+            gpu,
             Arc::new(|event| eprintln!("view: {event:?}")),
         )
         .map_err(|error| error.to_string())?;
@@ -291,10 +295,15 @@ mod windows_main {
                     println!("shot {} of {width}×{height}", path.display());
                 }
             }
-            let picture = match decoder.next().map_err(|error| error.to_string())? {
-                Some(picture) => picture,
-                None => decoder.frame_at(0).map_err(|error| error.to_string())?,
+            // As the engine reads them: in the sampling of chroma of the file, saying their
+            // matrix and range.
+            let frame = match decoder.next_decoded().map_err(|error| error.to_string())? {
+                Some(frame) => frame,
+                None => decoder.decoded_at(0).map_err(|error| error.to_string())?,
             };
+            let picture = converter
+                .native(&frame)
+                .map_err(|error| error.to_string())?;
             let now = Instant::now();
             if next_at > now {
                 std::thread::sleep(next_at - now);

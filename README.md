@@ -230,8 +230,55 @@ columbina login github
   branch of its own, which is merged into the project, or dropped, when it is done.
 - **An editor holds the conversation.** `columbina acp` speaks the Agent Client Protocol, for an
   editor such as Zed.
-- **Video.** With `COLUMBINA_VIDEO=1` the agent cuts a film by what is said in it, with ffmpeg,
-  and lays pictures, music and titles over it. See [Editing video](docs/video.md).
+- **Video.** With `COLUMBINA_VIDEO=1` the agent cuts a film by what is said in it, adds
+  subtitles from the speech, grades it on the nodes of the Color page, matches its shots and
+  exports it, on the same timeline as the editing studio below. See [Editing video](docs/video.md).
+
+### The editing studio
+
+The desktop application has an editing studio, made after DaVinci Resolve: a media pool, a Cut
+page, an Edit page with a source viewer and a timeline viewer, and a Color page; a timeline of
+video, audio and subtitle tracks, an inspector, transitions, titles and changes of speed, with
+Resolve's keys and mouse gestures. It plays timelines in real time on the graphics card, and
+exports H.264, HEVC or ProRes with SRT subtitles beside the film. The agent edits and grades the
+same timeline with its video tools, and the person and the agent undo each other's steps in one
+history. Films that the agent cut before are made timelines when the studio opens.
+[Editing video](docs/video.md) says how to use it, with its keys.
+
+The Fairlight page works on the same audio tracks as Edit. Clip volume and pan have keyframes;
+fade handles, crossfades, channel mapping and Normalize Audio Levels share the same controls
+across the pages. The mixer has track and bus faders, sends, surround panning, EQ, Dynamics and
+insert effects, with user presets and live meters. Automation lanes can be drawn or recorded,
+and follow timeline edits. Loudness analysis and the `video_loudness` and `video_duck` tools
+use the engine's mix and the same undo history. Platform loudness presets such as YouTube and
+Spotify are working targets, not official delivery requirements. Fairlight, like the rest of
+the editing studio, runs on Windows.
+
+The Color page grades as Resolve does. Each clip has a tree of nodes, serial, parallel and layer
+nodes, outside nodes and key mixers among them, and a group of clips and the timeline have
+grades of their own. Its palettes are Primaries (wheels, bars and Log), Curves (custom and the
+six HSL curves, with Soft Clip), Qualifier (HSL, RGB and LUM, with Matte Finesse), Window,
+Tracker, Blur (Blur, Sharpen and Mist) and Key. Power Windows are linear, circular, polygon,
+curve and gradient; they are drawn and moved on the viewer, several points of a curve at once,
+inverted or taken away from each other, and kept as presets that every project shares, and made
+to follow the picture by the tracker, with a cloud of points or with points of your own; a key
+adds a node with a window already on it. LUTs are dropped on nodes from a browser that shows
+each on a test image, and with Live Preview on the viewer before it is applied; Generate LUT
+writes a grade out as a LUT. The Gallery keeps stills and PowerGrades, to wipe against the frame
+or to fill a split screen. The video scopes are a waveform, a parade, a vectorscope, a histogram
+and a CIE chromaticity diagram, docked or in a window of their own. Shot Match to This Clip
+makes clips look alike by an adjustment that no palette shows, as in Resolve, and Auto Color
+balances a clip into its Lift and Gain.
+
+Colour management follows Resolve's Project Settings. A new project is graded in DaVinci YRGB,
+not managed, as in Resolve; DaVinci YRGB Color Managed, ACEScct and ACEScc are chosen there,
+their transforms those of OpenColorIO and its ACES configs, and the input colour space, the LUTs
+and the Inverse DRT of each clip are set in the media pool. The viewer shows HDR on a display
+for which Windows has HDR on, and an export to an HDR output space (HLG or PQ) is written in 10
+bits and tagged as HDR.
+
+The studio runs on Windows only for now; macOS will have it later. On macOS and Linux its entry
+is greyed out and says why, and the rest of Columbina runs there as usual.
 
 ### An assistant in Feishu
 
@@ -282,8 +329,8 @@ Each assistant may ask a model of its own, and think as hard as you choose for i
   DeepSeek, part by part, and what they cost.
 - [Pets](docs/pets.md) says how to make a pet for the desktop application, and how a program of
   your own can follow what the task is doing.
-- [Editing video](docs/video.md) says how the agent cuts a film by what is said in it, and
-  there is a Chinese and a Japanese one beside it.
+- [Editing video](docs/video.md) says how the editing studio and the agent cut and grade a
+  film, and there is a Chinese and a Japanese one beside it.
 
 ## License
 

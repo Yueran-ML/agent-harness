@@ -1,0 +1,75 @@
+import { FolderOpen, X } from 'lucide-react';
+import { useState, useSyncExternalStore } from 'react';
+import { useWords } from '../../app/locale';
+import { sentenceOf } from '../../key/form';
+import { fileName } from '../timecode';
+import { fellBack, type RenderJob, type Renders } from './renders';
+
+/**
+ * The strip of the export of the window, where there is one: it alone follows the progress, so
+ * that what the engine tells several times a second draws the strip again, and not the studio.
+ */
+export function ExportProgress({ renders }: { renders: Renders }) {
+  const { job } = useSyncExternalStore(renders.subscribe, renders.getSnapshot, renders.getSnapshot);
+  return job === null ? null
+    : <RenderProgress job={job} onCancel={() => void renders.cancel()} onReveal={() => renders.reveal()} onDismiss={() => renders.dismiss()} />;
+}
+
+/**
+ * How the export of the window goes, in a strip at the top of the studio: it lies over nothing, so
+ * the user goes on editing while it runs (the engine renders the timeline as it was when it began).
+ * While it runs it shows how far it is, how fast, and with which encoder, and it can be cancelled;
+ * once it is done, the file can be shown in its folder; where it failed, it says why, in the words
+ * of the engine; where the computer had no encoder for H.264 or HEVC, that ProRes was written instead.
+ */
+export function RenderProgress({ job, onCancel, onReveal, onDismiss }: {
+  job: RenderJob;
+  onCancel: () => void;
+  onReveal: () => Promise<boolean>;
+  onDismiss: () => void;
+}) {
+  const words = useWords();
+  const labels = words.label.studio.render;
+  const hints = words.hint.studio.render;
+  const [unrevealed, setUnrevealed] = useState(false);
+  const going = job.state === 'running' || job.state === 'cancelling';
+  const part = job.frames > 0 ? Math.min(1, job.frame / job.frames) : 0;
+  const said = job.state === 'done' ? hints.done
+    : job.state === 'failed' ? hints.failed
+      : job.state === 'cancelled' ? hints.cancelled
+        : job.state === 'stopped' ? hints.stopped : null;
+  const detail = job.state === 'failed' && job.message ? sentenceOf(job.message) : null;
+  const name = job.path ? fileName(job.path) : job.name;
+  // What a screen reader is told: that the export started, is being cancelled, or how it ended; not
+  // each frame, which the bar shows.
+  const announced = going ? `${job.state === 'cancelling' ? labels.cancelling : labels.exporting} ${job.name}` : `${said ?? ''} ${name}`;
+  return <div className="render-progress" role="group" aria-label={labels.exporting} data-state={job.state} data-test="render-progress">
+    <p className="sr-only" role="status" data-test="render-announced">{announced}</p>
+    <div className="render-progress-words">
+      <p>
+        <strong>{going ? (job.state === 'cancelling' ? labels.cancelling : labels.exporting) : said}</strong>
+        <span className="render-progress-name" title={job.path ?? undefined}>{name}</span>
+      </p>
+      {going && <>
+        <div className="render-bar" role="progressbar" aria-label={name} aria-valuemin={0} aria-valuemax={Math.max(1, job.frames)}
+          aria-valuenow={Math.min(job.frame, Math.max(1, job.frames))} data-test="render-bar">
+          <span style={{ width: `${(part * 100).toFixed(1)}%` }} />
+        </div>
+        <p className="mono caption" data-test="render-numbers">
+          {labels.frames(job.frame, job.frames)}
+          {job.fps > 0 && <> · {words.label.studio.fps(job.fps.toFixed(1))}</>}
+          {job.encoder && <> · <span title={labels.encoder}>{job.encoder}</span></>}
+        </p>
+      </>}
+      {detail && <p className="caption" lang="en" title={detail} data-test="render-detail">{detail}</p>}
+      {fellBack(job) && <p className="caption" data-test="render-fallback">{hints.fallback}</p>}
+      {unrevealed && <p className="caption" lang="en">{job.path}</p>}
+    </div>
+    {going && <button type="button" className="btn btn-quiet" disabled={job.state === 'cancelling'} onClick={onCancel} data-test="render-cancel">{words.label.cancel}</button>}
+    {job.state === 'done' && <button type="button" className="btn btn-quiet" onClick={() => void onReveal().then(shown => setUnrevealed(!shown), () => setUnrevealed(true))}
+      data-test="render-reveal"><FolderOpen size={14} aria-hidden="true" />{labels.reveal}</button>}
+    {!going && <button type="button" className="icon-btn" onClick={onDismiss} aria-label={words.label.close} title={words.label.close} data-test="render-dismiss">
+      <X size={14} />
+    </button>}
+  </div>;
+}

@@ -6,7 +6,20 @@
 //   --engine-build=<dir>  COLUMBINA_ENGINE_BUILD  the build of engine/, by default engine/target/release
 //   --ffmpeg=<dir>        COLUMBINA_FFMPEG_LGPL   the LGPL shared build of FFmpeg 8.1 (with bin/ and
 //                                                 LICENSE.txt, as BtbN's), by default FFMPEG_DIR
+//   --dxc=<dir>           COLUMBINA_DXC           a folder with dxcompiler.dll and dxil.dll, by default
+//                                                 Redist\D3D\x64 of the Windows SDK; `none` for none
+//   --ocio=<dir>          OCIO_DIR                the OpenColorIO that the engine is built with (its
+//                                                 OCIO_DIR), checked to be of the version of its notices
 // What is missing ends the packaging, saying what.
+//
+// DXC. Microsoft's DirectX Shader Compiler, dxcompiler.dll and dxil.dll of 1.8.2502 or later, goes
+// beside the engine, which compiles its shaders with it where it finds both there (and with FXC of
+// Windows where it does not). It is taken unmodified from Redist\D3D\x64 of the Windows SDK, whose
+// license makes those files Distributable Code; the newest pair of the SDKs installed is taken, both
+// files of one version. None found ends the packaging, so that no package loses DXC unnoticed:
+// install the Windows SDK 10.0.26100, or name the folder with --dxc=, or package without it with
+// --dxc=none (the engine then compiles with FXC). Its notices are THIRD_PARTY_DXC.md and
+// licenses/DirectXShaderCompiler-THIRD-PARTY-NOTICES.txt. The DLLs are never kept in git.
 //
 // Which libraries: those that the engine and ffmpeg.exe import (the import tables of their PE
 // files, read here, delay-loaded ones too), and what those import in turn, as long as it is a
@@ -33,7 +46,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { hostTarget, rustCrates, writeCrateNotices } from '../scripts/engine-notices.mjs';
+import { hostTarget, locateOcio, rustCrates, writeCrateNotices, writeOcioNotices, writeVendoredNotices } from '../scripts/engine-notices.mjs';
 
 /** The files of the engine's folder on each system, as far as they are known. */
 export const LAYOUT = {
@@ -235,6 +248,85 @@ function ffmpegNotice(versionLine, options) {
   ].join('\n');
 }
 
+/** The files of DXC that go beside the engine, and the least version of them. */
+export const DXC_FILES = ['dxcompiler.dll', 'dxil.dll'];
+export const DXC_LEAST = [1, 8, 2502, 0];
+
+/** The file version of a PE file (of its VS_FIXEDFILEINFO), as four numbers, or undefined if it has none. */
+export function peFileVersion(buffer, file = 'the file') {
+  if (buffer.length < 0x40 || buffer.readUInt16LE(0) !== 0x5a4d) throw new Error(`${file} is not a PE file that can be read: no MZ`);
+  const at = buffer.indexOf(Buffer.from([0xbd, 0x04, 0xef, 0xfe]));
+  if (at < 0 || at + 16 > buffer.length) return undefined;
+  const high = buffer.readUInt32LE(at + 8);
+  const low = buffer.readUInt32LE(at + 12);
+  return [high >>> 16, high & 0xffff, low >>> 16, low & 0xffff];
+}
+
+/** Below 0, 0 or above 0, as version `a` is older than, the same as, or newer than `b`. */
+export function compareVersions(a, b) {
+  for (let index = 0; index < 4; index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return 0;
+}
+
+/** The folders of the Windows SDKs installed where their DXC may be: Redist\D3D\x64, and Redist\<version>\D3D\x64. */
+export function sdkDxcFolders(env = process.env) {
+  const roots = [
+    env.WindowsSdkDir,
+    env['ProgramFiles(x86)'] && path.join(env['ProgramFiles(x86)'], 'Windows Kits', '10'),
+    env.ProgramFiles && path.join(env.ProgramFiles, 'Windows Kits', '10'),
+    'C:\\Program Files (x86)\\Windows Kits\\10',
+  ].filter(Boolean);
+  const folders = new Map();
+  for (const root of roots) {
+    const redist = path.join(root, 'Redist');
+    const versions = existsSync(redist) ? readdirSync(redist).map((name) => path.join(redist, name, 'D3D', 'x64')) : [];
+    for (const folder of [path.join(redist, 'D3D', 'x64'), ...versions]) folders.set(path.resolve(folder).toLowerCase(), path.resolve(folder));
+  }
+  return [...folders.values()];
+}
+
+/**
+ * The DXC of a folder: both files there, of one version, 1.8.2502 or later, and importing nothing
+ * that Windows does not have. Answers { folder, version, files } or { folder, why }.
+ */
+export function dxcIn(folder) {
+  const missing = DXC_FILES.find((name) => !existsSync(path.join(folder, name)));
+  if (missing) return { folder, why: `there is no ${missing}` };
+  const versions = [];
+  for (const name of DXC_FILES) {
+    const file = path.join(folder, name);
+    const buffer = readFileSync(file);
+    const version = peFileVersion(buffer, file);
+    if (!version) return { folder, why: `${name} says no version` };
+    const foreign = peImports(buffer, file).filter((imported) => {
+      const lower = imported.toLowerCase();
+      return VC_RUNTIME.test(lower) || !(lower.startsWith('api-ms-win-') || WINDOWS_LIBRARIES.has(lower));
+    });
+    if (foreign.length > 0) return { folder, why: `${name} imports ${foreign.join(', ')}, which Windows does not have` };
+    versions.push(version);
+  }
+  const [compiler, signer] = versions;
+  if (compareVersions(compiler, signer) !== 0) return { folder, why: `dxcompiler.dll is ${compiler.join('.')} and dxil.dll ${signer.join('.')}, not one version` };
+  if (compareVersions(compiler, DXC_LEAST) < 0) return { folder, why: `they are of version ${compiler.join('.')}, older than ${DXC_LEAST.slice(0, 3).join('.')}` };
+  return { folder, version: compiler.join('.'), files: DXC_FILES.map((name) => [name, path.join(folder, name)]) };
+}
+
+/**
+ * The DXC to bring beside the engine: that of the folder named by --dxc= or COLUMBINA_DXC, else the
+ * newest of the Windows SDKs installed; { skipped } with --dxc=none. None that will do ends the packaging.
+ */
+export function locateDxc({ args = process.argv.slice(2), env = process.env } = {}) {
+  const given = args.find((one) => one.startsWith('--dxc='))?.slice('--dxc='.length) ?? (env.COLUMBINA_DXC || undefined);
+  if (given?.toLowerCase() === 'none') return { skipped: 'it was asked for none (--dxc=none or COLUMBINA_DXC=none): the engine compiles its shaders with FXC' };
+  const looked = (given ? [path.resolve(given)] : sdkDxcFolders(env)).map(dxcIn);
+  const usable = looked.filter((one) => !one.why).sort((a, b) => compareVersions(b.version.split('.').map(Number), a.version.split('.').map(Number)));
+  if (usable.length > 0) return usable[0];
+  const why = looked.map((one) => `${one.folder}: ${one.why}`).join('; ') || 'no Windows SDK was found';
+  throw new Error(`There is no DXC of ${DXC_LEAST.slice(0, 3).join('.')} or later (dxcompiler.dll and dxil.dll) to bring beside the engine (${why}). Install the Windows SDK 10.0.26100, whose Redist\\D3D\\x64 has them, or name a folder that holds both with --dxc= or COLUMBINA_DXC; --dxc=none packages the engine without them, and it compiles its shaders with FXC.`);
+}
+
 /**
  * Where the engine and the FFmpeg to bring with it are, checked before anything is packaged: both
  * are there, and the FFmpeg is an LGPL build. Answers them, or why no engine is brought.
@@ -275,7 +367,22 @@ export function locateEngine({ desktop, args = process.argv.slice(2), platform =
   if (runtime.length > 0) {
     throw new Error(`${engine} imports ${runtime.join(', ')}: it is to be linked with the C runtime statically (engine/.cargo/config.toml: target-feature=+crt-static); a RUSTFLAGS in the environment takes the place of that file.`);
   }
-  return { platform, layout, repository, engine, ffmpegBin, ffmpeg, ffmpegLicense };
+  // Microsoft's compiler of shaders, beside it.
+  const dxc = locateDxc({ args });
+  // The OpenColorIO linked into it, of the version that its notices are of.
+  const ocio = locateOcio({ args });
+  return { platform, layout, repository, engine, ffmpegBin, ffmpeg, ffmpegLicense, dxc, ocio };
+}
+
+/** What the notices say of the DXC brought, or of none. */
+function dxcNotice(dxc) {
+  if (dxc.skipped) return '';
+  return [
+    '## This build of the DirectX Shader Compiler',
+    '',
+    `\`dxcompiler.dll\` and \`dxil.dll\` of this folder are of version ${dxc.version} (their file version).`,
+    '',
+  ].join('\n');
 }
 
 /**
@@ -287,13 +394,24 @@ export async function bundleEngine({ resources, desktop, located }) {
     console.warn(`The package has no engine of the studio: ${located.skipped}`);
     return located;
   }
-  const { platform, layout, repository, engine, ffmpegBin, ffmpeg, ffmpegLicense } = located;
+  const { platform, layout, repository, engine, ffmpegBin, ffmpeg, ffmpegLicense, dxc } = located;
   const { brought, ofWindows } = await windowsLibraries([engine, ffmpeg], ffmpegBin);
   const folder = path.join(resources, 'engine');
   await rm(folder, { recursive: true, force: true });
   await mkdir(folder, { recursive: true });
-  const files = [[layout.engine, engine], [layout.ffmpeg, ffmpeg], ...[...brought.values()].map((from) => [path.basename(from), from])];
+  const files = [
+    [layout.engine, engine], [layout.ffmpeg, ffmpeg], ...[...brought.values()].map((from) => [path.basename(from), from]),
+    ...(dxc.skipped ? [] : dxc.files),
+  ];
   for (const [name, from] of files) await copyFile(from, path.join(folder, name));
+  if (dxc.skipped) {
+    console.warn(`The package has no DXC beside the engine: ${dxc.skipped}.`);
+  } else {
+    // As copied: still of the version that was checked.
+    const copied = dxcIn(folder);
+    if (copied.why || copied.version !== dxc.version) throw new Error(`The DXC copied beside the engine is not as it was checked: ${copied.why ?? copied.version}.`);
+    console.log(`DXC ${dxc.version} of ${dxc.folder} is beside the engine.`);
+  }
 
   // The ffmpeg of the package, run with nothing but Windows on PATH: it must start with the
   // libraries beside it, and be of the LGPL.
@@ -306,13 +424,27 @@ export async function bundleEngine({ resources, desktop, located }) {
   await mkdir(path.join(licenses, 'FFmpeg'), { recursive: true });
   await copyFile(ffmpegLicense, path.join(licenses, 'FFmpeg', 'LICENSE.txt'));
   await copyFile(path.join(desktop, 'licenses', 'GPL-3.0.txt'), path.join(licenses, 'FFmpeg', 'GPL-3.0.txt'));
+  const withoutComments = async (file) => (await readFile(path.join(desktop, file), 'utf8')).replace(/<!--[\s\S]*?-->\s*/g, '');
+  let dxcTerms = '';
+  if (!dxc.skipped) {
+    await mkdir(path.join(licenses, 'DirectXShaderCompiler'), { recursive: true });
+    await copyFile(path.join(desktop, 'licenses', 'DirectXShaderCompiler-THIRD-PARTY-NOTICES.txt'), path.join(licenses, 'DirectXShaderCompiler', 'THIRD-PARTY-NOTICES.txt'));
+    dxcTerms = `${(await withoutComments('THIRD_PARTY_DXC.md')).trimEnd()}\n`;
+  }
+  const ocioList = await writeOcioNotices({ out: folder });
+  const vendoredList = await writeVendoredNotices({ out: folder });
   const crates = await rustCrates({ engine: path.join(repository, 'engine'), target: hostTarget(platform) });
   const crateList = await writeCrateNotices({ crates, out: folder });
   // What is written for those who keep the repository (in <!-- -->) is not shipped.
-  const notice = (await readFile(path.join(desktop, 'THIRD_PARTY_ENGINE.md'), 'utf8')).replace(/<!--[\s\S]*?-->\s*/g, '');
+  const notice = await withoutComments('THIRD_PARTY_ENGINE.md');
   await writeFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), [
     notice.trimEnd(), '',
     ffmpegNotice(versionLine, options),
+    ...(dxcTerms ? [dxcTerms, dxcNotice(dxc)] : []),
+    '## OpenColorIO and the libraries linked with it', '',
+    ocioList,
+    '## Libraries compiled into the engine from their sources', '',
+    vendoredList,
     '## The files of this folder', '',
     ...files.map(([name]) => `- \`${name}\``).sort(),
     '', `They load besides, from Windows itself: ${[...ofWindows].sort().join(', ')}.`, '',
@@ -321,6 +453,6 @@ export async function bundleEngine({ resources, desktop, located }) {
   ].join('\n'));
 
   const size = (await Promise.all(files.map(([name]) => stat(path.join(folder, name))))).reduce((sum, one) => sum + one.size, 0);
-  console.log(`The engine is in ${folder}: ${files.map(([name]) => name).sort().join(', ')} (${Math.round(size / 1024 / 1024)} MB), and the notices of FFmpeg and of ${crates.length} crates.`);
-  return { folder, files: files.map(([name]) => name).sort(), libraries: [...brought.keys()].sort(), ofWindows: [...ofWindows].sort(), versionLine, crates: crates.length };
+  console.log(`The engine is in ${folder}: ${files.map(([name]) => name).sort().join(', ')} (${Math.round(size / 1024 / 1024)} MB), and the notices of FFmpeg, of OpenColorIO ${located.ocio.version} and of ${crates.length} crates.`);
+  return { folder, files: files.map(([name]) => name).sort(), libraries: [...brought.keys()].sort(), ofWindows: [...ofWindows].sort(), versionLine, crates: crates.length, dxc: dxc.skipped ? null : dxc.version, ocio: located.ocio.version };
 }

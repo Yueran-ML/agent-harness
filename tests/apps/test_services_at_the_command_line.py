@@ -40,7 +40,6 @@ OPENAI = {
     "api_key_env": "OPENAI_API_KEY",
     "api_key_file": KEYS,
     "reasoning_style": "openai",
-    "max_tokens_field": "max_completion_tokens",
     "pictures": True,
 }
 DEEPSEEK = {
@@ -49,11 +48,14 @@ DEEPSEEK = {
     "api_key_env": "DEEPSEEK_API_KEY",
     "api_key_file": KEYS,
     "reasoning_style": "deepseek",
+    "pictures": True,
+    "pictures_only": ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
 }
 NO_ADAPTER = (
     "columbina: the profile has no entry 'model' that loads "
-    "columbina.llm.adapters.openai_chat or columbina.llm.adapters.anthropic_messages, or it "
-    "is disabled, so there is nothing to point at the service {}\n"
+    "columbina.llm.adapters.openai_chat, columbina.llm.adapters.openai_responses or "
+    "columbina.llm.adapters.anthropic_messages, or it is disabled, so there is nothing to "
+    "point at the service {}\n"
 )
 NAMES = "deepseek, openai, anthropic, openrouter, moonshot, zhipu, siliconflow, ollama, lmstudio"
 
@@ -174,7 +176,7 @@ def test_claude_that_was_chosen_is_talked_to_and_another_service_named_goes_befo
     assert claude["model"]["plugin"] == "columbina.llm.adapters.anthropic_messages"
     assert claude["frontend"]["config"]["model"]["model"] == "claude-sonnet-5-5"
     # The adapter of the protocol of the service that is named, whatever was chosen.
-    assert named["model"]["plugin"] == "columbina.llm.adapters.openai_chat"
+    assert named["model"]["plugin"] == "columbina.llm.adapters.openai_responses"
     assert named["model"]["config"] == OPENAI
 
 
@@ -475,7 +477,7 @@ def test_an_adapter_that_is_switched_off_is_no_adapter_to_point(
     # What was stored was put into the profile before the patch switched its adapter off.
     assert stored_only["model"] == {
         "id": "model",
-        "plugin": "columbina.llm.adapters.openai_chat",
+        "plugin": "columbina.llm.adapters.openai_responses",
         "config": OPENAI,
         "disabled": True,
     }

@@ -2,18 +2,20 @@
 
 use std::path::Path;
 
-use columbina_model::{AudioFacts, Facts, Rate, Time, VideoFacts};
+use columbina_model::{AudioFacts, AudioStream, ColorFacts, Facts, Rate, Time, VideoFacts};
 use ff::format::context::Input;
 use ff::format::stream::{Disposition, Stream};
 use ff::media::Type;
 use ffmpeg_next as ff;
 
-use crate::{ffi, timing, MediaError};
+use crate::{color, ffi, timing, Hardware, MediaError, VideoDecoder};
 
 /// What a file holds, as libav finds it. This blocks.
 ///
 /// - The picture is the best stream of pictures that is not the cover of an album, and the
-///   sound the best stream of sound that libav can decode, as libav ranks them.
+///   sound the best stream of sound that libav can decode, as libav ranks them. The facts of the
+///   sound name the layout of its channels where the file gives one, and list every stream of
+///   sound that libav can decode, as [`sounds`] does.
 /// - Its duration is that of the picture if it has one, else that of the sound, in the time
 ///   base of that stream, from the start of the stream (see the crate's doc). Where the file
 ///   does not say how long the stream lasts, as Matroska does not, the end of the stream is
@@ -25,6 +27,9 @@ use crate::{ffi, timing, MediaError};
 ///   matrix that mirrors the picture is read as a mirror left to right and a turn: the turn
 ///   is kept, and the mirror is not, since the facts of a file hold none. (The editing of
 ///   Python keeps the turn as ffprobe gives it, counterclockwise: its 90 is 270 here.)
+/// - What it says of its colours is read from the parameters of its stream; for a picture of
+///   PQ or HLG whose stream lacks the mastering display or the light levels, its first frame is
+///   decoded on the processor for them too (see [`crate::Decoded::color`]).
 ///
 /// # Errors
 /// The path is not UTF-8; the file is not there, cannot be read, or is not media of the formats
@@ -41,14 +46,136 @@ pub fn probe(path: &Path) -> Result<Facts, MediaError> {
         .map(|stream| stream.index());
     let timed = video.or(audio).ok_or(MediaError::NoStreams)?;
     let stream_of = |index: usize| input.stream(index).ok_or(MediaError::NoStreams);
-    let video = video.map(|index| picture(&stream_of(index)?)).transpose()?;
-    let audio = audio.map(|index| sound(&stream_of(index)?)).transpose()?;
+    let mut video = video.map(|index| picture(&stream_of(index)?)).transpose()?;
+    if let Some(video) = &mut video {
+        video.still = matches!(
+            input.format().name(),
+            "png_pipe" | "jpeg_pipe" | "webp_pipe" | "tiff_pipe" | "exr_pipe"
+        );
+    }
+    let audio = audio
+        .map(|index| sound_facts(&input, &stream_of(index)?))
+        .transpose()?;
+    if let Some(video) = &mut video {
+        video.color = video
+            .color
+            .take()
+            .map(|stream| from_first_frame(path, stream));
+    }
     let duration = duration(&mut input, timed, video.as_ref().map(|video| video.rate))?;
     Ok(Facts {
         duration,
         video,
         audio,
     })
+}
+
+/// A stream of sound of a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoundStream {
+    /// Its index among all the streams of the file, as libav and the `ffmpeg` of the command
+    /// line number them, which [`crate::AudioDecoder::open_stream`] takes.
+    pub index: usize,
+    /// How many channels it has.
+    pub channels: u16,
+    /// The name that libav gives the layout of its channels (`mono`, `stereo`, `2.1`, `5.1`,
+    /// `5.1(side)`), whose order [`crate::AudioDecoder::open_unmixed`] gives them in; none
+    /// where the file says only how many channels there are (then they are in the default
+    /// order of libav for as many).
+    pub layout: Option<String>,
+    /// Its samples a second.
+    pub rate: u32,
+    /// The name of its codec, as ffprobe names it.
+    pub codec: String,
+}
+
+/// The streams of sound of a file that this build of libav can decode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sounds {
+    /// The index of the best of them, as libav ranks them: the sound of [`probe`] and of
+    /// [`crate::AudioDecoder::open`]. None where there are none.
+    pub best: Option<usize>,
+    /// Every one of them, in the order of their indices.
+    pub streams: Vec<SoundStream>,
+}
+
+/// The streams of sound of a file, each with its channels and their layout, for a file whose
+/// several streams of sound each hold a microphone of its own, as cameras write them. This
+/// blocks, and reads only the head of the file.
+///
+/// # Errors
+/// The file cannot be opened (as [`probe`]).
+pub fn sounds(path: &Path) -> Result<Sounds, MediaError> {
+    let input = open(path)?;
+    Ok(Sounds {
+        best: sound_stream(&input),
+        streams: sound_streams(&input),
+    })
+}
+
+/// The streams of sound of an open file that libav can decode, in the order of their indices.
+fn sound_streams(input: &Input) -> Vec<SoundStream> {
+    let mut streams = Vec::new();
+    for found in input.streams() {
+        if decodable_sound(input, found.index()).is_none() {
+            continue;
+        }
+        // A stream that says no rate or no channels is passed over, as one that cannot be
+        // decoded is: the others are listed still.
+        let Ok(facts) = sound(&found) else {
+            continue;
+        };
+        streams.push(SoundStream {
+            index: found.index(),
+            channels: facts.channels,
+            layout: ffi::sound_layout(&found),
+            rate: facts.rate,
+            codec: facts.codec,
+        });
+    }
+    streams
+}
+
+/// The facts of the sound of a file whose best stream of sound is `best`: those of that stream,
+/// with the layout of its channels, and every stream of sound of the file that libav can
+/// decode (see [`sounds`]). A stream whose number does not fit the model is left out.
+fn sound_facts(input: &Input, best: &Stream) -> Result<AudioFacts, MediaError> {
+    let mut facts = sound(best)?;
+    facts.layout = ffi::sound_layout(best);
+    let streams: Vec<AudioStream> = sound_streams(input)
+        .into_iter()
+        .filter_map(|stream| {
+            Some(AudioStream {
+                index: u32::try_from(stream.index).ok()?,
+                channels: stream.channels,
+                layout: stream.layout,
+            })
+        })
+        .collect();
+    facts.streams = Some(streams);
+    Ok(facts)
+}
+
+/// The index of the sound of a file: the best stream of sound that this build of libav can
+/// decode, as libav ranks them.
+pub(crate) fn sound_stream(input: &Input) -> Option<usize> {
+    input
+        .streams()
+        .best(Type::Audio)
+        .filter(|stream| ff::decoder::find(stream.parameters().id()).is_some())
+        .map(|stream| stream.index())
+}
+
+/// `index`, if it is the index of a stream of sound of a file that this build of libav can
+/// decode.
+pub(crate) fn decodable_sound(input: &Input, index: usize) -> Option<usize> {
+    input
+        .stream(index)
+        .filter(|stream| {
+            stream.parameters().medium() == Type::Audio
+                && ff::decoder::find(stream.parameters().id()).is_some()
+        })
+        .map(|stream| stream.index())
 }
 
 /// How the frames of a picture are coded, as its first packets show: whether each is a key frame,
@@ -185,17 +312,47 @@ pub fn frame_numbers(
     Ok((number(first), number(last)))
 }
 
+/// How many frames the picture of a file has, where its index says so without reading it: in
+/// MP4 and `QuickTime`, whose index lists every frame when the file is opened, those that are
+/// kept once decoded (not those before the start of an edit list). None for the other formats,
+/// and for a file of fragments, whose index grows as it is read (it lists fewer frames than its
+/// header counts). The number of frames is not the number of the frame after the last: a frame
+/// that comes late leaves a number that no frame has, as a phone that drops a frame does, and
+/// the frame before it is shown there (see the crate's doc).
+///
+/// # Errors
+/// The file cannot be opened (as [`probe`]), or it has no picture.
+pub fn frame_count(path: &Path) -> Result<Option<u64>, MediaError> {
+    let input = open(path)?;
+    let index = video_stream(&input)?.ok_or(MediaError::NoVideo)?;
+    if !input.format().name().split(',').any(|name| name == "mov") {
+        return Ok(None);
+    }
+    let stream = input.stream(index).ok_or(MediaError::NoVideo)?;
+    let counted = u64::try_from(stream.frames()).unwrap_or(0);
+    let listed = u64::try_from(ffi::index_entries(&input, index)).unwrap_or(0);
+    if counted == 0 || listed != counted {
+        return Ok(None);
+    }
+    Ok(Some(ffi::kept_index_entries(&input, index)))
+}
+
 /// The demuxers of libav that a file may be read with: those of the editing of Python
-/// (`columbina.video.media.DEMUXERS`), and MPEG-PS (`mpeg`, of DVDs and cameras), which
-/// that list lacks. A list of other files, such as an HLS playlist or a list of `concat`, is of none of
-/// them, so that libav opens no file that such a list names; nor is text, which the demuxers of
-/// pictures drawn in text would take for one.
-pub const DEMUXERS: [&str; 13] = [
+/// (`columbina.video.media.DEMUXERS`), and what that list lacks: MPEG-PS (`mpeg`, of DVDs and
+/// cameras), MXF (`mxf`, of broadcast and cinema cameras: `OP1a`, and `OP-Atom`, whose essence is
+/// in the file read), and stills of TIFF and `OpenEXR` (`tiff_pipe`, `exr_pipe`, a picture each,
+/// as PNG). It is a list of what may be read, not of what may not: a list of other files, such as
+/// an HLS playlist or a list of `concat`, is of none of them, so that libav opens no file that
+/// such a list names (and an `image2` pattern names no others); nor is text, which the demuxers
+/// of pictures drawn in text would take for one. None of these opens another file or address:
+/// MXF reads the essence of its own file only, and only `file:` may be opened at all.
+pub const DEMUXERS: [&str; 16] = [
     "mov",
     "matroska",
     "avi",
     "mpegts",
     "mpeg",
+    "mxf",
     "wav",
     "mp3",
     "flac",
@@ -204,6 +361,8 @@ pub const DEMUXERS: [&str; 13] = [
     "png_pipe",
     "jpeg_pipe",
     "webp_pipe",
+    "tiff_pipe",
+    "exr_pipe",
 ];
 
 /// Refuse a path that a project cannot hold, or that libav cannot be given.
@@ -380,13 +539,36 @@ fn picture(stream: &Stream) -> Result<VideoFacts, MediaError> {
         })
         .unwrap_or(8);
     Ok(VideoFacts {
+        still: false,
         width,
         height,
         rate,
         codec: stream.parameters().id().name().to_owned(),
         bits,
         rotation: rotation(stream),
+        color: Some(color::of_stream(
+            stream,
+            ffi::pixel_of_number(parameters.format),
+        )),
     })
+}
+
+/// The colours of the picture of a file, with what its first frame says where the stream may
+/// lack it: the side data of HDR, which an encoder may write in the frames only (as x265 writes
+/// it, in SEI). The first frame is decoded on the processor for that, and only for a picture of
+/// PQ or HLG that lacks it; a frame that cannot be decoded leaves the colours of the stream.
+fn from_first_frame(path: &Path, stream: ColorFacts) -> ColorFacts {
+    if !color::wants_frame(&stream) {
+        return stream;
+    }
+    let first = VideoDecoder::open(path, Hardware::Off)
+        .and_then(|mut decoder| decoder.next_decoded())
+        .ok()
+        .flatten();
+    match first {
+        Some(first) => color::merged(&stream, &first.color()),
+        None => stream,
+    }
 }
 
 /// The sound of a file.
@@ -404,6 +586,9 @@ fn sound(stream: &Stream) -> Result<AudioFacts, MediaError> {
         rate,
         channels,
         codec: stream.parameters().id().name().to_owned(),
+        // Filled in by `sound_facts` for the sound of a file.
+        layout: None,
+        streams: None,
     })
 }
 

@@ -21,6 +21,7 @@ conversation.
 
 from columbina.agent import AGENTS
 from columbina.apps import FRONTEND
+from columbina.apps.effort import SOURCE, told_by
 from columbina.apps.serve.server import Config, Server
 from columbina.commands import COMMANDS, Command
 from columbina.kernel import Context
@@ -40,4 +41,6 @@ def apply(ctx: Context, config: Config) -> None:
     commands.registry.add(
         ctx, "effort", Command(server.effort, "Show how hard the model thinks, or choose a level.")
     )
+    # The agent of the conversation is told how to work at ultra, and no other.
+    ctx.use(AGENTS).context.add(ctx, SOURCE, told_by(server.how_to_work))
     ctx.provide(FRONTEND, server)

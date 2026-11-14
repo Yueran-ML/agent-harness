@@ -82,6 +82,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const missing = (file: string) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
   // The files that are not there, beside the folders that are gone. Every other file is.
   const absent = new Set<string>();
+  // What a folder lists, by its path, where a test says; any other lists nothing.
+  const listed = new Map<string, string[]>();
   // Whether the application starts with the system, as the system keeps it.
   const loginItem = { openAtLogin: false };
   const app = Object.assign(new EventEmitter(), {
@@ -98,7 +100,10 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       return path.resolve(`/columbina-test/${name}`);
     }),
   });
-  const dialog = { showOpenDialog: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }) };
+  const dialog = {
+    showOpenDialog: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }),
+    showSaveDialog: vi.fn().mockResolvedValue({ canceled: true }),
+  };
   const sent: [string, unknown][] = [];
   // Every window that the shell opened, the main one first.
   const windows: any[] = [];
@@ -160,6 +165,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   // The runs of an assistant, `columbina feishu --json` or `columbina wecom --json`, which write their
   // lines through a reader of lines too, and end when the test says so.
   const bots: any[] = [];
+  // The runs of `columbina video migrate`, which end when the test says so.
+  const migrations: any[] = [];
   const lineReaders: any[] = [];
   const setup = {
     answer: ((): SetupRun => ({ out: '{"use": null, "services": []}\n', code: 0 })) as (args: string[], input: string) => SetupRun | null,
@@ -223,8 +230,22 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       });
       return child;
     }
+    if (args.includes('video') && (args.includes('migrate') || args.includes('migration-duck'))) {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 800 + migrations.length, exitCode: null as number | null, signalCode: null, executable: _executable, args, options,
+        stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: Object.assign(new EventEmitter(), { end: vi.fn() }), killed: false,
+      });
+      migrations.push(child);
+      return child;
+    }
     if (args.includes('/pid')) {
-      engines.kill(Number(args[args.indexOf('/pid') + 1]));
+      const pid = Number(args[args.indexOf('/pid') + 1]);
+      const migration = migrations.find(each => each.pid === pid);
+      if (migration) {
+        migration.killed = true;
+        queueMicrotask(() => migration.emit('close', 1, null));
+      }
+      engines.kill(pid);
       return Object.assign(new EventEmitter(), { killed: args });
     }
     // The engine of the studio, which is started for a project and never headless.
@@ -273,6 +294,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       drive.set(path.resolve(to), { ...source });
     }),
     mkdir: vi.fn(async (_folder: string, _options?: unknown) => undefined),
+    readdir: vi.fn(async (folder: string) => [...(listed.get(path.resolve(folder)) ?? [])]),
     writeFile: vi.fn(async (to: string, text: string, options?: { flag?: string }) => {
       if (options?.flag === 'wx' && drive.has(path.resolve(to))) throw there(to);
       drive.set(path.resolve(to), { size: String(text).length });
@@ -348,6 +370,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     'node:fs': {
       constants: { COPYFILE_EXCL: 1 },
       existsSync: (file: string) => !absent.has(path.resolve(file)), mkdirSync, realpathSync,
+      readdirSync: (folder: string) => [...(listed.get(path.resolve(folder)) ?? [])],
       statSync: (value: string) => {
         if (gone.has(path.resolve(value))) throw missing(value);
         return { isDirectory: () => true };
@@ -380,7 +403,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     __dirname: path.dirname(mainPath),
     process: shellProcess,
     // The clock of the tests, so that a test that sets it sets it for the shell too.
-    URL, setTimeout, clearTimeout, Date, AbortSignal, ...clock,
+    URL, setTimeout, clearTimeout, Date, AbortSignal, AbortController, ...clock,
   }, { filename: mainPath });
   await Promise.resolve();
   // A second application of Columbina makes no window, and nothing calls it.
@@ -415,10 +438,10 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     // Do once what the shell does again and again every so many milliseconds.
     again: (ms: number) => { for (const one of [...repeated.values()]) if (one.ms === ms) one.act(); },
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, mkdirSync, disk, drive, file, sent,
-    dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
+    dialog, files, gone, absent, listed, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions, trays, pictures,
     setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, wecomWindow, asWecomWindow, menu, logins, signIns, bots,
-    lineReaders, engines,
+    lineReaders, engines, migrations,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -3834,6 +3857,423 @@ describe('the engine of the studio', () => {
   /** The connections that reached an engine: the main one, then the one of the view, of each engine in turn. */
   const connections = (shell: Shell) => shell.engines.sockets.filter(socket => socket.server !== null);
 
+  it('renders only to the file chosen in Save As, and never takes a path or overwrite permission from the page', async () => {
+    const shell = await shellHarness();
+    const options = { timeline: 't1', codec: 'hevc', quality: 'high', subtitle_tracks: ['S2', 'S1', 'S2'], range: { from: 10, to: 50 }, language: 'zh-CN' };
+    expect(await shell.invoke('engine-render', options)).toMatchObject({ ok: false });
+    expect(shell.dialog.showSaveDialog).not.toHaveBeenCalled();
+    await openIn(shell);
+    const [main] = connections(shell);
+    shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ result: { job: 'render-1' } }));
+    const chosen = path.resolve('/exports/chosen.mp4');
+    // Nothing is there yet: there is nothing to replace.
+    shell.absent.add(chosen);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    expect(await shell.invoke('engine-render', { ...options, path: '/unselected/precious.mp4', replace: true }))
+      .toEqual({ ok: true, result: { job: 'render-1' } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'render.start', params: {
+      timeline: 't1', path: chosen, codec: 'hevc', quality: 'high', subtitle_tracks: ['S2', 'S1'], range: { from: 10, to: 50 }, replace: false,
+    } });
+    // The SRT of each subtitle track named once, and no `subtitles` of earlier drafts, which the engine refuses.
+    expect(Object.keys(main.written.at(-1)!.params).sort()).toEqual(['codec', 'path', 'quality', 'range', 'replace', 'subtitle_tracks', 'timeline']);
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)).toEqual([shell.window, expect.objectContaining({
+      title: '导出时间线', filters: [{ name: 'MP4 / MOV', extensions: ['mp4', 'mov'] }],
+    })]);
+    const count = main.written.length;
+    expect(await shell.invoke('engine-render', options)).toEqual({ ok: true, result: { cancelled: true } });
+    expect(main.written.length).toBe(count);
+    await expect(shell.invoke('engine-call', { method: 'render.start', params: { path: chosen } })).rejects.toThrow('no method');
+    let choose!: (value: unknown) => void;
+    shell.dialog.showSaveDialog.mockReturnValueOnce(new Promise(resolve => { choose = resolve; }));
+    const pending = shell.invoke('engine-render', options);
+    await openIn(shell, '/another-film');
+    choose({ canceled: false, filePath: chosen });
+    expect(await pending).toMatchObject({ ok: false, error: { message: 'The project of the studio was closed meanwhile.' } });
+    expect(connections(shell)[2].methods()).not.toContain('render.start');
+  });
+
+  it('attaches and keeps both native monitors independently, including after a page reload', async () => {
+    const shell = await shellHarness();
+    const { cwd } = await openIn(shell);
+    const [, view] = connections(shell);
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 10, y: 20, width: 640, height: 360 });
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 650, y: 20, width: 640, height: 360 });
+    await settledAll();
+    expect(view.written.filter(request => request.method === 'view.attach').map(request => request.params.monitor))
+      .toEqual(['source', 'timeline']);
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { monitor: 'source', shown: false } });
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 670, y: 30, width: 640, height: 360 });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { monitor: 'timeline', x: 670 } });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    expect(view.written.slice(-2).map(request => request.params)).toEqual([
+      { monitor: 'source', shown: false }, { monitor: 'timeline', shown: false },
+    ]);
+    await shell.invoke('engine-open', { cwd });
+    expect(told(shell).slice(-2).map(event => [event.kind, event.monitor])).toEqual([['attached', 'source'], ['attached', 'timeline']]);
+    const count = view.written.length;
+    for (const monitor of [undefined, null, 'program', '__proto__']) {
+      expect(() => shell.invoke('engine-view-rect', { monitor, x: 0, y: 0, width: 1, height: 1 })).toThrow('monitor');
+      await expect(shell.invoke('engine-call', { method: 'transport.seek', params: { monitor, frame: 1 } })).rejects.toThrow('monitor');
+    }
+    expect(view.written.length).toBe(count);
+  });
+
+  it('validates export settings before the dialog and keeps a refusal from the engine intact', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const options = { timeline: 't1', codec: 'prores', quality: 'medium', subtitle_tracks: [] };
+    for (const patch of [{ timeline: '' }, { codec: 'gif' }, { quality: 'lossless' }, { subtitle_tracks: true }, { subtitle_tracks: 'S1' },
+      { subtitle_tracks: ['S1', 2] }, { subtitle_tracks: [''] }, { subtitle_tracks: Array.from({ length: 65 }, (_, at) => `S${at}`) },
+      { range: null }, { range: { from: -1, to: 10 } }, { range: { from: 1, to: 1 } }, { range: { from: 0.5, to: 10 } }]) {
+      await expect(shell.invoke('engine-render', { ...options, ...patch })).rejects.toThrow();
+    }
+    expect(shell.dialog.showSaveDialog).not.toHaveBeenCalled();
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: 'relative.mov' });
+    await expect(shell.invoke('engine-render', options)).rejects.toThrow('whole output path');
+    const [main] = connections(shell);
+    expect(main.methods()).not.toContain('render.start');
+    const chosen = path.resolve('/exports/existing.mov');
+    const error = { code: -32001, message: 'An output already exists.', data: { reason: 'exists', path: chosen } };
+    shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ error }));
+    // The file is there, and Save As asked to replace it: but a partial file beside it was not asked
+    // of. The export is refused naming that file, not the film just confirmed, and the engine is not asked.
+    shell.listed.set(path.resolve('/exports'), ['existing.mov', 'Existing.mov.part']);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    const part = path.join(path.resolve('/exports'), 'Existing.mov.part');
+    expect(await shell.invoke('engine-render', options)).toEqual({ ok: false, error: { code: -32001, message: `${part} is there already.`, data: { reason: 'part_exists', path: part } } });
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].filters).toEqual([{ name: 'MOV', extensions: ['mov'] }]);
+    expect(main.methods()).not.toContain('render.start');
+    // The engine's own refusal is handed on as it is.
+    shell.listed.set(path.resolve('/exports'), ['existing.mov']);
+    shell.absent.add(chosen);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    expect(await shell.invoke('engine-render', options)).toEqual({ ok: false, error });
+    expect(main.written.at(-1)!.params).toEqual({ timeline: 't1', codec: 'prores', quality: 'medium', subtitle_tracks: [], path: chosen, replace: false });
+  });
+
+  it('opens Save As in the project folder named after the timeline, and replaces only what Save As confirmed', async () => {
+    const shell = await shellHarness();
+    const { cwd } = await openIn(shell);
+    const [main] = connections(shell);
+    let jobs = 0;
+    shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ result: { job: `render-${++jobs}` } }));
+    const options = { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: ['S1'], name: 'Cut: "final"?' };
+    const exports = path.resolve('/exports');
+    const chosen = path.join(exports, 'film.mp4');
+    // Whether the export replaces what is there; or the file beside it that it is refused for, the engine not asked.
+    const render = async (listing: string[], patch = {}) => {
+      shell.listed.set(exports, listing);
+      shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+      const asked = main.written.length;
+      const answer = await shell.invoke('engine-render', { ...options, ...patch });
+      if (!answer.ok) {
+        expect(main.written.slice(asked).map(each => each.method)).not.toContain('render.start');
+        expect(answer.error.code).toBe(-32001);
+        return `${answer.error.data.reason} ${path.basename(answer.error.data.path)}`;
+      }
+      return main.written.at(-1)!.params.replace;
+    };
+    // The file chosen is there: Windows asked whether to replace it, and the user said so.
+    expect(await render(['film.mp4', 'notes.txt', 'other.srt'])).toBe(true);
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].defaultPath).toBe(path.join(cwd, 'Cut_ _final__.mp4'));
+    // An SRT, the .mov of a ProRes fallback or a partial file beside it was not asked of.
+    expect(await render(['film.mp4', 'FILM.srt'])).toBe('exists FILM.srt');
+    expect(await render(['film.mp4', 'film.en.srt'])).toBe('exists film.en.srt');
+    expect(await render(['film.mp4', 'film.mov'])).toBe('exists film.mov');
+    expect(await render(['film.mp4', 'film.mp4.part'])).toBe('part_exists film.mp4.part');
+    // Without subtitle tracks an SRT is not written, and ProRes has no fallback.
+    expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: [] })).toBe(true);
+    expect(await render(['film.mp4', 'film.mov'], { codec: 'prores' })).toBe(true);
+    // Where the engine tells the timeline, the SRT files are named as it names them: one track is
+    // `<stem>.srt`, more are `<stem>.<language, else name>.srt`; another SRT beside it is not in the way.
+    const subtitle = (id: string, language: string, name = id) => ({ id, kind: 'subtitle', name, language, enabled: id === 'S1', locked: false, cues: [] });
+    shell.engines.servers.get(main.address)!.answers.set('project.get', () => ({ result: { revision: 3, project: { timelines: [
+      { id: 't1', tracks: [{ id: 'v1', kind: 'video' }, subtitle('S1', 'en'), subtitle('S2', 'fr'), subtitle('S3', '', 'Notes: draft'), subtitle('S4', 'EN')] },
+    ] } } }));
+    expect(await render(['film.mp4', 'film.fr.srt', 'film.srt'], { subtitle_tracks: ['S3', 'S1'] })).toBe(true);
+    expect(await render(['film.mp4', 'film.en.srt'], { subtitle_tracks: ['S3', 'S1'] })).toBe('exists film.en.srt');
+    expect(await render(['film.mp4', 'FILM.Notes_ draft.srt.part'], { subtitle_tracks: ['S3', 'S1'] })).toBe('part_exists FILM.Notes_ draft.srt.part');
+    expect(await render(['film.mp4', 'film.EN-2.srt'], { subtitle_tracks: ['S1', 'S4'] })).toBe('exists film.EN-2.srt');
+    expect(await render(['film.mp4', 'film.fr.srt'], { subtitle_tracks: ['S2'] })).toBe(true);
+    expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: ['S2'] })).toBe('exists film.srt');
+    // render.start is held to the revision that the names were worked out at.
+    expect(await render(['film.mp4'], { subtitle_tracks: ['S3', 'S1'] })).toBe(true);
+    expect(main.written.at(-1)!.params.revision).toBe(3);
+    // Another client changed the language of S1 meanwhile: the engine refuses the export as stale,
+    // and it is prepared again by the project as it is now, whose SRT is in the way.
+    const server = shell.engines.servers.get(main.address)!;
+    let revision = 3;
+    const timelines = (language: string) => [{ id: 't1', tracks: [subtitle('S1', language), subtitle('S3', '', 'Notes: draft')] }];
+    server.answers.set('project.get', () => ({ result: { revision, project: { timelines: timelines(revision === 3 ? 'en' : 'fr') } } }));
+    server.answers.set('render.start', (params: { revision?: number }) => {
+      if (params.revision !== 4) { revision = 4; return { error: { code: -32001, message: 'stale', data: { reason: 'stale_revision', expected: params.revision, actual: 4 } } }; }
+      return { result: { job: `render-${++jobs}` } };
+    });
+    shell.listed.set(exports, ['film.mp4', 'film.fr.srt']);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    const fr = path.join(exports, 'film.fr.srt');
+    expect(await shell.invoke('engine-render', { ...options, subtitle_tracks: ['S3', 'S1'] }))
+      .toEqual({ ok: false, error: { code: -32001, message: `${fr} is there already.`, data: { reason: 'exists', path: fr } } });
+    // Asked once, at revision 3, which the engine refused.
+    expect(main.written.filter(each => each.method === 'render.start').at(-1)!.params).toMatchObject({ revision: 3, replace: true });
+    // Where nothing is in the way of the names at the new revision, it is started at that one.
+    revision = 3;
+    expect(await render(['film.mp4'], { subtitle_tracks: ['S3', 'S1'] })).toBe(true);
+    expect(main.written.filter(each => each.method === 'render.start').slice(-2).map(each => each.params.revision)).toEqual([3, 4]);
+    // An engine that stays stale is not asked without end: its refusal is handed on.
+    server.answers.set('render.start', (params: { revision?: number }) => ({ error: { code: -32001, message: 'stale', data: { reason: 'stale_revision', expected: params.revision, actual: 9 } } }));
+    const asked = main.written.filter(each => each.method === 'render.start').length;
+    shell.listed.set(exports, ['film.mp4']);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    expect(await shell.invoke('engine-render', { ...options, subtitle_tracks: ['S3', 'S1'] })).toMatchObject({ ok: false, error: { data: { reason: 'stale_revision' } } });
+    expect(main.written.filter(each => each.method === 'render.start').length - asked).toBe(3);
+    server.answers.set('render.start', () => ({ result: { job: `render-${++jobs}` } }));
+    // A file that is not there replaces nothing.
+    shell.absent.add(chosen);
+    expect(await render([])).toBe(false);
+    // A name that is no name of a file is not suggested.
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true });
+    await shell.invoke('engine-render', { ...options, name: 'CON' });
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].defaultPath).toBe(path.join(cwd, '_CON.mp4'));
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true });
+    await shell.invoke('engine-render', { ...options, name: undefined, codec: 'prores' });
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].defaultPath).toBe(path.join(cwd, 'export.mov'));
+    // The page cancels the exports that it started, and no other (such as an agent's).
+    shell.engines.servers.get(main.address)!.answers.set('render.cancel', () => ({ result: {} }));
+    expect(await shell.invoke('engine-call', { method: 'render.cancel', params: { job: 'render-2' } })).toEqual({ ok: true, result: {} });
+    for (const job of ['render-99', undefined, 7]) {
+      await expect(shell.invoke('engine-call', { method: 'render.cancel', params: { job } })).rejects.toThrow('only an export that it started');
+    }
+    expect(main.written.filter(request => request.method === 'render.cancel')).toHaveLength(1);
+  });
+
+  describe('and the old projects of its folder', () => {
+    const service = { COLUMBINA_SERVICE_EXECUTABLE: python };
+    /** End a run of `video migrate`, with what it writes, and how it ends. */
+    const ended = async (run: any, out: unknown, code = 0, stderr = '') => {
+      if (stderr) run.stderr.emit('data', Buffer.from(stderr, 'utf8'));
+      if (out !== undefined) run.stdout.emit('data', Buffer.from(`warming up\n${typeof out === 'string' ? out : JSON.stringify(out)}\n`, 'utf8'));
+      run.exitCode = code;
+      run.emit('close', code, null);
+      await settledAll();
+    };
+    const migratedOf = (shell: Shell) => told(shell).filter(event => event.kind === 'migrated');
+    const film = path.resolve('/film/old-film');
+
+    it('answers migration duck only for the open session without accepting a renderer path', async () => {
+      const shell = await shellHarness(undefined, service); const {cwd} = await openIn(shell);
+      await ended(shell.migrations[0], {migrations: [{source:film,timeline:'t3',dropped:['duck: omitted'],duck_pending:true,existing:true}]});
+      expect(migratedOf(shell).at(-1).migrations[0]).toMatchObject({duck_pending:true,existing:true});
+      await expect(shell.invoke('migration-duck',{session:0,timeline:'t3',accept:true})).rejects.toThrow('no longer open');
+      await expect(shell.invoke('migration-duck',{session:1,timeline:'t3',accept:true,workspace:'/elsewhere'})).rejects.toThrow('only session');
+      await expect(shell.invoke('migration-duck',{session:1,timeline:'../t3',accept:true})).rejects.toThrow('only session');
+      const answer=shell.invoke('migration-duck',{session:1,timeline:'t3',accept:true});await settledAll();
+      const run=shell.migrations[1];expect(run.args).toEqual(['-m','columbina','video','migration-duck','--workspace',cwd,'--timeline','t3','--answer','yes','--json']);
+      expect(run.options.cwd).toBe(cwd);expect(run.options.env.COLUMBINA_ENGINE).toBe(builtEngine());expect(run.options.windowsHide).toBe(true);
+      await expect(shell.invoke('migration-duck',{session:1,timeline:'t3',accept:false})).rejects.toThrow('pending answer');
+      await ended(run,{timeline:'t3',duck_prompted:true,status:'applied'});expect(await answer).toMatchObject({ok:true,result:{duck_prompted:true}});
+      const retry=shell.invoke('migration-duck',{session:1,timeline:'t3',accept:false});await settledAll();await ended(shell.migrations[2],{error:'stale project'},2);
+      expect(await retry).toMatchObject({ok:false,error:{message:'stale project'}});
+      const late=shell.invoke('migration-duck',{session:1,timeline:'t3',accept:true});await settledAll();const running=shell.migrations[3];
+      await shell.invoke('engine-close');expect(running.killed).toBe(true);expect(await late).toMatchObject({ok:false});
+    });
+
+    it('are migrated once the engine is open, by the program of the service, beside the studio, and the page is told', async () => {
+      const shell = await shellHarness(undefined, service);
+      const { cwd, answer } = await openIn(shell);
+      // The studio was opened without waiting for the migration.
+      expect(answer).toMatchObject({ session: 1, owned: true });
+      expect(shell.migrations).toHaveLength(1);
+      const [run] = shell.migrations;
+      expect(run.executable).toBe(python);
+      expect(run.args).toEqual(['-m', 'columbina', 'video', 'migrate', '--workspace', cwd, '--json']);
+      // In the folder, with the engine of the window, which it reaches through the lock of the project.
+      expect(run.options.cwd).toBe(cwd);
+      expect(run.options.env.COLUMBINA_ENGINE).toBe(builtEngine());
+      expect(run.options.windowsHide).toBe(true);
+      expect(migratedOf(shell)).toEqual([]);
+      await ended(run, { migrations: [{ source: film, timeline: 't3', at: '2026-10-30T00:00:00Z', media: { a1: 'm4' }, dropped: ['duck: speech ducking comes in phase 3'] }] });
+      expect(migratedOf(shell)).toEqual([{
+        kind: 'migrated', session: 1, error: null,
+        migrations: [{ source: film, timeline: 't3', dropped: ['duck: speech ducking comes in phase 3'], warnings: [] }],
+      }]);
+      // Nothing is left to do in that folder: it is not looked at again while the application runs.
+      await shell.invoke('engine-close');
+      await shell.invoke('engine-open', { cwd });
+      await settledAll();
+      expect(shell.engines.children).toHaveLength(2);
+      expect(shell.migrations).toHaveLength(1);
+      // A page that is loaded again finds the engine as it was, and nothing is migrated anew.
+      await shell.invoke('engine-open', { cwd });
+      expect(shell.migrations).toHaveLength(1);
+    });
+
+    it('tell of each project that could not be migrated, with why, and are tried again the next time', async () => {
+      const shell = await shellHarness(undefined, service);
+      const { cwd } = await openIn(shell);
+      const talk = path.resolve('/film/talk');
+      await ended(shell.migrations[0], {
+        migrations: [
+          { source: film, timeline: 't3', dropped: [], warnings: ['migration committed as t3; marker: denied'] },
+          { source: talk, error: `cannot migrate ${talk}: legacy source a1 changed since import` },
+        ],
+      }, 1);
+      expect(migratedOf(shell).at(-1)).toEqual({
+        kind: 'migrated', session: 1, error: null, migrations: [
+          { source: film, timeline: 't3', dropped: [], warnings: ['migration committed as t3; marker: denied'] },
+          { source: talk, error: `cannot migrate ${talk}: legacy source a1 changed since import` },
+        ],
+      });
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      expect(shell.migrations).toHaveLength(2);
+      // Where nothing was left to do, nothing is told.
+      await ended(shell.migrations[1], { migrations: [] });
+      expect(migratedOf(shell)).toHaveLength(1);
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      expect(shell.migrations).toHaveLength(2);
+    });
+
+    it('say why they could not be looked at, and never hold up the studio', async () => {
+      const shell = await shellHarness(undefined, service);
+      const { cwd } = await openIn(shell);
+      await ended(shell.migrations[0], { error: 'another client is migrating this Studio project; try again later' }, 2);
+      expect(migratedOf(shell).at(-1)).toEqual({ kind: 'migrated', session: 1, migrations: [], error: 'another client is migrating this Studio project; try again later' });
+      expect(await shell.invoke('engine-call', { method: 'project.get' })).toMatchObject({ ok: true });
+      // A run that says nothing that is read is told of by the last line it wrote of itself.
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      await ended(shell.migrations[1], undefined, 1, 'Traceback (most recent call last):\nModuleNotFoundError: No module named columbina\n');
+      expect(migratedOf(shell).at(-1)).toEqual({ kind: 'migrated', session: 2, migrations: [], error: 'ModuleNotFoundError: No module named columbina' });
+      // One that could not be started is told of too, and the studio is open all the same.
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      shell.migrations[2].emit('error', new Error('spawn ENOENT'));
+      await settledAll();
+      expect(migratedOf(shell).at(-1)).toMatchObject({ session: 3, error: 'The old projects could not be looked at: spawn ENOENT' });
+      // What does not say what it is is passed over: a report is a document of known fields.
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      await ended(shell.migrations[3], { migrations: [{ source: film, timeline: 7, dropped: 'all', error: null, secret: 'x' }, 'junk'] });
+      expect(migratedOf(shell).at(-1)!.migrations).toEqual([{ source: film, dropped: [], warnings: [] }, { source: '', dropped: [], warnings: [] }]);
+    });
+
+    it('are stopped with the studio, and told of no more', async () => {
+      const shell = await shellHarness(undefined, service);
+      await openIn(shell);
+      const [run] = shell.migrations;
+      await openIn(shell, '/another-film');
+      await settledAll();
+      expect(run.killed).toBe(true);
+      expect(shell.spawn.mock.calls.some(([program, args]) => program === 'taskkill.exe' && args.includes(String(run.pid)))).toBe(true);
+      expect(migratedOf(shell)).toEqual([]);
+      // The other folder is migrated in its turn, and the first is tried again when it is opened again.
+      expect(shell.migrations).toHaveLength(2);
+      await ended(shell.migrations[1], { migrations: [] });
+      await openIn(shell, '/film');
+      expect(shell.migrations).toHaveLength(3);
+    });
+
+    it('are not looked at without a service to look with, nor outside Windows', async () => {
+      // In development without a service, the shell replays: there is no program to migrate with.
+      const replay = await shellHarness();
+      await openIn(replay);
+      expect(replay.migrations).toEqual([]);
+      // A package that lost its Python has none either; the studio opens all the same.
+      const lost = await shellHarness(undefined, {}, { packaged: true });
+      lost.absent.add(path.join(resources, 'python', 'python.exe'));
+      await expect(openIn(lost)).resolves.toMatchObject({ answer: { session: 1 } });
+      expect(lost.migrations).toEqual([]);
+      for (const platform of ['darwin', 'linux'] as const) {
+        const elsewhere = await shellHarness(undefined, service, { platform });
+        const cwd = await elsewhere.select('/film');
+        await expect(elsewhere.invoke('engine-open', { cwd })).rejects.toThrow('only on Windows');
+        await settledAll();
+        expect(elsewhere.migrations).toEqual([]);
+      }
+    });
+  });
+
+  it('shows in its folder only the file of an export that the window started, where the engine said it wrote it', async () => {
+    const shell = await shellHarness();
+    await expect(shell.invoke('engine-reveal', { job: 'render-1' })).resolves.toBe(false);
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('render.start', () => ({ result: { job: 'render-1' } }));
+    const chosen = path.resolve('/exports/film.mp4');
+    shell.absent.add(chosen);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    await shell.invoke('engine-render', { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: [] });
+    shell.absent.delete(chosen);
+    expect(await shell.invoke('engine-reveal', { job: 'render-1' })).toBe(true);
+    expect(shell.system.showItemInFolder).toHaveBeenLastCalledWith(chosen);
+    // Where the computer had no encoder for H.264, the engine wrote ProRes into a .mov, and says so.
+    const fallback = path.resolve('/exports/film.mov');
+    server.notify('render.progress', { job: 'render-1', state: 'done', frame: 10, frames: 10, fps: 30, path: fallback, encoder: 'prores_ks' });
+    await settledAll();
+    expect(await shell.invoke('engine-reveal', { job: 'render-1' })).toBe(true);
+    expect(shell.system.showItemInFolder).toHaveBeenLastCalledWith(fallback);
+    // A job of another (an agent's), a path that the page names, or a file that is gone: nothing is shown.
+    const count = shell.system.showItemInFolder.mock.calls.length;
+    server.notify('render.progress', { job: 'render-2', state: 'done', frame: 1, frames: 1, fps: 1, path: path.resolve('/agent/out.mp4') });
+    await settledAll();
+    for (const asked of [{ job: 'render-2' }, { job: fallback }, { path: fallback }, {}, null]) expect(await shell.invoke('engine-reveal', asked)).toBe(false);
+    shell.absent.add(fallback);
+    expect(await shell.invoke('engine-reveal', { job: 'render-1' })).toBe(false);
+    expect(shell.system.showItemInFolder.mock.calls.length).toBe(count);
+  });
+
+  it('opens in the file manager only a folder that the engine lists as a root of LUTs', async () => {
+    const shell = await shellHarness();
+    const project = path.resolve('/film/.columbina/studio');
+    const library = path.resolve('/home/me/.columbina/luts');
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(false);
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('luts.list', () => ({ result: { roots: [
+      { place: 'project', path: project, exists: true }, { place: 'library', path: library, exists: true },
+    ], luts: [], truncated: false } }));
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(true);
+    expect(shell.system.openPath).toHaveBeenLastCalledWith(library);
+    expect(main.written.at(-1)).toMatchObject({ method: 'luts.list' });
+    expect(await shell.invoke('engine-open-lut-folder', { path: project })).toBe(true);
+    expect(shell.system.openPath).toHaveBeenLastCalledWith(project);
+    // Any other path, one below a root or above it, a relative one or none, is not opened.
+    const count = shell.system.openPath.mock.calls.length;
+    for (const asked of [
+      { path: path.join(library, 'Film') }, { path: path.dirname(library) }, { path: path.resolve('/Windows/System32') },
+      { path: 'luts' }, { path: `${library}${path.sep}..` }, { root: 1 }, {}, null,
+    ]) expect(await shell.invoke('engine-open-lut-folder', asked)).toBe(false);
+    // A root that is not there, or an engine that lists none, opens nothing either.
+    shell.gone.add(library);
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(false);
+    shell.gone.delete(library);
+    server.answers.set('luts.list', () => ({ error: { code: -32601, message: 'no such method' } }));
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(false);
+    expect(shell.system.openPath.mock.calls.length).toBe(count);
+    // What the file manager says it could not do is told.
+    server.answers.set('luts.list', () => ({ result: { roots: [{ place: 'library', path: library, exists: true }], luts: [], truncated: false } }));
+    shell.system.openPath.mockResolvedValueOnce('No application opens folders.');
+    await expect(shell.invoke('engine-open-lut-folder', { path: library })).rejects.toThrow('No application opens folders.');
+  });
+
+  it('refuses a transaction of the page that says whether media is a still picture', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const count = main.written.length;
+    for (const still of [true, false, null]) {
+      await expect(shell.invoke('engine-call', { method: 'transaction.apply', params: { ops: [{ op: 'set_media', id: 'm1', still }] } }))
+        .rejects.toThrow('still picture');
+    }
+    expect(main.written.length).toBe(count);
+  });
+
   it('opens only a folder that was chosen, in a project of its own there, with an engine that it starts', async () => {
     const shell = await shellHarness();
     await expect(shell.invoke('engine-open', { cwd: path.resolve('/unchosen') })).rejects.toThrow('native folder dialog');
@@ -3855,7 +4295,7 @@ describe('the engine of the studio', () => {
     expect(child.stderr.listenerCount('data')).toBe(1);
     // Two connections, each of which said hello as the desktop.
     const [main, view] = connections(shell);
-    for (const socket of [main, view]) expect(socket.written[0]).toMatchObject({ method: 'hello', params: { client: 'desktop', protocol: 1 } });
+    for (const socket of [main, view]) expect(socket.written[0]).toMatchObject({ method: 'hello', params: { client: 'desktop', protocol: 2 } });
   });
 
   it('keeps the engine of a folder that is open, and closes it before it opens another', async () => {
@@ -3875,22 +4315,232 @@ describe('the engine of the studio', () => {
     ]);
   });
 
+  it('lets go the scopes of a page that is loaded again or gone, and keeps those of the page that is there', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    let made = 0;
+    shell.engines.servers.get(main.address)!.answers.set('scopes.subscribe', () => ({ result: { scope_id: `scope-${++made}` } }));
+    for (let at = 0; at < 3; at++) await shell.invoke('engine-call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } });
+    await shell.invoke('engine-call', { method: 'scopes.unsubscribe', params: { scope_id: 'scope-2' } });
+    const unsubscribed = () => main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id);
+    // Navigations that load no other page let none go.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-2']);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-2', 'scope-1', 'scope-3']);
+    // Let go once: the new page's scopes are its own.
+    await shell.invoke('engine-call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'parade' } } });
+    shell.window.webContents.emit('render-process-gone');
+    shell.window.webContents.emit('render-process-gone');
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-2', 'scope-1', 'scope-3', 'scope-4']);
+  });
+
+  it('ends a Live Preview that a page left on as it is loaded again or gone', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const ended = () => main.written.filter(request => request.method === 'viewer.preview' && request.params?.on === false).length;
+    const preview = { method: 'viewer.preview', params: { grade: { level: 'clip', timeline: 't1', clip: 'c1' }, node: 'n1', lut: 'Film/Look.cube' } };
+    // A page that previewed nothing leaves nothing to end.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(0);
+    await shell.invoke('engine-call', preview);
+    // Navigations that load no other page end none.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    await settledAll();
+    expect(ended()).toBe(0);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(1);
+    // Ended once: the new page's previews are its own.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(1);
+    // A page that crashed is the same.
+    await shell.invoke('engine-call', preview);
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    await settledAll();
+    expect(ended()).toBe(2);
+  });
+
+  it('closes the window of the scopes as the main window is put away in the tray', async () => {
+    const shell = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python });
+    const set = { set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: true, running: false, state: null, code: null, error: null };
+    shell.setup.answer = (args) => (args.includes('--status')
+      ? { out: `${JSON.stringify(set)}\n`, code: 0 }
+      : { out: `${JSON.stringify({ writable: true })}\n`, code: 0 });
+    await openIn(shell);
+    const [main] = connections(shell);
+    shell.engines.servers.get(main.address)!.answers.set('scopes.subscribe', () => ({ result: { scope_id: 'scope-1' } }));
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true });
+    const scopes = shell.windows.at(-1);
+    await shell.handlers.get('columbina-scopes:call')!({ sender: scopes.webContents, senderFrame: scopes.webContents.mainFrame },
+      { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } });
+    await shell.invoke('feishu-start');
+    shell.window.emit('close', { preventDefault: vi.fn() });
+    expect(shell.window.hide).toHaveBeenCalledOnce();
+    // Over nothing, it would measure for no one.
+    expect(scopes.close).toHaveBeenCalledOnce();
+    await settledAll();
+    expect(main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id)).toEqual(['scope-1']);
+    expect(told(shell).filter(event => event.kind === 'scopes-window')).toEqual([{ kind: 'scopes-window', open: false, session: 1 }]);
+  });
+
+  it('lets go a scope that the window of the scopes subscribed as it was closed or loaded again', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('scopes.subscribe', () => 'hold');
+    const unsubscribed = () => main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id);
+    const asker = (window: any) => (name: string, ...args: unknown[]) => shell.handlers.get(`columbina-scopes:${name}`)!(
+      { sender: window.webContents, senderFrame: window.webContents.mainFrame }, ...args);
+    const subscribe = { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } };
+    // Closed while it subscribes: the scope it gets is let go at once, and is not one of the next window.
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true });
+    const first = shell.windows.at(-1);
+    const asked = asker(first)('call', subscribe);
+    await settledAll();
+    await asker(first)('close');
+    server.answerHeld('scopes.subscribe', { result: { scope_id: 'scope-1' } });
+    await asked;
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1']);
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true });
+    const second = shell.windows.at(-1);
+    expect(await asker(second)('call', { method: 'scopes.set', params: { scope_id: 'scope-1', settings: {} } })).toMatchObject({ ok: false });
+    // Loaded again while it subscribes: the same.
+    const again = asker(second)('call', subscribe);
+    await settledAll();
+    second.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    server.answerHeld('scopes.subscribe', { result: { scope_id: 'scope-2' } });
+    await again;
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1', 'scope-2']);
+    // The scope of the window that is there, asked and answered, is its own.
+    const kept = asker(second)('call', subscribe);
+    await settledAll();
+    server.answerHeld('scopes.subscribe', { result: { scope_id: 'scope-3' } });
+    expect(await kept).toEqual({ ok: true, result: { scope_id: 'scope-3' } });
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1', 'scope-2']);
+    await asker(second)('close');
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1', 'scope-2', 'scope-3']);
+  });
+
+  it('opens the floating scopes in a window of their own, which reaches the engine for its own scopes alone and gets their pictures alone', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    let made = 0;
+    server.answers.set('scopes.subscribe', () => ({ result: { scope_id: `scope-${++made}` } }));
+    // The page's own scope, docked.
+    await shell.invoke('engine-call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'parade' } } });
+    const before = shell.windows.length;
+    expect(await shell.invoke('engine-scopes-window', { open: true, loaded: true, language: 'ja', bounds: { x: 10, y: 20, width: 700, height: 400 } }))
+      .toEqual({ open: true });
+    const scopes = shell.windows[before];
+    expect(shell.windows).toHaveLength(before + 1);
+    expect(scopes.options).toMatchObject({
+      parent: shell.window, x: 10, y: 20, width: 700, height: 400, minWidth: 240, minHeight: 180, show: false,
+      webPreferences: { preload: path.resolve(path.dirname(mainPath), 'scopes-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+    });
+    expect(scopes.loadFile).toHaveBeenCalledWith(path.resolve(path.dirname(mainPath), '../dist/scopes.html'));
+    expect(scopes.webContents.setWindowOpenHandler).toHaveBeenCalled();
+    // Asked again, it is told what it measures, and no other is made.
+    await shell.invoke('engine-scopes-window', { open: true, loaded: false, language: 'zh-CN' });
+    expect(shell.windows).toHaveLength(before + 1);
+    expect(shell.sent.filter(([channel]) => channel === 'columbina-scopes:context').at(-1)![1])
+      .toEqual({ session: 1, loaded: false, language: 'zh-CN', theme: 'moonveil' });
+    const as = (name: string, ...args: unknown[]) => shell.handlers.get(`columbina-scopes:${name}`)!(
+      { sender: scopes.webContents, senderFrame: scopes.webContents.mainFrame }, ...args);
+    expect(await as('context')).toEqual({ session: 1, loaded: false, language: 'zh-CN', theme: 'moonveil' });
+    // The main window, or a frame of another page, is not the window of the scopes.
+    expect(() => shell.handlers.get('columbina-scopes:context')!(shell.event)).toThrow('not the window of the scopes');
+    expect(() => shell.handlers.get('columbina-scopes:context')!({ sender: scopes.webContents, senderFrame: { url: 'file:///elsewhere/scopes.html' } }))
+      .toThrow('not the window of the scopes');
+    // Its own scopes: subscribed, set and let go; nothing else of the engine, and none of the page's.
+    expect(await as('call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } }))
+      .toEqual({ ok: true, result: { scope_id: 'scope-2' } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } });
+    for (const method of ['transaction.apply', 'view.sample', 'project.get', 'scopes.statistics', 7]) {
+      await expect(as('call', { method, params: {} })).rejects.toThrow('may call');
+    }
+    await expect(as('call', { method: 'scopes.set', params: [1] })).rejects.toThrow('is an object');
+    expect(await as('call', { method: 'scopes.unsubscribe', params: { scope_id: 'scope-1' } })).toMatchObject({ ok: false });
+    expect(await as('call', { method: 'scopes.set', params: { scope_id: 'scope-1', settings: {} } })).toMatchObject({ ok: false });
+    // The pictures of its scope go to it alone; those of the page's to the page.
+    shell.sent.length = 0;
+    server.notify('scopes.frame', { scope_id: 'scope-2', width: 2, height: 2, picture: 'AAAA' });
+    server.notify('scopes.frame', { scope_id: 'scope-1', width: 2, height: 2, picture: 'BBBB' });
+    await settledAll();
+    expect(shell.sent.filter(([channel]) => channel === 'columbina-scopes:event').map(([, value]) => (value as any).params.scope_id)).toEqual(['scope-2']);
+    expect(told(shell).filter(event => event.method === 'scopes.frame').map(event => event.params.scope_id)).toEqual(['scope-1']);
+    // Closed by itself: its scopes let go, the page's kept, and the page told.
+    await as('close');
+    await settledAll();
+    const unsubscribed = () => main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id);
+    expect(unsubscribed()).toEqual(['scope-2']);
+    expect(told(shell).filter(event => event.kind === 'scopes-window')).toEqual([{ kind: 'scopes-window', open: false, session: 1 }]);
+    // Opened again and closed by the page; and closed as the page is loaded again.
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true, language: 'en', bounds: { x: 1, y: 1, width: 10, height: 10 } });
+    const again = shell.windows.at(-1);
+    expect(again.options).not.toHaveProperty('x');
+    expect(again.options).toMatchObject({ width: 640, height: 420 });
+    expect(await shell.invoke('engine-scopes-window', { open: false })).toEqual({ open: false });
+    expect(again.close).toHaveBeenCalledOnce();
+    await shell.invoke('engine-scopes-window', { open: true });
+    const third = shell.windows.at(-1);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    expect(third.close).toHaveBeenCalledOnce();
+  });
+
   it('lets the page call the methods that it may, and no other', async () => {
     const shell = await shellHarness();
     expect(await shell.invoke('engine-call', { method: 'project.get' })).toMatchObject({ ok: false, error: { code: null } });
     await openIn(shell);
     const [main, view] = connections(shell);
     const allowed = [
-      'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'transport.load', 'transport.play',
+      'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'luts.list', 'view.display', 'view.viewport', 'transport.load', 'transport.play',
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
+      'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics', 'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
+      'view.sample', 'view.pointer', 'window.bind', 'window.input', 'window.unbind',
+      // The Gallery and the comparisons of the viewer (T26, T27).
+      'viewer.wipe', 'viewer.split', 'still.grab', 'still.get', 'still.apply', 'still.label', 'still.delete', 'still.move',
+      'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',
+      // Highlight, Bypass Color and the graded thumbnails of the Color page (T21, T13d).
+      'viewer.highlight', 'viewer.bypass', 'timeline.thumbnail',
+      // Window presets (T23).
+      'window_presets.list', 'window_presets.save', 'window_presets.update', 'window_presets.delete', 'window_presets.apply',
+      // The LUT browser's previews and the Color Viewer LUT of the Color page (wave E).
+      'luts.preview', 'viewer.preview', 'viewer.lut',
+      // The Tracker palette and the keys of the Color › Tracker menu (T24).
+      'track.start', 'track.stop', 'track.edit',
+      // The meters and the analyses of sound (phase 3, T9b).
+      'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.level_profile', 'audio.cancel',
+      'audio.eq_response', 'audio.dynamics_curve', 'audio.fx_meters', 'audio.soft_clip_curve', 'audio.noise_learn',
+      'audio_presets.list', 'audio_presets.save', 'audio_presets.update', 'audio_presets.delete',
+      // The recording of automation (T16), and the rest of it (T16b).
+      'automation.record', 'automation.touch', 'automation.punch', 'automation.punch_out',
+      'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy', 'clips.copy',
     ];
     for (const method of allowed) {
-      const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3 };
+      const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };
       expect(await shell.invoke('engine-call', { method, params })).toEqual({ ok: true, result: {} });
-      expect(main.written.at(-1)).toMatchObject({ method, params });
+      expect((method === 'scopes.statistics' ? view : main).written.at(-1)).toMatchObject({ method, params });
     }
     const sent = main.written.length + view.written.length;
-    for (const method of ['view.attach', 'view.detach', 'media.import', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
+    for (const method of ['render.start', 'view.attach', 'view.detach', 'media.import', 'still.import', 'still.export', 'grade.export_lut', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
       await expect(shell.invoke('engine-call', { method, params: {} })).rejects.toThrow('no method of the engine');
     }
     for (const params of [[1], 'ops', 3]) {
@@ -3904,6 +4554,157 @@ describe('the engine of the studio', () => {
     expect(await shell.invoke('engine-call', { method: 'transaction.apply', params: { ops: [] } })).toEqual({
       ok: false, error: { code: -32001, message: 'the clip covers frames that clip c1 covers', data: { reason: 'overlap', with: 'c1', index: 0 } },
     });
+  });
+
+  it('measures through the view connection while gesture transactions use the main connection', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main, view] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('scopes.statistics', () => 'hold');
+    const measuring = shell.invoke('engine-call', { method: 'scopes.statistics', params: { timeline: 't1', frame: 0, bins: 1024 } });
+    await settledAll();
+    expect(view.written.at(-1)).toMatchObject({ method: 'scopes.statistics' });
+    expect(main.methods()).not.toContain('scopes.statistics');
+    const params = { revision: 0, gesture: { id: 'match-1' }, ops: [{ op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', label: '' }] };
+    expect(await shell.invoke('engine-call', { method: 'transaction.apply', params })).toEqual({ ok: true, result: {} });
+    expect(main.written.at(-1)).toMatchObject({ method: 'transaction.apply', params });
+    expect(server.held).toHaveLength(1);
+    server.answerHeld('scopes.statistics', { result: { frame: 0 } });
+    expect(await measuring).toEqual({ ok: true, result: { frame: 0 } });
+    // A pending measurement belongs to this engine, and is rejected when a new project opens.
+    const interrupted = shell.invoke('engine-call', { method: 'scopes.statistics', params: { timeline: 't1', frame: 1 } });
+    await settledAll();
+    await openIn(shell, '/next-film');
+    expect(await interrupted).toMatchObject({ ok: false });
+    expect(view.destroyed).toBe(true);
+    const [, freshView] = connections(shell).slice(-2);
+    expect(await shell.invoke('engine-call', { method: 'scopes.statistics', params: { timeline: 't1', frame: 2 } })).toEqual({ ok: true, result: {} });
+    expect(freshView.written.at(-1)).toMatchObject({ method: 'scopes.statistics', params: { timeline: 't1', frame: 2 } });
+  });
+
+  it('refuses a late old-session edit or measurement before touching either new-engine connection', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const old = told(shell).filter(each => each.kind === 'opened').at(-1)!.session;
+    await openIn(shell, '/next-film');
+    const fresh = told(shell).filter(each => each.kind === 'opened').at(-1)!.session;
+    const [main, view] = connections(shell).slice(-2);
+    for (const [method, params, connection] of [
+      ['transaction.apply', { revision: 0, ops: [{ op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', label: '' }] }, main],
+      ['scopes.statistics', { view: 'timeline' }, view],
+      ['window.bind', { monitor: 'timeline', revision: 0, timeline: 't1', target: { level: 'clip', timeline: 't1', clip: 'c1' }, clip: 'c1', node: 'n1', selected: 'w1', visible: true, outline: true, tool: 'window' }, main],
+      ['window.input', { binding: 1, kind: 'down', event: 2 }, main],
+      ['window.unbind', { binding: 1 }, main],
+      ['view.pointer', { monitor: 'timeline', on: false }, main],
+    ] as const) {
+      const before = main.written.length + view.written.length;
+      expect(await shell.invoke('engine-call', { method, params, expectedSession: old })).toMatchObject({ ok: false });
+      expect(main.written.length + view.written.length).toBe(before);
+      expect(await shell.invoke('engine-call', { method, params, expectedSession: fresh })).toMatchObject({ ok: true });
+      expect(connection.written.at(-1)).toMatchObject({ method, params });
+      expect(connection.written.at(-1)!.params).not.toHaveProperty('expectedSession');
+    }
+  });
+
+  it('lets a comparison of the viewer name a still by its id, never a file', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const named = { on: true, reference: { kind: 'still', still: 's3' } };
+    expect(await shell.invoke('engine-call', { method: 'viewer.wipe', params: named })).toEqual({ ok: true, result: {} });
+    expect(main.written.at(-1)).toMatchObject({ method: 'viewer.wipe', params: named });
+    const split = { items: [{ kind: 'current' }, { kind: 'still', still: 'ps1' }, { kind: 'clip', clip: 'c2' }] };
+    expect(await shell.invoke('engine-call', { method: 'viewer.split', params: split })).toEqual({ ok: true, result: {} });
+    const sent = main.written.length;
+    for (const [method, params] of [
+      ['viewer.wipe', { reference: { kind: 'still', path: 'C:\\secret.png' } }],
+      ['viewer.wipe', { reference: { kind: 'still', still: 's1', path: 'C:\\secret.png' } }],
+      ['viewer.split', { items: [{ kind: 'current' }, { kind: 'still', path: 'C:\\secret.exr' }] }],
+    ] as const) {
+      await expect(shell.invoke('engine-call', { method, params })).rejects.toThrow('by its id, not a file');
+    }
+    expect(main.written.length).toBe(sent);
+  });
+
+  it('imports stills only from pictures chosen in the dialog, and exports them where Save As says, by the name typed there', async () => {
+    const shell = await shellHarness();
+    expect(await shell.invoke('engine-still-import', { language: 'en' })).toMatchObject({ ok: false });
+    expect(await shell.invoke('engine-still-export', { language: 'en', stills: ['s1'] })).toMatchObject({ ok: false });
+    expect(shell.dialog.showOpenDialog).not.toHaveBeenCalled();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('still.import', params => ({ result: { added: params.paths.map((_: string, at: number) => ({ id: `s${at + 1}` })) } }));
+    server.answers.set('still.export', () => ({ result: { written: [] } }));
+    const chosen = [path.resolve('/looks/day.png'), path.resolve('/looks/night.exr')];
+    shell.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [...chosen, 'relative.png'] });
+    // Whatever paths the page names are no part of it.
+    expect(await shell.invoke('engine-still-import', { language: 'zh-CN', album: 'a2', paths: ['C:\\secret.png'] }))
+      .toEqual({ ok: true, result: { added: [{ id: 's1' }, { id: 's2' }] } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'still.import', params: { paths: chosen, album: 'a2' } });
+    const [over, options] = shell.dialog.showOpenDialog.mock.calls.at(-1)!;
+    expect(over).toBe(shell.window);
+    expect(options.title).toBe('导入静帧');
+    expect(options.properties).toEqual(['openFile', 'multiSelections']);
+    expect(options.filters[0].extensions).toEqual(['png', 'tif', 'tiff', 'exr']);
+    // Nothing chosen is nothing imported; an album is named by its id.
+    const asked = main.written.length;
+    expect(await shell.invoke('engine-still-import', { language: 'en' })).toEqual({ ok: true, result: null });
+    expect(main.written.length).toBe(asked);
+    for (const album of ['', 3, {}]) await expect(shell.invoke('engine-still-import', { album })).rejects.toThrow('Name an album by its id.');
+    // Export: the folder and the name that Save As gave, the name the prefix of each file; nothing there is replaced.
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: path.resolve('/out/Show.png') });
+    expect(await shell.invoke('engine-still-export', { language: 'ja', stills: ['s1', 'ps2'], dir: 'C:\\elsewhere' })).toEqual({ ok: true, result: { written: [] } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'still.export', params: { stills: ['s1', 'ps2'], dir: path.resolve('/out'), prefix: 'Show' } });
+    expect(main.written.at(-1)!.params.replace).toBeUndefined();
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].title).toBe('スチルを書き出す');
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true, filePath: '' });
+    const before = main.written.length;
+    expect(await shell.invoke('engine-still-export', { language: 'en', stills: ['s1'] })).toEqual({ ok: true, result: null });
+    expect(main.written.length).toBe(before);
+    for (const stills of [undefined, [], [''], [3], 's1']) {
+      await expect(shell.invoke('engine-still-export', { stills })).rejects.toThrow('Name the stills to export by their ids.');
+    }
+  });
+
+  it('generates a LUT of the grade the page names where Save As says, opening in the library of LUTs', async () => {
+    const shell = await shellHarness();
+    expect(await shell.invoke('engine-export-lut', { language: 'en', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, size: 33 })).toMatchObject({ ok: false });
+    expect(shell.dialog.showSaveDialog).not.toHaveBeenCalled();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    const library = path.resolve('/home/.columbina/luts');
+    server.answers.set('luts.list', () => ({ result: { roots: [{ place: 'project', path: path.resolve('/film/.columbina/studio'), exists: true },
+      { place: 'library', path: library, exists: true }], luts: [], truncated: false } }));
+    server.answers.set('grade.export_lut', params => ({ result: { path: params.path, name: 'Day.cube', size: params.size, nodes: ['n1'], ignored: [] } }));
+    const chosen = path.resolve('/home/.columbina/luts/Day.cube');
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    // Whatever path the page names is no part of it; Save As asked before a file is replaced.
+    expect(await shell.invoke('engine-export-lut', { language: 'zh-CN', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, size: 33, node: 'n2',
+      frame: 12, name: 'Day', path: 'C:/secret.cube', replace: false })).toMatchObject({ ok: true, result: { path: chosen } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'grade.export_lut', params: {
+      grade: { level: 'clip', timeline: 't1', clip: 'c1' }, size: 33, path: chosen, replace: true, node: 'n2', frame: 12 } });
+    const [over, options] = shell.dialog.showSaveDialog.mock.calls.at(-1)!;
+    expect(over).toBe(shell.window);
+    expect(options.title).toBe('生成 LUT');
+    expect(options.defaultPath).toBe(path.join(library, 'Day.cube'));
+    expect(options.filters[0].extensions).toEqual(['cube']);
+    // Linux asks before a file is replaced only where it is told to (replace: true rests on it).
+    expect(options.properties).toEqual(['showOverwriteConfirmation']);
+    // Nothing chosen is nothing written.
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true, filePath: '' });
+    const before = main.written.filter(each => each.method === 'grade.export_lut').length;
+    expect(await shell.invoke('engine-export-lut', { language: 'en', grade: { level: 'timeline', timeline: 't1' }, size: 65 })).toEqual({ ok: true, result: null });
+    expect(main.written.filter(each => each.method === 'grade.export_lut')).toHaveLength(before);
+    // A grade named by what is not its target, a size of no cube, a node or a frame that is not one.
+    for (const asked of [
+      { grade: 't1', size: 33 }, { grade: { level: 'clip', path: 'C:/x' }, size: 33 }, { grade: { timeline: 't1' }, size: 33 },
+    ]) await expect(shell.invoke('engine-export-lut', asked)).rejects.toThrow('Name the grade');
+    await expect(shell.invoke('engine-export-lut', { grade: { level: 'timeline', timeline: 't1' }, size: 32 })).rejects.toThrow('17, 33 or 65');
+    await expect(shell.invoke('engine-export-lut', { grade: { level: 'timeline', timeline: 't1' }, size: 17, node: 3 })).rejects.toThrow('Name a node');
+    await expect(shell.invoke('engine-export-lut', { grade: { level: 'timeline', timeline: 't1' }, size: 17, frame: 1.5 })).rejects.toThrow('whole number');
   });
 
   it('lets a transaction of the page name no file: no media that it adds, and no proxy that it sets', async () => {
@@ -3977,26 +4778,46 @@ describe('the engine of the studio', () => {
     expect(main.written.length).toBe(asked);
   });
 
+  it('imports the chosen files into a bin and passes an engine refusal back without retrying in Master', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const chosen = [path.resolve('/media/selected.mov')];
+    const refused = { code: -32001, message: 'bin b3 no longer exists', data: { reason: 'not_found' } };
+    shell.engines.servers.get(main.address)!.answers.set('media.import', () => ({ error: refused }));
+    shell.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: chosen });
+    expect(await shell.invoke('engine-import', { language: 'en', bin: 'b3', paths: ['secret.mp4'] }))
+      .toEqual({ ok: false, error: refused });
+    expect(main.written.filter(message => message.method === 'media.import')).toEqual([
+      expect.objectContaining({ method: 'media.import', params: { paths: chosen, bin: 'b3' } }),
+    ]);
+    const asked = shell.dialog.showOpenDialog.mock.calls.length;
+    for (const bin of ['', null, 3, {}, []]) {
+      await expect(shell.invoke('engine-import', { bin })).rejects.toThrow('Name a bin by its id.');
+    }
+    expect(shell.dialog.showOpenDialog).toHaveBeenCalledTimes(asked);
+  });
+
   it('makes the view where the page keeps the viewer, in the window, on a connection of its own', async () => {
     const shell = await shellHarness();
     // Before an engine is open, the viewer is only remembered.
-    await shell.invoke('engine-view-rect', { x: 10, y: 20, width: 640, height: 360 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 10, y: 20, width: 640, height: 360 });
     await openIn(shell);
     const [main, view] = connections(shell);
     // The handle as the engine reads it: the 8 bytes of the window, in decimal, whole.
     expect(shell.window.getNativeWindowHandle).toHaveBeenCalled();
     expect(view.written.at(-1)).toMatchObject({ method: 'view.attach', params: { parent: '18446744069414588980', x: 10, y: 20, width: 640, height: 360 } });
-    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, adapter: null, backend: null });
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 800, height: 450 });
-    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { x: 0, y: 0, width: 800, height: 450 } });
-    await shell.invoke('engine-view-show', { shown: false });
+    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 800, height: 450 });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { monitor: 'source', x: 0, y: 0, width: 800, height: 450 } });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { shown: false } });
     const sent = view.written.length;
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     expect(view.written.length).toBe(sent);
     // The page may move the view with a call too, which the shell remembers as well.
-    expect(await shell.invoke('engine-call', { method: 'view.place', params: { x: 1, y: 2, width: 3, height: 4 } })).toEqual({ ok: true, result: {} });
-    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { x: 1, y: 2, width: 3, height: 4 } });
+    expect(await shell.invoke('engine-call', { method: 'view.place', params: { monitor: 'source', x: 1, y: 2, width: 3, height: 4 } })).toEqual({ ok: true, result: {} });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { monitor: 'source', x: 1, y: 2, width: 3, height: 4 } });
     // Nothing of the view goes on the main connection.
     expect(main.methods().filter(method => method?.startsWith('view.'))).toEqual([]);
     // Whole pixels of the screen, at or after the corner, and no larger than the engine draws.
@@ -4016,21 +4837,21 @@ describe('the engine of the studio', () => {
     const [, view] = connections(shell);
     const server = shell.engines.servers.get(view.address)!;
     server.answers.set('view.attach', () => 'hold');
-    await shell.invoke('engine-view-rect', { x: 1, y: 1, width: 100, height: 100 });
-    await shell.invoke('engine-view-rect', { x: 2, y: 2, width: 200, height: 200 });
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 1, y: 1, width: 100, height: 100 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 2, y: 2, width: 200, height: 200 });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(1);
     server.answerHeld('view.attach', { result: { adapter: 'NVIDIA GeForce RTX 4080', backend: 'Dx12' } });
     await settledAll();
     expect(view.methods().slice(-3)).toEqual(['view.attach', 'view.show', 'view.place']);
     expect(view.written.at(-1)).toMatchObject({ params: { x: 2, y: 2, width: 200, height: 200 } });
-    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, adapter: 'NVIDIA GeForce RTX 4080', backend: 'Dx12' });
+    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, monitor: 'source', adapter: 'NVIDIA GeForce RTX 4080', backend: 'Dx12' });
   });
 
   it('makes no view while the page keeps it hidden, and hides one made meanwhile before it says so', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-show', { shown: false });
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     await openIn(shell);
     const [, view] = connections(shell);
     await settledAll();
@@ -4038,21 +4859,21 @@ describe('the engine of the studio', () => {
     expect(view.methods().filter(method => method?.startsWith('view.'))).toEqual([]);
     const server = shell.engines.servers.get(view.address)!;
     server.answers.set('view.attach', () => 'hold');
-    await shell.invoke('engine-view-show', { shown: true });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
     expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(1);
     // Something comes to lie over it while it is made: it is hidden before the page is told of it.
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     const toldBefore = told(shell).length;
     server.answerHeld('view.attach', { result: { adapter: null, backend: null } });
     await settledAll();
     expect(view.methods().slice(-2)).toEqual(['view.attach', 'view.show']);
     expect(view.written.at(-1)).toMatchObject({ params: { shown: false } });
-    expect(told(shell).slice(toldBefore)).toEqual([{ kind: 'attached', session: 1, adapter: null, backend: null }]);
+    expect(told(shell).slice(toldBefore)).toEqual([{ kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null }]);
   });
 
   it('makes the view again for an engine that is opened anew, and where its window was let go', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     const { cwd } = await openIn(shell);
     await shell.invoke('engine-close');
     await shell.invoke('engine-open', { cwd });
@@ -4062,35 +4883,43 @@ describe('the engine of the studio', () => {
     // A view whose window is gone is made again where the page keeps the viewer.
     const [, view] = connections(shell).slice(2);
     shell.engines.servers.get(view.address)!.answers.set('view.place', () => ({ error: { code: -32003, message: 'the view is gone', data: { reason: 'gone' } } }));
-    await shell.invoke('engine-view-rect', { x: 5, y: 5, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 5, y: 5, width: 320, height: 180 });
     await settledAll();
     expect(view.methods().slice(-2)).toEqual(['view.place', 'view.attach']);
     expect(view.written.at(-1)).toMatchObject({ params: { x: 5, y: 5 } });
   });
 
-  it('says on macOS that the engine makes no view there, and keeps the menu of the application', async () => {
-    const socket = '/tmp/columbina-0/0123456789abcdef.sock';
-    const mac = await shellHarness(undefined, {}, { platform: 'darwin' });
-    expect(mac.window.removeMenu).not.toHaveBeenCalled();
-    mac.engines.starts.push({ listen: socket });
-    const { answer } = await openIn(mac);
-    expect(answer.owned).toBe(true);
-    expect(mac.engines.children[0].program).toBe(builtEngine('columbina-engine'));
-    expect(mac.engines.children[0].options.detached).toBe(true);
-    const [, view] = connections(mac);
-    mac.engines.servers.get(socket)!.answers.set('view.attach', () => ({
-      error: { code: -32003, message: 'views are not made on this system', data: { reason: 'unsupported' } },
-    }));
-    await mac.invoke('engine-view-rect', { x: 0, y: 0, width: 400, height: 180 });
-    await settledAll();
-    expect(told(mac).at(-1)).toEqual({ kind: 'unsupported', session: 1, reason: 'unsupported', message: 'views are not made on this system' });
-    const sent = view.written.length;
-    await mac.invoke('engine-view-rect', { x: 0, y: 0, width: 500, height: 180 });
-    await mac.invoke('engine-view-show', { shown: false });
-    expect(view.written.length).toBe(sent);
-    // On Windows the window has no menu, which would take the top of its client area.
+  it('starts no engine outside Windows, refuses every request for one, and keeps the menu of macOS', async () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const elsewhere = await shellHarness(undefined, {}, { platform });
+      if (platform === 'darwin') expect(elsewhere.window.removeMenu).not.toHaveBeenCalled();
+      elsewhere.engines.starts.push({ listen: '/tmp/columbina-0/0123456789abcdef.sock' });
+      const cwd = await elsewhere.select('/film');
+      await expect(elsewhere.invoke('engine-open', { cwd })).rejects.toThrow('only on Windows for now. macOS will come later.');
+      for (const [name, asked] of [
+        ['engine-call', { method: 'project.get' }],
+        ['engine-import', {}],
+        ['engine-still-import', {}],
+        ['engine-still-export', { stills: ['s1'] }],
+        ['engine-render', { timeline: 't1', codec: 'hevc', quality: 'high', subtitle_tracks: [] }],
+        ['engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 400, height: 180 }],
+        ['engine-view-show', { monitor: 'source', shown: true }],
+      ] as const) {
+        await expect(Promise.resolve().then(() => elsewhere.invoke(name, asked))).rejects.toThrow('only on Windows for now');
+      }
+      await settledAll();
+      expect(elsewhere.engines.children).toEqual([]);
+      expect(connections(elsewhere)).toEqual([]);
+      expect(elsewhere.dialog.showOpenDialog).toHaveBeenCalledTimes(1);
+      expect(elsewhere.dialog.showSaveDialog).not.toHaveBeenCalled();
+      // Closing what is not open is nothing.
+      await expect(elsewhere.invoke('engine-close')).resolves.toBeUndefined();
+    }
+    // On Windows the window has no menu, which would take the top of its client area, and the studio opens.
     const windows = await shellHarness();
     expect(windows.window.removeMenu).toHaveBeenCalledOnce();
+    await expect(openIn(windows)).resolves.toMatchObject({ answer: { session: 1, owned: true } });
+    expect(windows.engines.children).toHaveLength(1);
   });
 
   it('reaches the engine of an agent that has the project open, and says that it has no view', async () => {
@@ -4099,7 +4928,7 @@ describe('the engine of the studio', () => {
     const agents = shell.engines.serve('\\\\.\\pipe\\columbina-engine-fedcba9876543210', studioOf(cwd), 31);
     agents.answers.set('view.attach', () => ({ error: { code: -32601, message: 'no such method' } }));
     shell.engines.starts.push({ held: agents.address });
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     await expect(shell.invoke('engine-open', { cwd })).resolves.toMatchObject({ owned: false, pid: 31 });
     await settledAll();
     expect(told(shell).at(-1)).toMatchObject({ kind: 'unsupported', reason: 'headless' });
@@ -4223,15 +5052,15 @@ describe('the engine of the studio', () => {
 
   it('tells a page that was loaded again how the view stands, and hides the view until it says where the viewer is', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     const { cwd } = await openIn(shell);
     const [, view] = connections(shell);
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     // The page is loaded again: the native view would stay over it.
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
     // Hidden already; nothing more is sent.
     expect(view.methods().filter(method => method === 'view.show')).toHaveLength(1);
-    await shell.invoke('engine-view-show', { shown: true });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
@@ -4239,10 +5068,10 @@ describe('the engine of the studio', () => {
     // The new page opens its project again, and hears how the view stands.
     await shell.invoke('engine-open', { cwd });
     expect(told(shell).slice(-2)).toEqual([
-      expect.objectContaining({ kind: 'opened', session: 1 }), { kind: 'attached', session: 1, adapter: null, backend: null },
+      expect.objectContaining({ kind: 'opened', session: 1 }), { kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null },
     ]);
     // Shown again only once it says where the viewer is.
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 330, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 330, height: 180 });
     expect(view.methods().slice(-2)).toEqual(['view.place', 'view.show']);
     expect(view.written.at(-1)).toMatchObject({ params: { shown: true } });
     // A page that crashed is the same.
@@ -4252,14 +5081,14 @@ describe('the engine of the studio', () => {
 
   it('takes no late word of a view that was made before for the one there is', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     await openIn(shell);
     const [, view] = connections(shell);
     const server = shell.engines.servers.get(view.address)!;
     // Two moves go out; the first is answered that the view is gone, which makes it again.
     server.answers.set('view.place', () => 'hold');
-    await shell.invoke('engine-view-rect', { x: 1, y: 0, width: 320, height: 180 });
-    await shell.invoke('engine-view-rect', { x: 2, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 1, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 2, y: 0, width: 320, height: 180 });
     const gone = { error: { code: -32003, message: 'the view is gone', data: { reason: 'gone' } } };
     server.answerHeld('view.place', gone);
     await settledAll();
@@ -4288,40 +5117,63 @@ describe('the engine of the studio', () => {
       shell.window.webContents.emit('before-input-event', event, { type: 'keyDown', control: false, shift: false, alt: false, meta: false, ...input });
       return event.preventDefault.mock.calls.length === 1;
     };
+    // The page did not take the key: it hands it back, as the shell describes keys.
+    const left = (shell: Shell, input: Record<string, unknown>) => shell.invoke('left-key', { control: false, shift: false, alt: false, meta: false, code: '', ...input });
     const shell = await shellHarness();
     const page = shell.window.webContents;
-    expect(press(shell, { control: true, key: '=' })).toBe(true);
-    expect(press(shell, { control: true, shift: true, key: '+' })).toBe(true);
+    // The keys that the studio uses go to the page first: the shell does nothing with them as they come.
+    for (const input of [{ control: true, key: '=' }, { control: true, shift: true, key: '+' }, { control: true, key: '-' }, { control: true, key: '0' },
+      { control: true, code: 'Numpad0', key: 'Insert' }, { key: 'F11' }, { key: 'F12' }]) {
+      expect(press(shell, input)).toBe(false);
+    }
+    expect(page.setZoomLevel).not.toHaveBeenCalled();
+    expect(shell.window.setFullScreen).not.toHaveBeenCalled();
+    expect(page.toggleDevTools).not.toHaveBeenCalled();
+    // Where the page left them, the shell does what the menu did.
+    expect(left(shell, { control: true, key: '=' })).toBe(true);
+    expect(left(shell, { control: true, shift: true, key: '+' })).toBe(true);
     expect(page.setZoomLevel.mock.calls).toEqual([[0.5], [1]]);
     // The page measures the viewer again: the pixels of the screen that it covers changed.
     expect(told(shell).at(-1)).toEqual({ kind: 'measure', session: null });
-    expect(press(shell, { control: true, key: '-' })).toBe(true);
-    expect(press(shell, { control: true, code: 'Numpad0', key: 'Insert' })).toBe(true);
+    expect(left(shell, { control: true, key: '-' })).toBe(true);
+    expect(left(shell, { control: true, code: 'Numpad0', key: 'Insert' })).toBe(true);
     expect(page.setZoomLevel.mock.calls.slice(2)).toEqual([[0.5], [0]]);
-    expect(press(shell, { key: 'F11' })).toBe(true);
+    expect(left(shell, { key: 'F11' })).toBe(true);
     expect(shell.window.setFullScreen).toHaveBeenCalledWith(true);
+    expect(left(shell, { key: 'F12' })).toBe(true);
+    expect(page.toggleDevTools).toHaveBeenCalledTimes(1);
+    // Loading again and the tools by Ctrl+Shift+I are the shell's at once, also where the page does not answer.
     expect(press(shell, { control: true, key: 'r' })).toBe(true);
     expect(page.reload).toHaveBeenCalledOnce();
     expect(press(shell, { control: true, shift: true, key: 'I' })).toBe(true);
-    expect(press(shell, { key: 'F12' })).toBe(true);
+    expect(page.toggleDevTools).toHaveBeenCalledTimes(2);
+    // A page cannot have those done by handing them back, nor anything that the menu did not do.
+    for (const input of [{ control: true, key: 'r' }, { control: true, shift: true, key: 'I' }, { key: 'a', control: true }, { key: '=', control: true, alt: true }, { key: '0' }, { key: 'F10' }]) {
+      expect(left(shell, input)).toBe(false);
+    }
+    expect(page.reload).toHaveBeenCalledOnce();
     expect(page.toggleDevTools).toHaveBeenCalledTimes(2);
     // Other keys are the page's, and so is a key let go.
-    for (const input of [{ key: 'a', control: true }, { key: '=', control: true, alt: true }, { key: 'F11', type: 'keyUp' }, { key: '0' }]) {
+    for (const input of [{ key: 'a', control: true }, { key: '=', control: true, alt: true }, { key: 'F11', type: 'keyUp' }, { key: '0' }, { key: 'F10' }]) {
       expect(press(shell, input)).toBe(false);
     }
+    // Only the window of the application hands keys back.
+    await expect(Promise.resolve().then(() => shell.handlers.get('columbina:left-key')!(shell.unrelated, { key: 'F11' }))).rejects.toThrow('IPC sender');
     // A package does not load its page again, nor show its tools.
     const packaged = await shellHarness(undefined, {}, { packaged: true });
     expect(press(packaged, { control: true, key: 'r' })).toBe(false);
-    expect(press(packaged, { key: 'F12' })).toBe(false);
-    expect(press(packaged, { control: true, key: '=' })).toBe(true);
+    expect(left(packaged, { key: 'F12' })).toBe(false);
+    expect(packaged.window.webContents.toggleDevTools).not.toHaveBeenCalled();
+    expect(left(packaged, { control: true, key: '=' })).toBe(true);
     // macOS keeps its menu, and the keys are its own.
     const mac = await shellHarness(undefined, {}, { platform: 'darwin' });
     expect(mac.window.webContents.listenerCount('before-input-event')).toBe(0);
+    expect(left(mac, { key: 'F11' })).toBe(false);
   });
 
   it('answers only its own window', async () => {
     const shell = await shellHarness();
-    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
+    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-still-import', 'engine-still-export', 'engine-export-lut', 'engine-render', 'engine-reveal', 'engine-open-lut-folder', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
       await expect(Promise.resolve().then(() => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, { cwd: path.resolve('/film') })))
         .rejects.toThrow('IPC sender');
     }

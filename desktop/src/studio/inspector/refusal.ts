@@ -1,0 +1,28 @@
+import type { Messages } from '../../messages/en';
+import { EngineError } from '../engine';
+
+/** Why the engine refused a change, said in one sentence, and the longest transition that fits where it says one. */
+export interface Refusal { reason: string | null; text: string; longest: number | null }
+
+/**
+ * The sentence for a refusal of the engine: by its reason (`hint.studio.edit.*`, or one that the
+ * caller says better for its own panel), else the general one with what the engine said.
+ */
+export function refusalOf(error: unknown, words: Messages['hint']['studio'], overrides: Partial<Record<string, string>> = {}): Refusal {
+  const data = error instanceof EngineError && error.data && typeof error.data === 'object' ? error.data as { reason?: unknown; longest?: unknown } : null;
+  const reason = typeof data?.reason === 'string' ? data.reason : null;
+  const sentences = words.edit;
+  const text = reason !== null && overrides[reason] ? overrides[reason]!
+    : reason !== null && Object.hasOwn(sentences, reason) ? sentences[reason as keyof typeof sentences]
+      : `${sentences.failed}${error instanceof Error ? ` ${error.message}` : ''}`;
+  const longest = reason === 'no_handles' && typeof data?.longest === 'number' && data.longest > 0 ? data.longest : null;
+  return { reason, text, longest };
+}
+
+/** The refusal in a line: its sentence, and the longest transition that fits after it. */
+export function refusalText(error: unknown, words: Messages['hint']['studio']): string {
+  const { text, longest } = refusalOf(error, words);
+  if (longest === null) return text;
+  const more = words.inspector.longest(longest);
+  return /[。．]$/.test(text) ? `${text}${more}` : `${text} ${more}`;
+}

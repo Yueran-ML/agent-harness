@@ -1,0 +1,48 @@
+[package]
+name = "columbina-audio"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The module `testing`: the check that a node's output does not depend on how the sound is cut
+# into blocks, the allocator that counts, the test nodes and the signals, for the tests of this
+# crate and of the crates that use it.
+# The allocations of the C++ of the stretch are counted too (`columbina-stretch`'s
+# `count-allocations`).
+testing = ["columbina-stretch/count-allocations"]
+
+[dependencies]
+# The project that the graph is built from (src/graph/build.rs), and its resolved clips.
+columbina-model = { path = "../model" }
+# The transforms of Fourier of real signals (src/fft.rs), and the complex numbers of their spectra.
+realfft.workspace = true
+rustfft.workspace = true
+# The ring between one thread that writes and one that reads (src/rt/ring.rs).
+rtrb.workspace = true
+# The settings of a strip as the model lists them for its lanes, to tell a change that the graph
+# takes as it plays from one that needs another graph (src/graph/build_retune.rs).
+serde_json.workspace = true
+thiserror.workspace = true
+# RNNoise, the voice mode of Noise Reduction (src/fx/rnnoise.rs).
+nnnoiseless.workspace = true
+# Signalsmith Stretch: the change of speed that keeps the pitch, and Pitch (src/fx/stretch.rs,
+# src/fx/pitch.rs, src/graph/clip.rs).
+columbina-stretch = { path = "../stretch" }
+
+[target.'cfg(windows)'.dependencies]
+# The thread of the mix asks the system for the priority of audio (MMCSS "Pro Audio", or a time
+# critical priority), and is measured by the time of the processor it took (src/play/thread.rs).
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+# The crate itself with its module `testing`, for the tests in tests/.
+columbina-audio = { path = ".", features = ["testing"] }
+# The random projects of schema 3 (`samples::schema3_project`) and `Project::sample`.
+columbina-model = { path = "../model", features = ["sample"] }
+proptest.workspace = true
+# The loudness of BS.1770 by another hand, to check ours against (tests/loudness.rs).
+ebur128.workspace = true

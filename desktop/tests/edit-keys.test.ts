@@ -1,0 +1,291 @@
+import { describe, expect, it } from 'vitest';
+import type { Key } from '../src/app/keys';
+import { editKey, editCommand, liftRange, shortened, sourceTime, type EditContext } from '../src/studio/timeline/editKeys';
+import { clip, media, timeline } from './timeline-fixture';
+import { materialLength } from '../src/studio/timeline/drop';
+
+const key = (value: string, fields: Partial<Key> = {}): Key => ({ key: value, ctrl: false, meta: false, shift: false, alt: false, composing: false, repeat: false, ...fields });
+const context = (fields: Partial<EditContext> = {}): EditContext => ({
+  timeline: timeline(), selected: ['c1'], linked: true, frame: 100, marks: { in: null, out: null },
+  targets: { video_track: 'v1', audio_track: null }, focus: 'timeline', source: { media, frame: 30, rate: { num: 25, den: 1 } }, revision: 4, ...fields,
+});
+const command = (value: string, fields: Partial<Key> = {}, ctx = context()) => editCommand(editKey(key(value, fields)), ctx);
+describe('DaVinci editing keys', () => {
+  it('maps tool, snapping and linked-selection keys without stealing modified or IME keys', () => {
+    expect(editKey(key('a'))).toEqual({ kind: 'tool', tool: 'select' });
+    expect(editKey(key('t'))).toEqual({ kind: 'tool', tool: 'trim' });
+    expect(editKey(key('b'))).toEqual({ kind: 'tool', tool: 'blade' });
+    expect(editKey(key('n'))).toEqual({ kind: 'snap' });
+    expect(editKey(key('l', { ctrl: true, shift: true }))).toEqual({ kind: 'linked' });
+    for (const fields of [{ composing: true }, { repeat: true }, { alt: true }, { ctrl: true }]) expect(editKey(key('a', fields))).toBeNull();
+  });
+  it('distinguishes undo, redo and fit so Ctrl+Shift+Z is never fit', () => {
+    expect(command('z', { ctrl: true })).toEqual({ kind: 'history', method: 'history.undo' });
+    expect(command('z', { meta: true, shift: true })).toEqual({ kind: 'history', method: 'history.redo' });
+    expect(editKey(key('z', { shift: true }))).toEqual({ kind: 'fit' });
+  });
+  it('sends distinct insert/overwrite/replace/top/append commands with explicit track targets', () => {
+    for (const [value, edit] of [['F9', 'insert'], ['F10', 'overwrite'], ['F11', 'replace'], ['F12', 'place_on_top']]) {
+      const result = command(value);
+      expect(result).toMatchObject({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit, timeline: 't1', at: 100 }] } });
+    }
+    expect(command('F9')).toMatchObject({ transaction: { ops: [{ source: { kind: 'media', media: 'm1' }, video_track: 'v1', audio_track: null }] } });
+    expect(command('F11')).toMatchObject({ transaction: { ops: [{ source: { kind: 'media', media: 'm1', from: { ticks: 30, scale: 25 } } }] } });
+    expect(command('F12', { shift: true })).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'append', timeline: 't1', source: { kind: 'media', media: 'm1' }, video_track: 'v1', audio_track: null }] } });
+  });
+  it('keeps F10 an overwrite on the Cut page, and Source Overwrite, with no timecode to sync by, does nothing', () => {
+    // Reference Manual 20, p. 565: F10 overwrites on the Cut page; p. 563: no overlapping timecode, no edit.
+    expect(command('F10', {}, context({ cut: true }))).toMatchObject({ transaction: { ops: [{ edit: 'overwrite', at: 100, video_track: 'v1' }] } });
+    expect(command('F9', {}, context({ cut: true }))).toMatchObject({ transaction: { ops: [{ edit: 'smart_insert' }] } });
+    expect(editCommand({ kind: 'place', edit: 'source_overwrite' }, context({ cut: true }))).toBeNull();
+  });
+  it('places on top at the edit point within five frames of the playhead on the Cut page, as DaVinci Resolve', () => {
+    // Reference Manual 20, p. 563: near an edit point (within five frames), with no timeline In or Out, the clip aligns with it.
+    const at = (frame: number, fields: Partial<EditContext> = {}) => (command('F12', {}, context({ frame, cut: true, ...fields })) as { transaction: { ops: { at: number }[] } }).transaction.ops[0].at;
+    expect(at(103)).toBe(100);
+    expect(at(95)).toBe(100);
+    expect(at(106)).toBe(106);
+    expect(at(103, { cut: false })).toBe(103);
+    expect(at(103, { marks: { in: 40, out: null } })).toBe(40);
+  });
+  it('uses the marked timeline range for a three-point edit, with an exclusive out frame', () => {
+    const ctx = context({ marks: { in: 50, out: 90 } });
+    expect(command('F9', {}, ctx)).toMatchObject({ transaction: { ops: [{ edit: 'insert', at: 50, source: { length: 40 } }] } });
+    expect(command('i')).toEqual({ kind: 'marks', marks: { in: 100, out: null } });
+    expect(command('o')).toEqual({ kind: 'marks', marks: { in: null, out: 101 } });
+    expect(command('x', { alt: true }, ctx)).toEqual({ kind: 'marks', marks: { in: null, out: null } });
+  });
+  it('follows the rules of three-point editing of DaVinci Resolve for every set of marks', () => {
+    // The media lasts 4000 s at a scale of 25 ticks a second; the timeline is at 25 fps, a tick a frame.
+    const at = (marks: { in: number | null; out: number | null }, source: Partial<typeof media> = {}, edit = 'F10') => {
+      const result = command(edit, {}, context({ marks, source: { media: { ...media, ...source }, frame: 30, rate: { num: 25, den: 1 } } }));
+      if (result?.kind !== 'transaction') throw new Error('No edit.');
+      const op = result.transaction.ops[0] as { at: number; source: Record<string, unknown> };
+      return { at: op.at, source: op.source };
+    };
+    const tick = (ticks: number) => ({ ticks, scale: 25 });
+    // No marks: the source from its first frame (not the frame of the source monitor) at the playhead of the timeline.
+    expect(at({ in: null, out: null })).toEqual({ at: 100, source: { kind: 'media', media: 'm1' } });
+    // A source In and Out at the playhead: the engine takes the marks of the media.
+    expect(at({ in: null, out: null }, { mark_in: tick(200), mark_out: tick(240) })).toEqual({ at: 100, source: { kind: 'media', media: 'm1' } });
+    // A timeline In alone is where it goes.
+    expect(at({ in: 50, out: null }, { mark_in: tick(200) })).toEqual({ at: 50, source: { kind: 'media', media: 'm1' } });
+    // Timeline In and Out decide the length; the source In goes to the timeline In (all four marks: the source Out is passed over).
+    expect(at({ in: 50, out: 90 })).toEqual({ at: 50, source: { kind: 'media', media: 'm1', length: 40 } });
+    expect(at({ in: 50, out: 90 }, { mark_in: tick(200), mark_out: tick(400) })).toEqual({ at: 50, source: { kind: 'media', media: 'm1', length: 40 } });
+    // Timeline In and Out with only a source Out: the source is backtimed from its Out.
+    expect(at({ in: 50, out: 90 }, { mark_out: tick(240) })).toEqual({ at: 50, source: { kind: 'media', media: 'm1', length: 40, from: tick(200) } });
+    // ... and a source Out nearer its start than the length begins at its first frame.
+    expect(at({ in: 50, out: 90 }, { mark_out: tick(10) })).toMatchObject({ source: { from: tick(0), length: 40 } });
+    // Only a timeline Out: backtimed, so that the source Out lands on it.
+    expect(at({ in: null, out: 500 }, { mark_in: tick(200), mark_out: tick(240) })).toEqual({ at: 460, source: { kind: 'media', media: 'm1' } });
+    // ... with a source In alone, its end lands on it; where it is longer than the time before, its end that fits is used from 0.
+    expect(at({ in: null, out: 500 }, { mark_in: tick(99_800) })).toEqual({ at: 300, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: 500 }, { mark_out: tick(240) })).toEqual({ at: 260, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: 50 }, { mark_out: tick(240) })).toEqual({ at: 0, source: { kind: 'media', media: 'm1', length: 50, from: tick(190) } });
+    // A still without marks lasts five seconds, backtimed too.
+    const still = { facts: { ...media.facts, video: { ...media.facts.video!, still: true } } };
+    expect(at({ in: null, out: 500 }, still)).toEqual({ at: 375, source: { kind: 'media', media: 'm1' } });
+    // Insert and place on top follow the same rules; replace lines the source monitor's frame up with the playhead.
+    expect(at({ in: null, out: 500 }, { mark_in: tick(200), mark_out: tick(240) }, 'F9')).toEqual({ at: 460, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: 500 }, { mark_in: tick(200), mark_out: tick(240) }, 'F12')).toEqual({ at: 460, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: null }, {}, 'F11')).toEqual({ at: 100, source: { kind: 'media', media: 'm1', from: tick(30) } });
+  });
+  it('backtimes in whole source ticks at fractional rates, ending at or before the source Out', () => {
+    const t = { ...timeline(), rate: { num: 30000, den: 1001 } };
+    const m = { ...media, facts: { ...media.facts, duration: { ticks: 48000 * 600, scale: 48000 } }, mark_out: { ticks: 48000 * 60, scale: 48000 } };
+    const result = command('F10', {}, context({ timeline: t, marks: { in: 0, out: 7 }, source: { media: m, frame: 0, rate: t.rate } }));
+    // 7 frames at 29.97 fps are 11211.2 ticks at 48 kHz: the clip begins 11212 ticks before the Out.
+    expect(result).toMatchObject({ transaction: { ops: [{ at: 0, source: { length: 7, from: { ticks: 48000 * 60 - 11212, scale: 48000 } } }] } });
+  });
+  it('sets source marks in the source timebase and clears a now-invalid opposite mark', () => {
+    const m = { ...media, mark_out: { ticks: 20, scale: 25 } };
+    const ctx = context({ focus: 'source', source: { media: m, frame: 30, rate: { num: 25, den: 1 } } });
+    expect(command('i', {}, ctx)).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_media', id: 'm1', mark_in: { ticks: 30, scale: 25 }, mark_out: null }] } });
+    expect(command('o', {}, ctx)).toMatchObject({ transaction: { ops: [{ op: 'set_media', mark_out: { ticks: 31, scale: 25 } }] } });
+    expect(command('x', { alt: true }, ctx)).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_media', id: 'm1', mark_out: null }] } });
+    // A mark where it already is, or clearing marks that there are not, is no edit: the engine would refuse it.
+    const marked = { ...media, mark_in: { ticks: 30, scale: 25 } };
+    expect(command('i', {}, context({ focus: 'source', source: { media: marked, frame: 30, rate: { num: 25, den: 1 } } }))).toBeNull();
+    expect(command('x', { alt: true }, context({ focus: 'source', source: { media, frame: 30, rate: { num: 25, den: 1 } } }))).toBeNull();
+  });
+  it('keeps the Out frame in the range, on the source and on the timeline, at 30 and at 29.97 fps', () => {
+    // DaVinci Resolve's Out point is the last frame of the range (Reference Manual 20, pp. 760, 824):
+    // In at frame 59 and Out at frame 180 are 122 frames. The Out is kept as the frame after it.
+    for (const rate of [{ num: 30, den: 1 }, { num: 30000, den: 1001 }]) {
+      const scale = rate.num === 30 ? 600 : 30000;
+      const at = (frame: number) => sourceTime(frame, rate, scale);
+      const m: typeof media = { ...media, facts: { ...media.facts, duration: at(2416), video: { ...media.facts.video!, rate } } };
+      const source = (frame: number, marked = m) => context({ focus: 'source', source: { media: marked, frame, rate } });
+      const inAt59 = command('i', {}, source(59)) as { transaction: { ops: { mark_in: unknown }[] } };
+      expect(inAt59.transaction.ops[0].mark_in).toEqual(at(59));
+      const outAt180 = command('o', {}, source(180, { ...m, mark_in: at(59) })) as { transaction: { ops: { mark_out: { ticks: number; scale: number } }[] } };
+      expect(outAt180.transaction.ops[0].mark_out).toEqual(at(181));
+      const marked = { ...m, mark_in: at(59), mark_out: at(181) };
+      // As the engine counts them for an edit with these marks, and as a drop takes them.
+      expect(materialLength(marked, rate)).toBe(122);
+      // On the timeline: In at 59, O at 180; Delete and Backspace take the Out frame too.
+      const t = { ...timeline([clip('c1', 0, 400)]), rate };
+      const inMark = command('i', {}, context({ timeline: t, frame: 59 })) as { marks: { in: number; out: number | null } };
+      const marks = (command('o', {}, context({ timeline: t, frame: 180, marks: inMark.marks })) as { marks: { in: number; out: number } }).marks;
+      expect(marks).toEqual({ in: 59, out: 181 });
+      expect(command('F9', {}, context({ timeline: t, marks, source: { media: m, frame: 0, rate } }))).toMatchObject({ transaction: { ops: [{ edit: 'insert', at: 59, source: { length: 122 } }] } });
+      expect(command('Delete', {}, context({ timeline: t, selected: [], marks }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 59, to: 181 }] } });
+      expect(command('Backspace', {}, context({ timeline: t, selected: [], marks }))).toMatchObject({ transaction: { ops: [
+        { edit: 'blade', at: 181 }, { edit: 'trim', clip: 'c1', edge: 'out', delta: -122 },
+      ] } });
+      // Ripple Overwrite (Shift+F10) puts the source in place of the 122 frames from 59 to 180.
+      expect(command('F10', { shift: true }, context({ timeline: t, marks, source: { media: m, frame: 0, rate } }))).toMatchObject({ transaction: { ops: [
+        { edit: 'ripple_delete_range', from: 59, to: 181 }, { edit: 'insert', at: 59 },
+      ] } });
+      // Backtimed to a timeline Out at 180: the last frame of the source lands on frame 180.
+      const backtimed = command('F10', {}, context({ timeline: t, marks: { in: null, out: 181 }, source: { media: marked, frame: 0, rate } }));
+      expect(backtimed).toMatchObject({ transaction: { ops: [{ at: 59 }] } });
+    }
+  });
+  it('shortens the transition that the engine names to the longest that fits, and nothing else', () => {
+    const t = timeline([clip('c1', 0, 100), clip('c2', 100, 100), clip('c3', 200, 100)]);
+    (t.tracks[0] as Extract<typeof t.tracks[number], { kind: 'video' | 'audio' }>).transitions = [{ id: 'x1', kind: 'dissolve', left: 'c2', right: 'c3', length: 10, align: 'center' }];
+    const add = (left: string, right: string) => ({ edit: 'add_transition' as const, timeline: 't1', left, right, kind: 'dissolve' as const, length: 25, align: 'center' as const });
+    const sent = { revision: 4, ops: [add('c1', 'c2'), { edit: 'set_transition' as const, timeline: 't1', id: 'x1', length: 25 }] };
+    const refusal = (clip: string, longest?: number) => ({ reason: 'no_handles', clip, need: 13, have: 6, ...(longest === undefined ? {} : { longest }) });
+    expect(shortened(sent, t, refusal('c1', 12))).toEqual({ revision: 4, ops: [{ ...add('c1', 'c2'), length: 12 }, sent.ops[1]] });
+    // c3 is a clip of the transition that is set, not of the one added.
+    expect(shortened(sent, t, refusal('c3', 7))).toEqual({ revision: 4, ops: [sent.ops[0], { ...sent.ops[1], length: 7 }] });
+    // c2 is of both: the first that is longer than the longest goes first.
+    expect(shortened(sent, t, refusal('c2', 7))!.ops.map(op => (op as { length: number }).length)).toEqual([7, 25]);
+    for (const other of [refusal('c1'), refusal('c1', 0), refusal('c1', 25), refusal('c9', 12), { reason: 'locked', track: 'v1' }, null, 'no_handles']) {
+      expect(shortened(sent, t, other)).toBeNull();
+    }
+  });
+  it('says why Ctrl+T adds no transition: no two clips meet at the playhead, or at a clip chosen', () => {
+    const apart = timeline([clip('c1', 0, 100), clip('c2', 120, 100)]);
+    expect(command('t', { ctrl: true }, context({ timeline: apart, selected: [] }))).toEqual({ kind: 'refused', reason: 'no_edit_at_playhead' });
+    expect(command('t', { ctrl: true }, context({ selected: [], frame: 90 }))).toEqual({ kind: 'refused', reason: 'no_edit_at_playhead' });
+    expect(command('t', { ctrl: true }, context({ timeline: apart }))).toEqual({ kind: 'refused', reason: 'no_edit_chosen' });
+    // The cut has its transition already: there is nothing to do, and nothing to say.
+    const done = timeline();
+    (done.tracks[0] as Extract<typeof done.tracks[number], { kind: 'video' | 'audio' }>).transitions = [{ id: 'x1', kind: 'dissolve', left: 'c1', right: 'c2', length: 25, align: 'center' }];
+    expect(command('t', { ctrl: true }, context({ timeline: done }))).toEqual({ kind: 'none' });
+  });
+  it('uses shared undo and keeps destructive keys from repeating', () => {
+    // Backspace lifts; Delete, and Shift with either, ripple deletes, as DaVinci Resolve has them.
+    expect(command('Backspace')).toMatchObject({ transaction: { ops: [{ edit: 'lift', clips: ['c1'], linked: true }] } });
+    expect(command('Delete')).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete', clips: ['c1'], linked: true }] } });
+    expect(command('Delete', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete' }] } });
+    expect(command('Backspace', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete' }] } });
+    // With timeline In and Out and no clip chosen, the range; a clip chosen by hand comes first (Reference Manual 20, p. 760).
+    expect(command('Delete', {}, context({ selected: [], marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
+    expect(command('Delete', { shift: true }, context({ selected: [], marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
+    expect(command('Delete', {}, context({ marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'ripple_delete', timeline: 't1', clips: ['c1'], linked: true }] } });
+    expect(command('Backspace', {}, context({ marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: true }] } });
+    expect(command('Delete', { repeat: true })).toBeNull();
+    expect(command('Delete', {}, context({ selected: [] }))).toBeNull();
+  });
+  it('blades target tracks, finds previous/next cuts and asks for the speed dialog', () => {
+    expect(command('b', { ctrl: true })).toMatchObject({ transaction: { ops: [{ edit: 'blade', at: 100, tracks: ['v1'], linked: true }] } });
+    expect(command('\\', { ctrl: true })).toEqual(command('b', { ctrl: true }));
+    expect(command('ArrowUp', {}, context({ frame: 110 }))).toEqual({ kind: 'seek', monitor: 'timeline', frame: 100 });
+    expect(command('ArrowDown', {}, context({ frame: 10 }))).toEqual({ kind: 'seek', monitor: 'timeline', frame: 100 });
+    expect(command('r')).toEqual({ kind: 'speed', clips: ['c1'] });
+  });
+  it('adds one default transition per selected cut and toggles selected clips and target locks', () => {
+    expect(command('t', { ctrl: true })).toMatchObject({ transaction: { ops: [{ edit: 'add_transition', left: 'c1', right: 'c2', length: 25, kind: 'dissolve', align: 'center' }] } });
+    expect(command('d')).toMatchObject({ transaction: { ops: [{ op: 'set_clip', id: 'c1', enabled: false }] } });
+    const t = timeline([clip('c1', 0, 100, { enabled: false })]);
+    expect(command('d', {}, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_clip', enabled: true }] } });
+  });
+  it('links or unlinks the clips chosen with Ctrl+Alt+L, and locks tracks by number with Alt+Shift, as DaVinci Resolve', () => {
+    const t = timeline([clip('c1', 0, 100, { link: 'g1' }), clip('c2', 100, 100), clip('c3', 200, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('a1c', 0, 100, { link: 'g1' })], transitions: [] });
+    t.tracks.push({ id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: true, clips: [], transitions: [] });
+    // Reference Manual 20, pp. 771, 1097: Linked Clips (Option-Command-L) unlinks a linked clip, and links clips that are not.
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c1'] }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { op: 'set_clip', timeline: 't1', id: 'c1', link: null }, { op: 'set_clip', timeline: 't1', id: 'a1c', link: null },
+    ] } });
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c2', 'c3'] }))).toMatchObject({ transaction: { ops: [
+      { op: 'set_clip', id: 'c2', link: '$link' }, { op: 'set_clip', id: 'c3', link: '$link' },
+    ] } });
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c1', 'c2'] }))).toMatchObject({ transaction: { ops: [
+      { id: 'c1', link: '$link' }, { id: 'c2', link: '$link' }, { id: 'a1c', link: '$link' },
+    ] } });
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c2'] }))).toBeNull();
+    // P. 762: Option-Shift-1 to 8 lock V1 to V8, Option-Shift-9 all video tracks, Option-Shift-F1 to F8 A1 to A8.
+    // A digit typed with Shift is another sign: it is known by where it lies.
+    expect(command('!', { alt: true, shift: true, code: 'Digit1' }, context({ timeline: t }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_track', timeline: 't1', id: 'v1', locked: true }] } });
+    expect(command('2', { alt: true, shift: true }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_track', id: 'v2', locked: false }] } });
+    expect(command('(', { alt: true, shift: true, code: 'Digit9' }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [
+      { id: 'v1', locked: true }, { id: 'v2', locked: true },
+    ] } });
+    expect(command('F1', { alt: true, shift: true }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_track', id: 'a1', locked: true }] } });
+    expect(command('#', { alt: true, shift: true, code: 'Digit3' }, context({ timeline: t }))).toBeNull();
+    // Option-Shift-F9 locks or unlocks all audio tracks; with all of them locked, it unlocks them.
+    t.tracks.push({ id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: true, clips: [], transitions: [] });
+    expect(command('F9', { alt: true, shift: true }, context({ timeline: t }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { op: 'set_track', timeline: 't1', id: 'a1', locked: true }, { op: 'set_track', timeline: 't1', id: 'a2', locked: true },
+    ] } });
+    expect(editKey(key('F10', { alt: true, shift: true }))).toBeNull();
+  });
+  it('leaves clips on locked tracks out of D, R and Ctrl+Alt+L, linked or not', () => {
+    // Reference Manual 20, p. 762: clips on locked tracks cannot be otherwise affected, nor their parameters edited.
+    const t = timeline([clip('c1', 0, 100, { link: 'g1' }), clip('c2', 100, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 0, 100, { link: 'g1' })], transitions: [] });
+    const ctx = (selected: string[], linked = true) => context({ timeline: t, selected, linked });
+    expect(command('d', {}, ctx(['c1']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', enabled: false }] } });
+    expect(command('r', {}, ctx(['c1']))).toEqual({ kind: 'speed', clips: ['c1'] });
+    expect(command('l', { ctrl: true, alt: true }, ctx(['c1']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', link: null }] } });
+    expect(command('l', { ctrl: true, alt: true }, ctx(['c2', 'a1c'], false))).toBeNull();
+    // Only clips on locked tracks chosen: nothing is sent, and the page says why.
+    for (const value of ['d', 'r']) expect(command(value, {}, ctx(['a1c'], false))).toEqual({ kind: 'refused', reason: 'locked' });
+  });
+  it('leaves clips linked to those chosen on locked tracks out of deleting, blading and transitions, and says why where all are locked', () => {
+    // Reference Manual 20, pp. 762, 769: a clip on a locked track stays as it is, and the rest of its group changes.
+    // The engine refuses an edit that names one (`locked`), so none is named.
+    const t = timeline([clip('c1', 0, 100, { link: 'g1' }), clip('c2', 100, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 0, 100, { link: 'g1' })], transitions: [] });
+    const ctx = (selected: string[], fields: Partial<EditContext> = {}) => context({ timeline: t, selected, ...fields });
+    expect(command('Backspace', {}, ctx(['c1', 'a1c']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: true }] } });
+    expect(command('Delete', {}, ctx(['c1']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'ripple_delete', timeline: 't1', clips: ['c1'], linked: true }] } });
+    // On the Cut page, c1 of Track 1 closes up; its sound on the locked track is not named.
+    expect(command('Backspace', {}, ctx(['c1'], { cut: true }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'ripple_delete', timeline: 't1', clips: ['c1'], linked: true }] } });
+    expect(command('b', { ctrl: true }, ctx(['c1']))).toMatchObject({ transaction: { ops: [{ edit: 'blade', tracks: ['v1'] }] } });
+    expect(command('t', { ctrl: true }, ctx(['c1']))).toMatchObject({ transaction: { ops: [{ edit: 'add_transition', left: 'c1', right: 'c2' }] } });
+    // Every clip chosen on a locked track: no edit is sent, the range of In and Out not taken instead.
+    const locked = { ...t, tracks: t.tracks.map(track => ({ ...track, locked: true })) } as typeof t;
+    for (const [value, fields] of [['Backspace', {}], ['Delete', {}], ['b', { ctrl: true }], ['t', { ctrl: true }], ['d', {}], ['r', {}], ['l', { ctrl: true, alt: true }]] as const) {
+      expect(command(value, fields, ctx(['c1'], { timeline: locked, marks: { in: 20, out: 80 } }))).toEqual({ kind: 'refused', reason: 'locked' });
+    }
+    // Nothing chosen is not a refusal.
+    expect(command('Delete', {}, ctx([], { timeline: locked }))).toBeNull();
+  });
+  it('takes the range between timeline In and Out points for Shift+F10 and for Backspace, as DaVinci Resolve', () => {
+    // Reference Manual 20, pp. 561, 842: with timeline In and Out, Ripple Overwrite replaces that range, the rest rippled.
+    expect(command('F10', { shift: true }, context({ marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { edit: 'ripple_delete_range', timeline: 't1', from: 20, to: 80 },
+      { edit: 'insert', timeline: 't1', source: { kind: 'media', media: 'm1' }, at: 20, video_track: 'v1', audio_track: null },
+    ] } });
+    expect(command('F10', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_overwrite', at: 100 }] } });
+    // P. 765: Delete with timeline In and Out lifts the range, leaving a gap, on the tracks not locked.
+    const t = timeline([clip('c1', 0, 30), clip('c2', 30, 20), clip('c3', 50, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('a1c', 0, 200)], transitions: [] });
+    t.tracks.push({ id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: true, clips: [clip('a2c', 0, 200)], transitions: [] });
+    expect(command('Backspace', {}, context({ timeline: t, selected: [], marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { edit: 'lift', timeline: 't1', clips: ['c2'], linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'c1', edge: 'out', delta: -10, ripple: false, linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'c3', edge: 'in', delta: 30, ripple: false, linked: false },
+      { edit: 'blade', timeline: 't1', at: 80, tracks: ['a1'], linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'a1c', edge: 'out', delta: -60, ripple: false, linked: false },
+    ] } });
+    expect(liftRange(t, 300, 400)).toEqual([]);
+    expect(command('Backspace', {}, context({ timeline: t, selected: [], marks: { in: 300, out: 400 } }))).toBeNull();
+  });
+  it('does nothing when a timeline or source needed by the command is absent', () => {
+    expect(command('F9', {}, context({ timeline: null }))).toBeNull();
+    expect(command('F9', {}, context({ source: null }))).toBeNull();
+    expect(command('i', {}, context({ focus: 'source', source: null }))).toBeNull();
+  });
+  it('converts fractional rates to integer source ticks without a floating-point boundary error', () => {
+    expect(sourceTime(12345, { num: 24000, den: 1001 }, 48000)).toEqual({ ticks: 24714690, scale: 48000 });
+    expect(sourceTime(7, { num: 25, den: 1 }, 15360)).toEqual({ ticks: 4300, scale: 15360 });
+  });
+});

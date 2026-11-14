@@ -6,7 +6,7 @@
 //!
 //! The engine takes the lock of the project, opens it, and listens on a local socket (see
 //! [`address`]). Its first line on stdout is `{"listening": "<address>", "pid": …,
-//! "protocol": 1}`, written once it listens; nothing else is ever written to stdout. What it
+//! "protocol": 2}`, written once it listens; nothing else is ever written to stdout. What it
 //! logs goes to stderr, a line of JSON at a time, from a thread of its own (see [`log`](mod@log)), so
 //! that the engine never waits for whoever reads stderr, or for no one to. The desktop and the
 //! agent connect to it and speak JSON-RPC 2.0 a line at a time, as `PROTOCOL.md` at the root of
@@ -22,24 +22,65 @@
 //! the system shuts down. As it ends it stops taking connections, closes those that are open,
 //! saves the project, and lets the lock go.
 //!
+//! The LUTs that grades name are looked for in the folder of the project, then in the library of
+//! LUTs: the folders that `COLUMBINA_LUTS` lists (absolute paths, separated as `PATH` is), or
+//! where it is not set, `luts` in `COLUMBINA_HOME`, or else in `.columbina` in the user's home
+//! (see [`grading::library`]).
+//!
 //! It ends with 0 when it was asked to; 1 when it stopped because of an error after it started
 //! listening, as when the last save failed; 2 when it could not start, with `{"error": "…"}` on
 //! stderr; and 3 when the project is open in another engine, with `{"held": {"pid": …,
 //! "address": "…"}}` on stderr, or `{"contended": true}` if that engine has not yet said where it
 //! listens.
 
+// The futures of the methods hold what a monitor shows (a target of the card) across an await,
+// and whether wgpu's types may be sent is deeper than the compiler looks by default.
+#![recursion_limit = "256"]
+
 mod address;
+mod analysis;
 mod audio;
+mod audio_presets;
+mod compare;
 mod conn;
+mod fx_meters;
+mod gallery;
+mod gpu;
+mod grading;
+mod highlight;
 mod log;
+mod lut_export;
+mod lut_preview;
+mod luts;
+mod managed;
+mod meters;
 mod names;
+mod notice;
+mod play;
+mod presentation;
+mod probe;
 mod proxy;
 mod queue;
+mod render;
 mod rpc;
+mod scopes;
 mod session;
+mod srt;
+mod stills;
+mod thumbnail;
 mod timer;
+mod tracking;
 mod transport;
 mod view;
+mod viewer_preview;
+mod window;
+mod window_presets;
+
+#[cfg(test)]
+mod protocol;
+#[cfg(test)]
+#[path = "../../media/tests/support/mod.rs"]
+mod test_media;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -99,9 +140,9 @@ struct Options {
     /// it reads each file until FILE is there, to see the engine answer meanwhile.
     read_gate: Option<PathBuf>,
     /// Not in the usage, for the tests: what plays the sound (`--sound
-    /// device|null|stall|fail-after=<ms>`, see `audio::Kind`; `--mute` plays silence on the
-    /// device, which is the clock all the same), and `--fail-card-at <frame>`, from which frame
-    /// on the first frame on the graphics card fails to be copied.
+    /// device|null|stall|fail-after=<ms>|capture=<path>`, see `audio::Kind`; `--mute` plays
+    /// silence on the device, which is the clock all the same), and `--fail-card-at <frame>`,
+    /// from which frame on the first frame on the graphics card fails to be copied.
     setup: transport::Setup,
     /// Whether proxies are made (not by a headless engine, nor with `--no-proxies`, which the
     /// tests give where they would get in the way), and, not in the usage, the `ffmpeg` that
@@ -120,6 +161,7 @@ impl Options {
         let mut setup = transport::Setup {
             sound: audio::Kind::Device { mute: false },
             fail_card_at: None,
+            test_hooks: false,
         };
         let mut proxies = proxy::Setup::default();
         while let Some(arg) = args.next() {
@@ -129,6 +171,7 @@ impl Options {
                     project = Some(PathBuf::from(dir));
                 }
                 Some("--headless") => headless = true,
+                Some("--test-hooks") => setup.test_hooks = true,
                 Some("--idle-seconds") => idle = number(args.next().as_ref(), "--idle-seconds")?,
                 Some("--queue-capacity") => {
                     limits.messages = above_0(args.next().as_ref(), "--queue-capacity")?;
@@ -306,13 +349,28 @@ enum Ending {
 /// Open the project of a directory whose lock is held, and serve it until the engine is
 /// stopped.
 fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
-    let (store, project) = match Store::open(dir) {
-        Ok(opened) => opened,
-        Err(error) => return Ending::Failed(error.to_string()),
-    };
+    if cfg!(windows) {
+        // What will compile the shaders of the card, which is made later: Microsoft's DXC where
+        // it lies beside the engine (as the package brings it), else FXC.
+        let compiler = columbina_compose::ShaderCompiler::chosen();
+        log(
+            "shader_compiler",
+            &json!({
+                "compiler": compiler.name(),
+                "path": compiler.path(),
+                "by": compiler.reason(),
+            }),
+        );
+    }
     // A proxy that is not where the engine keeps them is not taken: the engine reads, and
-    // deletes, only its own.
-    let project = proxy::owned_only(project, &proxy::proxy_dir(dir));
+    // deletes, only its own. It is taken away before the project is read, so that one at a path
+    // that is not absolute does not keep the project from being read.
+    let proxies = proxy::proxy_dir(dir);
+    let (store, project) =
+        match Store::open_with(dir, |project| proxy::owned_only(project, &proxies)) {
+            Ok(opened) => opened,
+            Err(error) => return Ending::Failed(error.to_string()),
+        };
     let (report, save_errors) = mpsc::unbounded_channel();
     let saver = Saver::new(store, move |error| {
         let _ = report.send(error.to_string());
@@ -335,7 +393,7 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         options.limits,
         options.read_gate.clone(),
         options.headless,
-        options.setup,
+        options.setup.clone(),
         &options.proxies,
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));
@@ -456,8 +514,8 @@ async fn serve(
     let closed = presence.wait_for(|presence| presence.connected == 0);
     let _ = tokio::time::timeout(CLOSING, closed).await;
     // Before the state is locked for good: the maker of proxies tells what it did with it.
-    let proxies = Arc::clone(&engine);
-    let _ = tokio::task::spawn_blocking(move || proxies.stop_proxies()).await;
+    let background = Arc::clone(&engine);
+    let _ = tokio::task::spawn_blocking(move || background.stop_background()).await;
     let state = Arc::clone(&engine.state).lock_owned().await;
     Ending::Stopped { code, state }
 }
@@ -613,6 +671,7 @@ mod tests {
                 setup: transport::Setup {
                     sound: audio::Kind::Device { mute: false },
                     fail_card_at: None,
+                    test_hooks: false,
                 },
                 proxies: proxy::Setup::default(),
             }
@@ -655,6 +714,7 @@ mod tests {
                 setup: transport::Setup {
                     sound: audio::Kind::Device { mute: true },
                     fail_card_at: Some(30),
+                    test_hooks: false,
                 },
                 // A headless engine makes none.
                 proxies: proxy::Setup {

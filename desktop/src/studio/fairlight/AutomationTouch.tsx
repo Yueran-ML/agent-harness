@@ -1,0 +1,450 @@
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { EngineBridge } from '../../bridge';
+import {
+  callEngine, type AutomationTouch as TouchMessage, type AutomationParameter, type Lanes, type LanesOf, type Timeline,
+} from '../engine';
+import {
+  categoryOfPath, ownerKey, readGlide, readWriteOnPaste, saveWriteOnPaste, type AutomationTarget,
+} from './automation';
+/** One in-flight RPC, 10 ms event sampling, newest movement wins; releases never disappear. */
+export class TouchQueue {
+  private target: AutomationTarget | null = null;
+  private value = 0;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private chain = Promise.resolve();
+  private pending: TouchMessage | null = null;
+  private queued: {
+    message: TouchMessage;
+    replaceable: boolean;
+  }[] = [];
+  private sending = false;
+  constructor(private timeline: string, private send: (message: TouchMessage) => Promise<unknown>, private fail: (error: unknown) => void) {
+  }
+  private enqueue(message: TouchMessage, replaceable = false) {
+    const last = this.queued.at(-1);
+    if (replaceable && last?.replaceable && last.message.path === message.path && ownerKey(last.message) === ownerKey(message))
+      last.message = message;
+    else
+      this.queued.push({ message, replaceable });
+    if (this.sending)
+      return;
+    this.sending = true;
+    this.chain = (async () => {
+      while (this.queued.length) {
+        const next = this.queued.shift()!;
+        try {
+          await this.send(next.message);
+        }
+        catch (error) {
+          this.fail(error);
+          this.pending = null;
+          this.queued = this.queued.filter(x => !x.message.touching);
+          this.end();
+        }
+      }
+      this.sending = false;
+    })();
+  }
+  start(target: AutomationTarget, value: number) {
+    this.end();
+    this.target = target;
+    this.value = value;
+    this.enqueue({
+      timeline: this.timeline, ...target.of, path: target.path, value, touching: true
+    });
+  }
+  change(value: number) {
+    if (!this.target)
+      return;
+    this.value = value;
+    this.pending = {
+      timeline: this.timeline, ...this.target.of, path: this.target.path, value, touching: true
+    };
+    if (!this.timer)
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        const message = this.pending;
+        this.pending = null;
+        if (message)
+          this.enqueue(message, true);
+      }, 10);
+  }
+  end() {
+    if (this.timer)
+      clearTimeout(this.timer);
+    this.timer = null;
+    if (this.pending)
+      this.enqueue(this.pending, true);
+    this.pending = null;
+    if (this.target)
+      this.enqueue({
+        timeline: this.timeline, ...this.target.of, path: this.target.path, value: this.value, touching: false
+      });
+    this.target = null;
+  }
+  active() {
+    return this.target !== null;
+  }
+  /** The control being touched, if one is. */
+  touched() {
+    return this.target;
+  }
+  settled() {
+    return this.chain;
+  }
+}
+export interface AutomationTouchControl {
+  enabled: boolean;
+  recording: boolean;
+  trim: boolean;
+  preview: boolean;
+  active: (target?: AutomationTarget) => boolean;
+  start: (target: AutomationTarget, value: number) => boolean;
+  change: (value: number) => void;
+  end: () => void;
+  instant: (target: AutomationTarget, value: number) => boolean;
+  startBatch: (values: {
+    target: AutomationTarget;
+    value: number;
+  }[]) => boolean;
+  changeBatch: (values: {
+    target: AutomationTarget;
+    value: number;
+  }[]) => void;
+  instantBatch: (values: {
+    target: AutomationTarget;
+    value: number;
+  }[]) => boolean;
+  /** Each value put into Preview at once, whatever the Touch and the Arm (the strip's Auto, p. 3908). */
+  previewBatch: (values: {
+    target: AutomationTarget;
+    value: number;
+  }[]) => boolean;
+  show: (target: AutomationTarget) => void;
+  live: {
+    target: AutomationTarget;
+    value: number;
+  } | null;
+  lives: {
+    target: AutomationTarget;
+    value: number;
+  }[];
+  reading: (target: AutomationTarget, baseline: number, parameter?: Pick<AutomationParameter, 'kind' | 'scale'>) => number;
+  /**
+   * How a control shows its automation: red while it is written (touched, or put into Write by
+   * a Punch In), blue while Preview holds it, green while its lane plays it back (p. 3915).
+   */
+  status: (target: AutomationTarget) => AutomationStatus;
+  /** Whether any control of a track, bus or VCA is written now (its Arm shows red, p. 3901). */
+  writing: (of: LanesOf) => 'write' | 'preview' | null;
+  /** Whether the timeline plays. */
+  playing: boolean;
+  /** Punch In without Preview: these settings (those the engine put into Write) are in Write until the next stop. */
+  punchIn: (settings: readonly AutomationTarget[]) => void;
+  /** Punch Out: what these owners (all, where `null`) hold or write goes back to Read. */
+  punchOut: (owners: readonly LanesOf[] | null) => void;
+  /** Write on Preset or Clipboard Paste (Preferences › User › Fairlight › Automation), off by default. */
+  writeOnPaste: boolean;
+  setWriteOnPaste: (on: boolean) => void;
+}
+export type AutomationStatus = 'write' | 'preview' | 'read' | null;
+const Context = createContext<AutomationTouchControl | null>(null);
+export const useAutomationTouch = () => useContext(Context);
+export function AutomationTouchProvider({ bridge, session, timeline, revision = 0, enabled, recording, playing = true, read = false, show, onFailure, children }: {
+  bridge: Pick<EngineBridge, 'call'>;
+  session: number;
+  timeline: Timeline;
+  revision?: number;
+  enabled: boolean;
+  recording: boolean;
+  playing?: boolean;
+  read?: boolean;
+  show: (target: AutomationTarget) => void;
+  onFailure: (error: unknown) => void;
+  children: ReactNode;
+}) {
+  const now = useRef({
+    session, timeline, enabled, recording, playing, onFailure
+  });
+  now.current = {
+    session, timeline, enabled, recording, playing, onFailure
+  };
+  const [live, setLive] = useState<AutomationTouchControl['live']>(null);
+  const [lives, setLives] = useState<AutomationTouchControl['lives']>([]);
+  const held = useRef(new Map<string, {
+    value: number;
+    released: number | null;
+  }>());
+  const [, redraw] = useState(0);
+  const queues = useMemo(() => new Map<string, TouchQueue>(), [bridge, session, timeline.id]);
+  const primary = useRef<string | null>(null);
+  const targetId = (target: AutomationTarget) => `${ownerKey(target.of)}/${target.path}`;
+  // Punch In without Preview (p. 3913): of each owner, the settings that the engine put into
+  // Write, each until the timeline has played and stopped (Write is entered again for each pass,
+  // p. 3908). Each shows the value it had where the pass began to write it, as the engine holds it.
+  const punched = useRef(new Map<string, { played: boolean; paths: Set<string>; values: Map<string, number> }>());
+  const [writeOnPaste, setWriteOnPaste] = useState(readWriteOnPaste);
+  useEffect(() => {
+    let changed = false;
+    for (const [key, entry] of punched.current) {
+      if (playing && !entry.played) {
+        entry.played = true;
+        changed = true;
+      }
+      else if (!playing && entry.played) {
+        punched.current.delete(key);
+        changed = true;
+      }
+    }
+    if (changed)
+      redraw(n => n + 1);
+  }, [playing]);
+  const end = () => {
+    queues.forEach(q => q.end());
+    for (const value of held.current.values())
+      if (value.released === null)
+        value.released = performance.now();
+    setLive(null);
+    setLives([]);
+  };
+  useEffect(() => {
+    window.addEventListener('blur', end);
+    return () => {
+      window.removeEventListener('blur', end);
+      queues.forEach(q => q.end());
+    };
+  }, [queues]);
+  const preview = timeline.audio?.record?.preview ?? false;
+  useEffect(() => {
+    if (!enabled || !recording || (!playing && !preview))
+      end();
+  }, [enabled, recording, playing, preview]);
+  // An edit made while recording (of this or any other control) does not end a touch: only one
+  // whose strip went away, was locked or set safe or bypassed, as a control that is gone is let go.
+  useEffect(() => {
+    const writable = (target: AutomationTarget) => {
+      const of = target.of;
+      const owner = 'track' in of
+        ? timeline.tracks.find(track => track.kind === 'audio' && track.id === of.track && !track.locked)
+        : 'bus' in of ? timeline.buses?.find(bus => bus.id === of.bus) : timeline.vcas?.find(vca => vca.id === of.vca);
+      const arm = owner && 'automation_arm' in owner ? owner.automation_arm : undefined;
+      return Boolean(owner) && arm !== 'safe' && arm !== 'off';
+    };
+    let ended = false;
+    for (const [id, queue] of queues) {
+      const target = queue.touched();
+      if (!target || writable(target)) continue;
+      queue.end();
+      ended = true;
+      const value = held.current.get(id);
+      if (value && value.released === null) value.released = performance.now();
+    }
+    if (!ended) return;
+    setLive(old => old && writable(old.target) ? old : null);
+    setLives(old => old.every(each => writable(each.target)) ? old : old.filter(each => writable(each.target)));
+  }, [timeline, queues]);
+  useEffect(() => {
+    if (!enabled || !recording || read || (!playing && !preview)) {
+      held.current.clear();
+      redraw(n => n + 1);
+    }
+    if (!enabled || !recording || read)
+      punched.current.clear();
+  }, [enabled, recording, playing, preview, read, revision, queues]);
+  const touch = timeline.audio?.record?.touch;
+  useEffect(() => {
+    if (!enabled || !recording || preview || read || (touch !== 'snap' && touch !== 'snap_latch'))
+      return;
+    const returning = (id: string, value: {
+      released: number | null;
+    }) => value.released !== null
+      && (touch === 'snap' || id.endsWith('/fader_db'));
+    if (![...held.current].some(([id, value]) => returning(id, value)))
+      return;
+    const timer = setInterval(() => {
+      const duration = Math.max(10, readGlide());
+      let changed = false, moving = false;
+      for (const [id, value] of held.current) {
+        if (!returning(id, value))
+          continue;
+        changed = true;
+        if (performance.now() - value.released! >= duration)
+          held.current.delete(id);
+        else
+          moving = true;
+      }
+      if (changed)
+        redraw(n => n + 1);
+      if (!moving)
+        clearInterval(timer);
+    }, 16);
+    return () => clearInterval(timer);
+  }, [enabled, recording, preview, read, touch, live, lives]);
+  // `previewing`: put into Preview by the strip's Auto button (p. 3908), which takes every enabled
+  // parameter whatever the Touch and the Arm, while Preview is on.
+  const eligible = (target: AutomationTarget, value: number, previewing = false) => {
+    const { timeline: t, enabled: on, recording: rec, playing: running } = now.current;
+    if (!on || !rec || (!running && !t.audio?.record?.preview) || !Number.isFinite(value) || t.audio?.record?.categories?.[categoryOfPath(target.path)] === false)
+      return false;
+    const of = target.of;
+    const owner = 'track' in of ? t.tracks.find(x => x.id === of.track && x.kind === 'audio') : 'bus' in of ? t.buses?.find(x => x.id === of.bus) : t.vcas?.find(x => x.id === of.vca);
+    if (!owner || ('locked' in owner && owner.locked) || ('automation_arm' in owner && (owner.automation_arm === 'safe' || owner.automation_arm === 'off')))
+      return false;
+    if (previewing)
+      return Boolean(t.audio?.record?.preview);
+    return (t.audio?.record?.touch ?? 'off') !== 'off' || ('automation_arm' in owner && owner.automation_arm === true);
+  };
+  const startBatch = (values: {
+    target: AutomationTarget;
+    value: number;
+  }[], previewing = false) => {
+    values = values.filter(v => eligible(v.target, v.value, previewing));
+    if (!values.length)
+      return false;
+    end();
+    for (const { target, value } of values) {
+      const id = targetId(target);
+      let queue = queues.get(id);
+      if (!queue) {
+        queue = new TouchQueue(timeline.id, message => callEngine(bridge, 'automation.touch', message, { expectedSession: session }), error => {
+          if (now.current.session === session && now.current.timeline.id === timeline.id) {
+            held.current.delete(id);
+            setLive(null);
+            setLives(old => old.filter(v => targetId(v.target) !== id));
+            now.current.onFailure(error);
+          }
+        });
+        queues.set(id, queue);
+      }
+      queue.start(target, value);
+      held.current.set(id, { value, released: null });
+    }
+    primary.current = targetId(values[0].target);
+    setLive(values[0]);
+    setLives(values);
+    return true;
+  };
+  const changeBatch = (values: {
+    target: AutomationTarget;
+    value: number;
+  }[]) => {
+    values = values.filter(v => Number.isFinite(v.value) && queues.get(targetId(v.target))?.active());
+    for (const v of values) {
+      queues.get(targetId(v.target))!.change(v.value);
+      held.current.set(targetId(v.target), { value: v.value, released: null });
+    }
+    if (values.length) {
+      setLive(values[0]);
+      setLives(values);
+    }
+  };
+  const start = (target: AutomationTarget, value: number) => startBatch([{ target, value }]);
+  const ownerOfTarget = (of: LanesOf) => 'track' in of
+    ? timeline.tracks.find(track => track.kind === 'audio' && track.id === of.track) as { automation_arm?: unknown; lanes?: Lanes } | undefined
+    : 'bus' in of ? timeline.buses?.find(bus => bus.id === of.bus) : timeline.vcas?.find(vca => vca.id === of.vca);
+  // A lane with points plays the control back while Toggle Automation is on, but where its Arm is Off.
+  const automated = (target: AutomationTarget) => {
+    const owner = ownerOfTarget(target.of);
+    return enabled && owner?.automation_arm !== 'off' && Boolean(owner?.lanes?.[target.path]?.points.length);
+  };
+  const inWrite = (target: AutomationTarget) => enabled && recording && !read
+    && Boolean(punched.current.get(ownerKey(target.of))?.paths.has(target.path))
+    && timeline.audio?.record?.categories?.[categoryOfPath(target.path)] !== false;
+  // Once the engine has punched out: what is held is let go of (the engine passes over the release).
+  const punchOut = (owners: readonly LanesOf[] | null) => {
+    const keys = owners?.map(ownerKey) ?? null;
+    const named = (id: string) => keys === null || keys.some(key => id.startsWith(`${key}/`));
+    for (const [id, queue] of queues)
+      if (named(id))
+        queue.end();
+    for (const id of [...held.current.keys()])
+      if (named(id))
+        held.current.delete(id);
+    for (const key of [...punched.current.keys()])
+      if (keys === null || keys.includes(key))
+        punched.current.delete(key);
+    setLive(old => old && !named(targetId(old.target)) ? old : null);
+    setLives(old => old.filter(each => !named(targetId(each.target))));
+    redraw(n => n + 1);
+  };
+  const control: AutomationTouchControl = {
+    enabled, recording, trim: timeline.audio?.record?.mode === 'trim', preview: timeline.audio?.record?.preview ?? false, active: target => target ? Boolean(queues.get(targetId(target))?.active()) : [...queues.values()].some(q => q.active()), start, startBatch, changeBatch,
+    instantBatch: values => {
+      if (!startBatch(values))
+        return false;
+      end();
+      return true;
+    },
+    previewBatch: values => {
+      if (!startBatch(values, true))
+        return false;
+      end();
+      return true;
+    },
+    change: value => {
+      if (!Number.isFinite(value) || !primary.current || !queues.get(primary.current)?.active())
+        return;
+      queues.get(primary.current)!.change(value);
+      held.current.set(primary.current, { value, released: null });
+      setLive(old => old ? { ...old, value } : null);
+      setLives(old => old.map(v => targetId(v.target) === primary.current ? { ...v, value } : v));
+    }, end,
+    instant: (target, value) => {
+      if (!start(target, value))
+        return false;
+      end();
+      return true;
+    }, show, live, lives, playing, writeOnPaste,
+    setWriteOnPaste: on => {
+      saveWriteOnPaste(on);
+      setWriteOnPaste(on);
+    },
+    punchIn: settings => {
+      for (const { of, path } of settings) {
+        const key = ownerKey(of), entry = punched.current.get(key)
+          ?? { played: now.current.playing, paths: new Set<string>(), values: new Map<string, number>() };
+        entry.paths.add(path);
+        punched.current.set(key, entry);
+      }
+      redraw(n => n + 1);
+    },
+    punchOut,
+    status: target => {
+      if (enabled && recording && held.current.has(targetId(target)))
+        return timeline.audio?.record?.preview ? 'preview' : 'write';
+      if (inWrite(target))
+        return 'write';
+      return automated(target) ? 'read' : null;
+    },
+    writing: of => {
+      const key = ownerKey(of);
+      if (enabled && recording && [...held.current.keys()].some(id => id.startsWith(`${key}/`)))
+        return timeline.audio?.record?.preview ? 'preview' : 'write';
+      return enabled && recording && !read && punched.current.has(key) ? 'write' : null;
+    },
+    reading: (target, baseline, parameter) => {
+      const id = targetId(target), value = held.current.get(id);
+      const written = inWrite(target) ? punched.current.get(ownerKey(target.of)) : undefined;
+      if (!value && written?.played) {
+        // Held where the pass began to write it, until it is touched.
+        if (!written.values.has(target.path))
+          written.values.set(target.path, baseline);
+        return written.values.get(target.path)!;
+      }
+      if (!value || !enabled || !recording)
+        return baseline;
+      const record = timeline.audio?.record, snap = record?.touch === 'snap' || record?.touch === 'snap_latch' && target.path === 'fader_db';
+      if (!record?.preview && snap && value.released !== null) {
+        const duration = Math.max(10, readGlide()), progress = parameter?.kind === 'switch' ? 1 : Math.min(1, (performance.now() - value.released) / duration);
+        if (progress === 1) {
+          held.current.delete(id);
+          return baseline;
+        }
+        return parameter?.scale === 'log' && value.value > 0 && baseline > 0 ? Math.exp(Math.log(value.value) * (1 - progress) + Math.log(baseline) * progress) : value.value + (baseline - value.value) * progress;
+      }
+      return value.value;
+    }
+  };
+  return <Context.Provider value={control}>{children}</Context.Provider>;
+}
+export const sameTarget = (a: AutomationTarget, b: AutomationTarget) => ownerKey(a.of) === ownerKey(b.of) && a.path === b.path;

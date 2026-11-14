@@ -1,0 +1,119 @@
+/* The Project Settings window (Reference Manual 20, p. 19): its panels at the left, the settings of the one chosen at the right. */
+.project-settings {
+  display: flex;
+  gap: var(--s3);
+  min-height: min(60vh, 520px);
+}
+
+.project-settings-panels {
+  flex: none;
+  width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--line);
+  padding-right: var(--s2);
+}
+
+.project-settings-panels button {
+  min-height: 28px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  text-align: left;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.project-settings-panels button[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.project-settings-panel {
+  flex: 1;
+  min-width: 0;
+  max-height: 64vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.project-settings-panel section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-bottom: var(--s3);
+}
+
+.project-settings-problem {
+  margin: 0;
+  color: var(--bad);
+}
+
+.project-setting {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  min-height: 30px;
+}
+
+.project-setting .setting-name {
+  width: 220px;
+}
+
+.project-setting-value {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+
+.project-setting-value .field {
+  max-width: 320px;
+}
+
+.project-check {
+  gap: var(--s2);
+}
+
+.project-nits {
+  width: 90px;
+}
+
+.project-setting-hint {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.project-lut-folders p,
+.project-lut-folders ol {
+  margin: 0;
+}
+
+.project-lut-folders li {
+  overflow-wrap: anywhere;
+}
+
+.project-lut-folders li[data-exists='false'] {
+  opacity: 0.6;
+}
+
+/* The gear of the Project Settings, at the lower right of every page (p. 19). */
+.studio-settings-button {
+  position: absolute;
+  right: var(--s3);
+  bottom: 5px;
+}
+
+/* A setting kept with the project that the engine does not do yet: greyed, and said so beside it. */
+.project-not-yet {
+  color: var(--moon-3);
+}
+
+.project-check[data-not-yet] {
+  opacity: 0.75;
+}

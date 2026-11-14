@@ -80,8 +80,17 @@ from columbina.llm.adapters.anthropic_messages import AnthropicMessages
 from columbina.llm.adapters.anthropic_messages import Config as AnthropicConfig
 from columbina.llm.adapters.openai_chat import Config as AdapterConfig
 from columbina.llm.adapters.openai_chat import OpenAIChat
+from columbina.llm.adapters.openai_responses import Config as ResponsesConfig
+from columbina.llm.adapters.openai_responses import OpenAIResponses
 from columbina.llm.credentials import CredentialsError, origin_of, sendable, trimmed
-from columbina.llm.services import PRESETS, Service, adapter_config, of_ones_own, preset
+from columbina.llm.services import (
+    PRESETS,
+    Service,
+    adapter_config,
+    of_ones_own,
+    preset,
+    protocol_at,
+)
 from columbina.llm.types import LlmFailure
 from columbina.plain_yaml import PlainYamlError
 
@@ -949,9 +958,12 @@ async def checked(
         raise SetupError(_NOT_A_KEY)
     service = _meant(name, address, chosen(home), show)
     config = adapter_config(service, str(home / KEYS), env)
-    adapter: OpenAIChat | AnthropicMessages
-    if service.protocol == "anthropic":
+    adapter: OpenAIChat | OpenAIResponses | AnthropicMessages
+    protocol = protocol_at(service, env)
+    if protocol == "anthropic":
         adapter = AnthropicMessages(AnthropicConfig.model_validate(config), secret=key)
+    elif protocol == "openai-responses":
+        adapter = OpenAIResponses(ResponsesConfig.model_validate(config), secret=key)
     else:
         adapter = OpenAIChat(AdapterConfig.model_validate(config), secret=key)
     try:

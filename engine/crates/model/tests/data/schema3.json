@@ -1,0 +1,457 @@
+{
+  "bins": [],
+  "color": {
+    "aces_version": "2.0",
+    "automatic": false,
+    "color_space_aware_tools": true,
+    "custom_luminance": 100.0,
+    "gamut_compress": false,
+    "graphics_white": 100.0,
+    "hdr_203_nits": false,
+    "idt": "Rec.709 Gamma 2.4",
+    "input": "Rec.709 Gamma 2.4",
+    "input_drt": "none",
+    "input_lut": {
+      "1d": null,
+      "3d": null
+    },
+    "input_sat_rolloff": {
+      "limit": 1000.0,
+      "start": 100.0
+    },
+    "inverse_drt": false,
+    "limit_gamut": null,
+    "lut_interpolation": "trilinear",
+    "node_luts_in": "timeline",
+    "odt": "Rec.709",
+    "output": "Rec.709 Gamma 2.4",
+    "output_drt": "none",
+    "output_lut": {
+      "1d": null,
+      "3d": null
+    },
+    "output_sat_rolloff": {
+      "limit": 1000.0,
+      "start": 100.0
+    },
+    "preset": "sdr_rec709",
+    "processing_mode": "sdr",
+    "resize_in": "linear",
+    "s_curve_contrast": true,
+    "science": "yrgb",
+    "separate_gamma": false,
+    "timeline": "Rec.709 Gamma 2.4",
+    "viewer_lut": {
+      "1d": null,
+      "3d": null
+    },
+    "white_point_adaptation": true,
+    "working_luminance": "sdr_100"
+  },
+  "groups": [],
+  "media": [
+    {
+      "bin": null,
+      "color_override": {
+        "input": null,
+        "inverse_drt": true,
+        "levels": "auto",
+        "lut": {
+          "1d": null,
+          "3d": null
+        }
+      },
+      "facts": {
+        "audio": {
+          "channels": 2,
+          "codec": "aac",
+          "rate": 48000
+        },
+        "duration": {
+          "scale": 15360,
+          "ticks": 153600
+        },
+        "video": {
+          "bits": 8,
+          "codec": "h264",
+          "height": 1080,
+          "rate": {
+            "den": 1,
+            "num": 25
+          },
+          "rotation": 0,
+          "width": 1920
+        }
+      },
+      "id": "m1",
+      "identity": {
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "modified_us": 1790000000000000,
+        "size": 12500000
+      },
+      "mark_in": null,
+      "mark_out": null,
+      "name": "talk.mp4",
+      "path": "C:/media/talk.mp4"
+    },
+    {
+      "bin": null,
+      "color_override": {
+        "input": null,
+        "inverse_drt": true,
+        "levels": "auto",
+        "lut": {
+          "1d": null,
+          "3d": null
+        }
+      },
+      "facts": {
+        "audio": {
+          "channels": 1,
+          "codec": "pcm_s16le",
+          "rate": 48000
+        },
+        "duration": {
+          "scale": 15360,
+          "ticks": 153600
+        },
+        "video": null
+      },
+      "id": "m2",
+      "identity": {
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "modified_us": 1790000000000000,
+        "size": 12500000
+      },
+      "mark_in": null,
+      "mark_out": null,
+      "name": "voice.wav",
+      "path": "C:/media/voice.wav"
+    },
+    {
+      "bin": null,
+      "color_override": {
+        "input": null,
+        "inverse_drt": true,
+        "levels": "auto",
+        "lut": {
+          "1d": null,
+          "3d": null
+        }
+      },
+      "facts": {
+        "audio": {
+          "channels": 6,
+          "codec": "pcm_s16le",
+          "rate": 48000
+        },
+        "duration": {
+          "scale": 15360,
+          "ticks": 153600
+        },
+        "video": null
+      },
+      "id": "m3",
+      "identity": {
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "modified_us": 1790000000000000,
+        "size": 12500000
+      },
+      "mark_in": null,
+      "mark_out": null,
+      "name": "mix51.wav",
+      "path": "C:/media/mix51.wav"
+    }
+  ],
+  "next_id": 10,
+  "schema": 3,
+  "timelines": [
+    {
+      "grade": {
+        "links": [
+          {
+            "from": "source",
+            "input": 0,
+            "kind": "rgb",
+            "to": "output"
+          }
+        ],
+        "nodes": []
+      },
+      "height": 1080,
+      "id": "t1",
+      "name": "Timeline 1",
+      "rate": {
+        "den": 1,
+        "num": 25
+      },
+      "sample_rate": 48000,
+      "tracks": [
+        {
+          "clips": [
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "grade": {
+                "links": [
+                  {
+                    "from": "source",
+                    "input": 0,
+                    "kind": "rgb",
+                    "to": "output"
+                  }
+                ],
+                "nodes": []
+              },
+              "group": null,
+              "id": "c1",
+              "length": 100,
+              "link": null,
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 0
+                },
+                "kind": "media",
+                "media": "m1"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 0,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            },
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "grade": {
+                "links": [
+                  {
+                    "from": "source",
+                    "input": 0,
+                    "kind": "rgb",
+                    "to": "output"
+                  }
+                ],
+                "nodes": []
+              },
+              "group": null,
+              "id": "c2",
+              "length": 100,
+              "link": null,
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 61440
+                },
+                "kind": "media",
+                "media": "m1"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 100,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            }
+          ],
+          "enabled": true,
+          "id": "V1",
+          "kind": "video",
+          "locked": false,
+          "name": "V1",
+          "transitions": [
+            {
+              "align": "center",
+              "id": "x3",
+              "kind": "dissolve",
+              "left": "c1",
+              "length": 10,
+              "right": "c2"
+            }
+          ]
+        },
+        {
+          "clips": [
+            {
+              "enabled": true,
+              "fade_in": 10,
+              "fade_out": 0,
+              "gain_db": -6.0,
+              "grade": {
+                "links": [
+                  {
+                    "from": "source",
+                    "input": 0,
+                    "kind": "rgb",
+                    "to": "output"
+                  }
+                ],
+                "nodes": []
+              },
+              "group": null,
+              "id": "c4",
+              "length": 100,
+              "link": "g9",
+              "pan": -0.5,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 0
+                },
+                "kind": "media",
+                "media": "m1"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 0,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            },
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 20,
+              "gain_db": 0.0,
+              "grade": {
+                "links": [
+                  {
+                    "from": "source",
+                    "input": 0,
+                    "kind": "rgb",
+                    "to": "output"
+                  }
+                ],
+                "nodes": []
+              },
+              "group": null,
+              "id": "c5",
+              "length": 100,
+              "link": null,
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 15360
+                },
+                "kind": "media",
+                "media": "m2"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 100,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            }
+          ],
+          "enabled": true,
+          "id": "A1",
+          "kind": "audio",
+          "locked": false,
+          "name": "A1",
+          "transitions": [
+            {
+              "align": "center",
+              "id": "x6",
+              "kind": "crossfade",
+              "left": "c4",
+              "length": 12,
+              "right": "c5"
+            }
+          ]
+        },
+        {
+          "clips": [
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 3.0,
+              "grade": {
+                "links": [
+                  {
+                    "from": "source",
+                    "input": 0,
+                    "kind": "rgb",
+                    "to": "output"
+                  }
+                ],
+                "nodes": []
+              },
+              "group": null,
+              "id": "c7",
+              "length": 150,
+              "link": null,
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 30720
+                },
+                "kind": "media",
+                "media": "m3"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 0,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            }
+          ],
+          "enabled": false,
+          "id": "A2",
+          "kind": "audio",
+          "locked": false,
+          "name": "A2",
+          "transitions": []
+        }
+      ],
+      "width": 1920
+    }
+  ]
+}

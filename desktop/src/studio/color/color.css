@@ -1,0 +1,682 @@
+/*
+ * The Color page, laid out as DaVinci Resolve's (Reference Manual 20, p. 2966): the Interface
+ * toolbar; the gallery, the viewer and the node editor; the thumbnail timeline and the
+ * mini-timeline; the palettes at the foot.
+ */
+.color-page {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(200px, 1fr) auto auto minmax(170px, 0.75fr);
+  grid-template-areas:
+    "bar bar bar"
+    "side viewer nodes"
+    "thumbs thumbs thumbs"
+    "mini mini mini"
+    "palettes palettes palettes";
+}
+
+.color-page > * {
+  min-width: 0;
+  min-height: 0;
+  background: var(--ink-1);
+}
+
+/* The part of the page that has the focus: a line along its top edge (p. 2967). */
+.color-page > [data-focused] {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.color-gap {
+  flex: 1;
+}
+
+.color-empty {
+  padding: var(--s3);
+}
+
+/* --- The Interface toolbar. */
+.color-bar {
+  grid-area: bar;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 0 var(--s2);
+  overflow-x: auto;
+}
+
+.color-tool {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  white-space: nowrap;
+}
+
+.color-tool[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* A filter of the Clips menu is on: an orange line beneath the button (p. 3032). */
+.color-tool[data-filtered] {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.color-tool-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.color-filter, .color-level, .color-head-kind {
+  width: auto;
+  min-width: 0;
+  height: 26px;
+  font-size: var(--text-caption);
+}
+
+/* --- The gallery, the LUT browser or the media pool, at the top left. */
+.color-side {
+  grid-area: side;
+  width: clamp(220px, 20cqi, 320px);
+  display: flex;
+  flex-direction: column;
+  padding: var(--s2) var(--s3);
+}
+
+.color-side[data-panel='pool'] {
+  padding: 0;
+}
+
+.color-side > .pool {
+  flex: 1;
+  width: auto;
+  max-height: none;
+}
+
+/* --- The viewer. */
+.color-viewer {
+  grid-area: viewer;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.color-viewer > .monitor {
+  flex: 1;
+  min-height: 0;
+}
+
+.color-viewer-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.color-head-timecode {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-caption);
+  color: var(--moon-1);
+  white-space: nowrap;
+}
+
+/* The playback frame rate: green in real time, red where frames are dropped (p. 2985). */
+.color-realtime {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--moon-3);
+}
+
+.color-realtime[data-state='realtime'] {
+  background: var(--ok);
+}
+
+.color-realtime[data-state='dropping'] {
+  background: var(--red, #e05050);
+}
+
+/* The LUTs that cannot be read, at the lower right of the picture (p. 3413). */
+.color-missing-luts {
+  flex: none;
+  align-self: flex-end;
+  margin: 0 var(--s2);
+  padding: 2px var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: #f3d7a0;
+  background: var(--warn-wash);
+}
+
+.color-cinema-exit {
+  display: none;
+}
+
+/* --- The node editor. */
+.color-nodes {
+  grid-area: nodes;
+  width: clamp(300px, 34cqi, 560px);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.color-nodes-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.color-nodes-head {
+  flex: none;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 40px 0 var(--s3);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.color-nodes-head .overline {
+  margin: 0;
+}
+
+.color-level-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.color-level-dot {
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--moon-3);
+}
+
+.color-level-dot[aria-pressed='true'] {
+  background: var(--accent);
+}
+
+.color-expand {
+  position: absolute;
+  top: 3px;
+  right: 6px;
+}
+
+.color-expand[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.color-incomplete {
+  flex: none;
+  margin: 0;
+  padding: 4px var(--s3);
+  font-size: var(--text-caption);
+  background: var(--warn-wash);
+}
+
+.color-nodes-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ink-0);
+}
+
+.color-graph {
+  display: block;
+  font-family: var(--font-mono, monospace);
+}
+
+.color-link {
+  fill: none;
+  stroke: #57b26a;
+  stroke-width: 1.6;
+}
+
+.color-link[data-kind='key'] {
+  stroke: #5b8fd6;
+  stroke-dasharray: 4 3;
+}
+
+.color-end circle {
+  fill: #3f9a52;
+  stroke: #9fdcab;
+}
+
+.color-end[data-end='output'] circle {
+  fill: var(--ink-3, #444);
+  stroke: var(--moon-2);
+}
+
+.color-node {
+  cursor: default;
+}
+
+.color-node-card {
+  fill: #3a3a40;
+  stroke: #6d6d76;
+  stroke-width: 1;
+}
+
+.color-node[data-current] .color-node-card {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.color-node[data-enabled='false'] .color-node-card {
+  opacity: 0.45;
+}
+
+.color-node-number {
+  font-size: 11px;
+  fill: #e8e6e0;
+}
+
+.color-node[data-enabled='false'] .color-node-number {
+  fill: #8d8b86;
+}
+
+.color-node-label {
+  font-size: 10px;
+  fill: var(--moon-2);
+}
+
+.color-node-kind {
+  font-size: 9px;
+  fill: var(--moon-2);
+}
+
+.color-port[data-kind='rgb'] {
+  fill: #57b26a;
+}
+
+.color-port[data-kind='key'] {
+  fill: #5b8fd6;
+}
+
+.color-node-matched circle, .color-badge-matched circle {
+  fill: #d8c47a;
+}
+
+/* --- The thumbnail timeline. */
+.color-thumbs-area {
+  grid-area: thumbs;
+}
+
+.color-thumbs {
+  display: flex;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s2);
+  list-style: none;
+  overflow-x: auto;
+  overscroll-behavior: contain;
+}
+
+.color-thumb {
+  flex: none;
+  width: 112px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--moon-2);
+}
+
+.color-thumb[data-enabled='false'] {
+  opacity: 0.5;
+}
+
+.color-thumb-top, .color-thumb-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 15px;
+}
+
+.color-thumb-timecode {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-mono, monospace);
+}
+
+.color-thumb-number {
+  padding: 0 3px;
+  border-radius: 2px;
+  color: var(--moon-1);
+}
+
+/* A clip that is graded: a thin rainbow round its number (p. 3027). */
+.color-thumb-number[data-graded] {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--ink-1), var(--ink-1)) padding-box,
+    linear-gradient(90deg, #e05050, #e0b050, #60c060, #50a0e0, #a060e0) border-box;
+}
+
+.color-thumb-frame {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  touch-action: none;
+}
+
+.color-thumb[data-selected] .color-thumb-frame {
+  border-color: var(--moon-2);
+}
+
+/* The current clip: outlined in orange (p. 2973). */
+.color-thumb[data-current] .color-thumb-frame {
+  border-color: var(--accent);
+}
+
+.color-thumb-picture {
+  display: flex;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--ink-0);
+}
+
+.color-thumb-picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.color-thumb-picture[data-kind='title'] span {
+  padding: 2px 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #e6e1f0;
+}
+
+.color-thumb-scrub {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  padding: 0 3px;
+  font-family: var(--font-mono, monospace);
+  background: #000a;
+  color: #fff;
+}
+
+.color-thumb-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
+.color-badge {
+  flex: none;
+  display: inline-flex;
+  color: var(--moon-1);
+}
+
+/* --- The mini-timeline. */
+.color-mini-area {
+  grid-area: mini;
+}
+
+.color-mini {
+  display: flex;
+  /* At most six tracks of video and the ruler; more are scrolled to (p. 2974). */
+  max-height: calc(18px + 6 * 16px + 14px);
+  overflow-y: auto;
+}
+
+.color-mini-numbers {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-2);
+}
+
+.color-mini-corner {
+  flex: none;
+  height: 18px;
+}
+
+.color-mini-number {
+  height: 16px;
+  padding: 0;
+  font-size: 10px;
+  color: #f2f0ea;
+}
+
+.color-mini-number[data-state='disabled'] {
+  color: var(--moon-3);
+}
+
+.color-mini-number[data-state='skipped'] {
+  color: #e05050;
+}
+
+.color-mini-lanes {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.color-mini-content {
+  position: relative;
+}
+
+.color-mini-ruler {
+  position: relative;
+  height: 18px;
+  cursor: ew-resize;
+  touch-action: none;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.color-mini-tick {
+  position: absolute;
+  bottom: 0;
+  height: 6px;
+  border-left: 1px solid var(--moon-3);
+  pointer-events: none;
+}
+
+.color-mini-tick::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: 5px;
+  left: 3px;
+  font-size: 9px;
+  white-space: nowrap;
+  color: var(--moon-2);
+  font-family: var(--font-mono, monospace);
+}
+
+.color-mini-track {
+  position: relative;
+  height: 16px;
+}
+
+.color-mini-track[data-state='disabled'] {
+  opacity: 0.4;
+}
+
+.color-mini-clip {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  padding: 0;
+  border: 1px solid #608ab8;
+  border-radius: 2px;
+  background: #284e74;
+  box-sizing: border-box;
+}
+
+/* The current clip, in orange (p. 2974). */
+.color-mini-clip[data-current] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.color-mini-clip[data-enabled='false'] {
+  opacity: 0.45;
+}
+
+.color-mini-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+/* --- The palettes: the left, the center (merged where the page is narrow) and the right. */
+.color-palettes-area {
+  grid-area: palettes;
+}
+
+.color-palettes {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 1px;
+  background: var(--line);
+}
+
+.color-palettes[data-merged] {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}
+
+.color-palette-group {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-1);
+}
+
+.color-palette-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 3px var(--s2);
+  overflow-x: auto;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.color-palette-tabs button {
+  height: 24px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  white-space: nowrap;
+}
+
+.color-palette-tabs button[aria-selected='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.color-palette {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* --- The node editor expanded over the viewer beside it (p. 2981). */
+.color-page[data-nodes-expanded] .color-nodes {
+  grid-column: viewer / nodes;
+  width: auto;
+}
+
+.color-page[data-nodes-expanded] .color-viewer {
+  display: none;
+}
+
+/* --- Enhanced viewer (Alt+F): over all that lies beside and beneath it, the palettes left (p. 2993). */
+.color-page[data-viewer-mode='enhanced'] :is(.color-side, .color-nodes, .color-thumbs-area, .color-mini-area),
+.color-page[data-viewer-mode='full'] :is(.color-side, .color-nodes, .color-thumbs-area, .color-mini-area, .color-palettes-area) {
+  display: none;
+}
+
+.color-page:is([data-viewer-mode='enhanced'], [data-viewer-mode='full']) .color-viewer {
+  grid-column: 1 / -1;
+  display: flex;
+}
+
+/* Full page viewer (Shift+F): the palettes go too; the transport and the page tabs stay (p. 2994). */
+.color-page[data-viewer-mode='full'] {
+  grid-template-rows: auto minmax(200px, 1fr);
+}
+
+/*
+ * Cinema viewer (P): over the whole window, laid over it outside the studio, whose containment
+ * would hold it; its transport shows while the pointer is on it (p. 2995).
+ */
+.color-cinema {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  background: #000;
+}
+
+.color-cinema > .color-viewer {
+  flex: 1;
+  min-width: 0;
+  background: #000;
+}
+
+.color-cinema :is(.monitor-head, .transport, .color-cinema-exit) {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.color-cinema .color-viewer:hover :is(.monitor-head, .transport, .color-cinema-exit) {
+  opacity: 1;
+}
+
+.color-cinema .color-cinema-exit {
+  display: inline-flex;
+  position: absolute;
+  top: var(--s3);
+  right: var(--s3);
+}
+
+/* A studio too narrow for the three side by side: the viewer above the gallery and the node editor. */
+@container studio (max-width: 760px) {
+  .color-page {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(200px, 1fr) minmax(160px, auto) auto auto minmax(170px, auto);
+    grid-template-areas: "bar bar" "viewer viewer" "side nodes" "thumbs thumbs" "mini mini" "palettes palettes";
+    overflow-y: auto;
+  }
+
+  .color-side, .color-nodes {
+    width: auto;
+  }
+
+  .color-page:not([data-side]) .color-nodes {
+    grid-column: 1 / -1;
+  }
+
+  .color-palettes, .color-palettes[data-merged] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -6,20 +6,168 @@ change what was there before.
 
 ## Unreleased
 
-- The agent edits video by what is said in it, with the ffmpeg of the system, where
-  `COLUMBINA_VIDEO` is 1. Eight tools take sources into a project directory, transcribe a talk
-  with faster-whisper on this machine (`COLUMBINA_WHISPER_MODEL` names a model; nothing is
-  downloaded), and make the talk a story, `story.md`, which is cut with the tools for files:
-  a line taken away or struck through is a sentence cut, a word struck through is a word cut, a
-  line moved is a sentence moved, and `[pause 1.8s]` lines are the pauses. `video_apply` commits
-  it and says what was cut and how long the film lasts; a cut falls into the silence between two
-  words. `video_overlay` lays pictures over the film, sounds under it, made quieter while somebody
-  speaks, and titles on it, each at words of the talk, so that it moves with them; it crosses
-  sentences into each other and switches the captions. `video_render` makes a preview or the
-  film with captions burnt in and as a file of SubRip beside it; every commit can be undone.
-  `columbina video import|transcribe|apply|correct|overlay|render|undo|info` does the same by
-  hand. Every run of ffmpeg opens files alone, of the formats of film, sound and pictures. See
-  `docs/video.md`.
+- The zoom, position, rotation and opacity of a clip take keyframes (studio, phase 4). In the
+  Inspector of the Edit page each has a diamond that puts a key at the playhead or takes away
+  the one there, and arrows to the key before and after; once a setting has keys, a value
+  given at another frame puts a key there. The keys stay on their pictures where the clip is
+  trimmed, slipped or played at another speed, as the keys of its grade do. The agent sets
+  them with the operations `set_clip_keys` and `splice_clip_keys` of `video_edit`.
+- The Edit page has a Curve Editor under its timeline (studio, phase 4), opened from the
+  toolbar of the timeline or from the Video tab of the Inspector: the curves of the keyframes
+  of the clip that is chosen, whose keys are dragged in time and in value, added with a
+  double click and deleted, given Linear, Ease In, Ease Out, Ease In and Out or Hold, shaped
+  by their Bezier handles, and copied and pasted. A drag is one step to undo.
+- A clip has a crop, with a softness, and a composite mode (studio, phase 4): the Cropping and
+  the Composite Mode of the Inspector, drawn in the viewer and in an export. A mode lays the
+  clip over the tracks below it as the same mode of a Layer Mixer lays one input over
+  another; where nothing is below it, the clip is shown as it is. The sides of the crop and
+  its softness take keyframes too. Projects are of schema 5; one of schema 4 is read with no crop and the normal mode,
+  and its file is kept beside it as `project.schema4.json`.
+- A tool `video_grade_keys`, with which the agent puts, removes or clears the keyframes of
+  one setting of a node of a grade without sending its other keys.
+- DeepSeek's Flash is shown the pictures that a tool gives back, such as a picture that was
+  read or one of the screen: it takes them now, and its Pro, which takes none, is told that a
+  picture was there. Which models of a service take pictures is said model by model.
+- A tool `computer`, with which the agent sees the screen of the machine and uses its
+  pointer and its keyboard: screenshots and a zoom, clicks, drags, the wheel, typing and
+  chords. It is off unless `COLUMBINA_COMPUTER=1` switches it on, is asked about as a
+  command of the shell is, and stops when the pointer is put into the upper left corner
+  of the screen. It works on Windows, on macOS and on Linux under X11, with nothing to
+  install; under Wayland the model is told that the screen is not reached. See
+  `docs/computer.md`.
+- OpenAI is spoken to in its Responses protocol (`/v1/responses`). Its newer models, such as
+  GPT-6 Astra, call a tool and reason in one reply only there, and refused a turn of the agent
+  in Chat Completions. The conversation is sent whole with each request and is not stored at
+  the service; what the model thought goes back to it sealed, and its summary is what is shown.
+  The pictures of a tool's result go in the result. An address of one's own under the name
+  `openai`, such as one that passes requests on, is still asked in Chat Completions.
+- The editing studio has a Fairlight page (phase 3), on Windows, made after DaVinci Resolve's,
+  on the same audio tracks as the Edit page. Clip volume and pan have keyframes; fade handles,
+  crossfades, channel mapping, Normalize Audio Levels and the copy and paste of audio
+  attributes are shared by the pages. Track headers have their number, format, meter, colour,
+  height lock, arm, mute and solo; the timeline has Razor, a vertical zoom, a mark for a playhead
+  out of view, and a transport and timecode area with Go To Timecode, Range In and Out, Loop,
+  Play Range, shuttle speeds, and the monitor's mute, level and DIM.
+- The mixer: track and bus faders, sends (pre or post fader), surround panning, buses of any
+  format feeding other buses (FlexBus), VCAs, and Track Groups that link editing, faders, solo,
+  mute, sends, panning and automation. A strip has a 6-band EQ and Dynamics (Expander/Gate,
+  Compressor with a sidechain, Limiter) with their curves, and inserts: Gain, Limiter, Soft
+  Clipper, Stereo Width, De-Esser, De-Hummer, Ducker, Noise Reduction (with Learn) and Pitch,
+  with user presets and a favourites list. Pitch Correction keeps the pitch of a clip at another
+  speed. Delay is made up across the graph, and the meters and loudness readings are those of
+  the graph that plays.
+- Automation: lanes of any setting of a track, bus or VCA, drawn with the Pencil or edited point
+  by point; recording in Write or Trim under Off, Latch, Snap or Snap Latch, with Preview, the
+  Active Range, Fill and Glide Range, Join Mix, Punch In and Punch Out, All Read and the
+  Automation Arm (Safe, Off); copy and paste, also of one level to another; and Automation
+  Follows Edit, so that lanes move with the clips over them.
+- Media: the channels of each stream of sound are read as they are, and a clip of media is set
+  to a layout, its channels mapped or split into linked mono clips. The File page shows the
+  waveform of each channel, and auditions a channel with its level.
+- Playback: the timeline's sound plays at any speed and while its playhead is dragged (Audio
+  Scrubbing), and an export runs the same graph, so that what is heard is what is written.
+- `video_loudness` measures or adjusts clip, track and output loudness, and `video_duck`
+  lowers selected backgrounds around dialogue. Candidate mixes are measured before a
+  single undoable edit. Platform loudness presets are explicitly non-official targets.
+
+- The editing studio has a Color page (phase 2), on Windows, made after DaVinci Resolve's. Each
+  clip has a tree of nodes (serial, parallel, layer and outside nodes, key mixers), and groups of
+  clips and the timeline have grades of their own; the node editor has Resolve's keys, links
+  dragged between nodes, labels, Lock Node, resets and Original Memory. The palettes are
+  Primaries (Color Wheels, Color Bars, Log Wheels, Auto Color and the black and white point
+  pickers), Curves (custom, the six HSL curves, Soft Clip), Qualifier (HSL, RGB, LUM, Matte
+  Finesse, pickers in the viewer, Highlight), Window, Tracker, Blur (Blur, Sharpen, Mist) and Key.
+  Thumbnails of the clips show their grades; grades are copied, pasted and taken from the clips
+  before. Every change is one step of undo, shared with the agent.
+- Power Windows: Linear, Circular, Polygon, Curve and Gradient, drawn and edited with their
+  controls on the viewer, with zoom and pan of the viewer; a Curve is drawn point by point, and
+  several of its points are moved, scaled, rotated or deleted together. The window list turns
+  each window on and off by its shape button, names it, inverts it, and with Mask off takes it
+  away from the others. Windows are kept as presets in a
+  library that every project of the user shares. Alt+C, Alt+Q, Alt+G and Alt+B add a serial node
+  with a circular, linear, polygon or Curve window in one step of undo. The tracker makes windows
+  follow the picture, with a cloud of points or with points placed (Pan, Tilt, Zoom, Rotate, 3D;
+  forward, backward, a frame at a time), in Clip or Frame mode, each track one step of undo.
+- LUTs, stills and comparisons: a LUT browser with Favorites, LUTs dropped on nodes, the
+  project's Input, Output and Color Viewer LUTs, and Generate LUT (17, 33 or 65 point cubes)
+  from a clip's thumbnail. The browser shows each LUT on a test image, and Live Preview and
+  Hover Scrub Preview show it on the viewer and on the current clip before it is applied; the
+  Color Viewer LUT is shown on the Color page alone. The Gallery keeps stills with their grades
+  in the project's albums and in PowerGrade albums shared by every project, applies or appends
+  them, keeps the memories A to H, and brings deleted stills back with Ctrl+Z. The viewer wipes
+  the frame against a still or another clip in eight styles, shows a split screen of up to 16
+  pictures, Highlight, and Bypass Color, which the Edit and Cut pages have too.
+- Video scopes: waveform, parade, vectorscope, histogram and CIE chromaticity, drawn on the
+  graphics card, docked or floating in a window of their own, one, two, four or nine at a time.
+- Shot Match to This Clip, to another clip or to a still, as Resolve does it: an adjustment at
+  the end of a node that no palette shows, marked on the clip and its node, with Reset Shot Match.
+- Colour management, in Project Settings: DaVinci YRGB by default, as in Resolve, or DaVinci
+  YRGB Color Managed, ACEScct and ACEScc (ACES 1.3 or 2.0), with the transforms of OpenColorIO
+  and its ACES configs, built into the engine. The input colour space of media, Bypass and Data
+  Levels are set in the media pool, with a 1D and a 3D LUT and the Inverse DRT of each source
+  clip; phones' HLG and PQ video, Apple Log, DJI D-Log and the log spaces of other cameras are
+  read. The viewers show HDR where Windows has HDR on, and an export to an HDR output space is
+  written in 10 bits with its HDR tags, mastering display, MaxCLL and MaxFALL. A line below the
+  viewer says while new transforms are being made, or why they could not be; the settings that
+  do not change the picture yet are greyed. A project made before is not managed, and looks and
+  exports as it did.
+- Media: 4:2:2 and 4:4:4 video is decoded at full precision, the alpha of ProRes 4444 is
+  composited, and MXF files and TIFF and EXR pictures are read.
+- The engine's project is schema 3, which adds grades, groups, colour settings and the colour of
+  media; a schema 2 project is upgraded when it is opened. The protocol adds the methods of the
+  Color page: scopes and their figures, the viewer's pointer and samples, Power Window controls,
+  comparisons, Highlight and Bypass Color, the Gallery, the LUT library and its previews
+  (`luts.preview`, `viewer.preview`, `viewer.lut`), Generate LUT, window presets, `add_serial`
+  with windows, window tracking (`track.start`, `track.stop`, `track.edit`, with the
+  notifications `track.progress` and `track.state`), graded thumbnails, and `color_pending` and
+  `color_error` in the timeline's state. `engine/PROTOCOL.md` describes all of it. The engine
+  compiles its shaders with the DirectX Shader Compiler of Microsoft that comes with it, and
+  with FXC where it cannot.
+- The agent grades: `video_grade_info`, `video_grade_set`, `video_grade_node`,
+  `video_grade_copy`, `video_grade_lut` (with Generate LUT), `video_grade_group`,
+  `video_grade_scopes` (figures of a frame drawn off screen, so no desktop is needed),
+  `video_color_settings`, `video_media_color` and `video_shot_match` (with Auto Color), beside
+  the nine editing tools. Values are checked with DaVinci's names, ranges and neutral values
+  before they are sent. See `docs/video.md`.
+- The desktop application has an editing studio (phase 1), on Windows, made after DaVinci
+  Resolve. The Media page holds the media pool, with bins inside bins, list and thumbnail views
+  and the details of each clip. The Edit page has a source viewer and a timeline viewer, a
+  timeline of video, audio and subtitle tracks with selection, trim and blade tools, snapping,
+  linked selection, three-point edits (F9 to F12), ripple and lift deletes, rolls, slips, slides
+  and Alt-drag copies, an inspector for transform, opacity, volume, pan, fades, titles and
+  transitions, a dialog of speed (constant, reversed), and an effects library of transitions,
+  titles and solid colours. The Cut page has the source tape, smart insert, append, ripple
+  overwrite and place on top, a magnetic Track 1 and two timelines. A timeline shows one
+  subtitle track at a time; subtitles are added from the track's menu or by a double-click,
+  and are exported as SRT per track. The export dialog writes H.264 or HEVC with the hardware
+  encoder, or ProRes, with a bar of progress that can cancel. Keys and mouse gestures follow
+  Resolve and are listed in `docs/video.md`. Films the agent cut before the studio are made
+  timelines when the studio opens a folder.
+- The engine speaks protocol 2: edit commands (`insert`, `overwrite`, `ripple_delete`, `trim`,
+  `roll`, `slip`, `slide`, `set_speed`, `add_transition` and the rest) expand into basic
+  operations at the moment they are applied, so undo holds only basic operations, and one batch
+  is one step. It plays timelines in a timeline viewer beside the source viewer, mixes
+  their sound, makes thumbnails and waveforms, exports with `render.start` and writes SRT
+  for the subtitle tracks named in `subtitle_tracks`. New basic operations `shift_clips` and
+  `shift_cues` move many clips or subtitles of a track in one step. A timeline may enable only
+  one subtitle track (`subtitle_shown`). `engine/PROTOCOL.md` describes all of it.
+- Video editing runs on Windows only for now; macOS will have it later. On macOS and Linux the
+  video plugin offers no tools and tells the model why, and every `columbina video` command says
+  that video editing needs Windows instead of looking for an engine. The rest of the agent runs
+  on Windows, macOS and Linux as before.
+- A video export that is cancelled while the engine is still answering its start is now
+  cancelled in the engine too, instead of going on.
+- Video tools and the CLI now edit Studio through the shared engine (protocol 2). One edit
+  batch is one undo step, shared with the desktop. Nine tools import media, apply timeline
+  edits, transcribe, write and cut track stories, correct text, export, undo and inspect.
+  Stories reflect repeated clips, trim, speed and reverse; text cuts ripple unlocked picture,
+  sound and subtitles together. Insertions split subtitles at the cut. The CLI adds `edit`
+  and `story`; `overlay` and `render --final` are replaced by engine edits and codec/quality
+  options. Rendering uses original media, with SRT subtitles kept separate from the picture;
+  H.264/HEVC hardware unavailability falls back to ProRes MOV. The Python filter-graph renderer
+  and independent project writer are retired after four real-engine film checks. `video migrate`
+  converts legacy films to timelines, preserves old files and records omissions; the first
+  default agent connection also migrates. See `docs/video.md` for setup and command examples.
 - The desktop application shows what came with this release. The status line says about what
   the task cost, and that it is in plan mode, which a press there leaves; the bar above a task
   has the agent plan, and writes the conversation into a page with `/export`. Under a turn that
@@ -146,6 +294,19 @@ change what was there before.
 - On Windows the cmdlets that read files, `Get-Content`, `Select-String` and `Import-Csv`, read
   UTF-8 in the commands of the agent and of hooks, and Python opens files in UTF-8 there unless
   `PYTHONUTF8` says otherwise. A file of UTF-8 in Chinese no longer comes out garbled.
+- Ultra no longer adds to the system prompt. The agent of the conversation is told how to work
+  at ultra in a message of its own before the input of the turn, and told once that it is over
+  when another level is chosen. The system prompt, the tools and the conversation so far are
+  then the same at every level, so a change of level no longer writes the whole system prompt
+  into the conversation again, and only what is asked of the reasoning and what follows the
+  conversation differ. A summary that takes the message away has it told again, as with every
+  instruction of that kind, and a subagent is told nothing of it.
+- Requests to Anthropic ask the cache to keep the tools and the system prompt apart from the
+  conversation, with a breakpoint of their own beside the one that moves with the conversation,
+  each for as long as the config says. A change of the effort, or of the beginning of the
+  conversation, then still reads them from the cache, on the models that put the thinking after
+  them. `python -m bench.cache_levels` measures what a service reads from its cache as the
+  level changes, with the key that the program finds as it always does.
 
 ## 0.2.0 (2026-10-25)
 

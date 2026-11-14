@@ -1,0 +1,394 @@
+// @vitest-environment jsdom
+import { createRef } from 'react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Timeline, type TimelineHandle } from '../src/studio/timeline/Timeline';
+import type { EngineBridge } from '../src/bridge';
+import { HEADER_WIDTH } from '../src/studio/timeline/geometry';
+import { keyOf } from '../src/app/keys';
+import { clip, media, timeline } from './timeline-fixture';
+import { likeABrowser } from './mounted';
+import { MEDIA_DRAG } from '../src/studio/media/drag';
+
+const rect = (left: number, top: number, width: number, height: number): DOMRect => ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} });
+beforeEach(() => {
+  likeABrowser();
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  vi.stubGlobal('DragEvent', MouseEvent);
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(956);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.clip) {
+      // The style sheet places a clip by its frames and the pixels of a frame of the timeline.
+      const scale = Number(this.closest<HTMLElement>('.timeline')?.dataset.scale ?? 4);
+      return rect(HEADER_WIDTH + Number(this.style.getPropertyValue('--start')) * scale, 34, Number(this.style.getPropertyValue('--length')) * scale, 64);
+    }
+    if (this.dataset.track) return rect(0, 30, 956, 72);
+    return rect(0, 0, 956, 400);
+  });
+});
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+const settle = () => act(async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); });
+const node = (id = 'c1') => document.querySelector<HTMLElement>(`[data-clip="${id}"]`)!;
+const root = () => screen.getByRole('region', { name: 'Timeline' });
+const pointer = (frame: number, extra = {}) => ({ button: 0, clientX: HEADER_WIDTH + frame * 4, clientY: 45, pointerId: 1, ...extra });
+function mount(t = timeline([clip('c1', 10, 60), clip('c2', 100, 60)])) {
+  const call = vi.fn().mockResolvedValue({ ok: true, result: {} });
+  const bridge = { call, onEvent: () => () => {} } as Pick<EngineBridge, 'call' | 'onEvent'>;
+  const onSeek = vi.fn();
+  const onSpeed = vi.fn();
+  const onSelection = vi.fn();
+  const ref = createRef<TimelineHandle>();
+  const props = { timeline: t, media: [media], bridge, session: 1, revision: 17, frame: 20, playing: false, onSeek, onSpeed, onSelection, ref };
+  return { ...render(<Timeline {...props} />), props, call, onSeek, onSpeed, onSelection, ref };
+}
+const click = (id = 'c1', extra = {}) => { const at = id === 'c1' ? 30 : 120; fireEvent.pointerDown(node(id), pointer(at, extra)); fireEvent.pointerUp(root(), pointer(at, extra)); };
+
+describe('timeline editing by pointer and keys', () => {
+  it('selects linked clips, toggles linked selection, and preserves a multiple selection while dragging', async () => {
+    const t = timeline([clip('c1', 10, 60, { link: 'g1' }), clip('c2', 100, 60, { link: 'g1' })]);
+    const { call, onSelection } = mount(t);
+    click();
+    expect(node().getAttribute('aria-selected')).toBe('true');
+    expect(node('c2').getAttribute('aria-selected')).toBe('true');
+    expect(onSelection).toHaveBeenLastCalledWith(['c1', 'c2']);
+    expect(call).not.toHaveBeenCalled();
+    fireEvent.keyDown(root(), { key: 'l', ctrlKey: true, shiftKey: true });
+    click('c2', { ctrlKey: true });
+    expect(node('c2').getAttribute('aria-selected')).toBe('false');
+    fireEvent.keyDown(root(), { key: 'Backspace' }); await settle();
+    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: false }] });
+  });
+  it('previews and snaps a move without changing clips or calling the engine, then commits once on release', async () => {
+    const { call } = mount();
+    fireEvent.pointerDown(node(), pointer(30));
+    fireEvent.pointerMove(root(), pointer(59));
+    expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 160}px`);
+    expect(document.querySelector<HTMLElement>('.timeline-snap')?.style.left).toBe(`${HEADER_WIDTH + 400}px`);
+    expect(node().style.getPropertyValue('--start')).toBe('10');
+    expect(call).not.toHaveBeenCalled();
+    fireEvent.pointerUp(root(), pointer(59)); await settle();
+    fireEvent.pointerUp(root(), pointer(59));
+    expect(call.mock.calls).toEqual([['transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 30, linked: true, clips: ['c1'], overwrite: true }] }]]);
+    expect(document.querySelector('[data-preview]')).toBeNull();
+  });
+  it('turns snapping off with N for one drag only, as DaVinci Resolve (it is as it was when the drag ends)', async () => {
+    // Reference Manual 20, p. 711: N while dragging turns snapping on or off for the operation; it reverts when it finishes.
+    const { call } = mount();
+    const snapping = () => screen.getByRole('button', { name: 'Snapping' }).getAttribute('aria-pressed');
+    fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(59));
+    expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 160}px`);
+    fireEvent.keyDown(root(), { key: 'n' });
+    // The preview follows at once, unsnapped, and the button stays as it is.
+    expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 156}px`);
+    expect(snapping()).toBe('true');
+    fireEvent.pointerMove(root(), pointer(59)); fireEvent.pointerUp(root(), pointer(59)); await settle();
+    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 29, linked: true, clips: ['c1'], overwrite: true }] });
+    // The next drag snaps again; N twice is as without it.
+    fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(59));
+    fireEvent.keyDown(root(), { key: 'n' }); fireEvent.keyDown(root(), { key: 'n' });
+    fireEvent.pointerUp(root(), pointer(59)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 30, linked: true, clips: ['c1'], overwrite: true }] });
+    // Outside a drag, N turns snapping off and keeps it so.
+    fireEvent.keyDown(root(), { key: 'n' });
+    expect(snapping()).toBe('false');
+  });
+  it('copies a clip dragged with Alt, overwriting what the copy covers and keeping every setting, as one transaction', async () => {
+    // Reference Manual 20, p. 811: Option-drag duplicates the selected clips; Alt is held until the button is let go.
+    const t = timeline([clip('c1', 10, 60, { speed: { num: 2, den: 1 }, reverse: true, gain_db: -6, fade_in: 5 }), clip('c2', 100, 60)]);
+    const { call } = mount(t);
+    fireEvent.pointerDown(node(), pointer(30, { altKey: true })); fireEvent.pointerMove(root(), pointer(80, { altKey: true }));
+    // The copy overwrites the end of c1 and the start of c2, which are marked so as it is dragged.
+    expect([...document.querySelectorAll<HTMLElement>('[data-covered]')].map(each => each.dataset.covered)).toEqual(['c1', 'c2']);
+    fireEvent.pointerUp(root(), pointer(80, { altKey: true })); await settle();
+    const copy = { ...t.tracks[0].kind !== 'subtitle' ? t.tracks[0].clips[0] : null!, id: '', start: 60, link: null };
+    expect(call.mock.calls).toEqual([['transaction.apply', { revision: 17, ops: [
+      { edit: 'trim', timeline: 't1', clip: 'c1', edge: 'out', delta: -10, ripple: false, linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'c2', edge: 'in', delta: 20, ripple: false, linked: false },
+      { op: 'insert_clip', timeline: 't1', track: 'v1', clip: copy },
+    ] }]]);
+    // Let go without Alt, it is a move.
+    call.mockClear();
+    fireEvent.pointerDown(node(), pointer(30, { altKey: true })); fireEvent.pointerMove(root(), pointer(80, { altKey: true }));
+    fireEvent.pointerUp(root(), pointer(80)); await settle();
+    expect(call.mock.calls[0][1].ops[0]).toMatchObject({ edit: 'move', clips: ['c1'], delta: 50 });
+  });
+  it('says why a clip dragged with Alt is not copied where its sound would go on a locked track', async () => {
+    const t = timeline([clip('c1', 10, 60, { link: 'g1' }), clip('c2', 100, 60)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 10, 60, { link: 'g1' })], transitions: [] });
+    const { call } = mount(t);
+    fireEvent.pointerDown(node(), pointer(30, { altKey: true })); fireEvent.pointerMove(root(), pointer(200, { altKey: true }));
+    fireEvent.pointerUp(root(), pointer(200, { altKey: true })); await settle();
+    expect(call.mock.calls.filter(([method]) => method === 'transaction.apply')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('A copy would go on a locked track, so nothing was copied.');
+  });
+  it.each(['Escape', 'pointerCancel', 'blur'])('cancels a drag with %s without editing', async how => {
+    const { call } = mount();
+    fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(50));
+    expect(document.querySelector('[data-preview]')).not.toBeNull();
+    if (how === 'Escape') fireEvent.keyDown(root(), { key: 'Escape' });
+    else if (how === 'blur') fireEvent.blur(window);
+    else fireEvent.pointerCancel(root(), pointer(50));
+    fireEvent.pointerUp(root(), pointer(50)); await settle();
+    expect(call).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-preview]')).toBeNull();
+  });
+  it('cancels an old drag if the agent edits the project before release', async () => {
+    const { props, rerender, call } = mount();
+    fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(50));
+    rerender(<Timeline {...props} revision={18} />);
+    fireEvent.pointerUp(root(), pointer(50)); await settle();
+    expect(call).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toContain('changed');
+  });
+  it('uses ripple trim in trim mode and respects the source handle', async () => {
+    const { call } = mount();
+    fireEvent.keyDown(root(), { key: 't' });
+    fireEvent.pointerDown(node(), pointer(11));
+    fireEvent.pointerMove(root(), pointer(16));
+    fireEvent.pointerUp(root(), pointer(16)); await settle();
+    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'trim', timeline: 't1', delta: 5, linked: true, clip: 'c1', edge: 'in', ripple: true }] });
+  });
+  it('moves an already selected clip with Ctrl held without toggling it off, overwriting as a plain drag does', async () => {
+    const { call } = mount(); click();
+    fireEvent.pointerDown(node(), pointer(30, { ctrlKey: true }));
+    fireEvent.pointerMove(root(), pointer(80, { ctrlKey: true }));
+    fireEvent.pointerUp(root(), pointer(80, { ctrlKey: true })); await settle();
+    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 50, clips: ['c1'], linked: true, overwrite: true }] });
+    expect(node().getAttribute('aria-selected')).toBe('true');
+  });
+  it.each([
+    ['slip', 45], ['slide', 85],
+  ] as const)('uses the %s half of a clip in trim mode', async (edit, clientY) => {
+    const { call } = mount();
+    fireEvent.keyDown(root(), { key: 't' });
+    fireEvent.pointerDown(node(), pointer(30, { clientY }));
+    fireEvent.pointerMove(root(), pointer(40, { clientY })); fireEvent.pointerUp(root(), pointer(40, { clientY })); await settle();
+    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit, timeline: 't1', delta: 10, linked: true, clip: 'c1' }] });
+  });
+  it('rolls a shared cut, shuffles in with Ctrl+Shift-drag, shows what a drag overwrites, and changes only tracks with Shift', async () => {
+    const { call } = mount(timeline([clip('c1', 10, 60), clip('c2', 70, 60)]));
+    fireEvent.pointerDown(node(), pointer(69.75));
+    fireEvent.pointerMove(root(), pointer(79.75)); fireEvent.pointerUp(root(), pointer(79.75)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'roll', timeline: 't1', left: 'c1', right: 'c2', delta: 10, linked: true }] });
+    const shuffle = { shiftKey: true, ctrlKey: true };
+    fireEvent.pointerDown(node(), pointer(30, shuffle));
+    fireEvent.pointerMove(root(), pointer(90, shuffle));
+    expect(document.querySelector('[data-covered]')).toBeNull();
+    fireEvent.pointerUp(root(), pointer(90, shuffle)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'insert_move', timeline: 't1', clips: ['c1'], at: 70, linked: true }] });
+    // A plain drag onto c2 shows the part of it that it would overwrite.
+    fireEvent.pointerDown(node(), pointer(30));
+    fireEvent.pointerMove(root(), pointer(60));
+    const covered = document.querySelector<HTMLElement>('[data-covered="c2"]')!;
+    expect([covered.style.left, covered.style.width]).toEqual([`${HEADER_WIDTH + 70 * 4}px`, `${30 * 4}px`]);
+    fireEvent.keyDown(root(), { key: 'Escape' });
+    expect(document.querySelector('[data-covered]')).toBeNull();
+    // Shift alone keeps the clip where it is in time: there is no other track here, so nothing changes.
+    call.mockClear();
+    fireEvent.pointerDown(node(), pointer(30, { shiftKey: true }));
+    fireEvent.pointerMove(root(), pointer(90, { shiftKey: true }));
+    expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 40}px`);
+    fireEvent.pointerUp(root(), pointer(90, { shiftKey: true })); await settle();
+    expect(call).not.toHaveBeenCalled();
+  });
+  it('retains a multi-selection and routes a captured pointer to the track under its release position', async () => {
+    const t = timeline(); t.tracks.push({ id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: false, clips: [], transitions: [] });
+    const { call } = mount(t);
+    const v1 = document.querySelector<HTMLElement>('[data-track="v1"]')!;
+    const v2 = document.querySelector<HTMLElement>('[data-track="v2"]')!;
+    vi.spyOn(v1, 'getBoundingClientRect').mockReturnValue(rect(0, 102, 956, 72));
+    vi.spyOn(v2, 'getBoundingClientRect').mockReturnValue(rect(0, 30, 956, 72));
+    click(); click('c2', { ctrlKey: true });
+    fireEvent.pointerDown(node(), pointer(30));
+    fireEvent.pointerMove(root(), pointer(40)); fireEvent.pointerUp(root(), pointer(40)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', clips: ['c1', 'c2'], delta: 10, to_track: 'v2', overwrite: true, linked: true }] });
+  });
+  it('moves the linked sound as many tracks up as its picture, and says why where there is no track for it', async () => {
+    // Linked Move Across Tracks (Reference Manual 20, p. 769): c1 from V1 to V2 takes its sound from A1 to A2.
+    const linked = (withA2: boolean) => {
+      const t = timeline([clip('c1', 10, 60, { link: 'g1' }), clip('c2', 100, 60)]);
+      t.tracks.push({ id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: false, clips: [], transitions: [] });
+      t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('s1', 10, 60, { link: 'g1' })], transitions: [] });
+      if (withA2) t.tracks.push({ id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: false, clips: [], transitions: [] });
+      return t;
+    };
+    const drag = () => {
+      const tops: Record<string, number> = { v2: 30, v1: 102, a1: 174, a2: 246 };
+      for (const lane of document.querySelectorAll<HTMLElement>('[data-track]')) vi.spyOn(lane, 'getBoundingClientRect').mockReturnValue(rect(0, tops[lane.dataset.track!] ?? 400, 956, 72));
+      fireEvent.pointerDown(node(), pointer(30));
+      fireEvent.pointerMove(root(), pointer(40));
+      const top = (id: string) => document.querySelector<HTMLElement>(`[data-preview="${id}"]`)?.style.top;
+      const preview = [top('c1'), top('s1')];
+      fireEvent.pointerUp(root(), pointer(40));
+      return preview;
+    };
+    const { call, unmount } = mount(linked(true));
+    // Rows of 72 pixels under the ruler, V2, V1, A1 and A2: the picture is shown on V2, its sound on A2.
+    expect(drag()).toEqual(['34px', '250px']);
+    await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', clips: ['c1', 's1'], delta: 10, to_track: 'v2', overwrite: true, linked: true }] });
+    unmount();
+    // No A2: the engine makes no track and would refuse, so nothing is sent.
+    const without = mount(linked(false));
+    drag(); await settle();
+    expect(without.call.mock.calls.filter(([method]) => method === 'transaction.apply')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('There is no track there for every clip and its linked clips, so nothing was moved.');
+  });
+  it('blades the clicked track or all tracks with Shift without a drag', async () => {
+    const { call } = mount();
+    fireEvent.keyDown(root(), { key: 'b' });
+    fireEvent.pointerDown(node(), pointer(30)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'blade', timeline: 't1', at: 30, tracks: ['v1'], linked: true }] });
+    fireEvent.pointerDown(node(), pointer(40, { shiftKey: true })); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'blade', timeline: 't1', at: 40, linked: true }] });
+  });
+  it('gives Ctrl+Shift+Z to redo, keeps marks in the UI, and requests the speed dialog', async () => {
+    const { call, onSpeed } = mount();
+    fireEvent.keyDown(root(), { key: 'z', ctrlKey: true, shiftKey: true }); await settle();
+    expect(call).toHaveBeenLastCalledWith('history.redo', undefined);
+    expect(root().dataset.scale).toBe('4');
+    call.mockClear();
+    fireEvent.keyDown(root(), { key: 'i' });
+    fireEvent.keyDown(root(), { key: 'o' });
+    expect(document.querySelector<HTMLElement>('.timeline-mark-range')?.style.width).toBe('4px');
+    expect(call).not.toHaveBeenCalled();
+    click(); fireEvent.keyDown(root(), { key: 'r' });
+    expect(onSpeed).toHaveBeenCalledWith(['c1']);
+  });
+  it('ignores editing shortcuts in text fields, IME, repeated keys and modal overlays', () => {
+    const { call } = mount(); click();
+    fireEvent.keyDown(root(), { key: 'Delete', isComposing: true });
+    fireEvent.keyDown(root(), { key: 'Delete', keyCode: 229 });
+    fireEvent.keyDown(root(), { key: 'Delete', repeat: true });
+    fireEvent.doubleClick(screen.getByText('V1'));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Name' }), { key: 'Delete' });
+    const dialog = document.createElement('dialog'); dialog.open = true; document.body.append(dialog);
+    fireEvent.keyDown(root(), { key: 'Delete' }); dialog.remove();
+    expect(call).not.toHaveBeenCalled();
+  });
+  it('shows a localized refusal and does not move the accepted project', async () => {
+    const { call } = mount();
+    call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'raw technical detail', data: { reason: 'no_room' } } });
+    fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(80)); fireEvent.pointerUp(root(), pointer(80)); await settle();
+    expect(screen.getByRole('alert').textContent).toContain('not enough room');
+    expect(screen.getByRole('alert').textContent).not.toContain('raw technical detail');
+    expect(node().style.getPropertyValue('--start')).toBe('10');
+  });
+  it('exposes source mark and placement keys for the dual-monitor host, with explicit target suppression', async () => {
+    const { props, ref, rerender, call } = mount();
+    rerender(<Timeline {...props} focus="source" source={{ media, frame: 45, rate: { num: 25, den: 1 } }} />);
+    act(() => { ref.current!.keyDown(keyOf(new KeyboardEvent('keydown', { key: 'i' }))); }); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ op: 'set_media', id: 'm1', mark_in: { ticks: 45, scale: 25 } }] });
+    fireEvent.click(screen.getByRole('button', { name: 'Target track: V1' }));
+    act(() => { ref.current!.keyDown(keyOf(new KeyboardEvent('keydown', { key: 'F9' }))); }); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'insert', timeline: 't1', source: { kind: 'media', media: 'm1' }, at: 20, video_track: null, audio_track: null }] });
+  });
+  it('deletes a clip whose sound is on a locked track without the sound, and says why where all the clips chosen are locked', async () => {
+    // Reference Manual 20, pp. 762, 769: the sound on the locked track stays; the engine would refuse an edit that named it.
+    const t = timeline([clip('c1', 10, 60, { link: 'g1' }), clip('c2', 100, 60)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 10, 60, { link: 'g1' })], transitions: [] });
+    const { props, rerender, call, onSelection } = mount(t);
+    click();
+    expect(onSelection).toHaveBeenLastCalledWith(['c1', 'a1c']);
+    fireEvent.keyDown(root(), { key: 'Backspace' }); await settle();
+    const applied = () => call.mock.calls.filter(([method]) => method === 'transaction.apply');
+    expect(applied()).toEqual([['transaction.apply', { revision: 17, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: true }] }]]);
+    // V1 locked too: every clip chosen is on a locked track, so nothing is sent.
+    call.mockClear();
+    rerender(<Timeline {...props} timeline={{ ...t, tracks: t.tracks.map(track => ({ ...track, locked: true })) }} />);
+    fireEvent.keyDown(root(), { key: 'Delete' }); await settle();
+    expect(applied()).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('A track affected by this edit is locked.');
+  });
+  it('says why Ctrl+T adds nothing, and makes a transition as long as the clips allow, as DaVinci Resolve does', async () => {
+    // No two clips meet at the playhead (frame 20): nothing is sent, and the page says so.
+    const { props, rerender, call } = mount();
+    const applied = () => call.mock.calls.filter(([method]) => method === 'transaction.apply').map(([, params]) => params);
+    fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    expect(applied()).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('No two clips meet at the playhead on the target tracks.');
+    // A clip chosen that meets no other clip.
+    click(); fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    expect(applied()).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('The clips chosen meet no other clip.');
+    // Two clips meet at the playhead, with 12 frames of handles where the standard dissolve needs
+    // 25: the engine refuses and names the longest that fits, and the dissolve is made that long
+    // (Reference Manual 20, p. 1020), in one step and without a word.
+    const met = timeline([clip('c1', 0, 100), clip('c2', 100, 100)]);
+    rerender(<Timeline {...props} timeline={met} frame={100} />);
+    fireEvent.pointerDown(root(), pointer(300)); fireEvent.pointerUp(root(), pointer(300));
+    call.mockClear();
+    call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'refused', data: { reason: 'no_handles', clip: 'c2', need: 13, have: 6, longest: 12 } } });
+    fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    const dissolve = { edit: 'add_transition', timeline: 't1', left: 'c1', right: 'c2', kind: 'dissolve', align: 'center' };
+    expect(applied()).toEqual([{ revision: 17, ops: [{ ...dissolve, length: 25 }] }, { revision: 17, ops: [{ ...dissolve, length: 12 }] }]);
+    expect(screen.queryByRole('alert')).toBeNull();
+    // Without a frame to spare, the refusal is said, and nothing more is sent.
+    call.mockClear();
+    call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'refused', data: { reason: 'no_handles', clip: 'c2', need: 13, have: 0, longest: 0 } } });
+    fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    expect(applied()).toEqual([{ revision: 17, ops: [{ ...dissolve, length: 25 }] }]);
+    expect(screen.getByRole('alert').textContent).toBe('The source does not have enough frames for this edit.');
+  });
+  it('does not start editing a locked clip or submit another transaction while one is pending', async () => {
+    const { props, rerender, call } = mount();
+    rerender(<Timeline {...props} timeline={{ ...props.timeline, tracks: props.timeline.tracks.map(t => ({ ...t, locked: true })) }} />);
+    click(); fireEvent.keyDown(root(), { key: 'Delete' });
+    expect(call).not.toHaveBeenCalled();
+    rerender(<Timeline {...props} />);
+    call.mockImplementation(() => new Promise(() => {}));
+    click(); fireEvent.keyDown(root(), { key: 'Delete' }); fireEvent.keyDown(root(), { key: 'Delete' });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+  it('does an undo asked for during an edit after it, and says that another edit must wait', async () => {
+    const { call } = mount();
+    let finish!: (value: unknown) => void;
+    call.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    click(); fireEvent.keyDown(root(), { key: 'Backspace' });
+    fireEvent.keyDown(root(), { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(root(), { key: 'd' });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert').textContent).toContain('still being applied');
+    await act(async () => { finish({ ok: true, result: {} }); });
+    await settle();
+    expect(call.mock.calls.map(([method]) => method)).toEqual(['transaction.apply', 'history.undo']);
+  });
+  it('cuts with the blade at the playhead where it is near it, with snapping on', async () => {
+    const { call } = mount();
+    fireEvent.keyDown(root(), { key: 'b' });
+    // The playhead is at frame 20; frame 21 is within 8 pixels at 4 pixels a frame.
+    fireEvent.pointerDown(node(), pointer(21)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'blade', timeline: 't1', at: 20, tracks: ['v1'], linked: true }] });
+    fireEvent.keyDown(root(), { key: 'n' });
+    fireEvent.pointerDown(node(), pointer(21)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'blade', timeline: 't1', at: 21, tracks: ['v1'], linked: true }] });
+  });
+  it('drops multiple media in pool order as one overwrite transaction, using source marks for their spacing', async () => {
+    const { props, rerender, call } = mount();
+    const items = [{ ...media, mark_in: { ticks: 25, scale: 25 }, mark_out: { ticks: 75, scale: 25 } }, { ...media, id: 'm2' }];
+    rerender(<Timeline {...props} media={items} />);
+    const dataTransfer = { types: [MEDIA_DRAG], dropEffect: 'none', getData: () => JSON.stringify({ session: 1, media: ['m1', 'm2'] }) };
+    const lane = document.querySelector('.timeline-lane')!;
+    fireEvent.dragOver(lane, { clientX: HEADER_WIDTH + 280, clientY: 45, dataTransfer });
+    expect(dataTransfer.dropEffect).toBe('copy'); expect(call).not.toHaveBeenCalled();
+    fireEvent.drop(lane, { clientX: HEADER_WIDTH + 280, clientY: 45, dataTransfer }); await settle();
+    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [
+      { edit: 'overwrite', timeline: 't1', at: 70, source: { kind: 'media', media: 'm1' }, video_track: 'v1', audio_track: null },
+      { edit: 'overwrite', timeline: 't1', at: 120, source: { kind: 'media', media: 'm2' }, video_track: 'v1', audio_track: null },
+    ] });
+  });
+  it('inserts on Ctrl+Shift-drop and ignores media drags from a different project session or onto locked tracks', async () => {
+    const { props, rerender, call } = mount();
+    const lane = document.querySelector('.timeline-lane')!;
+    const dataTransfer = { types: [MEDIA_DRAG], getData: () => JSON.stringify({ session: 2, media: ['m1'] }) };
+    fireEvent.drop(lane, { clientX: HEADER_WIDTH + 80, clientY: 45, dataTransfer }); await settle();
+    expect(call).not.toHaveBeenCalled();
+    dataTransfer.getData = () => JSON.stringify({ session: 1, media: ['m1'] });
+    fireEvent.drop(lane, { clientX: HEADER_WIDTH + 80, clientY: 45, dataTransfer, ctrlKey: true, shiftKey: true }); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'insert', timeline: 't1', at: 20, source: { kind: 'media', media: 'm1' }, video_track: 'v1', audio_track: null }] });
+    call.mockClear();
+    rerender(<Timeline {...props} timeline={{ ...props.timeline, tracks: props.timeline.tracks.map(t => ({ ...t, locked: true })) }} />);
+    fireEvent.drop(lane, { clientX: HEADER_WIDTH + 80, clientY: 45, dataTransfer }); await settle();
+    expect(call).not.toHaveBeenCalled();
+  });
+});

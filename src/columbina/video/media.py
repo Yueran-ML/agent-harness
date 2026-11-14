@@ -561,22 +561,28 @@ async def silences(
     duration_us: int,
     noise_db: float = -35.0,
     shortest_us: int = 300_000,
+    seconds: float | None = None,
 ) -> tuple[Silence, ...]:
     """Find the stretches of silence in the sound of a file.
 
     They are written to a file of the run, by a bare name: an hour of talk has more pauses than
-    the output of a run keeps.
+    the output of a run keeps. ``seconds`` is how long ffmpeg may take, if not the usual.
 
     Raises:
         MediaUnavailableError: ffmpeg cannot be run.
-        UnreadableMediaError: The sound cannot be read.
+        UnreadableMediaError: The sound cannot be read, or not in time.
     """
     detect = (
         f"silencedetect=noise={noise_db:g}dB:d={shortest_us / 1_000_000:g},"
         "ametadata=mode=print:file=silences.txt"
     )
     with apart(place) as cwd:
-        await ran(tools, [*_ffmpeg(tools, path), "-vn", "-af", detect, "-f", "null", "-"], cwd=cwd)
+        await ran(
+            tools,
+            [*_ffmpeg(tools, path), "-vn", "-af", detect, "-f", "null", "-"],
+            cwd=cwd,
+            seconds=_RUN_SECONDS if seconds is None else seconds,
+        )
         written = (
             (cwd / "silences.txt").read_text(encoding="utf-8")
             if (cwd / "silences.txt").exists()

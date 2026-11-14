@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "next_id": 7,
+  "media": [
+    {
+      "id": "m1",
+      "path": "C:\\media\\talk.mp4",
+      "identity": {
+        "size": 12500000,
+        "modified_us": 1790000000000000,
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "facts": {
+        "duration": {
+          "ticks": 153600,
+          "scale": 15360
+        },
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": {
+            "num": 25,
+            "den": 1
+          },
+          "codec": "h264",
+          "bits": 8,
+          "rotation": 0
+        },
+        "audio": {
+          "rate": 48000,
+          "channels": 2,
+          "codec": "aac"
+        }
+      },
+      "proxy": {
+        "path": "C:\\work\\.columbina\\studio\\cache\\proxies\\m1-0123456789ab.mov",
+        "width": 1920,
+        "height": 1080,
+        "codec": "hevc",
+        "digest_of_source": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "m2",
+      "path": "/home/me/phone/VID_0001.mov",
+      "identity": {
+        "size": 3000000,
+        "modified_us": 1790000000000001,
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "facts": {
+        "duration": {
+          "ticks": 450000,
+          "scale": 90000
+        },
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": {
+            "num": 30000,
+            "den": 1001
+          },
+          "codec": "hevc",
+          "bits": 10,
+          "rotation": 90
+        },
+        "audio": null
+      }
+    }
+  ],
+  "timelines": [
+    {
+      "id": "t1",
+      "name": "Timeline 1",
+      "rate": {
+        "num": 25,
+        "den": 1
+      },
+      "tracks": [
+        {
+          "id": "V1",
+          "kind": "video",
+          "clips": [
+            {
+              "id": "c1",
+              "media": "m1",
+              "source_in": {
+                "ticks": 0,
+                "scale": 15360
+              },
+              "start": 0,
+              "length": 100
+            }
+          ]
+        },
+        {
+          "id": "A1",
+          "kind": "audio",
+          "clips": [
+            {
+              "id": "c2",
+              "media": "m1",
+              "source_in": {
+                "ticks": 0,
+                "scale": 15360
+              },
+              "start": 0,
+              "length": 100
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t4",
+      "name": "Phone",
+      "rate": {
+        "num": 30000,
+        "den": 1001
+      },
+      "tracks": [
+        {
+          "id": "V1",
+          "kind": "video",
+          "clips": [
+            {
+              "id": "c5",
+              "media": "m2",
+              "source_in": {
+                "ticks": 0,
+                "scale": 90000
+              },
+              "start": 10,
+              "length": 100
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t6",
+      "name": "Sound only",
+      "rate": {
+        "num": 25,
+        "den": 1
+      },
+      "tracks": [
+        {
+          "id": "A1",
+          "kind": "audio",
+          "clips": [
+            {
+              "id": "c3",
+              "media": "m1",
+              "source_in": {
+                "ticks": 15360,
+                "scale": 15360
+              },
+              "start": 0,
+              "length": 50
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

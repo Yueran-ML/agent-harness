@@ -10,6 +10,33 @@ use columbina_media::{
 };
 use support::{media, number_in, Made, Sample};
 
+#[test]
+fn scaled_rgba_has_packed_rows_and_keeps_the_picture_converter_separate() {
+    let Some(made) = media(Sample::Fhd) else {
+        return;
+    };
+    for mut decoder in decoders(&made) {
+        let decoded = decoder.decoded_at(0).unwrap();
+        let mut converter = Converter::new();
+        for (width, height) in [(320, 180), (101, 57), (480, 270)] {
+            let small = converter.rgba_scaled(&decoded, width, height).unwrap();
+            assert_eq!((small.width, small.height), (width, height));
+            assert_eq!(small.data.len(), width as usize * height as usize * 4);
+            assert!(small
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel[3] == 255));
+            // The first block encodes frame 0 as limited-range black, now full-range RGB.
+            assert!(small.data[..3].iter().all(|&channel| channel < 8));
+            check(&converter.picture(&decoded).unwrap(), 0);
+        }
+        assert!(converter.rgba_scaled(&decoded, 0, 40).is_err());
+        assert!(converter.rgba_scaled(&decoded, u32::MAX, 40).is_err());
+    }
+}
+
 /// Numbers that are the same each time: splitmix64.
 struct Numbers(u64);
 

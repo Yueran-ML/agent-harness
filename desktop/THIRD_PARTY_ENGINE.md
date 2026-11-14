@@ -10,7 +10,9 @@ libraries that it links into the DLLs have no notices of their own here yet.
 The engine of the studio, `columbina-engine.exe`, is part of Columbina and is under its MIT
 license. The package brings it in `resources/engine/`, together with software of others that it
 needs, each under its own license. This file is copied there as well, followed by what only the
-build can tell: the exact build of FFmpeg, and the Rust crates in the engine.
+build can tell: the exact build of FFmpeg, the DirectX Shader Compiler of Microsoft that it compiles
+its shaders with, with its terms and version, the versions of OpenColorIO and of the libraries
+linked with it, and the Rust crates in the engine.
 
 ## FFmpeg
 
@@ -41,6 +43,52 @@ copyright (c) 2000-2026 the FFmpeg developers. FFmpeg is a trademark of Fabrice 
   https://github.com/BtbN/FFmpeg-Builds. Those scripts also fetch the sources of the libraries
   that the build links into the DLLs, one for each `--enable-lib…` option of its configuration.
   These libraries are under their own licenses.
+
+## OpenColorIO
+
+The engine manages colour with OpenColorIO (https://opencolorio.org), copyright Contributors to
+the OpenColorIO Project. It is linked statically into `columbina-engine.exe`, together with the
+libraries that OpenColorIO is built with: yaml-cpp, expat, Imath, pystring, minizip-ng and zlib.
+None of them is a file of its own in this folder.
+
+- **Which build.** OpenColorIO is built as a static library from the source of its release,
+  checked against its SHA-256, by `engine/crates/ocio/ci/build-ocio.ps1` of Columbina's
+  repository. Its own CMake fetches the other libraries at the versions that it recommends. The
+  versions, and the source of each, are listed below under *OpenColorIO and the libraries linked
+  with it*. The packaging checks that the OpenColorIO that the engine is built with is of that
+  version.
+- **License.** OpenColorIO is under the BSD 3-Clause License, whose text is
+  `licenses/OpenColorIO/LICENSE`. It includes code of other projects, whose notices are
+  `licenses/OpenColorIO/THIRD-PARTY.md` (among them SampleICC and xxHash, which are compiled into
+  the library; it lists some that only its tools and plugins use, which are not built here) and
+  `licenses/OpenColorIO/FileFormatCDL-NOTICE.txt`. yaml-cpp and expat are under the MIT license
+  (yaml-cpp includes dragonbox, `licenses/yaml-cpp/dragonbox-NOTICE.txt`), Imath and pystring under
+  the BSD 3-Clause License, and minizip-ng and zlib under the zlib license. The text of each is in
+  `licenses/<name>/`. They come with no warranty.
+- **The ACES configs.** The colour spaces, displays and views of the studio are those of the
+  configs for the Academy Color Encoding System (ACES) that are built into OpenColorIO
+  (`ocio://studio-config-latest`, the ACES Studio config). They are part of its source
+  (`src/OpenColorIO/builtinconfigs`), under its BSD 3-Clause License, and are made by the
+  OpenColorIO-Config-ACES project
+  (https://github.com/AcademySoftwareFoundation/OpenColorIO-Config-ACES).
+- **Source.** https://github.com/AcademySoftwareFoundation/OpenColorIO, and the repository of each
+  library at the tag listed below.
+
+## Signalsmith Stretch
+
+The engine changes the speed of sound without changing its pitch, and moves its pitch, with
+Signalsmith Stretch (https://github.com/Signalsmith-Audio/signalsmith-stretch), copyright (c) 2022
+Geraint Luff / Signalsmith Audio Ltd., which uses Signalsmith Linear
+(https://github.com/Signalsmith-Audio/linear), copyright (c) 2025 Signalsmith Audio, for its
+transforms. Both are libraries of C++ headers, compiled into `columbina-engine.exe` from their
+sources. Neither is a file of its own in this folder.
+
+- **Which version.** The headers are kept in Columbina's repository
+  (`engine/crates/stretch/vendor/`), copied unchanged from the releases listed below under
+  *Libraries compiled into the engine from their sources*.
+- **License.** Both are under the MIT license, whose texts are
+  `licenses/signalsmith-stretch/LICENSE.txt` and `licenses/signalsmith-linear/LICENSE.txt`. They
+  come with no warranty.
 
 ## Rust crates
 

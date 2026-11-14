@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('columbina', {
   onClose: (callback) => subscribe('columbina:closed', callback),
   onShutdown: (callback) => subscribe('columbina:shutdown', callback),
   onFullScreen: (callback) => subscribe('columbina:full-screen', callback),
+  // A key that the page left, of those that the menu had: the shell does what the menu did.
+  leftKey: (key) => ipcRenderer.invoke('columbina:left-key', {
+    key: key?.key, code: key?.code, control: key?.control === true, shift: key?.shift === true, alt: key?.alt === true, meta: key?.meta === true,
+  }),
   stop: () => ipcRenderer.invoke('columbina:stop'),
   setTheme: (theme) => ipcRenderer.invoke('columbina:set-theme', theme),
   setLanguage: (language) => ipcRenderer.invoke('columbina:set-language', language),
@@ -104,13 +108,40 @@ contextBridge.exposeInMainWorld('columbina', {
   // The engine of the studio. The page names no path to it and holds no handle of the window:
   // media comes from the dialog of the system, and the view is made by the shell.
   engine: {
+    migrationDuck: (asked) => ipcRenderer.invoke('columbina:migration-duck', { session: asked?.session, timeline: asked?.timeline, accept: asked?.accept }),
     open: (cwd) => ipcRenderer.invoke('columbina:engine-open', { cwd }),
-    call: (method, params) => ipcRenderer.invoke('columbina:engine-call', { method, params }),
-    importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language }),
-    viewRect: (rect) => ipcRenderer.invoke('columbina:engine-view-rect', {
-      x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
+    call: (method, params, context) => ipcRenderer.invoke('columbina:engine-call', {
+      method, params, ...(context?.expectedSession === undefined ? {} : { expectedSession: context.expectedSession }),
     }),
-    viewShow: (shown) => ipcRenderer.invoke('columbina:engine-view-show', { shown: shown === true }),
+    importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language, ...(asked?.bin === undefined ? {} : { bin: asked.bin }) }),
+    // Stills of the Gallery come from pictures chosen in the dialog of the system, and go where Save As says.
+    importStills: (asked) => ipcRenderer.invoke('columbina:engine-still-import', { language: asked?.language, ...(asked?.album === undefined ? {} : { album: asked.album }) }),
+    exportStills: (asked) => ipcRenderer.invoke('columbina:engine-still-export', {
+      language: asked?.language, stills: Array.isArray(asked?.stills) ? [...asked.stills] : asked?.stills,
+    }),
+    // Generate LUT: the grade and the size the page names, the file chosen in Save As.
+    exportLut: (asked) => ipcRenderer.invoke('columbina:engine-export-lut', {
+      language: asked?.language, grade: asked?.grade, size: asked?.size, node: asked?.node, frame: asked?.frame, name: asked?.name,
+    }),
+    render: (options) => ipcRenderer.invoke('columbina:engine-render', {
+      timeline: options?.timeline, codec: options?.codec, quality: options?.quality,
+      subtitle_tracks: Array.isArray(options?.subtitle_tracks) ? [...options.subtitle_tracks] : options?.subtitle_tracks,
+      range: options?.range === undefined ? undefined : { from: options.range?.from, to: options.range?.to },
+      language: options?.language, name: options?.name,
+    }),
+    reveal: (job) => ipcRenderer.invoke('columbina:engine-reveal', { job }),
+    // A root of LUTs that `luts.list` gave, which the shell opens only if the engine lists it.
+    openLutFolder: (folder) => ipcRenderer.invoke('columbina:engine-open-lut-folder', { path: folder }),
+    viewRect: (rect, monitor) => ipcRenderer.invoke('columbina:engine-view-rect', {
+      monitor, x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
+    }),
+    viewShow: (shown, monitor) => ipcRenderer.invoke('columbina:engine-view-show', { monitor, shown: shown === true }),
+    // The floating window of the video scopes: opened, told whether the viewer has something loaded, and closed.
+    scopesWindow: (asked) => ipcRenderer.invoke('columbina:engine-scopes-window', {
+      open: asked?.open === true, loaded: asked?.loaded === true, language: asked?.language,
+      bounds: asked?.bounds === undefined || asked.bounds === null ? undefined
+        : { x: asked.bounds.x, y: asked.bounds.y, width: asked.bounds.width, height: asked.bounds.height },
+    }),
     close: () => ipcRenderer.invoke('columbina:engine-close'),
     onEvent: (callback) => subscribe('columbina:engine-event', callback),
   },

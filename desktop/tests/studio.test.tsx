@@ -16,11 +16,11 @@ import { ja } from '../src/messages/ja';
 import { zhCN } from '../src/messages/zh-CN';
 import { createMockEngine } from '../src/mock';
 import {
-  ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type Project, type ProxyEvent, type TransportState,
+  ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type Project, type ProxyEvent, type SourceTransportState as TransportState,
 } from '../src/studio/engine';
 import { AWAIT_MS, commandOf, faster, Intent } from '../src/studio/keys';
 import { Studio } from '../src/studio/Studio';
-import { nominalFps, rateText, timecode } from '../src/studio/timecode';
+import { fileName, nominalFps, rateText, timecode } from '../src/studio/timecode';
 import { SCRUB_EVERY_MS } from '../src/studio/Transport';
 import { useViewerRect } from '../src/studio/useViewerRect';
 import { likeABrowser } from './mounted';
@@ -50,7 +50,7 @@ afterEach(() => {
 
 const SCALE = 15360;
 const mediaOf = (id: string, given: { path?: string; video?: Partial<NonNullable<Media['facts']['video']>> | null; seconds?: number } = {}): Media => ({
-  id,
+  id, name: given.path ? fileName(given.path) : `${id}.mp4`, bin: null, mark_in: null, mark_out: null,
   path: given.path ?? `C:\\media\\${id}.mp4`,
   identity: { size: 1000, modified_us: 1_790_000_000_000_000, digest: '0'.repeat(64) },
   facts: {
@@ -59,9 +59,9 @@ const mediaOf = (id: string, given: { path?: string; video?: Partial<NonNullable
     audio: { rate: 48000, channels: 2, codec: 'aac' },
   },
 });
-const projectOf = (...media: Media[]): Project => ({ schema: 1, next_id: 10, media, timelines: [] });
+const projectOf = (...media: Media[]): Project => ({ schema: 5, groups: [], bins: [], next_id: 10, media, timelines: [] });
 const stateOf = (given: Partial<TransportState> = {}): TransportState => ({
-  media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true, ...given,
+  monitor: 'source', media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true, ...given,
 });
 
 /**
@@ -100,9 +100,12 @@ function engineWith(project: Project, given: { state?: TransportState | null; op
     session,
     tell: (event: EngineEvent) => act(() => tell(event)),
     notify: (method: string, params: unknown) => act(() => tell({ kind: 'notification', session, method, params })),
-    /** What the engine is asked, without the project and the state that the copy fetches. */
+    /**
+     * What the engine is asked, without the project and the state that the copy fetches, and the
+     * choice of HDR on the viewers that is sent at each connect (T18).
+     */
     asked: () => bridge.call.mock.calls
-      .filter(([method]) => method !== 'project.get' && method !== 'transport.state')
+      .filter(([method]) => method !== 'project.get' && method !== 'transport.state' && method !== 'view.display')
       .map(([method, params]) => (params === undefined ? [method] : [method, params])),
     setRevision(next: number) { revision = next; },
   };
@@ -251,7 +254,7 @@ describe('the media pool', () => {
     expect(document.activeElement).toBe(item('m3'));
     await settle();
     // The arrows of the list are not steps of the transport.
-    expect(engine.asked()).toEqual([['transport.load', { media: 'm2' }], ['transport.load', { media: 'm1' }]]);
+    expect(engine.asked()).toEqual([['transport.load', { monitor: 'source', media: 'm2' }], ['transport.load', { monitor: 'source', media: 'm1' }]]);
     // The viewer follows what the transport tells.
     engine.notify('transport.state', stateOf({ media: 'm1' }));
     expect(one('loaded').textContent).toBe('m1.mp4');
@@ -279,16 +282,25 @@ describe('the media pool', () => {
     expect(marked('pool-none')).toEqual([]);
   });
 
-  it('is on the Media page only', async () => {
+  it('is beside the source monitor on the Media page, beside both monitors on the Edit page, and beside the one viewer of the Cut page', async () => {
     await studio(engineWith(projectOf(mediaOf('m1'))));
     expect(one('page-media').getAttribute('aria-selected')).toBe('true');
-    fireEvent.click(one('page-edit'));
-    expect(marked('pool')).toEqual([]);
-    // The monitor is the same on both.
+    expect(marked('pool')).toHaveLength(1);
     expect(marked('viewer')).toHaveLength(1);
     expect(marked('transport')).toHaveLength(1);
+    fireEvent.click(one('page-edit'));
+    // The Edit page has the same pool, and a timeline monitor beside the source monitor.
+    expect(marked('pool')).toHaveLength(1);
+    expect(marked('viewer')).toHaveLength(2);
+    expect(marked('transport')).toHaveLength(2);
+    fireEvent.click(one('page-cut'));
+    // The Cut page has the same pool, and one viewer that shows the source or the timeline: both
+    // monitors are there, and one of them is hidden.
+    expect(marked('pool')).toHaveLength(1);
+    expect(marked('viewer')).toHaveLength(2);
+    expect(document.querySelectorAll('.cut-viewer > .monitor:not([hidden])')).toHaveLength(1);
     expect(marked('studio-pages')).toEqual([]);
-    expect([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Edit']);
+    expect([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Cut', 'Edit', 'Color', 'Fairlight']);
   });
 });
 
@@ -356,7 +368,7 @@ describe('the keys of the studio', () => {
     press(' ', {}, one('step-forward'));
     press('ArrowRight', {}, one('studio'));
     await settle();
-    expect(engine.asked()).toEqual([['transport.play', { speed: 1 }], ['transport.step', { frames: 1 }]]);
+    expect(engine.asked()).toEqual([['transport.play', { monitor: 'source', speed: 1 }], ['transport.step', { monitor: 'source', frames: 1 }]]);
     outside.remove();
     scrolled.remove();
   });
@@ -380,7 +392,7 @@ describe('the keys of the studio', () => {
     press('l');
     await settle();
     expect(engine.asked()).toEqual([
-      ['transport.pause'], ['transport.step', { frames: 1 }], ['transport.step', { frames: -1 }], ['transport.play', { speed: 1 }],
+      ['transport.pause', { monitor: 'source' }], ['transport.step', { monitor: 'source', frames: 1 }], ['transport.step', { monitor: 'source', frames: -1 }], ['transport.play', { monitor: 'source', speed: 1 }],
     ]);
   });
 
@@ -395,9 +407,9 @@ describe('the keys of the studio', () => {
     press('End');
     await settle();
     expect(engine.asked()).toEqual([
-      ['transport.step', { frames: -1 }], ['transport.step', { frames: 1 }], ['transport.step', { frames: 1 }],
-      ['transport.step', { frames: 25 }], ['transport.step', { frames: -25 }],
-      ['transport.seek', { frame: 0, scrubbing: false }], ['transport.seek', { frame: 249, scrubbing: false }],
+      ['transport.step', { monitor: 'source', frames: -1 }], ['transport.step', { monitor: 'source', frames: 1 }], ['transport.step', { monitor: 'source', frames: 1 }],
+      ['transport.step', { monitor: 'source', frames: 25 }], ['transport.step', { monitor: 'source', frames: -25 }],
+      ['transport.seek', { monitor: 'source', frame: 0, scrubbing: false }], ['transport.seek', { monitor: 'source', frame: 249, scrubbing: false }],
     ]);
   });
 
@@ -433,7 +445,7 @@ describe('the keys of the studio', () => {
     expect(engine.asked()).toEqual([]);
     press('l');
     await settle();
-    expect(engine.asked()).toEqual([['transport.play', { speed: 1 }]]);
+    expect(engine.asked()).toEqual([['transport.play', { monitor: 'source', speed: 1 }]]);
     field.remove();
     box.remove();
     editable.remove();
@@ -482,7 +494,7 @@ describe('the transport', () => {
     fireEvent.click(one('use-proxies'));
     await settle();
     expect(engine.asked()).toEqual([
-      ['transport.step', { frames: -1 }], ['transport.play', { speed: 1 }], ['transport.step', { frames: 1 }], ['transport.proxies', { on: false }],
+      ['transport.step', { monitor: 'source', frames: -1 }], ['transport.play', { monitor: 'source', speed: 1 }], ['transport.step', { monitor: 'source', frames: 1 }], ['transport.proxies', { monitor: 'source', on: false }],
     ]);
   });
 
@@ -504,7 +516,7 @@ describe('the transport', () => {
     bar.getBoundingClientRect = () => ({ left: 100, right: 1100, top: 0, bottom: 18, width: 1000, height: 18, x: 100, y: 0, toJSON() {} }) as DOMRect;
     const seeks = () => engine.asked().filter(([method]) => method === 'transport.seek').map(([, params]) => params);
     act(() => { fireEvent.pointerDown(bar, { clientX: 200, button: 0, pointerId: 1 }); });
-    expect(seeks()).toEqual([{ frame: 100, scrubbing: true }]);
+    expect(seeks()).toEqual([{ monitor: 'source', frame: 100, scrubbing: true }]);
     // Three moves within the next thirtieth of a second: only the last is sent, once it is over.
     for (const x of [210, 220, 250]) {
       act(() => { vi.advanceTimersByTime(5); fireEvent.pointerMove(bar, { clientX: x, pointerId: 1 }); });
@@ -512,7 +524,7 @@ describe('the transport', () => {
     expect(seeks()).toHaveLength(1);
     expect(one('timecode').textContent).toBe('00:00:06:00');
     act(() => { vi.advanceTimersByTime(Math.ceil(SCRUB_EVERY_MS)); });
-    expect(seeks()).toEqual([{ frame: 100, scrubbing: true }, { frame: 150, scrubbing: true }]);
+    expect(seeks()).toEqual([{ monitor: 'source', frame: 100, scrubbing: true }, { monitor: 'source', frame: 150, scrubbing: true }]);
     // A move long after is sent at once.
     act(() => { vi.advanceTimersByTime(100); fireEvent.pointerMove(bar, { clientX: 400, pointerId: 1 }); });
     act(() => { vi.advanceTimersByTime(10); fireEvent.pointerMove(bar, { clientX: 1300, pointerId: 1 }); });
@@ -521,7 +533,7 @@ describe('the transport', () => {
     act(() => { fireEvent.pointerUp(bar, { clientX: 1300, pointerId: 1 }); });
     act(() => { vi.advanceTimersByTime(100); });
     expect(seeks()).toEqual([
-      { frame: 100, scrubbing: true }, { frame: 150, scrubbing: true }, { frame: 300, scrubbing: true }, { frame: 1000, scrubbing: false },
+      { monitor: 'source', frame: 100, scrubbing: true }, { monitor: 'source', frame: 150, scrubbing: true }, { monitor: 'source', frame: 300, scrubbing: true }, { monitor: 'source', frame: 1000, scrubbing: false },
     ]);
     // A move that is no drag sends nothing.
     act(() => { fireEvent.pointerMove(bar, { clientX: 300, pointerId: 1 }); });
@@ -550,9 +562,9 @@ describe('the viewer', () => {
     expect(one('viewer-words').textContent).toBe('The project is being taken over from the agent.');
     engine.tell({ kind: 'opened', session: engine.session, project: 'F:\\film\\.columbina\\studio', owned: true, pid: 600, revision: 0 });
     expect(marked('viewer-notice')).toEqual([]);
-    engine.tell({ kind: 'unsupported', session: engine.session, reason: 'unsupported', message: 'views are not made on this system' });
+    engine.tell({ kind: 'unsupported', monitor: 'source', session: engine.session, reason: 'unsupported', message: 'views are not made on this system' });
     expect(one('viewer-words').textContent).toBe('The preview cannot be shown on this system yet.');
-    engine.tell({ kind: 'unsupported', session: engine.session, reason: 'headless', message: 'no such method' });
+    engine.tell({ kind: 'unsupported', monitor: 'source', session: engine.session, reason: 'headless', message: 'no such method' });
     expect(one('viewer-words').textContent).toBe('The project is open in an engine without a window, so the preview cannot be shown.');
     engine.tell({ kind: 'exited', session: engine.session, expected: false, code: 1, signal: null });
     expect(one('viewer-words').textContent).toBe('The engine of the studio has stopped.');
@@ -576,16 +588,16 @@ describe('the viewer', () => {
     const engine = engineWith(projectOf());
     await studio(engine, false);
     expect(one('viewer').dataset.browser).toBe('');
-    expect(one('viewer-words').textContent).toBe('The preview appears in the desktop app.');
+    expect(one('viewer-words').textContent).toBe('The viewers appear only in the desktop app.');
     // Nothing is told to a shell that is not there.
     expect(engine.bridge.viewRect).not.toHaveBeenCalled();
     expect(engine.bridge.viewShow).not.toHaveBeenCalled();
     cleanup();
     await studio(engineWith(projectOf()), false, zhCN);
-    expect(one('viewer-words').textContent).toBe('预览窗只在桌面应用里显示。');
+    expect(one('viewer-words').textContent).toBe('检视器只在桌面应用里显示。');
     cleanup();
     await studio(engineWith(projectOf()), false, ja);
-    expect(one('viewer-words').textContent).toBe('プレビューはデスクトップアプリで表示されます。');
+    expect(one('viewer-words').textContent).toBe('ビューアはデスクトップアプリでのみ表示されます。');
   });
 
   it('works with the engine of the replay', async () => {
@@ -638,7 +650,7 @@ describe('where the viewer lies', () => {
     expect(bridge.viewRect).not.toHaveBeenCalled();
     drawFrame();
     // Left and top rounded, then right and bottom, and the size between them.
-    expect(bridge.viewRect.mock.calls).toEqual([[{ x: 397, y: 66, width: 954, height: 834 }]]);
+    expect(bridge.viewRect.mock.calls).toEqual([[{ x: 397, y: 66, width: 954, height: 834 }, 'source']]);
     // Asked many times in a frame: measured once. Nothing changed: nothing is told.
     for (let times = 0; times < 5; times += 1) act(() => { window.dispatchEvent(new Event('resize')); });
     expect(frames.size).toBe(1);
@@ -647,7 +659,7 @@ describe('where the viewer lies', () => {
     box = at(0, 44, 640, 400);
     act(() => { window.dispatchEvent(new Event('resize')); window.dispatchEvent(new Event('resize')); });
     drawFrame();
-    expect(bridge.viewRect.mock.calls.at(-1)).toEqual([{ x: 0, y: 66, width: 960, height: 534 }]);
+    expect(bridge.viewRect.mock.calls.at(-1)).toEqual([{ x: 0, y: 66, width: 960, height: 534 }, 'source']);
     expect(bridge.viewRect).toHaveBeenCalledTimes(2);
   });
 
@@ -666,13 +678,13 @@ describe('where the viewer lies', () => {
     // The page was zoomed: the shell says so. The same rectangle is told again.
     bridge.tell({ kind: 'measure', session: 3 });
     drawFrame();
-    expect(bridge.viewRect.mock.calls).toEqual([[{ x: 10, y: 10, width: 100, height: 50 }], [{ x: 10, y: 10, width: 100, height: 50 }]]);
+    expect(bridge.viewRect.mock.calls).toEqual([[{ x: 10, y: 10, width: 100, height: 50 }, 'source'], [{ x: 10, y: 10, width: 100, height: 50 }, 'source']]);
     // The ratio changes, as the page hears it.
     expect(queries.at(-1)!.media).toBe('(resolution: 1dppx)');
     vi.stubGlobal('devicePixelRatio', 1.25);
     act(() => { queries.at(-1)!.listener!(); });
     drawFrame();
-    expect(bridge.viewRect.mock.calls.at(-1)).toEqual([{ x: 13, y: 13, width: 125, height: 62 }]);
+    expect(bridge.viewRect.mock.calls.at(-1)).toEqual([{ x: 13, y: 13, width: 125, height: 62 }, 'source']);
     expect(queries.at(-1)!.media).toBe('(resolution: 1.25dppx)');
   });
 
@@ -690,27 +702,27 @@ describe('where the viewer lies', () => {
     }
     render(<Page />);
     // Hidden until the shell knows where it lies.
-    expect(bridge.viewShow.mock.calls).toEqual([[false]]);
+    expect(bridge.viewShow.mock.calls).toEqual([[false, 'source']]);
     drawFrame();
-    expect(bridge.viewShow.mock.calls).toEqual([[false], [true]]);
+    expect(bridge.viewShow.mock.calls).toEqual([[false, 'source'], [true, 'source']]);
     expect(bridge.viewRect.mock.invocationCallOrder[0]).toBeLessThan(bridge.viewShow.mock.invocationCallOrder[1]);
     fireEvent.click(one('lie'));
     expect(document.body.dataset.overlay).toBe('1');
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     fireEvent.click(one('lie'));
     expect(document.body.dataset.overlay).toBeUndefined();
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
     // The page is hidden, and shown again.
     const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
     act(() => { document.dispatchEvent(new Event('visibilitychange')); });
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     hidden.mockReturnValue('visible');
     act(() => { document.dispatchEvent(new Event('visibilitychange')); });
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
     const shows = bridge.viewShow.mock.calls.length;
     // The studio is left.
     fireEvent.click(one('leave'));
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     expect(bridge.viewShow.mock.calls.length).toBe(shows + 1);
     // Something that opens while it is not shown asks nothing of the shell.
     fireEvent.click(one('lie'));
@@ -719,26 +731,26 @@ describe('where the viewer lies', () => {
     // Shown again: it is told where it lies before it is shown.
     fireEvent.click(one('leave'));
     drawFrame();
-    expect(bridge.viewShow.mock.calls.slice(shows + 1)).toEqual([[false], [true]]);
+    expect(bridge.viewShow.mock.calls.slice(shows + 1)).toEqual([[false, 'source'], [true, 'source']]);
   });
 
   it('is hidden while a sheet, a picker or the list of commands is open', async () => {
     const bridge = shell();
     render(<Viewer bridge={bridge} active box={() => at(0, 0, 100, 100)} />);
     drawFrame();
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
     const { unmount } = render(<Sheet title="A question" onClose={() => {}}><p>Words</p></Sheet>);
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     unmount();
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
     render(<EffortPicker effort="high" efforts={['low', 'high']} choice="free" placement="up" onChoose={() => {}} />);
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
     fireEvent.click(one('effort-button'));
     expect(marked('effort-panel')).toHaveLength(1);
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     fireEvent.click(one('effort-button'));
     expect(marked('effort-panel')).toEqual([]);
-    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
   });
 });
 
@@ -772,19 +784,30 @@ describe('the studio as a keyboard and a reader know it', () => {
     const engine = engineWith(projectOf(mediaOf('m1')));
     await studio(engine);
     const tabs = () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].map(tab => [tab.textContent, tab.tabIndex]);
-    expect(tabs()).toEqual([['Media', 0], ['Edit', -1]]);
+    expect(tabs()).toEqual([['Media', 0], ['Cut', -1], ['Edit', -1], ['Color', -1], ['Fairlight', -1]]);
     one('page-media').focus();
     fireEvent.keyDown(one('page-media'), { key: 'ArrowRight' });
-    expect(tabs()).toEqual([['Media', -1], ['Edit', 0]]);
+    expect(tabs()).toEqual([['Media', -1], ['Cut', 0], ['Edit', -1], ['Color', -1], ['Fairlight', -1]]);
+    expect(document.activeElement).toBe(one('page-cut'));
+    expect(marked('cut-page')).toHaveLength(1);
+    fireEvent.keyDown(one('page-cut'), { key: 'ArrowRight' });
+    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', 0], ['Color', -1], ['Fairlight', -1]]);
     expect(document.activeElement).toBe(one('page-edit'));
-    expect(marked('pool')).toEqual([]);
     fireEvent.keyDown(one('page-edit'), { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(one('page-color'));
+    expect(marked('color-page')).toHaveLength(1);
+    fireEvent.keyDown(one('page-color'), { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(one('page-fairlight'));
+    expect(marked('fairlight-page')).toHaveLength(1);
+    fireEvent.keyDown(one('page-fairlight'), { key: 'ArrowRight' });
     expect(document.activeElement).toBe(one('page-media'));
     fireEvent.keyDown(one('page-media'), { key: 'ArrowLeft' });
-    expect(document.activeElement).toBe(one('page-edit'));
+    expect(document.activeElement).toBe(one('page-fairlight'));
     await settle();
-    // The arrows of the tabs are not steps of the transport.
-    expect(engine.asked()).toEqual([]);
+    // The arrows of the tabs are not steps of the transport. (The pool of the Cut page, in its
+    // thumbnail view, asks for pictures of its media, and the Color page for the LUTs of the library, the albums of the Gallery
+    // and how the viewer is zoomed, which only reads it.)
+    expect(engine.asked().filter(([method]) => !['media.thumbnail', 'luts.list', 'gallery.list', 'view.viewport'].includes(method as string))).toEqual([]);
   });
 
   it('says where the playhead is in timecode, on a bar that the keyboard reaches', async () => {
@@ -798,7 +821,7 @@ describe('the studio as a keyboard and a reader know it', () => {
     // Its arrows step the transport, as everywhere in the studio.
     press('ArrowRight', {}, bar);
     await settle();
-    expect(engine.asked()).toEqual([['transport.step', { frames: 1 }]]);
+    expect(engine.asked()).toEqual([['transport.step', { monitor: 'source', frames: 1 }]]);
   });
 
   it('offers a failed proxy to be made again under the list, for the media chosen', async () => {

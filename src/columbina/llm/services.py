@@ -4,9 +4,11 @@ Many services speak the OpenAI Chat Completions protocol, and one adapter
 talks to all of them. They differ in little: where they are, which
 environment variable holds their key, and a few habits. Anthropic is spoken
 to in its own protocol, by an adapter of its own, see
-:mod:`columbina.llm.adapters.anthropic_messages`. What is known of a service
-is written down here once, so that a user names a service and not its
-address.
+:mod:`columbina.llm.adapters.anthropic_messages`. So is OpenAI itself, whose
+newer models call tools only in its Responses protocol, see
+:mod:`columbina.llm.adapters.openai_responses` and :func:`protocol_at`. What
+is known of a service is written down here once, so that a user names a
+service and not its address.
 
 A service that is not listed here needs no entry: its address is enough for
 the adapter, and :func:`of_ones_own` makes a :class:`Service` of it.
@@ -26,7 +28,11 @@ __all__ = [
     "adapter_config",
     "of_ones_own",
     "preset",
+    "protocol_at",
 ]
+
+Protocol = Literal["openai-chat", "openai-responses", "anthropic"]
+"""What a service speaks, which is to say which adapter talks to it."""
 
 KEY_OF_ONES_OWN = "COLUMBINA_API_KEY"
 """The environment variable that may hold the key of a service that is not listed here."""
@@ -61,11 +67,13 @@ class Service:
             service: ``default`` asks for nothing, and the others ask for that
             much reasoning. ``None`` where the user chose nothing, and the
             profile decides.
-        protocol: What it speaks: the protocol of OpenAI, or that of
-            Anthropic. The first is spoken to by
-            :mod:`columbina.llm.adapters.openai_chat`, the second by
-            :mod:`columbina.llm.adapters.anthropic_messages`, which knows how
-            the service is told how much to reason.
+        protocol: What it speaks at its own address: Chat Completions, the
+            Responses protocol of OpenAI, or the protocol of Anthropic. The
+            first is spoken to by :mod:`columbina.llm.adapters.openai_chat`,
+            the second by :mod:`columbina.llm.adapters.openai_responses`, the
+            third by :mod:`columbina.llm.adapters.anthropic_messages`, which
+            knows how the service is told how much to reason. What it speaks
+            at another address is said by :func:`protocol_at`.
         balance: How the service is asked how much money its account has
             left, or ``None`` if it cannot be asked with its key: ``deepseek``
             for ``GET /user/balance``.
@@ -75,6 +83,8 @@ class Service:
             the request.
         pictures: Whether its models take pictures, over the protocol of
             OpenAI. Those of Anthropic all do.
+        pictures_only: Which of its models take pictures, where not all of
+            them do. Empty where ``pictures`` says it of all.
     """
 
     name: str
@@ -89,10 +99,11 @@ class Service:
     base_url_env: str | None = None
     key_page: str | None = None
     effort: Literal["default", "off", "low", "high", "max"] | None = None
-    protocol: Literal["openai-chat", "anthropic"] = "openai-chat"
+    protocol: Protocol = "openai-chat"
     balance: Literal["deepseek"] | None = None
     drops_unbound_thinking: bool = False
     pictures: bool = False
+    pictures_only: tuple[str, ...] = ()
 
 
 PRESETS: tuple[Service, ...] = (
@@ -107,6 +118,10 @@ PRESETS: tuple[Service, ...] = (
         base_url_env="DEEPSEEK_BASE_URL",
         key_page="https://platform.deepseek.com/api_keys",
         balance="deepseek",
+        # Its Flash takes pictures, under its name and under the two older ones that the
+        # service still reads as that model. Its Pro takes none.
+        pictures=True,
+        pictures_only=("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"),
     ),
     Service(
         name="openai",
@@ -117,6 +132,8 @@ PRESETS: tuple[Service, ...] = (
         # The models that reason refuse the older name, and the others take both.
         max_tokens_field="max_completion_tokens",
         key_page="https://platform.openai.com/api-keys",
+        # Its newer models call a tool and reason in one reply only here.
+        protocol="openai-responses",
         pictures=True,
     ),
     Service(
@@ -202,6 +219,31 @@ def _as_written(text: str) -> str:
     return text.replace("$", "$$")
 
 
+def _address(service: Service, env: Mapping[str, str]) -> str:
+    """Return where a service is asked: at its address, or where its variable says."""
+    if service.base_url_env is not None:
+        return env.get(service.base_url_env) or service.base_url
+    return service.base_url
+
+
+def protocol_at(service: Service, env: Mapping[str, str]) -> Protocol:
+    """Return what a service speaks where it is asked.
+
+    The Responses protocol is known to be spoken at the address of OpenAI
+    itself. Another address under the same name, such as one that passes
+    requests on, is taken to speak Chat Completions, as nearly all do.
+
+    Args:
+        service: The service, with the address that its user may have given it.
+        env: The environment, in which a variable may name another address.
+    """
+    if service.protocol == "openai-responses":
+        known = preset(service.name)
+        if known is None or _address(service, env) != known.base_url:
+            return "openai-chat"
+    return service.protocol
+
+
 def adapter_config(service: Service, keys: str, env: Mapping[str, str]) -> dict[str, Any]:
     """Return the config of the adapter that talks to a service.
 
@@ -215,9 +257,7 @@ def adapter_config(service: Service, keys: str, env: Mapping[str, str]) -> dict[
     Returns:
         The config, as it stands in a plugin entry.
     """
-    base_url = service.base_url
-    if service.base_url_env is not None:
-        base_url = env.get(service.base_url_env) or base_url
+    base_url = _address(service, env)
     config: dict[str, Any] = {"provider": service.name, "base_url": _as_written(base_url)}
     if service.key_env is not None:
         config["api_key_env"] = service.key_env
@@ -226,10 +266,15 @@ def adapter_config(service: Service, keys: str, env: Mapping[str, str]) -> dict[
         config["api_key_required"] = False
     if service.reasoning_style != "none":
         config["reasoning_style"] = service.reasoning_style
-    if service.max_tokens_field != "max_tokens":
+    # The Responses protocol has one name for the limit on the length of a reply.
+    if service.max_tokens_field != "max_tokens" and (
+        protocol_at(service, env) != "openai-responses"
+    ):
         config["max_tokens_field"] = service.max_tokens_field
     if service.pictures:
         config["pictures"] = True
+    if service.pictures_only:
+        config["pictures_only"] = list(service.pictures_only)
     # What another address takes, such as one that answers as Anthropic does, is not known.
     if service.drops_unbound_thinking and base_url == service.base_url:
         config["drop_unbound_thinking"] = True

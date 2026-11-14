@@ -94,11 +94,50 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: "1"
+      # The OpenColorIO that columbina-ocio links, as engine/crates/ocio/ci/build-ocio.ps1 knows it.
+      OCIO_VERSION: "2.6.0"
     steps:
       - uses: actions/checkout@v7
 
       - name: FFmpeg 8.1
         run: bash ../.github/scripts/ffmpeg.sh
+
+      # OpenColorIO, which columbina-ocio links statically from OCIO_DIR, is built by
+      # engine/crates/ocio/ci/build-ocio.ps1, the recipe of the crate's documentation, and kept in
+      # the cache. It is built again only when its version, the script, the toolchain files of
+      # CMake, the image of the runner or the version of MSVC changes.
+      - name: OpenColorIO, its key in the cache
+        id: ocio
+        shell: pwsh
+        env:
+          RECIPE: ${{ hashFiles('engine/crates/ocio/ci/build-ocio.ps1', 'engine/crates/ocio/cmake/*.cmake') }}
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $msvc = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt").Trim()
+          Add-Content $env:GITHUB_OUTPUT "key=ocio-$env:OCIO_VERSION-$env:ImageOS-msvc$msvc-$env:RECIPE"
+          Add-Content $env:GITHUB_ENV "OCIO_DIR=$env:RUNNER_TEMP\ocio-$env:OCIO_VERSION"
+
+      - name: OpenColorIO from the cache
+        id: ocio-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.OCIO_DIR }}
+          key: ${{ steps.ocio.outputs.key }}
+
+      # The source tarball of the release, checked against its SHA-256, and the dependencies that
+      # OCIO's CMake fetches by their tags.
+      - name: OpenColorIO, built when the cache has none
+        if: steps.ocio-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./crates/ocio/ci/build-ocio.ps1 -Version $env:OCIO_VERSION -Prefix $env:OCIO_DIR -WorkDir "$env:RUNNER_TEMP\ocio-build" -Jobs $env:NUMBER_OF_PROCESSORS
+
+      # Saved at once, so that a run whose tests fail does not build it again.
+      - name: OpenColorIO into the cache
+        if: steps.ocio-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.OCIO_DIR }}
+          key: ${{ steps.ocio.outputs.key }}
 
       # bindgen, for the bindings of libav, needs libclang. LLVM is on the images of Windows;
       # installed if it is not.

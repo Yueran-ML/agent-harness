@@ -893,6 +893,9 @@ def test_what_was_said_of_a_listed_service_stands_in_the_place_of_what_is_known(
         model="deepseek-flash",
         context_window=1_048_576,
         base_url_env="DEEPSEEK_BASE_URL",
+        # A mirror of the service has its models, and they take the pictures that they take.
+        pictures=True,
+        pictures_only=("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"),
     )
     assert with_said(model="deepseek-v4-pro").key_page == deepseek.key_page
     # Nor is it known what the account there has left.

@@ -11,7 +11,7 @@ const { createWriteStream, mkdirSync, readFileSync, realpathSync } = require('no
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 /** How long an engine is given to say where it listens, in milliseconds. */
 const LISTENING_MS = 20_000;
 /** How long a connection is given to be made: a busy pipe of Windows is tried again for ever. */

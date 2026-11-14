@@ -138,6 +138,9 @@ class Config(BaseModel):
             no picture in this protocol, so the pictures of the results of a
             reply go to the model in a message of the user after them. Where
             the model takes none, it is told so in their place.
+        pictures_only: The models that take pictures, where a service has
+            some that do and some that do not. Empty where all of them do,
+            which is to say where ``pictures`` alone decides.
     """
 
     provider: str
@@ -151,6 +154,7 @@ class Config(BaseModel):
     connect_timeout_seconds: float = Field(default=10.0, gt=0)
     headers: dict[str, str] = Field(default_factory=dict[str, str])
     pictures: bool = False
+    pictures_only: tuple[str, ...] = ()
 
 
 class _Function(BaseModel):
@@ -298,8 +302,14 @@ def _wire(message: Message, adapter: str) -> dict[str, JsonValue]:
 _NO_PICTURES = "(A picture was given back here, and this model takes no pictures.)"
 
 
-def _wired(messages: Sequence[Message], config: Config) -> list[JsonValue]:
+def _sees(config: Config, model: str) -> bool:
+    """Whether a model of the service takes pictures."""
+    return config.pictures and (not config.pictures_only or model in config.pictures_only)
+
+
+def _wired(messages: Sequence[Message], config: Config, model: str) -> list[JsonValue]:
     """Return the messages in the shape of the protocol, with the pictures of results after them."""
+    sees = _sees(config, model)
     wired: list[JsonValue] = []
     shown: list[JsonValue] = []
     for message in messages:
@@ -308,7 +318,7 @@ def _wired(messages: Sequence[Message], config: Config) -> list[JsonValue]:
             shown = []
         one = _wire(message, config.provider)
         if isinstance(message, ToolMessage) and message.pictures:
-            if config.pictures:
+            if sees:
                 shown.append(
                     {
                         "type": "text",
@@ -365,7 +375,7 @@ def build_body(request: LlmRequest, config: Config) -> dict[str, JsonValue]:
     call = request.config
     body: dict[str, JsonValue] = {
         "model": call.model,
-        "messages": _wired(request.messages, config),
+        "messages": _wired(request.messages, config, call.model),
         "stream": True,
     }
     if config.include_usage:

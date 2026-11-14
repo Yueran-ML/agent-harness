@@ -12,6 +12,8 @@ columbina-model = { path = "../model" }
 humantime.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The digest that tells two projects of schema 1 apart, as they are kept.
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

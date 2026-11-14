@@ -5,12 +5,14 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use columbina_model::{Rate, Time};
+use columbina_model::{ColorFacts, Rate, Time};
 use ff::format::context::Input;
 use ff::format::Pixel;
 use ffmpeg_next as ff;
 
+use crate::color;
 use crate::ffi::{self, Device, Planes, Scaler};
+use crate::native::{self, NativePicture};
 use crate::probe;
 use crate::timing::Timing;
 use crate::MediaError;
@@ -165,9 +167,15 @@ impl Picture {
 pub struct Decoded {
     frame: i64,
     raw: ff::frame::Video,
+    /// The bits of luma of the picture, as its stream says: those that a frame of more bits, as
+    /// a card gives one, holds at the top of each sample.
+    bits: u8,
     /// Whether the frame that came out before it has the same number, so that it is not the
     /// frame shown at its number.
     repeat: bool,
+    /// What its stream (its container) says of its colours, which a picture of it is taken by
+    /// before what the frame says (see [`Converter::native`]).
+    said: ffi::ColorCodes,
 }
 
 impl Decoded {
@@ -183,19 +191,31 @@ impl Decoded {
         ffi::on_device(self.raw.format())
     }
 
+    /// What the frame says of its colours: the numbers of its primaries, transfer, matrix, range
+    /// and siting of chroma, and the side data of HDR that it carries (the mastering display
+    /// and the light levels), as the decoder read them from the frame (its VUI and SEI).
+    #[must_use]
+    pub fn color(&self) -> ColorFacts {
+        color::of_frame(&self.raw)
+    }
+
     /// Another of the same frame, which shares its memory.
     fn again(&self) -> Result<Self, MediaError> {
         Ok(Self {
             frame: self.frame,
             raw: ffi::reference(&self.raw).map_err(MediaError::Decode)?,
+            bits: self.bits,
             repeat: self.repeat,
+            said: self.said,
         })
     }
 }
 
 /// What makes [`Decoded`] frames into [`Picture`]s: it copies them from the graphics card, and
 /// converts those of other formats (4:2:2, 4:4:4, RGB, 12 bits) with swscale, to P010 if they
-/// have more than 8 bits and NV12 if not, writing straight into the picture. It keeps what it
+/// have more than 8 bits and NV12 if not, writing straight into the picture. It makes them
+/// [`NativePicture`]s too ([`Converter::native`]), which keep the chroma of 4:2:2 and 4:4:4, and
+/// R'G'B' and alpha as they are. It keeps what it
 /// made for the last frame, so that the next one of the same shape is made without starting
 /// again; it takes frames of any file, one after another. One is used by one thread at a time,
 /// and each thread that makes pictures has its own.
@@ -209,6 +229,20 @@ pub struct Converter {
     /// A frame copied from the card in a format other than NV12 and P010, to be converted.
     copied: Option<ff::frame::Video>,
     scaler: Option<Scaler>,
+    thumbnail_scaler: Option<Scaler>,
+    /// The scaler of [`Converter::native`], for frames that it does not take as they are.
+    native_scaler: Option<Scaler>,
+}
+
+/// A small, packed RGBA picture, in stored orientation, with no row padding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rgba {
+    /// Its width in pixels.
+    pub width: u32,
+    /// Its height in pixels.
+    pub height: u32,
+    /// Four bytes per pixel, red, green, blue, alpha; rows from top to bottom.
+    pub data: Vec<u8>,
 }
 
 impl Converter {
@@ -216,6 +250,79 @@ impl Converter {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Scale a decoded frame and convert it to packed RGBA for a thumbnail. Hardware frames
+    /// are transferred first; the full-resolution picture converter keeps its own context.
+    ///
+    /// # Errors
+    /// Device transfer or conversion fails, either dimension is outside 1–16384, or the result
+    /// would exceed 64 MiB. These bounds are checked before libav allocates an output frame.
+    pub fn rgba_scaled(
+        &mut self,
+        decoded: &Decoded,
+        width: u32,
+        height: u32,
+    ) -> Result<Rgba, MediaError> {
+        if !(1..=16384).contains(&width)
+            || !(1..=16384).contains(&height)
+            || u64::from(width) * u64::from(height) > 16 * 1024 * 1024
+        {
+            return Err(MediaError::Unsupported(
+                "RGBA output exceeds the supported size".into(),
+            ));
+        }
+        let source = if ffi::on_device(decoded.raw.format()) {
+            let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
+            ffi::transfer(copied, &decoded.raw).map_err(MediaError::Device)?;
+            &*copied
+        } else {
+            &decoded.raw
+        };
+        let input = (source.format(), source.width(), source.height());
+        let scaler = match &mut self.thumbnail_scaler {
+            Some(scaler)
+                if (
+                    scaler.0.input().format,
+                    scaler.0.input().width,
+                    scaler.0.input().height,
+                ) == input
+                    && (scaler.0.output().width, scaler.0.output().height) == (width, height) =>
+            {
+                scaler
+            }
+            slot => slot.insert(Scaler(
+                ff::software::scaling::Context::get(
+                    input.0,
+                    input.1,
+                    input.2,
+                    Pixel::RGBA,
+                    width,
+                    height,
+                    ff::software::scaling::Flags::AREA,
+                )
+                .map_err(|error| {
+                    MediaError::Decode(format!("cannot scale a thumbnail: {error}"))
+                })?,
+            )),
+        };
+        let mut output = ff::frame::Video::empty();
+        scaler.thumbnail_colors().map_err(MediaError::Decode)?;
+        scaler
+            .0
+            .run(source, &mut output)
+            .map_err(|error| MediaError::Decode(error.to_string()))?;
+        let row = width as usize * 4;
+        let mut data = Vec::with_capacity(row * height as usize);
+        for y in 0..height as usize {
+            let start = y * output.stride(0);
+            data.extend_from_slice(&output.data(0)[start..start + row]);
+        }
+        Ok(Rgba {
+            width,
+            height,
+            data,
+        })
     }
 
     /// Make a frame a picture.
@@ -257,6 +364,75 @@ impl Converter {
         let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
         ffi::transfer(copied, raw).map_err(MediaError::Device)?;
         convert(&mut self.scaler, copied, decoded.frame, into)
+    }
+}
+
+impl Converter {
+    /// Make a frame a picture in the sampling of chroma that its file stores, nothing of its
+    /// chroma thrown away: 4:2:0 as NV12 or P010, as [`Converter::picture`] makes it; 4:2:2 as
+    /// P216 and 4:4:4 as P416, in 16 bits; R'G'B' (and grey, and a palette) as R'G'B'A, never
+    /// made Y'CbCr: of integers at full scale (Rgba64), of floats in half floats (`RgbaF16`)
+    /// (see [`NativePicture`]). Alpha is kept: of R'G'B'A as its fourth value, of Y'CbCr
+    /// (`ProRes` 4444) as a plane of its own.
+    ///
+    /// A frame whose Y', Cb and Cr are each in a plane of their own (as the decoders of the
+    /// processor give them: ProRes, `DNxHR`, H.264 and HEVC of 4:2:2 and 4:4:4), or that is
+    /// laid out as the picture already (as a card gives P010, P210 or P416), keeps every code
+    /// as it is; another (packed) is converted by swscale.
+    ///
+    /// Its matrix, range and siting of chroma are what its stream says (the container: MXF,
+    /// `QuickTime`, Matroska, or the parameters of the stream itself), and where it says
+    /// nothing, what the frame says, as [`crate::probe`] reads the colours of a file.
+    ///
+    /// # Errors
+    /// As [`Converter::picture`].
+    pub fn native(&mut self, decoded: &Decoded) -> Result<NativePicture, MediaError> {
+        let mut picture = NativePicture::default();
+        self.native_into(decoded, &mut picture)?;
+        Ok(picture)
+    }
+
+    /// As [`Converter::native`], in the place of `into`, whose planes are written over and kept
+    /// where they are of the size needed.
+    ///
+    /// # Errors
+    /// As [`Converter::picture`]; `into` is then written over in part.
+    pub fn native_into(
+        &mut self,
+        decoded: &Decoded,
+        into: &mut NativePicture,
+    ) -> Result<(), MediaError> {
+        let raw = &decoded.raw;
+        let codes = decoded.said.before(ffi::frame_colors(raw));
+        if !ffi::on_device(raw.format()) {
+            return native::fill(
+                &mut self.native_scaler,
+                raw,
+                decoded.bits,
+                decoded.frame,
+                codes,
+                into,
+            );
+        }
+        let memory = ffi::memory_format(raw)
+            .ok_or_else(|| MediaError::Device("a frame on the card has no format".into()))?;
+        if let Some((format, bits)) = native::laid_out_as(memory) {
+            let bits = native::bits_of(bits.into(), decoded.bits);
+            let mut planes = into.shape(decoded.frame, raw.width(), raw.height(), format, bits);
+            ffi::transfer_into(raw, &mut planes).map_err(MediaError::Device)?;
+            into.describe(codes, memory, false);
+            return Ok(());
+        }
+        let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
+        ffi::transfer(copied, raw).map_err(MediaError::Device)?;
+        native::fill(
+            &mut self.native_scaler,
+            copied,
+            decoded.bits,
+            decoded.frame,
+            codes,
+            into,
+        )
     }
 }
 
@@ -366,6 +542,8 @@ pub struct VideoDecoder {
     /// The width and height of the picture as it is stored, and the bits of its luma, as the
     /// stream says.
     shape: (u32, u32, u8),
+    /// What the stream says of the colours of its picture.
+    said: ffi::ColorCodes,
     input: Input,
     stream: usize,
     decoder: ff::decoder::Video,
@@ -523,9 +701,10 @@ impl VideoDecoder {
     ) -> Result<Self, Attempt> {
         let mut input = probe::open(path)?;
         let stream = probe::video_stream(&input)?.ok_or(MediaError::NoVideo)?;
-        let (timing, start, mut context, shape) = {
+        let (timing, start, mut context, shape, said) = {
             let found = input.stream(stream).ok_or(MediaError::NoVideo)?;
             let shape = shape_of(&found);
+            let said = ffi::stream_colors(&found);
             let base = probe::base(&found)?;
             let rate = forced.or_else(|| probe::rate(&found)).ok_or_else(|| {
                 MediaError::Unsupported("its picture has no rate of frames".into())
@@ -538,7 +717,7 @@ impl VideoDecoder {
             };
             let context = ff::codec::Context::from_parameters(found.parameters())
                 .map_err(|error| MediaError::Open(error.to_string()))?;
-            (timing, start, context, shape)
+            (timing, start, context, shape, said)
         };
         let codec = context.id();
         let unsupported = || {
@@ -592,6 +771,7 @@ impl VideoDecoder {
         let mut decoder = Self {
             source: path.to_owned(),
             shape,
+            said,
             input,
             stream,
             decoder: opened,
@@ -664,6 +844,8 @@ impl VideoDecoder {
             Decoded {
                 frame: 0,
                 raw: first.raw,
+                bits: first.bits,
+                said: first.said,
                 repeat: false,
             }
         } else {
@@ -1116,7 +1298,13 @@ impl VideoDecoder {
                     if raw.is_key() {
                         self.learn_key(frame);
                     }
-                    return Ok(Some(Decoded { frame, raw, repeat }));
+                    return Ok(Some(Decoded {
+                        frame,
+                        raw,
+                        bits: self.shape.2,
+                        said: self.said,
+                        repeat,
+                    }));
                 }
                 Err(ff::Error::Other { errno }) if errno == ff::util::error::EAGAIN => {
                     self.feed()?;
@@ -1266,5 +1454,32 @@ impl Attempt {
 impl From<MediaError> for Attempt {
     fn from(error: MediaError) -> Self {
         Self::File(error)
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    use super::*;
+
+    #[test]
+    fn rgba_uses_the_same_limited_bt709_matrix_as_the_preview() {
+        let mut raw = ff::frame::Video::new(Pixel::YUV444P, 16, 16);
+        for (plane, level) in [(0, 100), (1, 140), (2, 180)] {
+            raw.data_mut(plane).fill(level);
+        }
+        let frame = Decoded {
+            frame: 0,
+            raw,
+            bits: 8,
+            repeat: false,
+            said: ffi::ColorCodes::UNSAID,
+        };
+        let result = Converter::new().rgba_scaled(&frame, 8, 8).unwrap();
+        // BT.709 limited-range Y=100, Cb=140, Cr=180; BT.601 gives a visibly different red.
+        for pixel in result.data.as_chunks::<4>().0 {
+            for (actual, expected) in pixel.iter().zip([191_u8, 68, 123, 255]) {
+                assert!(actual.abs_diff(expected) <= 2, "{pixel:?}");
+            }
+        }
     }
 }

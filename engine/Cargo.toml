@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/model", "crates/store", "crates/server", "crates/media", "crates/view"]
+members = ["crates/model", "crates/store", "crates/server", "crates/media", "crates/view", "crates/compose", "crates/lut", "crates/ocio", "crates/track", "crates/audio", "crates/stretch"]
 
 [workspace.package]
 edition = "2021"
@@ -23,8 +23,21 @@ sha2 = "0.10"
 ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 # The sound of the transport (crates/server): WASAPI on Windows, Core Audio on macOS, ALSA on Linux.
 cpal = "=0.18.2"
-# The picture, drawn on the graphics card (crates/view): Direct3D 12 on Windows, Metal on macOS,
-# each turned on where it is used, and no other backend.
+# The graph of the sound (crates/audio): the transforms of Fourier, planned before the sound runs,
+# and the ring between one thread that writes and one that reads, neither waiting on the other.
+rustfft = "=6.4.1"
+realfft = "=3.5.1"
+rtrb = "=0.4.1"
+# The voice mode of Noise Reduction (crates/audio, T12): RNNoise, the network of Valin, in Rust,
+# with nothing of its tools for the command line.
+nnnoiseless = { version = "=0.5.2", default-features = false }
+# Loudness after ITU-R BS.1770 (crates/audio, T9): the measure of the tests, beside ffmpeg's, over
+# many signals; the meters run on our own code, which takes no memory on the thread of the mix.
+ebur128 = "=0.1.11"
+# Text laid out and drawn into pixels (crates/compose), with the fonts of the system.
+cosmic-text = "=0.19.0"
+# The picture, put together and drawn on the graphics card (crates/compose, crates/view): Direct3D 12
+# on Windows, Metal on macOS, each turned on where it is used, and no other backend.
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl"] }
 raw-window-handle = "=0.6.2"
 pollster = "=0.4.0"
@@ -42,3 +55,22 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+
+# The sound's DSP optimised in debug builds too (plan T6): playback in a debug build builds its
+# graph and runs its preroll (up to 10 s of sound) before its first sound, and unoptimised that
+# took more than the 2 s after which playback falls back to the clock of the system, so that the
+# engine's null test (server/tests/rpc/null.rs) could not run in a plain `cargo test`.
+[profile.dev.package.columbina-audio]
+opt-level = 3
+
+[profile.dev.package.columbina-stretch]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.realfft]
+opt-level = 3
+
+[profile.dev.package.nnnoiseless]
+opt-level = 3

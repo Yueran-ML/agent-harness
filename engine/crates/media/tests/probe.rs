@@ -396,3 +396,129 @@ fn a_list_of_other_files_is_not_media() {
         assert!(VideoDecoder::open(&path, Hardware::Off).is_err());
     }
 }
+
+#[test]
+fn the_frames_of_mp4_are_counted_from_its_index_and_a_dropped_frame_leaves_a_number_unused() {
+    // How many frames are decoded from a file, in software, and the number of the last.
+    let decoded = |path: &Path| {
+        let mut decoder = VideoDecoder::open(path, Hardware::Off).unwrap();
+        let (mut frames, mut last) = (0_u64, 0);
+        while let Some(picture) = decoder.next().unwrap() {
+            frames += 1;
+            last = picture.frame;
+        }
+        (frames, last)
+    };
+    let Some(made) = media(Sample::Dropped) else {
+        return;
+    };
+    let facts = probe(&made.path).unwrap();
+    let rate = facts.video.unwrap().rate;
+    assert_eq!(rate, Rate { num: 30, den: 1 });
+    // 121 numbers of frames by its duration, 120 frames, the last numbered 120: 60 has none.
+    assert_eq!(
+        facts.duration.ticks * 30,
+        121 * i64::from(facts.duration.scale)
+    );
+    assert_eq!(columbina_media::frame_count(&made.path).unwrap(), Some(120));
+    assert_eq!(decoded(&made.path), (120, 120));
+    // Frames before the start of an edit list are decoded and dropped, and not counted.
+    if let Some(made) = media(Sample::EditList) {
+        if let Some(count) = columbina_media::frame_count(&made.path).unwrap() {
+            assert_eq!(count, decoded(&made.path).0);
+        }
+    }
+    // Matroska lists only its key frames: how many frames it has is not known without reading it.
+    if let Some(made) = media(Sample::SameTimes) {
+        assert_eq!(columbina_media::frame_count(&made.path).unwrap(), None);
+    }
+    if let Some(made) = media(Sample::Fhd) {
+        assert_eq!(columbina_media::frame_count(&made.path).unwrap(), Some(100));
+    }
+}
+
+#[test]
+fn every_stream_of_sound_is_listed_with_its_channels_and_layout() {
+    use columbina_media::{sounds, SoundStream};
+    let stream = |index, channels, layout: Option<&str>, codec: &str| SoundStream {
+        index,
+        channels,
+        layout: layout.map(str::to_owned),
+        rate: 48000,
+        codec: codec.to_owned(),
+    };
+    // Two streams of mono, as a camera with two microphones writes them; this `QuickTime` does not
+    // say the layout of its PCM.
+    if let Some(made) = media(Sample::TwoMonoStreams) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, Some(0));
+        assert_eq!(
+            found.streams,
+            [
+                stream(0, 1, None, "pcm_s16le"),
+                stream(1, 1, None, "pcm_s16le")
+            ]
+        );
+    }
+    if let Some(made) = media(Sample::SixSines) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, Some(0));
+        assert_eq!(found.streams, [stream(0, 6, Some("5.1"), "pcm_s16le")]);
+    }
+    if let Some(made) = media(Sample::ThreeZero) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.streams, [stream(0, 3, Some("3.0"), "pcm_s16le")]);
+    }
+    // A WAV of one channel does not say which it is.
+    if let Some(made) = media(Sample::Mono) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.streams, [stream(0, 1, None, "pcm_s16le")]);
+    }
+    // The sound of a picture is numbered among all the streams of the file.
+    if let Some(made) = media(Sample::Fhd) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, Some(1));
+        assert_eq!(found.streams, [stream(1, 2, Some("stereo"), "aac")]);
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.channels, found.streams[0].channels);
+        assert_eq!(facts.codec, found.streams[0].codec);
+    }
+    if let Some(made) = media(Sample::Uhd) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, None);
+        assert_eq!(found.streams, Vec::<SoundStream>::new());
+    }
+}
+
+#[test]
+fn the_facts_of_sound_name_its_layout_and_list_every_stream_of_sound() {
+    use columbina_model::AudioStream;
+    let stream = |index, channels, layout: Option<&str>| AudioStream {
+        index,
+        channels,
+        layout: layout.map(str::to_owned),
+    };
+    if let Some(made) = media(Sample::TwoMonoStreams) {
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.layout, None);
+        assert_eq!(
+            facts.streams,
+            Some(vec![stream(0, 1, None), stream(1, 1, None)])
+        );
+    }
+    if let Some(made) = media(Sample::SixSines) {
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.layout.as_deref(), Some("5.1"));
+        assert_eq!(facts.streams, Some(vec![stream(0, 6, Some("5.1"))]));
+    }
+    // The sound of a picture is numbered among all the streams of the file.
+    if let Some(made) = media(Sample::Fhd) {
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.layout.as_deref(), Some("stereo"));
+        assert_eq!(facts.streams, Some(vec![stream(1, 2, Some("stereo"))]));
+    }
+    // A file of no sound has no facts of sound at all.
+    if let Some(made) = media(Sample::Uhd) {
+        assert_eq!(probe(&made.path).unwrap().audio, None);
+    }
+}

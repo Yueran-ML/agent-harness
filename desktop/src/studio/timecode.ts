@@ -33,6 +33,16 @@ export function rateText(rate: Rate): string {
   return String(Number((rate.num / rate.den).toFixed(3)));
 }
 
+/**
+ * The frame that an Out point marks, which is the last frame of the range and is in it, as in
+ * DaVinci Resolve, where the Out point is the last frame of a clip (Reference Manual 20, pp. 760,
+ * 824): a mark Out is kept as where the range ends, the frame after it (half open, as the engine
+ * takes every range), and is shown as the frame before that.
+ */
+export function outFrame(end: number): number {
+  return Math.max(0, Math.floor(end) - 1);
+}
+
 /** How many frames a time lasts at a rate, rounded as the engine counts the frames of media. */
 export function framesOf(time: Time, rate: Rate): number {
   if (!(time.scale > 0) || !(rate.den > 0)) return 0;
@@ -48,4 +58,22 @@ export function rateOf(media: Media | null | undefined, timelines: readonly { ra
 export function fileName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? path;
+}
+
+/**
+ * The frame that a timecode typed into Go To Timecode asks for (Reference Manual 20, pp. 3746–3747):
+ * digits fill the timecode from its frames up (`1000` is 00:00:10:00), a `.` stands for two zeros,
+ * and a leading `+` or `-` moves from `frame` by that much. Colons may be typed or left out. Null
+ * where the text is not one.
+ */
+export function enteredFrame(text: string, frame: number, rate: Rate): number | null {
+  const entry = /^([+-]?)([0-9.:;]+)$/.exec(text.replace(/\s+/g, ''));
+  if (!entry) return null;
+  const digits = entry[2].replace(/[:;]/g, '').replace(/\./g, '00');
+  if (!digits || digits.length > 8) return null;
+  const [hours, minutes, seconds, frames] = digits.padStart(8, '0').match(/../g)!.map(Number);
+  const fps = nominalFps(rate);
+  const count = ((hours * 60 + minutes) * 60 + seconds) * fps + frames;
+  const to = entry[1] === '+' ? frame + count : entry[1] === '-' ? frame - count : count;
+  return Math.max(0, to);
 }

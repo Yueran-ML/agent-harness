@@ -1,7 +1,7 @@
-//! Why a file cannot be read, or a frame of it cannot be given.
+//! Why a file cannot be read, or a frame of it cannot be given, or a file cannot be written.
 
-/// Why a file cannot be read, or a frame of it cannot be given. Nothing of this crate panics on
-/// a file, whatever is in it.
+/// Why a file cannot be read, or a frame of it cannot be given, or a file cannot be written.
+/// Nothing of this crate panics on a file, whatever is in it.
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {
     /// Its path is not UTF-8, which a project cannot hold, or it holds a NUL.
@@ -39,6 +39,17 @@ pub enum MediaError {
     /// A place in it cannot be sought.
     #[error("{0}")]
     Seek(String),
+    /// An encoder cannot be opened, or fails, or is given what it cannot take: a picture of
+    /// another size than the file's, or sound for a file without sound.
+    #[error("{0}")]
+    Encode(String),
+    /// No encoder of the codec that was asked for opens on this machine: the graphics card has
+    /// none, or none that takes what was asked (as HEVC of 10 bits); the reasons follow.
+    #[error("no encoder of {0}")]
+    NoEncoder(String),
+    /// The file cannot be made, or written into.
+    #[error("{0}")]
+    Write(String),
     /// There is no such frame: it is before the first frame or after the last one. `last` is the
     /// last frame, where it is known.
     #[error("there is no frame {frame}{}", last.map(|last| format!(": the last is {last}")).unwrap_or_default())]
@@ -52,8 +63,8 @@ pub enum MediaError {
 
 impl MediaError {
     /// What went wrong, for a program to read: `not_utf8`, `not_found`, `unreadable`,
-    /// `not_media`, `no_streams`, `no_video`, `unsupported`, `decode`, `device`, `read`, `seek`
-    /// or `out_of_range`.
+    /// `not_media`, `no_streams`, `no_video`, `unsupported`, `decode`, `device`, `read`, `seek`,
+    /// `encode`, `no_encoder`, `write` or `out_of_range`.
     #[must_use]
     pub fn reason(&self) -> &'static str {
         match self {
@@ -68,6 +79,9 @@ impl MediaError {
             Self::Device(_) => "device",
             Self::Read(_) => "read",
             Self::Seek(_) => "seek",
+            Self::Encode(_) => "encode",
+            Self::NoEncoder(_) => "no_encoder",
+            Self::Write(_) => "write",
             Self::OutOfRange { .. } => "out_of_range",
         }
     }

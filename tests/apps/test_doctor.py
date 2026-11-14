@@ -20,6 +20,7 @@ from columbina.apps.doctor import Finding, State, looked, shown
 from columbina.apps.launcher import main
 from columbina.builtin_tools.shell import NAME as SHELL
 from columbina.kernel import Entry
+from columbina.llm.adapters.openai_responses import OpenAIResponses
 from columbina.llm.credentials import CredentialsError, keep, origin_of
 from support.model_service import Service, listing, serving
 
@@ -315,7 +316,8 @@ def test_a_model_that_no_adapter_of_a_service_is_for_is_not_asked_for(
     state, said = found(lines)["model"]
     assert state == "warn"
     assert said.endswith(
-        ", which no entry that loads columbina.llm.adapters.openai_chat or "
+        ", which no entry that loads columbina.llm.adapters.openai_chat, "
+        "columbina.llm.adapters.openai_responses or "
         "columbina.llm.adapters.anthropic_messages is for, so no service is asked"
     )
     assert "service" not in found(lines)
@@ -480,6 +482,40 @@ async def test_claude_is_asked_for_its_models_in_the_protocol_of_anthropic(
     )
     assert service.asked == [("/v1/models?limit=1000", None)]
     assert service.heard[0]["anthropic-version"] == "2023-06-01"
+
+
+async def test_openai_is_asked_for_its_models_by_the_adapter_of_its_responses(
+    service: Service, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service.answers(200, listing("gpt-tiny"))
+    made: list[str] = []
+    real = OpenAIResponses
+
+    def responses(config: Any) -> Any:
+        made.append(config.base_url)
+        return real(config)
+
+    monkeypatch.setattr(doctor, "OpenAIResponses", responses)
+    model = {"provider": "openai", "model": "gpt-tiny"}
+    adapter = {
+        "provider": "openai",
+        "base_url": service.address,
+        "api_key_required": False,
+        "summary": "concise",
+    }
+    session = [
+        Entry(id="frontend", plugin="columbina.apps.headless", config={"model": model}),
+        Entry(id="model", plugin="columbina.llm.adapters.openai_responses", config=adapter),
+    ]
+
+    findings = await looked(session, {}, work)
+
+    assert findings[0] == Finding("ok", "model", f"gpt-tiny of openai, at {service.address}")
+    assert re.fullmatch(
+        r"answered in \d+\.\d s without a key, and lists gpt-tiny", findings[1].said
+    )
+    assert service.asked == [("/v1/models", None)]
+    assert made == [service.address]
 
 
 async def test_claude_without_a_list_of_models_is_worth_a_look(

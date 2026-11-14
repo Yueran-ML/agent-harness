@@ -1,0 +1,35 @@
+[package]
+name = "columbina-ocio"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+build = "build.rs"
+links = "OpenColorIO"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The spaces of media, as the model names them (`InputSpace`), for the catalogue.
+columbina-model = { path = "../model" }
+# A 1D shaper and a cube of the processor's CPU result, where a shader cannot be translated.
+columbina-lut = { path = "../lut" }
+# OCIO's GLSL into WGSL: the version of wgpu's own naga, with the frontend of GLSL and the
+# writer of WGSL (and its reader of WGSL, without which its reader of GLSL does not build).
+naga = { version = "=30.0.1", features = ["glsl-in", "wgsl-in", "wgsl-out"] }
+thiserror.workspace = true
+
+[build-dependencies]
+# The shim of C++ between OCIO and Rust (src/shim.cpp).
+cc = "1.2"
+
+[dev-dependencies]
+pollster.workspace = true
+serde_json.workspace = true
+wgpu.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+wgpu = { workspace = true, features = ["dx12"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+wgpu = { workspace = true, features = ["metal"] }

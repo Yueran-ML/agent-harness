@@ -23,6 +23,15 @@ export function onMac(): boolean {
   return window.columbina?.platform === 'darwin';
 }
 
+/**
+ * Whether the editing studio can be opened here. It runs only on Windows for now (the author's
+ * decision); macOS will come later. A page in a browser, with no shell, shows the studio of the replay.
+ */
+export function studioSupported(): boolean {
+  const platform = window.columbina?.platform;
+  return platform === undefined || platform === 'win32';
+}
+
 /** The key that is held for a shortcut, as the system names it. */
 export function modifier(): string {
   return onMac() ? '⌘' : 'Ctrl';

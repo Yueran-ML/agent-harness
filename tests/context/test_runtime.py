@@ -20,7 +20,8 @@ HELD = "commands are held: not at all. A command can do whatever the user of thi
 ASK = "approval: ask. A call that needs a yes is put to the user, if somebody is there to ask."
 WRITE = (
     "sandbox mode: workspace-write. Files in the working directory can be written, except in "
-    ".git and .columbina. Outside it no file can be read or written."
+    ".git and .columbina. Studio video tools may manage .columbina/studio, and edit/write may "
+    "change its story/t<N>.md files. Outside the working directory no file can be read or written."
 )
 
 

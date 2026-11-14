@@ -5,6 +5,7 @@ import os
 import socket
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -66,6 +67,33 @@ async def test_claude_is_asked_for_its_models_in_the_protocol_of_anthropic(
     assert claude.asked == [("/v1/models?limit=1000", None)]
     assert claude.heard[0]["x-api-key"] == KEY
     assert claude.heard[0]["anthropic-version"] == "2023-06-01"
+
+
+async def test_openai_is_asked_for_its_models_by_the_adapter_of_its_responses(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[tuple[str, str | None]] = []
+    closed: list[bool] = []
+
+    class Responses:
+        """Stands in for the adapter, so that nothing is asked of OpenAI."""
+
+        def __init__(self, config: Any, *, secret: str | None = None) -> None:
+            made.append((config.base_url, secret))
+
+        async def models(self) -> list[str]:
+            return ["gpt-a", "gpt-b"]
+
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(setup, "OpenAIResponses", Responses)
+
+    answer = await check(home, service="openai", api_key=KEY)
+
+    assert answer == {"models": ["gpt-a", "gpt-b"]}
+    assert made == [("https://api.openai.com/v1", KEY)]
+    assert closed == [True]
 
 
 async def test_the_blanks_around_a_key_that_is_checked_are_not_sent(

@@ -15,6 +15,84 @@ use tokio::task::JoinHandle;
 #[path = "../../media/tests/support/mod.rs"]
 mod support;
 
+#[path = "rpc/timeline.rs"]
+mod timeline;
+
+#[path = "rpc/render.rs"]
+mod render;
+
+#[path = "rpc/null.rs"]
+mod null;
+
+#[path = "rpc/grades.rs"]
+mod grades;
+
+#[path = "rpc/scopes.rs"]
+mod scopes;
+
+#[path = "rpc/clipboard.rs"]
+mod clipboard;
+
+#[path = "rpc/media_audio.rs"]
+mod media_audio;
+
+#[path = "rpc/audition.rs"]
+mod audition;
+
+#[path = "rpc/mixed_waveforms.rs"]
+mod mixed_waveforms;
+
+#[path = "rpc/luts.rs"]
+mod luts;
+
+#[path = "rpc/compare.rs"]
+mod compare;
+
+#[path = "rpc/palettes.rs"]
+mod palettes;
+
+#[path = "rpc/stills.rs"]
+mod stills;
+
+#[path = "rpc/project_luts.rs"]
+mod project_luts;
+
+#[path = "rpc/highlight.rs"]
+mod highlight;
+
+#[path = "rpc/color_page.rs"]
+mod color_page;
+
+#[path = "rpc/lut_preview.rs"]
+mod lut_preview;
+
+#[path = "rpc/viewport.rs"]
+mod viewport;
+
+#[cfg(windows)]
+#[path = "rpc/presentation.rs"]
+mod presentation;
+
+#[cfg(windows)]
+#[path = "rpc/window.rs"]
+mod window;
+
+#[path = "rpc/window_presets.rs"]
+mod window_presets;
+
+#[path = "rpc/window_nodes.rs"]
+mod window_nodes;
+
+#[path = "rpc/tracking.rs"]
+mod tracking;
+
+#[path = "rpc/processor_curves.rs"]
+mod processor_curves;
+#[path = "rpc/protocol.rs"]
+mod protocol;
+#[path = "rpc/sound.rs"]
+mod sound;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -67,10 +145,21 @@ async fn start(dir: &Path, args: &[&str]) -> Started {
 
 /// Start an engine on `dir` whose stderr is read or not, and read its first line.
 async fn start_with(dir: &Path, args: &[&str], mode: Stderr) -> Started {
+    start_in(dir, args, mode, &[]).await
+}
+
+/// As [`start_with`], with the variables of `env` set for the engine.
+async fn start_in(
+    dir: &Path,
+    args: &[&str],
+    mode: Stderr,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Started {
     let mut child = Command::new(env!("CARGO_BIN_EXE_columbina-engine"))
         .arg("--project")
         .arg(dir)
         .args(args)
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -125,7 +214,7 @@ async fn start_with(dir: &Path, args: &[&str], mode: Stderr) -> Started {
     let line: Value = serde_json::from_str(&first).unwrap();
     let keys: Vec<&String> = line.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["listening", "pid", "protocol"], "{line}");
-    assert_eq!(line["protocol"], 1);
+    assert_eq!(line["protocol"], 2);
     let pid = u32::try_from(line["pid"].as_u64().unwrap()).unwrap();
     assert_eq!(Some(pid), child.id());
     let rest = tokio::spawn(async move {
@@ -151,13 +240,19 @@ async fn engine(dir: &Path, args: &[&str]) -> Engine {
     }
 }
 
-/// Start an engine on `dir` that must end at once, and give its code and its line of stderr.
+/// Start an engine on `dir` that must end at once, and give its code and its refusal on stderr.
 async fn refused(dir: &Path, args: &[&str]) -> (i32, Value) {
     match start(dir, args).await {
         Started::Listening(engine) => panic!("the engine listens at {}", engine.address),
         Started::Ended { code, stderr } => {
-            let line = stderr.lines().next().expect("a line on stderr");
-            (code, serde_json::from_str(line).unwrap())
+            // Logs such as shader_compiler can come before the refusal.
+            let mut lines = stderr
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .filter(|line| line.get("event").is_none());
+            let line = lines.next().expect("a refusal on stderr");
+            assert!(lines.next().is_none(), "one refusal on stderr: {stderr}");
+            (code, line)
         }
     }
 }
@@ -297,8 +392,17 @@ impl Client {
         answer["error"].clone()
     }
 
+    /// The phase-0 source-monitor scenarios remain source scenarios in protocol 2.
+    async fn source_result(&mut self, method: &str, params: Option<Value>) -> Value {
+        self.result(method, Some(source_params(params))).await
+    }
+
+    async fn source_error(&mut self, method: &str, params: Option<Value>) -> Value {
+        self.error(method, Some(source_params(params))).await
+    }
+
     async fn hello(&mut self, kind: &str) -> Value {
-        self.result("hello", Some(json!({ "client": kind, "protocol": 1 })))
+        self.result("hello", Some(json!({ "client": kind, "protocol": 2 })))
             .await
     }
 
@@ -349,14 +453,40 @@ fn media(id: &str, path: &str) -> Value {
             },
             "audio": { "rate": 48000, "channels": 2, "codec": "aac" },
         },
+        "name": "a.mp4", "bin": null, "mark_in": null, "mark_out": null,
+        "color_override": {
+            "input": null, "levels": "auto", "lut": { "1d": null, "3d": null }, "inverse_drt": true,
+        },
     })
 }
 
 fn clip(id: &str, media: &str, start: i64, length: i64) -> Value {
-    json!({
-        "id": id, "media": media, "source_in": { "ticks": 0, "scale": 15360 },
-        "start": start, "length": length,
-    })
+    let mut clip = json!({
+        "id": id, "start": start, "length": length,
+        "source": { "kind": "media", "media": media, "in": { "ticks": 0, "scale": 15360 } },
+        "enabled": true, "speed": { "num": 1, "den": 1 }, "reverse": false, "link": null,
+        "transform": { "x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0 },
+        "gain_db": 0.0, "pan": 0.0, "fade_in": 0, "fade_out": 0,
+        "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
+        "group": null,
+    });
+    // What schema 4 adds, as a new clip has it: the engine writes it whole.
+    let source_in = columbina_model::Time {
+        ticks: 0,
+        scale: 15360,
+    };
+    let made = serde_json::to_value(columbina_model::Clip::of_media(
+        id, media, source_in, start, length,
+    ))
+    .unwrap();
+    for (name, value) in made.as_object().unwrap() {
+        clip.as_object_mut()
+            .unwrap()
+            .entry(name.clone())
+            .or_insert_with(|| value.clone());
+    }
+    assert_eq!(clip, made, "a clip written as schema 4 writes it");
+    clip
 }
 
 fn add_media(path: &str) -> Value {
@@ -405,7 +535,7 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
         hello,
         json!({
             "engine": "0.1.0",
-            "protocol": 1,
+            "protocol": 2,
             "revision": 0,
             "project": written(dir.path()),
             "pid": engine.pid,
@@ -417,7 +547,10 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
     assert_eq!(got["next_id"], 1);
     assert_eq!(
         got["project"],
-        json!({ "schema": 1, "next_id": 1, "media": [], "timelines": [] })
+        json!({
+            "schema": 5, "next_id": 1, "bins": [], "media": [], "timelines": [], "groups": [],
+            "color": serde_json::to_value(columbina_model::ColorSettings::default()).unwrap(),
+        })
     );
     drop(client);
     assert_eq!(engine.ended().await, 0);
@@ -510,12 +643,11 @@ async fn requests_that_cannot_be_answered_are_refused_with_their_codes() {
     );
 
     for params in [
-        json!({ "client": "robot", "protocol": 1 }),
+        json!({ "client": "robot", "protocol": 2 }),
         json!({ "client": "agent" }),
-        json!({ "client": "agent", "protocol": 2 }),
-        json!({ "client": "agent", "protocol": 1, "colour": "red" }),
+        json!({ "client": "agent", "protocol": 2, "colour": "red" }),
         json!([1]),
-        json!(["agent", 1]),
+        json!(["agent", 2]),
     ] {
         let error = client.error("hello", Some(params.clone())).await;
         assert_eq!(error["code"], -32602, "{params}: {error}");
@@ -525,12 +657,14 @@ async fn requests_that_cannot_be_answered_are_refused_with_their_codes() {
 
     client.hello("desktop").await;
     let error = client
-        .error("hello", Some(json!({ "client": "agent", "protocol": 1 })))
+        .error("hello", Some(json!({ "client": "agent", "protocol": 2 })))
         .await;
     assert_eq!(error["code"], -32600, "hello once");
     let error = client.error("no.such.method", None).await;
     assert_eq!(error["code"], -32601);
-    let error = client.error("project.get", Some(json!({ "x": 1 }))).await;
+    let error = client
+        .error("project.get", Some(json!({ "monitor": "source", "x": 1 })))
+        .await;
     assert_eq!(error["code"], -32602);
     let error = client.error("history.undo", Some(json!([1]))).await;
     assert_eq!(error["code"], -32602);
@@ -616,6 +750,152 @@ async fn a_line_over_16_mib_is_refused_and_the_connection_goes_on() {
 }
 
 #[tokio::test]
+async fn protocol_one_is_refused_with_the_supported_versions() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = Client::connect(&engine.address).await;
+    let error = client
+        .error("hello", Some(json!({"client": "agent", "protocol": 1})))
+        .await;
+    assert_eq!(error["code"], -32600);
+    assert_eq!(
+        error["data"],
+        json!({"reason": "protocol", "supported": [2]})
+    );
+    let error = client.error("project.get", None).await;
+    assert_eq!(error["code"], -32600);
+    client.hello("agent").await;
+}
+
+#[tokio::test]
+async fn mixed_edits_are_one_shared_undo_step_and_broadcast_only_basic_operations() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let added = agent.apply(json!([{"op": "add_timeline", "timeline": {
+        "id": "$t", "name": "Cut", "rate": {"num": 25, "den": 1}, "width": 1920, "height": 1080, "sample_rate": 48000,
+        "tracks": [{"id": "V1", "kind": "video", "name": "", "enabled": true, "locked": false, "clips": [], "transitions": []}]
+    }}])).await;
+    let timeline = added["names"]["$t"].clone();
+    agent.take_notifications();
+    let mut desktop = engine.client("desktop").await;
+    let before = project(&mut agent).await;
+    let applied = agent.apply(json!([
+        {"edit": "insert", "timeline": timeline, "at": 0, "source": {"kind": "color", "color": "#000000ff", "length": 30}},
+        {"edit": "blade", "timeline": timeline, "at": 10},
+        {"op": "set_track", "timeline": timeline, "id": "V1", "name": "Picture"},
+        {"edit": "ripple_delete_range", "timeline": timeline, "from": 10, "to": 20},
+    ])).await;
+    assert_eq!(applied["clamped"], json!([]));
+    assert!(applied["done"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|op| op.get("op").is_some() && op.get("edit").is_none()));
+    let seen = agent.take_notifications();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(desktop.message().await, seen[0]);
+    assert_eq!(seen[0]["params"]["done"], applied["done"]);
+    assert_eq!(
+        agent
+            .result("timeline.duration", Some(json!({"timeline": timeline})))
+            .await,
+        json!({"frames": 20})
+    );
+    let after = project(&mut agent).await;
+    let refused = agent
+        .error(
+            "transaction.apply",
+            Some(json!({"ops": [
+                {"op": "set_track", "timeline": timeline, "id": "V1", "locked": true},
+                {"edit": "blade", "timeline": timeline, "at": 5, "tracks": ["V1"]}
+            ]})),
+        )
+        .await;
+    assert_eq!(refused["data"]["reason"], "locked");
+    assert_eq!(refused["data"]["index"], 1);
+    assert_eq!(project(&mut agent).await, after);
+    let undone = desktop.result("history.undo", None).await;
+    assert_eq!(
+        undone["revision"],
+        applied["revision"].as_u64().unwrap() + 1
+    );
+    let mut expected = before["project"].clone();
+    expected["next_id"] = after["next_id"].clone();
+    assert_eq!(project(&mut agent).await["project"], expected);
+    desktop.result("history.redo", None).await;
+    assert_eq!(project(&mut agent).await["project"], after["project"]);
+}
+
+#[tokio::test]
+async fn named_edit_outputs_clamping_and_duration_cross_the_real_protocol() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    let added = client
+        .apply(json!([{"op":"add_timeline", "timeline":{
+            "id":"$t", "name":"Names", "rate":{"num":25,"den":1}, "width":1920, "height":1080,
+            "sample_rate":48000, "tracks":[]
+        }}]))
+        .await;
+    let timeline = added["names"]["$t"].clone();
+    assert_eq!(
+        client
+            .result("timeline.duration", Some(json!({"timeline":timeline})))
+            .await,
+        json!({"frames":0})
+    );
+    let result = client.apply(json!([
+        {"edit":"add_track", "timeline":timeline, "kind":"video", "name":"$display"},
+        {"edit":"insert", "timeline":timeline, "at":0, "source":{"kind":"color","color":"#AbCdEfff","length":30},"name":"$c"},
+        {"edit":"trim", "timeline":timeline, "clip":"$c", "edge":"out", "delta":-100},
+        {"edit":"add_track", "timeline":timeline, "kind":"subtitle", "language":"en"},
+        {"edit":"add_cue", "timeline":timeline, "track":"S1", "start":20, "length":5, "text":"$literal", "name":"$q"},
+        {"op":"set_cue", "timeline":timeline, "id":"$q", "text":"Named subtitle"}
+    ])).await;
+    assert_eq!(result["clamped"], json!([2]));
+    assert!(result["names"]["$c"].as_str().unwrap().starts_with('c'));
+    assert!(result["names"]["$q"].as_str().unwrap().starts_with('q'));
+    let before = project(&mut client).await;
+    assert_eq!(
+        before["project"]["timelines"][0]["tracks"][0]["clips"][0]["source"]["color"],
+        "#abcdefff"
+    );
+    assert_eq!(
+        client
+            .result("timeline.duration", Some(json!({"timeline":timeline})))
+            .await,
+        json!({"frames":25})
+    );
+    client.take_notifications();
+    let refused = client.error("transaction.apply", Some(json!({"ops":[
+        {"op":"set_track", "timeline":timeline, "id":"V1", "name":"Changed"},
+        {"edit":"append", "timeline":timeline, "source":{"kind":"color","color":"#000000ff","length":5},"name":{"audio":"$a"}}
+    ]}))).await;
+    assert_eq!(refused["code"], -32001);
+    assert_eq!(refused["data"]["index"], 1);
+    assert_eq!(refused["data"]["what"], "named output");
+    assert_eq!(project(&mut client).await, before);
+    assert_eq!(client.take_notifications(), [] as [Value; 0]);
+    let missing = client
+        .error("timeline.duration", Some(json!({"timeline":"absent"})))
+        .await;
+    assert_eq!(missing["code"], -32602);
+    assert_eq!(
+        missing["data"],
+        json!({"reason":"missing","timeline":"absent"})
+    );
+    let extra = client
+        .error(
+            "timeline.duration",
+            Some(json!({"timeline":timeline,"extra":true})),
+        )
+        .await;
+    assert_eq!(extra["code"], -32602);
+    assert_eq!(project(&mut client).await, before);
+}
+
+#[tokio::test]
 async fn every_client_is_told_of_a_change_and_the_one_that_made_it_first() {
     let dir = project_dir();
     let engine = engine(dir.path(), &["--headless"]).await;
@@ -625,9 +905,9 @@ async fn every_client_is_told_of_a_change_and_the_one_that_made_it_first() {
     let ops = json!([
         { "op": "add_media", "media": media("$m", "C:/media/a.mp4") },
         { "op": "add_timeline", "timeline": {
-            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 }, "tracks": [],
+            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
         } },
-        { "op": "add_track", "timeline": "$t", "track": { "id": "$v", "kind": "video", "clips": [] } },
+        { "op": "add_track", "timeline": "$t", "track": { "id": "$v", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [] } },
         { "op": "insert_clip", "timeline": "$t", "track": "$v", "clip": clip("$c", "$m", 0, 50) },
         { "op": "move_clip", "timeline": "$t", "id": "$c", "track": "$v", "start": 10 },
     ]);
@@ -875,6 +1155,35 @@ async fn a_project_that_cannot_be_read_ends_the_engine_with_2() {
 }
 
 #[tokio::test]
+async fn a_proxy_at_a_path_that_is_not_absolute_is_dropped_and_the_project_is_read() {
+    let dir = project_dir();
+    {
+        let args = ["--headless", "--no-proxies", "--idle-seconds", "1"];
+        let engine = engine(dir.path(), &args).await;
+        let mut agent = engine.client("agent").await;
+        agent.apply(add_media("C:/media/a.mp4")).await;
+        drop(agent);
+        assert_eq!(engine.ended().await, 0);
+    }
+    // Written by hand or by another program: the project could not be read with this proxy.
+    let mut written = saved(dir.path());
+    written["media"][0]["proxy"] = json!({
+        "path": "cache/proxies/m1-000000000000.mov", "width": 960, "height": 540,
+        "codec": "hevc", "digest_of_source": "0".repeat(64),
+    });
+    std::fs::write(
+        dir.path().join("project.json"),
+        serde_json::to_string_pretty(&written).unwrap(),
+    )
+    .unwrap();
+    let engine = engine(dir.path(), &["--headless", "--no-proxies"]).await;
+    let mut agent = engine.client("agent").await;
+    let read = project(&mut agent).await;
+    assert_eq!(read["project"]["media"][0]["proxy"], Value::Null, "{read}");
+    assert_eq!(read["project"]["media"][0]["id"], written["media"][0]["id"]);
+}
+
+#[tokio::test]
 async fn a_headless_engine_ends_once_no_one_has_been_connected_for_a_while() {
     let dir = project_dir();
     let engine = engine(dir.path(), &["--headless", "--idle-seconds", "1"]).await;
@@ -1052,7 +1361,7 @@ fn squat(address: &str, project: String) -> JoinHandle<()> {
         assert_eq!(hello["method"], "hello");
         let answer = json!({
             "jsonrpc": "2.0", "id": hello["id"],
-            "result": { "engine": "0.1.0", "protocol": 1, "revision": 0, "project": project, "pid": 4242 },
+            "result": { "engine": "0.1.0", "protocol": 2, "revision": 0, "project": project, "pid": 4242 },
         });
         let mut answer = serde_json::to_vec(&answer).unwrap();
         answer.push(b'\n');
@@ -1207,8 +1516,8 @@ async fn a_name_of_a_track_is_named_only_with_its_timeline() {
     let mut agent = engine.client("agent").await;
     let timeline = |id: &str, track: &str| {
         json!({
-            "id": id, "name": id, "rate": { "num": 25, "den": 1 },
-            "tracks": [{ "id": track, "kind": "video", "clips": [] }],
+            "id": id, "name": id, "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000,
+            "tracks": [{ "id": track, "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [] }],
         })
     };
     let ops = json!([
@@ -1237,10 +1546,10 @@ async fn clips_named_on_two_tracks_at_one_frame_are_told_apart() {
     let ops = json!([
         { "op": "add_media", "media": media("$m", "a.mp4") },
         { "op": "add_timeline", "timeline": {
-            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 },
+            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000,
             "tracks": [
-                { "id": "$pic", "kind": "video", "clips": [clip("$p2", "$m", 40, 10), clip("$p1", "$m", 0, 10)] },
-                { "id": "$snd", "kind": "audio", "clips": [clip("$s1", "$m", 0, 20), clip("$s2", "$m", 40, 20)] },
+                { "id": "$pic", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [clip("$p2", "$m", 40, 10), clip("$p1", "$m", 0, 10)] },
+                { "id": "$snd", "kind": "audio", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [clip("$s1", "$m", 0, 20), clip("$s2", "$m", 40, 20)] },
             ],
         } },
         { "op": "move_clip", "timeline": "$t", "id": "$s1", "track": "$snd", "start": 100 },
@@ -1349,9 +1658,13 @@ async fn files_are_taken_in_as_media_in_one_transaction() {
     assert_eq!(facts["video"]["width"], 1920);
     assert_eq!(facts["video"]["codec"], "h264");
     assert_eq!(facts["video"]["rate"], json!({ "num": 25, "den": 1 }));
+    // With the layout of its channels and every stream of sound, numbered among all streams.
     assert_eq!(
         facts["audio"],
-        json!({ "rate": 48000, "channels": 2, "codec": "aac" })
+        json!({
+            "rate": 48000, "channels": 2, "codec": "aac", "layout": "stereo",
+            "streams": [{ "index": 1, "channels": 2, "layout": "stereo" }],
+        })
     );
     let duration = &facts["duration"];
     assert_eq!(
@@ -1362,13 +1675,744 @@ async fn files_are_taken_in_as_media_in_one_transaction() {
 
     // A clip is cut from it in the scale of its duration.
     let clip = json!([{ "op": "add_timeline", "timeline": {
-        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 },
-        "tracks": [{ "id": "", "kind": "video", "clips": [{
-            "id": "", "media": "m1", "source_in": { "ticks": 0, "scale": duration["scale"] },
-            "start": 0, "length": 100,
+        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000,
+        "tracks": [{ "id": "", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [{
+            "id": "", "start": 0, "length": 100,
+            "source": { "kind": "media", "media": "m1", "in": { "ticks": 0, "scale": duration["scale"] } },
+            "enabled": true, "speed": { "num": 1, "den": 1 }, "reverse": false, "link": null,
+        "transform": { "x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0 },
+        "gain_db": 0.0, "pan": 0.0, "fade_in": 0, "fade_out": 0,
         }] }],
     } }]);
     agent.apply(clip).await;
+}
+
+#[tokio::test]
+async fn importing_into_a_bin_is_one_undo_and_an_unknown_bin_adds_nothing() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let added = agent
+        .apply(json!([{"op":"add_bin","bin":{"id":"$rushes","name":"Rushes","parent":null}}]))
+        .await;
+    let bin = &added["names"]["$rushes"];
+    agent
+        .result("media.import", Some(json!({"paths":[made.path],"bin":bin})))
+        .await;
+    let got = project(&mut agent).await;
+    assert_eq!(got["project"]["media"][0]["bin"], *bin);
+    agent.result("history.undo", None).await;
+    let before = project(&mut agent).await;
+    assert_eq!(before["project"]["media"], json!([]));
+    assert_eq!(before["project"]["bins"].as_array().unwrap().len(), 1);
+    let error = agent
+        .error(
+            "media.import",
+            Some(json!({"paths":[made.path],"bin":"missing"})),
+        )
+        .await;
+    assert_eq!(error["code"], -32001);
+    assert_eq!(project(&mut agent).await, before);
+}
+
+fn thumbnail_pixels(result: &Value) -> (u32, u32, Vec<u8>) {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(result["png"].as_str().unwrap())
+        .unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    assert_eq!(result["width"], info.width);
+    assert_eq!(result["height"], info.height);
+    pixels.truncate(info.buffer_size());
+    (info.width, info.height, pixels)
+}
+
+#[tokio::test]
+async fn an_edit_based_on_an_old_revision_cannot_cut_the_new_timeline() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let op = json!({"op":"add_bin","bin":{"id":"","name":"Rushes","parent":null}});
+    agent.apply(json!([op])).await;
+    let before = project(&mut agent).await;
+    let refused = agent
+        .error("transaction.apply", Some(json!({"ops":[op],"revision":0})))
+        .await;
+    assert_eq!(refused["code"], -32001);
+    assert_eq!(refused["data"]["reason"], "stale_revision");
+    assert_eq!(project(&mut agent).await, before);
+    agent
+        .result("transaction.apply", Some(json!({"ops":[op],"revision":1})))
+        .await;
+    assert_eq!(
+        project(&mut agent).await["project"]["bins"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn inspecting_media_prepares_a_single_migration_transaction_without_importing() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let before = project(&mut agent).await;
+    let inspected = agent
+        .result("media.inspect", Some(json!({"paths":[made.path]})))
+        .await;
+    assert_eq!(project(&mut agent).await, before);
+    assert_eq!(inspected["media"][0]["id"], "");
+    assert_eq!(inspected["media"][0]["facts"]["video"]["width"], 1920);
+    let mut media = inspected["media"][0].clone();
+    media["id"] = json!("$source");
+    agent.apply(json!([
+        {"op":"add_media","media":media},
+        {"op":"add_timeline","timeline":{"id":"$film","name":"Migrated","rate":{"num":25,"den":1},"width":1920,"height":1080,"sample_rate":48000,"tracks":[]}},
+        {"edit":"add_track","timeline":"$film","kind":"video"},
+        {"edit":"insert","timeline":"$film","source":{"kind":"media","media":"$source","length":25},"at":0,"audio_track":null}
+    ])).await;
+    agent.result("history.undo", None).await;
+    let undone = project(&mut agent).await;
+    assert_eq!(undone["project"]["media"], json!([]));
+    assert_eq!(undone["project"]["timelines"], json!([]));
+    assert!(agent.result("history.undo", None).await["done"].is_null());
+}
+
+#[tokio::test]
+async fn analysis_thumbnails_are_scaled_cached_and_do_not_edit_the_project() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths": [made.path]})))
+        .await;
+    let before = project(&mut client).await;
+    let first = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":180})),
+        )
+        .await;
+    let (width, height, pixels) = thumbnail_pixels(&first);
+    assert_eq!((width, height), (320, 180));
+    assert!(pixels[..3].iter().all(|byte| *byte < 8));
+    assert!(pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| pixel[3] == 255));
+    let middle = client
+        .result("media.thumbnail", Some(json!({"media":"m1", "height":90})))
+        .await;
+    assert_eq!(thumbnail_pixels(&middle).0, 160);
+    assert_eq!(
+        middle,
+        client
+            .result(
+                "media.thumbnail",
+                Some(json!({"media":"m1", "frame":50, "height":90}))
+            )
+            .await
+    );
+    let cache = dir.path().join("cache/thumbs");
+    let files: Vec<_> = std::fs::read_dir(&cache)
+        .unwrap()
+        .map(|file| file.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 2);
+    // A truncated cache is regenerated, not returned as a successful PNG.
+    for file in &files {
+        std::fs::write(file, b"broken PNG").unwrap();
+    }
+    assert_eq!(
+        first,
+        client
+            .result(
+                "media.thumbnail",
+                Some(json!({"media":"m1", "frame":0, "height":180}))
+            )
+            .await
+    );
+    for params in [
+        json!({"media":"m1", "height":0}),
+        json!({"media":"m1", "height":271}),
+        json!({"media":"m1", "frame":-1, "height":90}),
+        json!({"media":"m1", "frame":100, "height":90}),
+        json!({"media":"m1", "height":90, "extra":true}),
+    ] {
+        assert_eq!(
+            client.error("media.thumbnail", Some(params)).await["code"],
+            -32602
+        );
+    }
+    assert_eq!(
+        client
+            .error(
+                "media.thumbnail",
+                Some(json!({"media":"gone", "height":90}))
+            )
+            .await["data"]["reason"],
+        "missing"
+    );
+    assert_eq!(project(&mut client).await, before);
+}
+
+#[tokio::test]
+async fn analysis_thumbnail_turns_portrait_media_upright() {
+    let Some(made) = support::media(support::Sample::Portrait) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths": [made.path]})))
+        .await;
+    let result = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":160})),
+        )
+        .await;
+    let (width, height, _) = thumbnail_pixels(&result);
+    assert_eq!((width, height), (90, 160));
+}
+
+async fn waveform(client: &mut Client, media: &str) -> Value {
+    let result = client
+        .result("media.waveform", Some(json!({"media":media})))
+        .await;
+    if result["pending"] == true {
+        let ready =
+            |note: &Value| note["method"] == "media.waveform" && note["params"]["media"] == media;
+        if !client.take_notifications().iter().any(ready) {
+            loop {
+                if ready(&client.message().await) {
+                    break;
+                }
+            }
+        }
+        client
+            .result("media.waveform", Some(json!({"media":media})))
+            .await
+    } else {
+        result
+    }
+}
+
+/// The waveform of a stream of sound of a media, once it is made.
+async fn stream_waveform(client: &mut Client, media: &str, stream: usize) -> Value {
+    let params = json!({"media":media, "stream":stream});
+    let result = client.result("media.waveform", Some(params.clone())).await;
+    if result["pending"] == true {
+        let ready = |note: &Value| note["method"] == "media.waveform" && note["params"] == params;
+        if !client.take_notifications().iter().any(ready) {
+            loop {
+                if ready(&client.message().await) {
+                    break;
+                }
+            }
+        }
+        client.result("media.waveform", Some(params)).await
+    } else {
+        result
+    }
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_each_stream_of_sound_has_its_channels_and_its_own_cache() {
+    use base64::Engine as _;
+    let Some(made) = support::media(support::Sample::TwoMonoStreams) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.mov");
+    std::fs::copy(made.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    let peaks = |result: &Value| {
+        base64::engine::general_purpose::STANDARD
+            .decode(result["peaks"].as_str().unwrap())
+            .unwrap()
+    };
+    // Stream 0 at amplitude 0.25, stream 1 at 0.5: 127 × each, rounded.
+    let mut waves = Vec::new();
+    for (stream, most) in [(0, 32), (1, 64)] {
+        let result = stream_waveform(&mut client, "m1", stream).await;
+        assert_eq!(result["rate"], 100);
+        assert_eq!(result["channels"], 1, "stream {stream}");
+        let peaks = peaks(&result);
+        assert_eq!(peaks.len(), 200 * 2);
+        let pairs = peaks.as_chunks::<2>().0;
+        assert_eq!(
+            pairs.iter().map(|pair| pair[1].cast_signed()).max(),
+            Some(most)
+        );
+        assert_eq!(
+            pairs.iter().map(|pair| pair[0].cast_signed()).min(),
+            Some(-most)
+        );
+        waves.push(result);
+    }
+    // The sound of the media is its best stream, the first, in a cache of its own.
+    assert_eq!(waveform(&mut client, "m1").await, waves[0]);
+    assert_eq!(stream_waveform(&mut client, "m1", 1).await, waves[1]);
+    let mut caches: Vec<String> = std::fs::read_dir(dir.path().join("cache/waveforms"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    caches.sort();
+    assert_eq!(caches.len(), 3, "{caches:?}");
+    assert!(caches[0].ends_with("-s0.bin") && caches[1].ends_with("-s1.bin"));
+    // No third stream.
+    let error = client
+        .error("media.waveform", Some(json!({"media":"m1", "stream":2})))
+        .await;
+    assert_eq!(error["code"], -32602);
+    assert_eq!(error["data"], json!({"reason":"stream", "stream":2}));
+    // Offline, the waveform made of a stream is still given from its cache.
+    std::fs::rename(&source, source.with_extension("offline")).unwrap();
+    assert_eq!(stream_waveform(&mut client, "m1", 1).await, waves[1]);
+}
+
+/// The peaks of a waveform, decoded: for each bin, the least and the most of each channel.
+fn peaks_of(result: &Value) -> Vec<i8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(result["peaks"].as_str().unwrap())
+        .unwrap()
+        .into_iter()
+        .map(u8::cast_signed)
+        .collect()
+}
+
+/// A media of the tests imported into a new engine, copied into its project first.
+async fn imported(sample: support::Sample) -> Option<(tempfile::TempDir, Engine, Client)> {
+    let made = support::media(sample)?;
+    let dir = project_dir();
+    let extension = made.path.extension().unwrap().to_str().unwrap().to_owned();
+    let source = dir.path().join(format!("source.{extension}"));
+    std::fs::copy(&made.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    Some((dir, engine, client))
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_lays_its_channels_out_as_the_stream_does() {
+    let Some((_dir, _engine, mut client)) = imported(support::Sample::ThreeZero).await else {
+        return;
+    };
+    // 3.0: L, R and C at amplitude 0.25 each; C is the third channel of the stream.
+    let own = stream_waveform(&mut client, "m1", 0).await;
+    assert_eq!(own["channels"], 3);
+    let peaks = peaks_of(&own);
+    let most = |peaks: &[i8], channel: usize| {
+        peaks
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|bin| bin[channel * 2 + 1])
+            .max()
+            .unwrap()
+    };
+    for channel in 0..3 {
+        assert_eq!(most(&peaks, channel), 32, "channel {channel}");
+    }
+    // Without a stream, swresample lays the channels out as 2.1, the default of three: C is
+    // mixed into the left and right, and the third channel is of the low frequencies, silent.
+    let mixed = waveform(&mut client, "m1").await;
+    assert_eq!(mixed["channels"], 3);
+    assert_ne!(mixed, own);
+    assert_eq!(most(&peaks_of(&mixed), 2), 0);
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_is_named_by_its_index_among_all_the_streams() {
+    let Some((_dir, _engine, mut client)) = imported(support::Sample::Fhd).await else {
+        return;
+    };
+    // The picture is stream 0, the sound stream 1.
+    let sound = stream_waveform(&mut client, "m1", 1).await;
+    assert_eq!(sound, waveform(&mut client, "m1").await);
+    let error = client
+        .error("media.waveform", Some(json!({"media":"m1", "stream":0})))
+        .await;
+    assert_eq!(error["code"], -32602);
+    assert_eq!(error["data"], json!({"reason":"stream", "stream":0}));
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_that_starts_later_is_silent_until_it_starts() {
+    let Some((_dir, _engine, mut client)) = imported(support::Sample::LateStream).await else {
+        return;
+    };
+    // The sound of the media starts at 0 with stream 0; stream 1 half a second later.
+    let late = stream_waveform(&mut client, "m1", 1).await;
+    let peaks = peaks_of(&late);
+    assert_eq!(peaks.len(), 200 * 2);
+    let bins = peaks.as_chunks::<2>().0;
+    assert!(
+        bins[..50].iter().all(|bin| *bin == [0, 0]),
+        "{:?}",
+        &bins[..52]
+    );
+    assert!(
+        bins[51..].iter().all(|bin| bin[1] >= 60),
+        "{:?}",
+        &bins[48..56]
+    );
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_of_a_file_offline_is_pending_and_then_fails() {
+    let Some((dir, _engine, mut client)) = imported(support::Sample::TwoMonoStreams).await else {
+        return;
+    };
+    let source = dir.path().join("source.mov");
+    std::fs::rename(&source, source.with_extension("offline")).unwrap();
+    // As the sound of the media does: pending, told, and the error at the next query.
+    let params = json!({"media":"m1", "stream":1});
+    assert_eq!(
+        client.result("media.waveform", Some(params.clone())).await,
+        json!({"pending":true})
+    );
+    let ready = |note: &Value| note["method"] == "media.waveform" && note["params"] == params;
+    if !client.take_notifications().iter().any(ready) {
+        while !ready(&client.message().await) {}
+    }
+    let failed = client.error("media.waveform", Some(params.clone())).await;
+    assert_eq!(failed["code"], -32002);
+    assert_eq!(failed["data"]["reason"], "not_found");
+    // Restored, it is made.
+    std::fs::rename(source.with_extension("offline"), &source).unwrap();
+    assert_eq!(stream_waveform(&mut client, "m1", 1).await["channels"], 1);
+}
+
+#[tokio::test]
+async fn analysis_waveform_is_100_peaks_per_second_per_channel_and_cached() {
+    use base64::Engine as _;
+    let Some(made) = support::media(support::Sample::Wav) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[made.path]})))
+        .await;
+    let before = project(&mut client).await;
+    let result = waveform(&mut client, "m1").await;
+    assert_eq!(result["rate"], 100);
+    assert_eq!(result["channels"], 2);
+    let peaks = base64::engine::general_purpose::STANDARD
+        .decode(result["peaks"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(peaks.len(), 200 * 2 * 2);
+    assert!(peaks
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|pair| (pair[0].cast_signed()) < 0 && (pair[1].cast_signed()) > 0));
+    assert_eq!(waveform(&mut client, "m1").await, result);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("cache/waveforms"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(project(&mut client).await, before);
+    assert_eq!(
+        client
+            .error("media.thumbnail", Some(json!({"media":"m1", "height":90})))
+            .await["data"]["reason"],
+        "no_video"
+    );
+}
+
+#[tokio::test]
+async fn analysis_uses_an_available_proxy_and_falls_back_when_it_is_unreadable() {
+    let Some(original) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let Some(copy) = support::media(support::Sample::Prores) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.mp4");
+    std::fs::copy(original.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    let imported = project(&mut client).await;
+    let digest = imported["project"]["media"][0]["identity"]["digest"]
+        .as_str()
+        .unwrap();
+    let proxy_dir = Path::new(&written(dir.path())).join("cache/proxies");
+    std::fs::create_dir_all(&proxy_dir).unwrap();
+    let proxy = proxy_dir.join(format!("m1-{}.mov", &digest[..12]));
+    std::fs::copy(copy.path, &proxy).unwrap();
+    client
+        .apply(json!([{"op":"set_proxy", "media":"m1", "proxy": {
+            "path":proxy, "width":1920, "height":1080, "codec":"prores", "digest_of_source":digest
+        }}]))
+        .await;
+    let offline = source.with_extension("offline");
+    std::fs::rename(&source, &offline).unwrap();
+    let result = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":89})),
+        )
+        .await;
+    assert_eq!(thumbnail_pixels(&result).1, 89);
+    std::fs::rename(&offline, &source).unwrap();
+    std::fs::write(&proxy, b"damaged proxy").unwrap();
+    let before = project(&mut client).await;
+    let result = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":90})),
+        )
+        .await;
+    assert_eq!(thumbnail_pixels(&result).1, 90);
+    assert_eq!(project(&mut client).await, before);
+}
+
+#[tokio::test]
+async fn analysis_cache_survives_a_restart_and_an_offline_source() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.mp4");
+    std::fs::copy(made.path, &source).unwrap();
+    let first_engine = engine(dir.path(), &["--headless", "--idle-seconds", "1"]).await;
+    let mut client = first_engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    let thumb = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":90})),
+        )
+        .await;
+    let wave = waveform(&mut client, "m1").await;
+    let before = project(&mut client).await;
+    drop(client);
+    assert_eq!(first_engine.ended().await, 0);
+    std::fs::rename(&source, source.with_extension("offline")).unwrap();
+    let second_engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = second_engine.client("desktop").await;
+    assert_eq!(
+        client
+            .result(
+                "media.thumbnail",
+                Some(json!({"media":"m1", "frame":0, "height":90}))
+            )
+            .await,
+        thumb
+    );
+    assert_eq!(
+        client
+            .result("media.waveform", Some(json!({"media":"m1"})))
+            .await,
+        wave
+    );
+    // Opening the saved project resets its ephemeral revision, not the project itself.
+    assert_eq!(project(&mut client).await["project"], before["project"]);
+}
+
+#[tokio::test]
+async fn analysis_reports_failed_waveforms_and_can_retry_a_restored_source() {
+    let Some(made) = support::media(support::Sample::Wav) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.wav");
+    std::fs::copy(made.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    let mut observer = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    observer.message().await; // Import notification.
+    let offline = source.with_extension("offline");
+    std::fs::rename(&source, &offline).unwrap();
+    assert_eq!(
+        client
+            .result("media.waveform", Some(json!({"media":"m1"})))
+            .await,
+        json!({"pending":true})
+    );
+    assert_eq!(
+        observer.message().await,
+        json!({"jsonrpc":"2.0", "method":"media.waveform", "params":{"media":"m1"}})
+    );
+    let failed = client
+        .error("media.waveform", Some(json!({"media":"m1"})))
+        .await;
+    assert_eq!(failed["code"], -32002);
+    assert_eq!(failed["data"]["reason"], "not_found");
+    std::fs::rename(&offline, &source).unwrap();
+    client.take_notifications();
+    assert_eq!(waveform(&mut client, "m1").await["channels"], 2);
+}
+
+#[tokio::test]
+async fn analysis_waveform_is_aligned_to_the_video_origin_not_audio_preroll() {
+    use base64::Engine as _;
+    let Some(made) = support::media(support::Sample::MkvOffsetAudio) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[made.path]})))
+        .await;
+    let result = waveform(&mut client, "m1").await;
+    let got = base64::engine::general_purpose::STANDARD
+        .decode(result["peaks"].as_str().unwrap())
+        .unwrap();
+    let snapshot = project(&mut client).await;
+    let duration: columbina_model::Time =
+        serde_json::from_value(snapshot["project"]["media"][0]["facts"]["duration"].clone())
+            .unwrap();
+    let mut decoder = columbina_media::AudioDecoder::open(&made.path, None).unwrap();
+    let format = decoder.format();
+    let origin = columbina_media::video_start(&made.path).unwrap();
+    assert!(origin.ticks > 0);
+    let start = origin.ticks * i64::from(format.rate) / i64::from(origin.scale);
+    let length = (duration.ticks * i64::from(format.rate) + i64::from(duration.scale) - 1)
+        / i64::from(duration.scale);
+    // Build the reference in float bins before quantization. Sound before the first picture
+    // is omitted, including the distinctive higher level before 1 s in this PCM fixture.
+    let bins = usize::try_from(
+        (duration.ticks * 100 + i64::from(duration.scale) - 1) / i64::from(duration.scale),
+    )
+    .unwrap();
+    let mut expected =
+        vec![[f32::INFINITY, f32::NEG_INFINITY]; bins * usize::from(format.channels)];
+    while let Some(samples) = decoder.next().unwrap() {
+        for (index, frame) in samples
+            .data
+            .chunks_exact(usize::from(format.channels))
+            .enumerate()
+        {
+            let at = samples.start + i64::try_from(index).unwrap() - start;
+            if at < 0 || at >= length {
+                continue;
+            }
+            let bin = usize::try_from(at * 100 / i64::from(format.rate)).unwrap();
+            for (channel, sample) in frame.iter().enumerate() {
+                let pair = &mut expected[bin * usize::from(format.channels) + channel];
+                pair[0] = pair[0].min(*sample);
+                pair[1] = pair[1].max(*sample);
+            }
+        }
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "reference quantization is clamped to -127..=127"
+    )]
+    let expected: Vec<u8> = expected
+        .iter()
+        .flat_map(|pair| {
+            pair.iter().map(|value| {
+                if value.is_finite() {
+                    ((value.clamp(-1.0, 1.0) * 127.0).round() as i8).cast_unsigned()
+                } else {
+                    0
+                }
+            })
+        })
+        .collect();
+    assert_eq!(got.len(), expected.len());
+    for (index, (actual, expected)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(actual, expected, "waveform byte {index}");
+    }
+    assert_eq!(&got[..4], &[32, 32, 161, 161]); // Left +0.25, right -0.75, from 1 s.
+}
+
+#[tokio::test]
+async fn analysis_can_answer_without_a_writable_cache_and_refuses_unsupported_requests() {
+    let Some(sound) = support::media(support::Sample::Wav) else {
+        return;
+    };
+    let Some(picture) = support::media(support::Sample::Prores) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result(
+            "media.import",
+            Some(json!({"paths":[sound.path, picture.path]})),
+        )
+        .await;
+    std::fs::create_dir_all(dir.path().join("cache")).unwrap();
+    // These files prevent the engine creating its cache directories, on every platform.
+    std::fs::write(dir.path().join("cache/thumbs"), b"occupied").unwrap();
+    std::fs::write(dir.path().join("cache/waveforms"), b"occupied").unwrap();
+    assert_eq!(waveform(&mut client, "m1").await["channels"], 2);
+    let result = client
+        .result("media.thumbnail", Some(json!({"media":"m2", "height":90})))
+        .await;
+    assert_eq!(thumbnail_pixels(&result).1, 90);
+    assert_eq!(
+        client
+            .error("media.waveform", Some(json!({"media":"m2"})))
+            .await["data"]["reason"],
+        "no_audio"
+    );
+    for params in [
+        json!({"media":"m1", "rate":50}),
+        json!({}),
+        json!({"media":3}),
+    ] {
+        assert_eq!(
+            client.error("media.waveform", Some(params)).await["code"],
+            -32602
+        );
+    }
+    let mut large = media("huge", sound.path.to_str().unwrap());
+    large["facts"]["duration"]["ticks"] = json!(9_007_199_254_740_991_i64);
+    client
+        .apply(json!([{"op":"add_media", "media":large}]))
+        .await;
+    let error = client
+        .error("media.waveform", Some(json!({"media":"huge"})))
+        .await;
+    assert_eq!(error["code"], -32002);
+    assert_eq!(error["data"]["reason"], "too_large");
 }
 
 #[tokio::test]
@@ -1455,7 +2499,7 @@ async fn files_are_read_while_the_engine_goes_on_answering() {
         .await;
     // While the import is held, another client's transaction is applied and answered.
     let timeline = json!([{ "op": "add_timeline", "timeline": {
-        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "tracks": [],
+        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
     } }]);
     let applied = desktop.apply(timeline).await;
     assert_eq!(applied["revision"], 1);
@@ -1485,11 +2529,116 @@ async fn a_headless_engine_has_no_view() {
 }
 
 #[tokio::test]
+async fn view_methods_require_a_source_or_timeline_monitor() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let mut desktop = engine.client("desktop").await;
+    for monitor in ["source", "timeline"] {
+        assert_eq!(
+            desktop
+                .result("view.detach", Some(json!({"monitor":monitor})))
+                .await,
+            json!({"detached":false})
+        );
+        let error = desktop
+            .error("view.show", Some(json!({"monitor":monitor, "shown":true})))
+            .await;
+        assert_eq!(error["data"]["reason"], "no_view");
+    }
+    for params in [
+        None,
+        Some(json!({})),
+        Some(json!({"monitor":"program"})),
+        Some(json!({"monitor":null})),
+    ] {
+        assert_eq!(desktop.error("view.detach", params).await["code"], -32602);
+    }
+    for (method, params) in [
+        (
+            "view.attach",
+            json!({"parent":"1", "x":0, "y":0, "width":64, "height":36}),
+        ),
+        ("view.place", json!({"x":0, "y":0, "width":64, "height":36})),
+        ("view.show", json!({"shown":true})),
+    ] {
+        let error = desktop.error(method, Some(params)).await;
+        assert_eq!(error["code"], -32602);
+        assert!(
+            error["message"].as_str().unwrap().contains("monitor"),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn view_monitors_attach_hide_replace_and_detach_independently() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let attach = |monitor: &str, x| json!({"monitor":monitor, "parent":parent.hwnd.to_string(), "x":x, "y":0, "width":64, "height":36});
+    desktop
+        .result("view.attach", Some(attach("source", 0)))
+        .await;
+    desktop
+        .result("view.attach", Some(attach("timeline", 100)))
+        .await;
+    let views = until_views(&parent, "both monitors", |views| views.len() == 2).await;
+    let source = views.iter().find(|view| view.2[0] == 0).unwrap().0;
+    let timeline = views.iter().find(|view| view.2[0] == 100).unwrap().0;
+    desktop
+        .result(
+            "view.show",
+            Some(json!({"monitor":"timeline", "shown":false})),
+        )
+        .await;
+    until_views(&parent, "only timeline hidden", |views| {
+        views.iter().any(|v| v.0 == source && v.3) && views.iter().any(|v| v.0 == timeline && !v.3)
+    })
+    .await;
+    desktop
+        .result("view.attach", Some(attach("source", 10)))
+        .await;
+    until_views(
+        &parent,
+        "source replaced without changing timeline",
+        |views| {
+            views.len() == 2
+                && views.iter().any(|v| v.2[0] == 10 && v.3)
+                && views.iter().any(|v| v.0 == timeline && !v.3)
+        },
+    )
+    .await;
+    assert_eq!(
+        desktop
+            .result("view.detach", Some(json!({"monitor":"source"})))
+            .await,
+        json!({"detached":true})
+    );
+    let views = until_views(&parent, "timeline remains", |views| views.len() == 1).await;
+    assert_eq!(views[0].0, timeline);
+    assert_eq!(
+        desktop
+            .result("view.detach", Some(json!({"monitor":"source"})))
+            .await,
+        json!({"detached":false})
+    );
+    assert_eq!(
+        desktop
+            .result("view.detach", Some(json!({"monitor":"timeline"})))
+            .await,
+        json!({"detached":true})
+    );
+}
+
+#[tokio::test]
 async fn the_view_is_the_desktops_and_its_params_are_checked() {
     let dir = project_dir();
     let engine = engine(dir.path(), &[]).await;
     let mut agent = engine.client("agent").await;
-    let rect = json!({ "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36 });
+    let rect =
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36 });
     let error = agent.error("view.attach", Some(rect)).await;
     assert_eq!(error["code"], -32600, "{error}");
 
@@ -1497,45 +2646,55 @@ async fn the_view_is_the_desktops_and_its_params_are_checked() {
     let error = desktop
         .error(
             "view.place",
-            Some(json!({ "x": 0, "y": 0, "width": 64, "height": 36 })),
+            Some(json!({ "monitor": "source", "x": 0, "y": 0, "width": 64, "height": 36 })),
         )
         .await;
     assert_eq!(error["code"], -32003, "{error}");
     assert_eq!(error["data"]["reason"], "no_view");
     let error = desktop
-        .error("view.show", Some(json!({ "shown": true })))
+        .error(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": true })),
+        )
         .await;
     assert_eq!(error["data"]["reason"], "no_view", "{error}");
-    let detached = desktop.result("view.detach", None).await;
+    let detached = desktop
+        .result("view.detach", Some(json!({"monitor":"source"})))
+        .await;
     assert_eq!(detached, json!({ "detached": false }));
     for parent in ["", "abc", "0", "1.5"] {
-        let params = json!({ "parent": parent, "x": 0, "y": 0, "width": 64, "height": 36 });
+        let params = json!({ "monitor": "source", "parent": parent, "x": 0, "y": 0, "width": 64, "height": 36 });
         let error = desktop.error("view.attach", Some(params)).await;
         assert_eq!(error["code"], -32602, "{parent}: {error}");
         assert_eq!(error["data"]["reason"], "parent", "{parent}: {error}");
     }
     for params in [
-        json!({ "parent": 1, "x": 0, "y": 0, "width": 64, "height": 36 }),
-        json!({ "parent": "1", "x": 0, "y": 0, "width": -1, "height": 36 }),
-        json!({ "parent": "1", "x": 0, "y": 0, "width": 64 }),
-        json!({ "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36, "z": 1 }),
+        json!({ "monitor": "source", "parent": 1, "x": 0, "y": 0, "width": 64, "height": 36 }),
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": -1, "height": 36 }),
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 64 }),
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36, "z": 1 }),
     ] {
         let error = desktop.error("view.attach", Some(params.clone())).await;
         assert_eq!(error["code"], -32602, "{params}: {error}");
     }
     let error = desktop
-        .error("view.show", Some(json!({ "shown": "yes" })))
+        .error(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": "yes" })),
+        )
         .await;
     assert_eq!(error["code"], -32602, "{error}");
-    let error = desktop.error("view.detach", Some(json!({ "x": 1 }))).await;
+    let error = desktop
+        .error("view.detach", Some(json!({ "monitor": "source", "x": 1 })))
+        .await;
     assert_eq!(error["code"], -32602, "{error}");
     if cfg!(windows) {
         // A handle that is no window.
-        let params = json!({ "parent": "2147418113", "x": 0, "y": 0, "width": 64, "height": 36 });
+        let params = json!({ "monitor": "source", "parent": "2147418113", "x": 0, "y": 0, "width": 64, "height": 36 });
         let error = desktop.error("view.attach", Some(params)).await;
         assert_eq!(error["code"], -32602, "{error}");
         assert_eq!(error["data"]["reason"], "parent", "{error}");
-        let params = json!({ "parent": "1", "x": 0, "y": 0, "width": 20000, "height": 36 });
+        let params = json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 20000, "height": 36 });
         let error = desktop.error("view.attach", Some(params)).await;
         assert_eq!(error["data"]["reason"], "rect", "{error}");
     }
@@ -1779,7 +2938,7 @@ async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detache
     let engine = engine(dir.path(), &[]).await;
     let parent = parent::Parent::open();
     let mut desktop = engine.client("desktop").await;
-    let rect = |x: i32, y: i32, width: u32, height: u32| json!({ "x": x, "y": y, "width": width, "height": height });
+    let rect = |x: i32, y: i32, width: u32, height: u32| json!({ "monitor": "source", "x": x, "y": y, "width": width, "height": height });
     let mut attach = rect(10, 20, 320, 180);
     attach["parent"] = json!(parent.hwnd.to_string());
     let attached = desktop.result("view.attach", Some(attach.clone())).await;
@@ -1803,11 +2962,17 @@ async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detache
     })
     .await;
     desktop
-        .result("view.show", Some(json!({ "shown": false })))
+        .result(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": false })),
+        )
         .await;
     until_views(&parent, "hidden", |views| views.len() == 1 && !views[0].3).await;
     desktop
-        .result("view.show", Some(json!({ "shown": true })))
+        .result(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": true })),
+        )
         .await;
     until_views(&parent, "shown", |views| views.len() == 1 && views[0].3).await;
 
@@ -1825,7 +2990,9 @@ async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detache
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(parent.views().len(), 1);
     let mut desktop = engine.client("desktop").await;
-    let detached = desktop.result("view.detach", None).await;
+    let detached = desktop
+        .result("view.detach", Some(json!({"monitor":"source"})))
+        .await;
     assert_eq!(detached, json!({ "detached": true }));
     assert_eq!(parent.views(), []);
     // The log is written by a thread of its own, and read here by a task: it comes soon.
@@ -1846,7 +3013,7 @@ async fn a_view_whose_window_is_closed_is_gone_and_then_there_is_none() {
     let engine = engine(dir.path(), &[]).await;
     let parent = parent::Parent::open();
     let mut desktop = engine.client("desktop").await;
-    let place = json!({ "x": 0, "y": 0, "width": 64, "height": 36 });
+    let place = json!({ "monitor": "source", "x": 0, "y": 0, "width": 64, "height": 36 });
     let mut attach = place.clone();
     attach["parent"] = json!(parent.hwnd.to_string());
     desktop.result("view.attach", Some(attach)).await;
@@ -1867,14 +3034,97 @@ async fn a_view_whose_window_is_closed_is_gone_and_then_there_is_none() {
     let error = desktop.error("view.place", Some(place)).await;
     assert_eq!(error["data"]["reason"], "no_view", "{error}");
     let error = desktop
-        .error("view.show", Some(json!({ "shown": true })))
+        .error(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": true })),
+        )
         .await;
     assert_eq!(error["data"]["reason"], "no_view", "{error}");
-    let detached = desktop.result("view.detach", None).await;
+    let detached = desktop
+        .result("view.detach", Some(json!({"monitor":"source"})))
+        .await;
     assert_eq!(detached, json!({ "detached": false }));
 }
 
 // The transport.
+
+fn source_params(params: Option<Value>) -> Value {
+    let mut params = params.unwrap_or_else(|| json!({}));
+    if let Some(object) = params.as_object_mut() {
+        object.insert("monitor".into(), json!("source"));
+    }
+    params
+}
+
+#[tokio::test]
+async fn timeline_transport_has_its_own_playhead_and_redraws_after_an_edit() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut agent = engine.client("agent").await;
+    let mut red = clip("$red", "unused", 0, 100);
+    red["source"] = json!({"kind":"color", "color":"#ff0000ff"});
+    let added = agent
+        .apply(json!([{"op":"add_timeline", "timeline":{
+            "id":"$timeline", "name":"Cut", "width":64, "height":36,
+            "rate":{"num":25,"den":1}, "sample_rate":48000,
+            "tracks":[{"id":"$v", "kind":"video", "name":"Picture", "enabled":true,
+                "locked":false, "clips":[red], "transitions":[]}]
+        }}]))
+        .await;
+    let timeline = added["names"]["$timeline"].as_str().unwrap();
+    let loaded = agent
+        .result(
+            "transport.load",
+            Some(json!({"monitor":"timeline", "timeline":timeline})),
+        )
+        .await;
+    assert_eq!(loaded["monitor"], "timeline");
+    assert_eq!(loaded["frame"], 0);
+    assert_eq!(loaded["last"], 99);
+    let source = agent
+        .result("transport.state", Some(json!({"monitor":"source"})))
+        .await;
+    assert_eq!(source["monitor"], "source");
+    assert_eq!(source["media"], Value::Null);
+    agent
+        .result(
+            "transport.seek",
+            Some(json!({"monitor":"timeline", "frame":30})),
+        )
+        .await;
+    let (sought, _) = agent
+        .until_state("timeline at 30", |state| {
+            state["monitor"] == "timeline" && state["shown"] == 30
+        })
+        .await;
+    assert_eq!(sought["exact"], true);
+    agent
+        .result(
+            "transport.step",
+            Some(json!({"monitor":"timeline", "frames":-1})),
+        )
+        .await;
+    agent
+        .until_state("timeline at 29", |state| {
+            state["monitor"] == "timeline" && state["shown"] == 29
+        })
+        .await;
+    agent.take_notifications();
+    agent
+        .apply(json!([{"op":"trim_clip", "timeline":timeline,
+        "id":added["names"]["$red"], "start":0, "length":20}]))
+        .await;
+    let (changed, _) = agent
+        .until_state("clamped after edit", |state| {
+            state["monitor"] == "timeline" && state["last"] == 19
+        })
+        .await;
+    assert_eq!(changed["frame"], 19);
+    assert_eq!(changed["shown"], 19);
+}
 
 impl Client {
     /// The next `transport.state` that `wanted` takes, of those that came or come, and when it
@@ -1975,7 +3225,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
         return;
     };
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["media"], "m1", "{loaded}");
     assert_eq!(loaded["frame"], 0);
@@ -1994,29 +3244,32 @@ async fn a_source_plays_pauses_seeks_and_steps() {
 
     // At speed 1, 25 frames a second, by the sound (of the output of no device).
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 5, Duration::from_millis(2000)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["sound"], "on", "{state}");
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
 
     // Paused, it stays.
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     let (paused, _) = agent
         .until_state("paused", |state| state["playing"] == false)
         .await;
     assert_eq!(paused["exact"], true);
     assert_eq!(paused["sound"], "off");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["frame"], paused["frame"]);
     assert_eq!(state["playing"], false);
 
     // A seek shows the frame sought, and what it did is told after the answer.
     agent.take_notifications();
     let id = agent
-        .request("transport.seek", Some(json!({ "frame": 37 })))
+        .request(
+            "transport.seek",
+            Some(json!({ "monitor":"source", "frame": 37 })),
+        )
         .await;
     agent.answer(id).await;
     let before: Vec<Value> = agent.take_notifications();
@@ -2033,7 +3286,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
     );
     // Beyond the media, the nearest end.
     agent
-        .result("transport.seek", Some(json!({ "frame": 500 })))
+        .source_result("transport.seek", Some(json!({ "frame": 500 })))
         .await;
     agent
         .until_state("the end", |state| {
@@ -2041,7 +3294,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
         })
         .await;
     agent
-        .result("transport.seek", Some(json!({ "frame": -5 })))
+        .source_result("transport.seek", Some(json!({ "frame": -5 })))
         .await;
     agent
         .until_state("the start", |state| {
@@ -2051,7 +3304,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
 
     // Steps of one and of ten, within the media.
     agent
-        .result("transport.seek", Some(json!({ "frame": 40 })))
+        .source_result("transport.seek", Some(json!({ "frame": 40 })))
         .await;
     agent.until_state("40", |state| state["shown"] == 40).await;
     for (frames, wanted) in [
@@ -2064,7 +3317,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
         (-1000, 0),
     ] {
         agent
-            .result("transport.step", Some(json!({ "frames": frames })))
+            .source_result("transport.step", Some(json!({ "frames": frames })))
             .await;
         let (stepped, _) = agent
             .until_state("stepped", |state| state["frame"] == wanted)
@@ -2084,7 +3337,7 @@ async fn a_scrub_shows_the_key_frame_first_and_the_frame_once_it_settles() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent.take_notifications();
     // 20 seeks within half a second, as a page sends them while the playhead is dragged. Key
@@ -2094,7 +3347,7 @@ async fn a_scrub_shows_the_key_frame_first_and_the_frame_once_it_settles() {
     for index in 0..20 {
         let frame = 5 * index + 3;
         agent
-            .result(
+            .source_result(
                 "transport.seek",
                 Some(json!({ "frame": frame, "scrubbing": true })),
             )
@@ -2146,15 +3399,15 @@ async fn backward_from_the_middle_it_plays_to_frame_0_and_stops() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.seek", Some(json!({ "frame": 50 })))
+        .source_result("transport.seek", Some(json!({ "frame": 50 })))
         .await;
     agent.until_state("50", |state| state["shown"] == 50).await;
     let started = Instant::now();
     agent
-        .result("transport.play", Some(json!({ "speed": -1 })))
+        .source_result("transport.play", Some(json!({ "speed": -1 })))
         .await;
     let (playing, _) = agent
         .until_state("playing backward", |state| state["playing"] == true)
@@ -2181,10 +3434,10 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 4 })))
+        .source_result("transport.play", Some(json!({ "speed": 4 })))
         .await;
     // The client may be descheduled while the engine keeps playing. Let notifications queue:
     // their read times are not the times at which the frames were shown.
@@ -2215,10 +3468,10 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     );
     // Played from the end, it stays there.
     agent
-        .result("transport.play", Some(json!({ "speed": 2 })))
+        .source_result("transport.play", Some(json!({ "speed": 2 })))
         .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(
         (&state["frame"], &state["playing"]),
         (&json!(99), &json!(false))
@@ -2234,16 +3487,16 @@ async fn another_media_is_loaded_and_media_that_is_removed_is_unloaded() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("playing", |state| state["frame"].as_i64() > Some(3))
         .await;
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     assert_eq!(loaded["media"], "m2");
     assert_eq!(loaded["frame"], 0);
@@ -2264,13 +3517,13 @@ async fn another_media_is_loaded_and_media_that_is_removed_is_unloaded() {
         assert_eq!(unloaded["playing"], false);
     }
     let error = agent
-        .error("transport.play", Some(json!({ "speed": 1 })))
+        .source_error("transport.play", Some(json!({ "speed": 1 })))
         .await;
     assert_eq!(error["code"], -32004, "{error}");
     assert_eq!(error["data"]["reason"], "not_loaded");
     // Removing media that is not loaded unloads nothing.
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
         .apply(json!([{ "op": "add_media", "media": media("", "C:/x.mp4") }]))
@@ -2278,7 +3531,7 @@ async fn another_media_is_loaded_and_media_that_is_removed_is_unloaded() {
     agent
         .apply(json!([{ "op": "remove_media", "id": "m3" }]))
         .await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["media"], "m1");
 }
 
@@ -2292,14 +3545,14 @@ async fn what_the_transport_cannot_do_is_refused() {
     };
     for method in ["transport.pause", "transport.step"] {
         let params = (method == "transport.step").then(|| json!({ "frames": 1 }));
-        let error = agent.error(method, params).await;
+        let error = agent.source_error(method, params).await;
         assert_eq!(error["code"], -32004, "{method}: {error}");
         assert_eq!(error["data"]["reason"], "not_loaded");
     }
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["media"], Value::Null);
     let error = agent
-        .error("transport.load", Some(json!({ "media": "m9" })))
+        .source_error("transport.load", Some(json!({ "media": "m9" })))
         .await;
     assert_eq!(error["code"], -32602, "{error}");
     assert_eq!(error["data"], json!({ "reason": "missing", "media": "m9" }));
@@ -2312,16 +3565,23 @@ async fn what_the_transport_cannot_do_is_refused() {
         .unwrap()
         .to_owned();
     let error = agent
-        .error("transport.load", Some(json!({ "media": id })))
+        .source_error("transport.load", Some(json!({ "media": id })))
         .await;
     assert_eq!(error["code"], -32002, "{error}");
     assert_eq!(error["data"]["reason"], "not_found");
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
-    for speed in [json!(0), json!(9), json!(-9), json!(1.5), json!("1")] {
+    for speed in [
+        json!(0),
+        json!(9),
+        json!(-9),
+        json!(i32::MIN),
+        json!(1.5),
+        json!("1"),
+    ] {
         let error = agent
-            .error("transport.play", Some(json!({ "speed": speed })))
+            .source_error("transport.play", Some(json!({ "speed": speed })))
             .await;
         assert_eq!(error["code"], -32602, "{speed}: {error}");
     }
@@ -2332,10 +3592,10 @@ async fn what_the_transport_cannot_do_is_refused() {
         ("transport.state", json!({ "x": 1 })),
         ("transport.load", json!({})),
     ] {
-        let error = agent.error(method, Some(params.clone())).await;
+        let error = agent.source_error(method, Some(params.clone())).await;
         assert_eq!(error["code"], -32602, "{method} {params}: {error}");
     }
-    let error = agent.error("transport.rewind", None).await;
+    let error = agent.source_error("transport.rewind", None).await;
     assert_eq!(error["code"], -32601, "{error}");
 }
 
@@ -2371,20 +3631,20 @@ async fn a_source_plays_with_its_sound_on_the_output_device() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 5, Duration::from_millis(2000)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     match state["sound"].as_str().unwrap() {
         "on" => eprintln!("played with sound: the device is the clock"),
         "unavailable" => eprintln!("no sound: there is no device to play it on"),
         other => panic!("the sound is {other} while it plays at speed 1"),
     }
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     agent
         .until_state("paused", |state| state["playing"] == false)
         .await;
@@ -2402,11 +3662,11 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     for round in 0..4 {
         agent
-            .result("transport.seek", Some(json!({ "frame": 0 })))
+            .source_result("transport.seek", Some(json!({ "frame": 0 })))
             .await;
         agent
             .until_state("at 0", |state| {
@@ -2414,7 +3674,7 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
             })
             .await;
         agent
-            .result("transport.step", Some(json!({ "frames": 1 })))
+            .source_result("transport.step", Some(json!({ "frames": 1 })))
             .await;
         agent
             .until_state("at 1", |state| {
@@ -2424,7 +3684,7 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
         agent.take_notifications();
         let played = Instant::now();
         agent
-            .result("transport.play", Some(json!({ "speed": 1 })))
+            .source_result("transport.play", Some(json!({ "speed": 1 })))
             .await;
         let states = agent.states_for(Duration::from_millis(500)).await;
         let mut moved = 1;
@@ -2443,7 +3703,7 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
         }
         assert!(moved >= 6, "round {round}: it did not play: {states:?}");
         let paused_at = Instant::now();
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         let (paused, at) = agent
             .until_state("paused", |state| state["playing"] == false)
             .await;
@@ -2504,7 +3764,7 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     };
     // 2 s on a grid of 25 frames a second.
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(
         (
@@ -2518,7 +3778,7 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     );
     assert_eq!(loaded["sound"], "off");
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1000)).await;
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
@@ -2528,7 +3788,7 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     assert_eq!(stopped["frame"], 49, "{stopped}");
     // Sought and stepped, as a picture is.
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 10, "scrubbing": true })),
         )
@@ -2539,14 +3799,14 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
         })
         .await;
     agent
-        .result("transport.step", Some(json!({ "frames": 5 })))
+        .source_result("transport.step", Some(json!({ "frames": 5 })))
         .await;
     agent
         .until_state("stepped", |state| state["frame"] == 15)
         .await;
     // At another speed, and backward, it moves in silence.
     agent
-        .result("transport.play", Some(json!({ "speed": -4 })))
+        .source_result("transport.play", Some(json!({ "speed": -4 })))
         .await;
     let (backward, _) = agent
         .until_state("backward", |state| state["playing"] == true)
@@ -2560,19 +3820,19 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     // On the grid of the first timeline of the project: 3 s at 30 frames a second.
     agent
         .apply(json!([{ "op": "add_timeline", "timeline": {
-            "id": "", "name": "Cut", "rate": { "num": 30, "den": 1 }, "tracks": [],
+            "id": "", "name": "Cut", "rate": { "num": 30, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
         } }]))
         .await;
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     assert_eq!(loaded["last"], 89, "{loaded}");
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1000)).await;
     assert!((25.5..=34.5).contains(&rate), "{rate} frames a second");
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["sound"], "on");
 }
 
@@ -2589,10 +3849,10 @@ async fn a_device_that_fails_is_left_for_the_clock_of_the_system_and_opened_agai
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("playing with sound", |state| {
@@ -2618,12 +3878,12 @@ async fn a_device_that_fails_is_left_for_the_clock_of_the_system_and_opened_agai
     let moved = frames.last().unwrap() - at;
     assert!((10..=20).contains(&moved), "{frames:?}");
     // Played again, the device is opened anew.
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     agent
-        .result("transport.seek", Some(json!({ "frame": 0 })))
+        .source_result("transport.seek", Some(json!({ "frame": 0 })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("the sound again", |state| {
@@ -2648,11 +3908,11 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     let started = Instant::now();
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     // Nothing is heard: the playhead waits for the sound, then goes on without it.
     let (waiting, _) = agent
@@ -2704,7 +3964,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
             return;
         };
         agent
-            .result("transport.load", Some(json!({ "media": "m1" })))
+            .source_result("transport.load", Some(json!({ "media": "m1" })))
             .await;
         let loaded = until_logged(&engine, "transport_loaded").await;
         if loaded.contains(r#""decoder":"software""#) {
@@ -2714,7 +3974,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
         agent.take_notifications();
         if play {
             agent
-                .result("transport.play", Some(json!({ "speed": 4 })))
+                .source_result("transport.play", Some(json!({ "speed": 4 })))
                 .await;
             agent
                 .until_state("playing", |state| state["playing"] == true)
@@ -2728,7 +3988,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
             );
         } else {
             agent
-                .result("transport.seek", Some(json!({ "frame": frame })))
+                .source_result("transport.seek", Some(json!({ "frame": frame })))
                 .await;
             let (sought, _) = agent
                 .until_state("sought", |state| state["frame"] == frame)
@@ -2742,7 +4002,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
         assert!(!stderr.contains("transport_error"), "{stderr}");
         // On the processor from then on.
         agent
-            .result("transport.step", Some(json!({ "frames": -3 })))
+            .source_result("transport.step", Some(json!({ "frames": -3 })))
             .await;
         let wanted = if play { 96 } else { frame - 3 };
         let (stepped, _) = agent
@@ -2762,7 +4022,10 @@ async fn media_removed_while_it_is_loaded_is_unloaded_once_it_is() {
     let mut desktop = engine.client("desktop").await;
     // The load is sent, and the media removed by another client before it is done.
     let load = agent
-        .request("transport.load", Some(json!({ "media": "m1" })))
+        .request(
+            "transport.load",
+            Some(json!({ "monitor":"source", "media": "m1" })),
+        )
         .await;
     desktop
         .apply(json!([{ "op": "remove_media", "id": "m1" }]))
@@ -2779,7 +4042,7 @@ async fn media_removed_while_it_is_loaded_is_unloaded_once_it_is() {
         assert_eq!(unloaded["playing"], false);
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["media"], Value::Null, "{state}");
 }
 
@@ -2792,13 +4055,16 @@ async fn a_command_sent_while_another_client_loads_is_not_refused() {
     };
     let mut desktop = engine.client("desktop").await;
     let load = agent
-        .request("transport.load", Some(json!({ "media": "m1" })))
+        .request(
+            "transport.load",
+            Some(json!({ "monitor":"source", "media": "m1" })),
+        )
         .await;
     // Before the load is done (opening the decoder takes some 100 ms), once the engine has
     // read it: taken, and done after it.
     tokio::time::sleep(Duration::from_millis(20)).await;
     let played = desktop
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     assert_eq!(played, json!({}));
     let loaded = agent.answer(load).await;
@@ -2844,15 +4110,19 @@ async fn the_view_shows_the_frame_sought() {
     };
     let parent = parent::Parent::shown();
     let mut desktop = engine.client("desktop").await;
-    let attach =
-        json!({ "parent": parent.hwnd.to_string(), "x": 0, "y": 0, "width": 960, "height": 540 });
+    // In SDR, as the screen is read back in 8 bits: a monitor with HDR on would show the picture
+    // at the white of SDR of Windows, which a copy of the screen does not keep.
+    desktop
+        .result("view.display", Some(json!({ "hdr": false })))
+        .await;
+    let attach = json!({ "monitor": "source", "parent": parent.hwnd.to_string(), "x": 0, "y": 0, "width": 960, "height": 540 });
     desktop.result("view.attach", Some(attach)).await;
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     for (frame, scrubbing) in [(37, false), (77, true), (5, false)] {
         agent
-            .result(
+            .source_result(
                 "transport.seek",
                 Some(json!({ "frame": frame, "scrubbing": scrubbing })),
             )
@@ -2878,7 +4148,7 @@ async fn the_view_shows_the_frame_sought() {
     }
     // Sound alone: the view is black.
     agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     let deadline = Instant::now() + WAIT;
     loop {
@@ -2936,14 +4206,14 @@ async fn measure_playing_and_scrubbing() {
         .await;
     for (media, path) in added["added"].as_array().unwrap().iter().zip(&files) {
         let loaded = agent
-            .result("transport.load", Some(json!({ "media": media })))
+            .source_result("transport.load", Some(json!({ "media": media })))
             .await;
         let last = loaded["last"].as_i64().unwrap();
         eprintln!("{}: {loaded}", path.display());
         // Played to its end, or for 12 s.
         agent.take_notifications();
         agent
-            .result("transport.play", Some(json!({ "speed": 1 })))
+            .source_result("transport.play", Some(json!({ "speed": 1 })))
             .await;
         agent
             .until_state("playing", |state| state["playing"] == true)
@@ -2957,7 +4227,7 @@ async fn measure_playing_and_scrubbing() {
                 break;
             }
         }
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         // Scrubbing: a seek every 1/30 s, as a page sends them, then the time to the key frame
         // and to the frame itself, after a last seek.
         let mut keys = Vec::new();
@@ -2966,7 +4236,7 @@ async fn measure_playing_and_scrubbing() {
             for index in 0..10_i64 {
                 let frame = (round * 37 + index * 7 + 11) % (last + 1);
                 agent
-                    .result(
+                    .source_result(
                         "transport.seek",
                         Some(json!({ "frame": frame, "scrubbing": true })),
                     )
@@ -2980,7 +4250,7 @@ async fn measure_playing_and_scrubbing() {
             let target = (round * 53 + 97) % (last + 1);
             let sent = Instant::now();
             agent
-                .result(
+                .source_result(
                     "transport.seek",
                     Some(json!({ "frame": target, "scrubbing": true })),
                 )
@@ -3004,13 +4274,13 @@ async fn measure_playing_and_scrubbing() {
         // Fast forward and backward, for a while each, from the start and the middle.
         for (from, speed) in [(0, 8), (last / 2, -1), (last, -8)] {
             agent
-                .result("transport.seek", Some(json!({ "frame": from })))
+                .source_result("transport.seek", Some(json!({ "frame": from })))
                 .await;
             agent
-                .result("transport.play", Some(json!({ "speed": speed })))
+                .source_result("transport.play", Some(json!({ "speed": speed })))
                 .await;
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            agent.result("transport.pause", None).await;
+            agent.source_result("transport.pause", None).await;
         }
         eprintln!(
             "{}: scrubbing, the key frame shown after {keys:?}; the frame itself after {exacts:?} \
@@ -3286,6 +4556,7 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
         Sample::MkvLateStart,
         Sample::Portrait,
         Sample::EditList,
+        Sample::Dropped,
     ];
     let Some((engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
         return;
@@ -3314,6 +4585,19 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
     assert_eq!(size(0), (json!(1920), json!(1080)));
     assert_eq!(size(1), (json!(640), json!(360)));
     assert_eq!(size(7), (json!(640), json!(360)));
+    // A phone's media with a frame dropped: the proxy has its 120 frames, as many as the media,
+    // and one number of the 121 that its duration has is no frame's, in both.
+    let made = logged(&engine, "proxy_made");
+    let dropped = made.iter().find(|line| line["media"] == "m10").unwrap();
+    assert_eq!(
+        (
+            &dropped["frames"],
+            &dropped["frames_of_media"],
+            &dropped["numbers_of_media"]
+        ),
+        (&json!(120), &json!(120), &json!(121)),
+        "{dropped}"
+    );
 }
 
 #[tokio::test]
@@ -3335,7 +4619,7 @@ async fn a_proxy_made_in_prores_where_nvenc_is_not_is_numbered_as_the_media() {
     }
     // And the transport reads it, every frame at once.
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "proxy");
     for (_, state) in scrub(&mut agent, &numbers(8, 10, 180)).await {
@@ -3640,11 +4924,11 @@ async fn a_proxy_elsewhere_is_refused_and_taken_away_when_read_and_never_read_or
         None
     );
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "original", "{loaded}");
     agent
-        .result("transport.seek", Some(json!({ "frame": 90 })))
+        .source_result("transport.seek", Some(json!({ "frame": 90 })))
         .await;
     agent.until_state("90", |state| state["shown"] == 90).await;
     let dropped = logged_at_least(&engine, "proxy_dropped", 1).await;
@@ -3660,7 +4944,7 @@ async fn scrub(client: &mut Client, frames: &[i64]) -> Vec<(Duration, Value)> {
         client.take_notifications();
         let sent = Instant::now();
         client
-            .result(
+            .source_result(
                 "transport.seek",
                 Some(json!({ "frame": frame, "scrubbing": true })),
             )
@@ -3726,7 +5010,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     };
     agent.proxies_of(&["m1", "m2"]).await;
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(
         (&loaded["source"], &loaded["proxies"], &loaded["last"]),
@@ -3747,13 +5031,13 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     assert!(median < Duration::from_millis(100), "{median:?}");
     // Backward from the end, every frame (or nearly) is shown, at 60 a second.
     agent
-        .result("transport.seek", Some(json!({ "frame": 179 })))
+        .source_result("transport.seek", Some(json!({ "frame": 179 })))
         .await;
     agent
         .until_state("179", |state| state["shown"] == 179)
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": -1 })))
+        .source_result("transport.play", Some(json!({ "speed": -1 })))
         .await;
     let (stopped, _) = agent
         .until_state("at frame 0", |state| {
@@ -3776,14 +5060,14 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     assert!(presented >= 0.75 * 179.0, "{played}");
     // Proxies turned off: the media itself, at once while it does not play; and on again.
     agent
-        .result("transport.proxies", Some(json!({ "on": false })))
+        .source_result("transport.proxies", Some(json!({ "on": false })))
         .await;
     let (off, _) = agent
         .until_state("off", |state| state["source"] == "original")
         .await;
     assert_eq!((&off["proxies"], &off["shown"]), (&json!(false), &json!(0)));
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 61, "scrubbing": true })),
         )
@@ -3799,7 +5083,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         .until_state("61 itself", |state| state["shown"] == 61)
         .await;
     agent
-        .result("transport.proxies", Some(json!({ "on": true })))
+        .source_result("transport.proxies", Some(json!({ "on": true })))
         .await;
     agent
         .until_state("on", |state| {
@@ -3808,7 +5092,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         .await;
     // A proxy whose file is gone: the media itself is read, and the proxy is made again.
     agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     let got = project(&mut agent).await;
     let proxy = got["project"]["media"][0]["proxy"]["path"]
@@ -3818,7 +5102,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     std::fs::remove_file(&proxy).unwrap();
     agent.take_notifications();
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "original", "{loaded}");
     let notes = agent.proxies_of(&["m1"]).await;
@@ -3829,7 +5113,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         .await;
     assert!(Path::new(&proxy).is_file());
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 97, "scrubbing": true })),
         )
@@ -3869,12 +5153,12 @@ async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
     bytes[third..2 * third].fill(0);
     std::fs::write(&path, &bytes).unwrap();
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "proxy", "{loaded}");
     agent.take_notifications();
     agent
-        .result("transport.seek", Some(json!({ "frame": 90 })))
+        .source_result("transport.seek", Some(json!({ "frame": 90 })))
         .await;
     // The media itself shows the frame, and the proxy is made again (slowly: as the media plays).
     let (sought, _) = agent
@@ -3887,7 +5171,7 @@ async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
     for name in ["a", "b", "c", "d", "e"] {
         agent
             .apply(json!([{ "op": "add_timeline", "timeline": {
-                "id": "", "name": name, "rate": { "num": 25, "den": 1 }, "tracks": [],
+                "id": "", "name": name, "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
             } }]))
             .await;
     }
@@ -3911,7 +5195,7 @@ async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
     assert_eq!(opened.len(), 2, "to the media, and back: {opened:?}");
     // The new one is whole.
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 100, "scrubbing": true })),
         )
@@ -4099,16 +5383,16 @@ async fn proxies_turned_off_while_playing_take_effect_at_the_next_seek() {
     };
     agent.proxies_of(&["m1"]).await;
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("playing", |state| state["playing"] == true)
         .await;
     agent
-        .result("transport.proxies", Some(json!({ "on": false })))
+        .source_result("transport.proxies", Some(json!({ "on": false })))
         .await;
     let (told, _) = agent
         .until_state("told", |state| state["proxies"] == false)
@@ -4118,7 +5402,7 @@ async fn proxies_turned_off_while_playing_take_effect_at_the_next_seek() {
         (&json!(true), &json!("proxy"))
     );
     agent
-        .result("transport.seek", Some(json!({ "frame": 30 })))
+        .source_result("transport.seek", Some(json!({ "frame": 30 })))
         .await;
     // Told once it plays on from there, from the media itself: never paused meanwhile.
     let (sought, _) = agent
@@ -4130,9 +5414,9 @@ async fn proxies_turned_off_while_playing_take_effect_at_the_next_seek() {
             state["playing"] == true && state["frame"].as_i64().unwrap() > 35
         })
         .await;
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     agent
-        .result("transport.proxies", Some(json!({ "on": true })))
+        .source_result("transport.proxies", Some(json!({ "on": true })))
         .await;
     let (on, _) = agent
         .until_state("the proxy", |state| state["source"] == "proxy")
@@ -4209,14 +5493,14 @@ async fn measure_proxies() {
         eprintln!("{made}");
     }
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     eprintln!("{loaded}");
     let last = loaded["last"].as_i64().unwrap();
     most_memory = most_memory.max(memory_of(engine.pid).unwrap_or(0.0));
     for (source, on) in [("proxy", true), ("original", false)] {
         agent
-            .result("transport.proxies", Some(json!({ "on": on })))
+            .source_result("transport.proxies", Some(json!({ "on": on })))
             .await;
         agent
             .until_state(source, |state| state["source"] == source)
@@ -4238,20 +5522,20 @@ async fn measure_proxies() {
         );
         // Backward at -1 for 3 s, from the end.
         agent
-            .result("transport.seek", Some(json!({ "frame": last })))
+            .source_result("transport.seek", Some(json!({ "frame": last })))
             .await;
         agent
             .until_state("the end", |state| state["shown"] == last)
             .await;
         agent
-            .result("transport.play", Some(json!({ "speed": -1 })))
+            .source_result("transport.play", Some(json!({ "speed": -1 })))
             .await;
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(250)).await;
             most_memory = most_memory.max(memory_of(engine.pid).unwrap_or(0.0));
         }
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         agent
             .until_state("paused", |state| state["playing"] == false)
             .await;
@@ -4266,17 +5550,17 @@ async fn measure_proxies() {
         }
         // Forward at 1, for 3 s, from the start.
         agent
-            .result("transport.seek", Some(json!({ "frame": 0 })))
+            .source_result("transport.seek", Some(json!({ "frame": 0 })))
             .await;
         agent
-            .result("transport.play", Some(json!({ "speed": 1 })))
+            .source_result("transport.play", Some(json!({ "speed": 1 })))
             .await;
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(250)).await;
             most_memory = most_memory.max(memory_of(engine.pid).unwrap_or(0.0));
         }
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         if let Some(played) = logged(&engine, "transport_played").pop() {
             eprintln!("{source}: forward at 1: {played}");
@@ -4290,3 +5574,94 @@ async fn measure_proxies() {
         memory_of(engine.pid).unwrap_or(0.0)
     );
 }
+
+#[tokio::test]
+async fn the_viewer_allows_hdr_unless_told_otherwise_and_checks_its_params() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let mut agent = engine.client("agent").await;
+    let error = agent.error("view.display", Some(json!({}))).await;
+    assert_eq!(error["code"], -32600, "{error}");
+    let mut desktop = engine.client("desktop").await;
+    assert_eq!(
+        desktop.result("view.display", Some(json!({}))).await,
+        json!({ "hdr": true, "source": null, "timeline": null })
+    );
+    assert_eq!(
+        desktop
+            .result("view.display", Some(json!({ "hdr": false })))
+            .await,
+        json!({ "hdr": false, "source": null, "timeline": null })
+    );
+    assert_eq!(
+        desktop.result("view.display", Some(json!({}))).await["hdr"],
+        false
+    );
+    for params in [
+        None,
+        Some(json!({ "hdr": 1 })),
+        Some(json!({ "monitor": "source" })),
+    ] {
+        let error = desktop.error("view.display", params.clone()).await;
+        assert_eq!(error["code"], -32602, "{params:?}: {error}");
+    }
+    let other = project_dir();
+    let headless = self::engine(other.path(), &["--headless"]).await;
+    let mut desktop = headless.client("desktop").await;
+    let error = desktop.error("view.display", Some(json!({}))).await;
+    assert_eq!(error["code"], -32601, "{error}");
+}
+
+/// Ask `view.display` until what it says of `monitor` is as `wanted` says.
+#[cfg(windows)]
+async fn until_display(
+    desktop: &mut Client,
+    monitor: &str,
+    wanted: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let display = desktop.result("view.display", Some(json!({}))).await;
+        if wanted(&display[monitor]) {
+            return display;
+        }
+        assert!(Instant::now() < deadline, "{monitor}: {display}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn view_display_says_what_each_view_shows_and_keeps_it_to_sdr() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let attach = |monitor: &str, x| json!({"monitor":monitor, "parent":parent.hwnd.to_string(), "x":x, "y":0, "width":64, "height":36});
+    desktop
+        .result("view.attach", Some(attach("timeline", 0)))
+        .await;
+    let display = until_display(&mut desktop, "timeline", |shown| !shown.is_null()).await;
+    assert_eq!(display["source"], Value::Null);
+    let timeline = &display["timeline"];
+    // HDR is shown where the monitor has it on, as it is allowed.
+    assert_eq!(timeline["hdr_shown"], timeline["hdr_on"], "{display}");
+    eprintln!("the monitor of the test says: {timeline}");
+    desktop
+        .result("view.display", Some(json!({ "hdr": false })))
+        .await;
+    until_display(&mut desktop, "timeline", |shown| {
+        shown["hdr_shown"] == false
+    })
+    .await;
+    // A view attached while HDR is not allowed is not allowed it either.
+    desktop
+        .result("view.attach", Some(attach("source", 100)))
+        .await;
+    let display = until_display(&mut desktop, "source", |shown| !shown.is_null()).await;
+    assert_eq!(display["source"]["hdr_shown"], false, "{display}");
+    assert_eq!(display["hdr"], false);
+}
+
+#[path = "rpc/fx_processors.rs"]
+mod fx_processors;

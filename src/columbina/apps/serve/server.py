@@ -53,7 +53,6 @@ from columbina.agent import (
 from columbina.approval import APPROVAL, APPROVAL_ASK, ApprovalRequest, Outcome
 from columbina.apps.common import DEFAULT_PROMPT, model_named, open_agent
 from columbina.apps.effort import (
-    ULTRA,
     Effort,
     Style,
     effort_named,
@@ -61,6 +60,7 @@ from columbina.apps.effort import (
     offered,
     reasoning_of,
     style_of,
+    told_at,
 )
 from columbina.apps.serve import wire as wires
 from columbina.apps.serve.rpc import (
@@ -89,7 +89,7 @@ from columbina.apps.serve.rpc import (
 )
 from columbina.apps.serve.wire import WIRE, Wire
 from columbina.commands import Commands, is_command
-from columbina.kernel import Context, Next
+from columbina.kernel import Context
 from columbina.llm import CallConfig
 from columbina.permissions import PERMISSIONS
 from columbina.plan import planning
@@ -107,7 +107,6 @@ from columbina.session import (
 )
 from columbina.session.store import SESSION_FILE
 from columbina.skills import SKILLS, one_line
-from columbina.system_prompt import SYSTEM_PROMPT_ASSEMBLE, Draft
 
 __all__ = ["PAGE_BYTES", "PAGE_EVENTS", "PROTOCOL", "Config", "Server"]
 
@@ -756,8 +755,6 @@ class Server:
         agent.ctx.on(SESSION_EVENT, event)
         agent.ctx.on(STREAM, chunk)
         agent.ctx.on(APPROVAL_ASK, self._asker(agent))
-        # Only the agent of the conversation hears this: a subagent has a scope of its own.
-        agent.ctx.on(SYSTEM_PROMPT_ASSEMBLE, self._with_the_effort)
 
     def _event(self, committed: Committed) -> None:
         event = encode_event(committed.event)
@@ -770,10 +767,12 @@ class Server:
         where = f'"session_id":{text(frame.agent.id)},"turn":{frame.turn},"step":{frame.step}'
         self._send(told("session.stream", f'{{{where},"chunk":{chunk}}}'))
 
-    async def _with_the_effort(self, draft: Draft, proceed: Next[Draft, str]) -> str:
-        """Tell the agent of the conversation how to work, where the level of effort is ultra."""
-        text = await proceed(draft)
-        return f"{text}\n\n{ULTRA}" if self._chosen_effort() == "ultra" else text
+    async def how_to_work(self, agent: Agent) -> str | None:
+        """Tell the agent of the conversation how to work at the level of effort, and no other.
+
+        A subagent, or an agent that the conversation has left, is told nothing.
+        """
+        return told_at(self._chosen_effort(), agent.session) if agent is self._agent else None
 
     # Where the agent stands
 

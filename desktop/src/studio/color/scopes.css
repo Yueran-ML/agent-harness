@@ -1,0 +1,224 @@
+/*
+ * The video scopes of the Color page (Reference Manual 20, pp. 3007–3022): the docked panel, the
+ * floating window and its 1, 2, 4 or 9 panes, a pane's picture with the graticule drawn over it,
+ * and the Custom Controls of a scope.
+ */
+
+.scope-docked {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 140px;
+}
+
+.scope-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  background: #0b0b0c;
+  border: 1px solid var(--line);
+}
+
+.scope-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  background: var(--ink-1, var(--ink-2));
+}
+
+.scope-name {
+  height: 22px;
+  min-width: 0;
+  max-width: 160px;
+  font-size: var(--text-caption);
+}
+
+.scope-gap {
+  flex: 1;
+}
+
+.scope-pane-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scope-lens {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+/* The picture is a grid of counts, scaled smoothly to its pane; the graticule is drawn over it sharp. */
+.scope-picture {
+  position: absolute;
+  image-rendering: auto;
+}
+
+.scope-graticule {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.scope-graticule line {
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
+.scope-graticule text {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  dominant-baseline: middle;
+}
+
+.scope-graticule .scope-reference {
+  stroke-dasharray: 4 3;
+}
+
+.scope-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: var(--s2);
+  text-align: center;
+  color: var(--moon-2);
+}
+
+/* --- The Custom Controls of a scope, over its pane (p. 3019). */
+.scope-controls {
+  position: absolute;
+  top: 26px;
+  left: 4px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(280px, calc(100% - 8px));
+  max-height: calc(100% - 30px);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r1, 6px);
+  background: var(--ink-1, var(--ink-2));
+  box-shadow: 0 8px 24px #0006;
+  font-size: var(--text-caption);
+}
+
+.scope-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scope-slider > span,
+.scope-select > span {
+  flex: 0 0 96px;
+  color: var(--moon-2);
+}
+
+.scope-slider input {
+  flex: 1;
+  min-width: 0;
+}
+
+.scope-slider output {
+  flex: 0 0 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.scope-choice {
+  gap: 1px;
+}
+
+.scope-choice button,
+.scope-layouts button {
+  height: 22px;
+  min-width: 26px;
+  padding: 0 6px;
+  border-radius: var(--r1);
+  color: var(--moon-2);
+}
+
+.scope-choice button[aria-checked='true'],
+.scope-layouts button[aria-checked='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* --- The floating window (pp. 3007, 3018): over the page, below the menus. */
+.scope-window {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r1, 6px);
+  background: var(--ink-1, var(--ink-2));
+  box-shadow: 0 12px 32px #0008;
+  overflow: hidden;
+}
+
+.scope-window-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  cursor: move;
+  user-select: none;
+  font-size: var(--text-caption);
+}
+
+.scope-window-head button {
+  cursor: default;
+}
+
+.scope-layouts {
+  display: inline-flex;
+  gap: 1px;
+}
+
+.scope-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 2px;
+  padding: 2px;
+}
+
+.scope-grid[data-layout='1'] { grid-template: 1fr / 1fr; }
+.scope-grid[data-layout='2'] { grid-template: 1fr / repeat(2, minmax(0, 1fr)); }
+.scope-grid[data-layout='4'] { grid-template: repeat(2, minmax(0, 1fr)) / repeat(2, minmax(0, 1fr)); }
+.scope-grid[data-layout='9'] { grid-template: repeat(3, minmax(0, 1fr)) / repeat(3, minmax(0, 1fr)); }
+
+.scope-window-corner {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--line) 50%);
+}
+
+/* The floating scopes as a window of their own (T19): the system's frame moves and sizes it, so it fills its page. */
+.scope-window.scope-window-own {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.scope-window-own .scope-window-head {
+  cursor: default;
+}

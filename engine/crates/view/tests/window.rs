@@ -21,7 +21,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use columbina_view::{Event, Picture, RawParent, Rect, View, ViewError};
+use columbina_compose::{Gpu, Preference};
+use columbina_view::{Event, NativePicture, Picture, RawParent, Rect, View, ViewError};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -48,6 +49,11 @@ const BACKGROUND: [u8; 3] = [30, 160, 60];
 
 /// How long anything that should happen soon is waited for.
 const WAIT: Duration = Duration::from_secs(3);
+
+#[path = "window/overlay.rs"]
+mod overlay;
+#[path = "window/viewport.rs"]
+mod viewport;
 
 static CLICKS: AtomicU32 = AtomicU32::new(0);
 static CLICKED_X: AtomicI32 = AtomicI32::new(-1);
@@ -357,7 +363,7 @@ fn click(x: i32, y: i32) {
 }
 
 /// A picture of one colour, of BT.709 of limited range, and the colour it is drawn as.
-fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<Picture>, [u8; 3]) {
+fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<NativePicture>, [u8; 3]) {
     let [y, cb, cr] = codes;
     let stride = (width as usize).next_multiple_of(64);
     let rows = height as usize;
@@ -387,11 +393,26 @@ fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<Picture>, [u8; 3]) {
         luma + 1.8556 * cb,
     ]
     .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8);
-    (Arc::new(picture), rgb)
+    (Arc::new(columbina_compose::yuv::native_of(picture)), rgb)
+}
+
+/// A view kept to SDR: what the screen shows is read back in 8 bits, and a monitor with HDR on
+/// would show the picture at the white of SDR of Windows, which a copy of the screen does not
+/// keep.
+fn sdr_view(parent: RawParent, rect: Rect, gpu: Arc<Gpu>, report: columbina_view::Report) -> View {
+    View::attach_with_hdr(parent, rect, gpu, report, false).unwrap()
+}
+
+/// The engine's card, as the server makes it: a real one, or WARP.
+fn gpu() -> Arc<Gpu> {
+    Gpu::new(Preference::HighPerformance).expect("a graphics card, or the software one")
 }
 
 #[test]
 fn a_parent_that_is_not_a_window_is_refused() {
+    let Some(gpu) = columbina_compose::gpu_for_tests() else {
+        return;
+    };
     let rect = Rect {
         x: 0,
         y: 0,
@@ -399,9 +420,9 @@ fn a_parent_that_is_not_a_window_is_refused() {
         height: 10,
     };
     // A handle that names no window.
-    let error = View::attach(RawParent::Windows(0x7FFF_0001), rect).err();
+    let error = View::attach(RawParent::Windows(0x7FFF_0001), rect, Arc::clone(&gpu)).err();
     assert!(matches!(error, Some(ViewError::Parent(_))), "{error:?}");
-    let error = View::attach(RawParent::MacOS(1), rect).err();
+    let error = View::attach(RawParent::MacOS(1), rect, gpu).err();
     assert!(
         matches!(error, Some(ViewError::Unsupported(_))),
         "{error:?}"
@@ -425,7 +446,7 @@ fn a_view_draws_in_its_parent_follows_it_and_lets_the_input_through() {
         width: 320,
         height: 180,
     };
-    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    let view = sdr_view(RawParent::Windows(parent.hwnd), rect, gpu(), report);
     eprintln!("drawn by {} with {}", view.adapter(), view.backend());
     let child = hwnd(isize::try_from(view.raw_handle()).unwrap());
     unsafe {
@@ -500,10 +521,36 @@ fn a_view_draws_in_its_parent_follows_it_and_lets_the_input_through() {
         ],
     );
 
-    // The device lost, as in a driver reset: it is made again, and draws the next picture.
+    // The device lost, as in a driver reset: it is reported, the card is made again, as the
+    // server makes it, and given to the view, which draws the next picture.
     view.lose_device();
     let (picture, other) = solid(64, 36, [180, 60, 140]);
     view.present(picture, 0);
+    let deadline = Instant::now() + WAIT;
+    while !events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, Event::DeviceLost { .. }))
+    {
+        assert!(Instant::now() < deadline, "the loss was not reported");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(view.gpu().is_lost());
+    // Given a card that was lost already: that is reported too, at once.
+    let stale = gpu();
+    stale.mark_lost("given lost");
+    view.use_gpu(stale);
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, Event::DeviceLost { message } if message == "given lost")),
+        "{:?}",
+        events.lock().unwrap()
+    );
+    view.use_gpu(gpu());
     parent.until("drawn after the device was lost", &[((560, 300), other)]);
     {
         let events = events.lock().unwrap();
@@ -553,7 +600,7 @@ fn a_view_whose_parent_is_destroyed_is_gone() {
         let events = Arc::clone(&events);
         Arc::new(move |event: Event| events.lock().unwrap().push(event))
     };
-    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    let view = sdr_view(RawParent::Windows(parent.hwnd), rect, gpu(), report);
     assert!(!view.is_gone());
     // A turn that is not a quarter is drawn as none, and told once while it lasts.
     for rotation in [45, 45, -90, 45] {
@@ -575,6 +622,15 @@ fn a_view_whose_parent_is_destroyed_is_gone() {
     assert_eq!(view.show(true), Err(ViewError::Gone));
     assert!(view.is_gone());
     drop(view);
+    assert_eq!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, Event::Gone))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -593,7 +649,7 @@ fn a_frame_that_hangs_hides_the_view_until_it_returns() {
         width: 200,
         height: 150,
     };
-    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    let view = sdr_view(RawParent::Windows(parent.hwnd), rect, gpu(), report);
     let child = hwnd(isize::try_from(view.raw_handle()).unwrap());
     let visible = || {
         let style = unsafe { GetWindowLongW(child, GWL_STYLE) }.cast_unsigned();
@@ -647,4 +703,230 @@ fn a_frame_that_hangs_hides_the_view_until_it_returns() {
     assert!(millis.is_some_and(|millis| millis >= 1000), "{events:?}");
     drop(events);
     drop(view);
+}
+
+#[test]
+#[ignore = "needs a desktop that can be seen: run with --ignored"]
+fn two_views_on_one_card_each_draw_their_own_picture() {
+    columbina_view::prepare_process();
+    let parent = Parent::open(160, 700, 600, 260);
+    let gpu = gpu();
+    let rect = |x: i32| Rect {
+        x,
+        y: 20,
+        width: 240,
+        height: 180,
+    };
+    let left = sdr_view(
+        RawParent::Windows(parent.hwnd),
+        rect(20),
+        Arc::clone(&gpu),
+        Arc::new(|_| {}),
+    );
+    let right = sdr_view(
+        RawParent::Windows(parent.hwnd),
+        rect(320),
+        Arc::clone(&gpu),
+        Arc::new(|_| {}),
+    );
+    assert!(Arc::ptr_eq(&left.gpu(), &right.gpu()));
+    let (a, left_colour) = solid(64, 48, [120, 80, 190]);
+    let (b, right_colour) = solid(64, 48, [180, 60, 140]);
+    left.present(a, 0);
+    right.present(b, 0);
+    let (in_left, in_right) = ((140, 110), (440, 110));
+    parent.until(
+        "each its own",
+        &[(in_left, left_colour), (in_right, right_colour)],
+    );
+    // A new picture in one, and the other is drawn as it was.
+    let (c, other) = solid(64, 48, [60, 200, 100]);
+    left.present(c, 0);
+    parent.until(
+        "the left one changed",
+        &[(in_left, other), (in_right, right_colour)],
+    );
+    right.clear();
+    parent.until(
+        "the right one cleared",
+        &[(in_left, other), (in_right, [0, 0, 0])],
+    );
+    // One dropped, the other still draws on the card that they shared.
+    drop(right);
+    let (d, last) = solid(64, 48, [100, 100, 220]);
+    left.present(d, 0);
+    parent.until(
+        "the left one, alone",
+        &[(in_left, last), (in_right, BACKGROUND)],
+    );
+    assert!(!gpu.is_lost());
+}
+
+#[test]
+#[ignore = "needs a desktop that can be seen: run with --ignored"]
+fn composed_textures_share_the_device_and_are_replaced_after_a_device_change() {
+    use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target};
+    columbina_view::prepare_process();
+    let parent = Parent::open(160, 500, 600, 260);
+    let first_gpu = gpu();
+    let rect = |x| Rect {
+        x,
+        y: 20,
+        width: 240,
+        height: 180,
+    };
+    let source = sdr_view(
+        RawParent::Windows(parent.hwnd),
+        rect(20),
+        Arc::clone(&first_gpu),
+        Arc::new(|_| {}),
+    );
+    let timeline = sdr_view(
+        RawParent::Windows(parent.hwnd),
+        rect(320),
+        Arc::clone(&first_gpu),
+        Arc::new(|_| {}),
+    );
+    let (picture, source_color) = solid(64, 48, [120, 80, 190]);
+    source.present(picture, 0);
+    let compose = |gpu: &Arc<Gpu>, color| {
+        let target = Target::preview(gpu, 64, 36).unwrap();
+        Compositor::new(Arc::clone(gpu))
+            .render(
+                &Scene {
+                    width: 64,
+                    height: 36,
+                    layers: vec![SceneLayer {
+                        source: Source::Color(color),
+                        transform: columbina_compose::Transform::default(),
+                        opacity: 1.0,
+                        color: columbina_compose::LayerColor::default(),
+                        crop: columbina_compose::Crop::NONE,
+                        composite: columbina_compose::Composite::Normal,
+                    }],
+                    ..Default::default()
+                },
+                &target,
+            )
+            .unwrap();
+        target
+    };
+    let red = compose(&first_gpu, [1.0, 0.0, 0.0, 1.0]);
+    timeline
+        .present_texture(Arc::clone(red.texture()), Arc::clone(red.gpu()))
+        .unwrap();
+    parent.until(
+        "source and composed frame",
+        &[
+            ((140, 110), source_color),
+            ((440, 110), [255, 0, 0]),
+            ((440, 22), [0, 0, 0]),
+        ],
+    );
+    let replacement = gpu();
+    timeline.use_gpu(Arc::clone(&replacement));
+    parent.until(
+        "old texture cleared on a new device",
+        &[((140, 110), source_color), ((440, 110), [0, 0, 0])],
+    );
+    assert!(matches!(
+        timeline.present_texture(Arc::clone(red.texture()), Arc::clone(red.gpu())),
+        Err(ViewError::Gpu(_))
+    ));
+    let green = compose(&replacement, [0.0, 1.0, 0.0, 1.0]);
+    timeline
+        .present_texture(Arc::clone(green.texture()), Arc::clone(green.gpu()))
+        .unwrap();
+    parent.until(
+        "recomposed on the replacement device",
+        &[((140, 110), source_color), ((440, 110), [0, 255, 0])],
+    );
+    timeline.clear();
+    parent.until(
+        "composed frame cleared",
+        &[((140, 110), source_color), ((440, 110), [0, 0, 0])],
+    );
+}
+
+/// What the view says it shows, once its drawer has found it.
+fn display_of(view: &View) -> columbina_view::Display {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(display) = view.display() {
+            return display;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the view says nothing of its display"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Run by hand: what the monitor that a window is on says of HDR, as the view reads it, and the
+/// surface it chooses with HDR allowed and not. It changes nothing of the system.
+#[test]
+#[ignore = "needs a desktop: run with --ignored --nocapture, and read what it says"]
+fn the_view_reports_the_hdr_of_its_monitor() {
+    use columbina_view::{Content, HdrTransfer, Output};
+    columbina_view::prepare_process();
+    let parent = Parent::open(200, 200, 480, 270);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let report = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: Event| events.lock().unwrap().push(event))
+    };
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 480,
+        height: 270,
+    };
+    let view =
+        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
+    let (picture, _) = solid(64, 36, [180, 128, 128]);
+    view.present(picture, 0);
+    let allowed = display_of(&view);
+    eprintln!("monitor: {:?}", allowed.monitor);
+    eprintln!("HDR allowed: {:?}", allowed.output);
+    let hdr_on = allowed.monitor.is_some_and(|monitor| monitor.hdr);
+    assert_eq!(matches!(allowed.output, Output::Hdr { .. }), hdr_on);
+
+    // Not allowed: SDR, whatever the monitor.
+    view.allow_hdr(false);
+    let deadline = Instant::now() + WAIT;
+    while view.display().map(|display| display.output) != Some(Output::Sdr) {
+        assert!(Instant::now() < deadline, "{:?}", view.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    eprintln!(
+        "HDR not allowed: {:?}",
+        view.display().map(|display| display.output)
+    );
+
+    // HDR content, allowed again: drawn, and nothing reported wrong.
+    view.allow_hdr(true);
+    view.set_content(Content::Hdr {
+        transfer: HdrTransfer::Pq,
+        peak_nits: 1000.0,
+    });
+    let presented = view.presented();
+    let deadline = Instant::now() + WAIT;
+    while view.presented() == presented {
+        assert!(Instant::now() < deadline, "not drawn again");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let events = events.lock().unwrap().clone();
+    for event in &events {
+        eprintln!("event: {event:?}");
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Error { .. })),
+        "{events:?}"
+    );
+    drop(view);
+    drop(parent);
 }

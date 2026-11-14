@@ -1,0 +1,27 @@
+[package]
+name = "columbina-lut"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The digest that a LUT is cached by.
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+# A card of its own for the test of the WGSL against the reference on the processor; the crate
+# itself makes no use of a card.
+pollster.workspace = true
+wgpu.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+wgpu = { workspace = true, features = ["dx12"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+wgpu = { workspace = true, features = ["metal"] }

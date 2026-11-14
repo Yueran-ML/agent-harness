@@ -23,11 +23,23 @@ beginning changed since, as a summary changes it, the service refuses the
 request. A config may ask it to leave such thinking out instead, which a beta
 of the service does: the reply then goes on without that thinking.
 
-**The cache.** Every request asks the service to cache the conversation up to
-its last block, which it does once the prompt is long enough. A request that
-begins as the one before it did reads that beginning from the cache, at a
-fraction of the price. A change of how hard the model thinks starts the cache
-over.
+**The cache.** The service reads a request as the tools, the instructions and
+then the conversation, and a request that begins as one before it did reads
+that beginning from the cache, at a fraction of the price. Every request asks
+for two breakpoints of the cache, each for as long as the config says. One is
+put on the last block of the instructions, or on the last tool where there
+are no instructions, and the other one moves to the last block of the
+conversation. A prompt shorter than the least that the model caches is not
+cached at all.
+
+The instructions are the same at every level of effort, and so are the tools.
+A request that asks for another effort than the one before keeps nothing of
+the conversation from the cache: the service puts the thinking that it is
+asked for into the prompt, and that changes what follows. The tools and the
+instructions are read from the cache by the first breakpoint, where the model
+puts the thinking after them, which the service says depends on the model. The
+same goes for any other change of the conversation, such as a summary that
+takes the place of its beginning.
 
 **How hard the model thinks.** The ``reasoning`` of a call is sent as the
 effort of the request. Nothing is sent without one, and the default of the
@@ -383,17 +395,27 @@ def build_body(request: LlmRequest, config: Config) -> dict[str, JsonValue]:
         for message in request.messages
         if isinstance(message, SystemMessage)
     )
-    if system:
-        body["system"] = system
+    # The tools and the instructions come before the conversation, and they end where the
+    # beginning that is the same from one request to the next ends.
+    stable: list[dict[str, JsonValue]] = []
     if request.tools:
-        body["tools"] = [
+        tools: list[dict[str, JsonValue]] = [
             {"name": tool.name, "description": tool.description, "input_schema": tool.parameters}
             for tool in request.tools
         ]
+        body["tools"] = cast("list[JsonValue]", tools)
+        stable = tools
+    if system:
+        stable = [{"type": "text", "text": system}]
+        body["system"] = cast("list[JsonValue]", stable)
     if config.cache != "off":
         control: dict[str, JsonValue] = {"type": "ephemeral"}
         if config.cache == "1h":
             control["ttl"] = "1h"
+        # One breakpoint at the end of the tools and the instructions, which a change of the
+        # conversation or of the thinking leaves, and one that moves to its last block.
+        if stable:
+            stable[-1]["cache_control"] = dict(control)
         body["cache_control"] = control
     if call.reasoning is not None:
         body["output_config"] = {"effort": _EFFORT[call.reasoning]}

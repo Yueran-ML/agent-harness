@@ -22,12 +22,13 @@
 //!   thread that stopped taking messages would stop the app's input: this one only ever takes
 //!   them. It moves, shows and hides the window when the other threads ask it to with a posted
 //!   message; no other thread touches the window, and no one waits for this one.
-//! - **the drawer's**, which owns the graphics card (an `Instance`, `Adapter`, `Device` and the
-//!   `Surface` of the window) and draws when there is something new to draw: a picture, a new
+//! - **the drawer's**, which owns the `Surface` of the window, made on the engine's one graphics
+//!   card ([`Gpu`], shared with the compositor), and draws when there is something new to draw: a picture, a new
 //!   size, the window shown again or uncovered (`WM_PAINT`). It never draws on a clock, so an idle
 //!   view takes no time at all, and a playing one is drawn as often as pictures come, at the rate
 //!   of the media (pictures that come faster than it draws are skipped: the newest wins). It
-//!   draws with v-sync (`Fifo`), one frame queued at most.
+//!   draws with v-sync (`Fifo`), one frame queued at most. While HDR is allowed, it wakes once a
+//!   second to read the monitor of the window again, and draws only if that changed.
 //! - **the watchdog's**, which sleeps until a frame is begun. If a frame (uploading the picture,
 //!   taking an image of the window, drawing, presenting it) takes more than [`STALL`] (1 s), as
 //!   when the card hangs or a driver resets, the window is hidden, so that the page beneath it
@@ -38,21 +39,36 @@
 //! # The card failing
 //!
 //! A surface that is outdated (the window changed) is configured again; one that is lost is made
-//! again ([`Event::SurfaceLost`]). A device that is lost (a driver reset, the card removed) is
-//! made again, with all that was on it, from a new adapter, and the last picture is drawn again
-//! ([`Event::DeviceLost`]); if no device can be made, it is tried again a second later, and
-//! then at most once a second while there is something to draw (pictures that come meanwhile
-//! only take the place of the last one), and reported at most every 30 s. A frame that is not shown because the window is covered or the
+//! again ([`Event::SurfaceLost`]). The card is the engine's, not the view's: a device that is
+//! lost (a driver reset, the card removed) is reported ([`Event::DeviceLost`]), and the view
+//! draws nothing until its owner, who makes the engine's [`Gpu`] again, gives it the new one
+//! ([`View::use_gpu`]); then the surface is made again on it, with all that was on the old one,
+//! and the last picture is drawn again ([`Event::Ready`]). If the new card cannot draw in the
+//! window, it is tried again a second later, and then at most once a second while there is
+//! something to draw (pictures that come meanwhile only take the place of the last one), and
+//! reported at most every 30 s. A frame that is not shown because the window is covered or the
 //! card is slow to give an image is tried again a few times, 50 ms apart, then left until the
 //! next thing to draw. Nothing of this is an error of the caller's.
 //!
 //! # Colour
 //!
-//! A picture is NV12 or P010 ([`Picture`]), taken as BT.709 of limited range (phase 0: colour
-//! is managed in phase 2), turned into R'G'B' as it is drawn, and written as it is, its gamma
+//! A picture is a [`NativePicture`], in the sampling of chroma of its file (4:2:0 as NV12 or
+//! P010, 4:2:2 and 4:4:4 in 16 bits, every sample of chroma kept), turned into R'G'B' as it is
+//! drawn by the matrix and range that it says ([`columbina_compose::YuvCoding::of_native`]): as
+//! the compositor decodes it as a layer of a timeline and of an export, so that a clip looks the
+//! same in the source monitor and in the timeline monitor. It is written as it is, its gamma
 //! kept, to a surface that is not sRGB (`Bgra8Unorm`), so that it is not encoded twice. Pixels
 //! are taken as square. A picture is fitted into the window, turned as its media says, its shape
 //! kept, and centred, with black bars ([`letterbox`]).
+//!
+//! Where Windows has HDR on for the monitor that the window is on, and the view is allowed HDR
+//! ([`View::allow_hdr`], "Display HDR On Viewers If Available", RM20 p244, allowed unless told
+//! otherwise), the surface is one of half floats in scRGB, and the picture is mapped onto it:
+//! SDR with its white on the white of SDR that Windows has, so that it looks as it does with
+//! HDR off; HDR content ([`View::set_content`]) in nits, rolled off to the peak of the monitor.
+//! The monitor is followed as the window moves, and as HDR or the brightness of SDR is changed,
+//! within a second ([`display`] has how). Where HDR is off or not allowed, and the content is
+//! SDR (as it is unless told otherwise), the picture is drawn as it always was, bit for bit.
 //!
 //! # Platforms
 //!
@@ -62,6 +78,9 @@
 //! it: a window that only answers `HTTRANSPARENT` to hit tests lets through the input of its own
 //! thread, not the real input of the user. The process is made aware of the DPI of each monitor
 //! ([`prepare_process`]), as Electron is, so that rectangles are in device pixels on both sides.
+//! While it is asked to take the pointer ([`View::take_pointer`]), for a tool of the page used on
+//! the picture, it is enabled and answers `HTCLIENT`, so that the mouse over it is its own, and it
+//! reports what the mouse does there ([`Event::Pointer`], see [`mod@pointer`]).
 //!
 //! On **macOS** the view is not available yet: [`View::attach`] fails at once with
 //! [`ViewError::Unsupported`], touching nothing of `AppKit` (why, and what it would take, is in
@@ -76,8 +95,12 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+pub mod display;
+pub mod pointer;
 mod render;
 mod screen;
+mod viewport;
+pub mod window_overlay;
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -90,8 +113,13 @@ mod native_none;
 #[cfg(not(windows))]
 use native_none as native;
 
-pub use columbina_media::Picture;
+pub use columbina_compose::Gpu;
+use columbina_compose::Watch;
+pub use columbina_media::{NativePicture, Picture};
+pub use display::{Content, Display, HdrTransfer, Monitor, Output};
+pub use pointer::{Button, Pointer, PointerKind};
 pub use render::{letterbox, quarter_turns, Placement};
+pub use viewport::{Navigation, Presentation, Viewport, ViewportMap};
 
 /// How long a frame may take before the window is hidden.
 pub const STALL: Duration = Duration::from_secs(1);
@@ -170,6 +198,9 @@ pub enum ViewError {
     /// The rectangle is not one that a view can have.
     #[error("{0}")]
     Rect(String),
+    /// The viewport cannot be represented by the drawing coordinates.
+    #[error("{0}")]
+    Viewport(String),
     /// The window could not be made.
     #[error("the window of the view cannot be made: {0}")]
     Window(String),
@@ -191,6 +222,7 @@ impl ViewError {
         match self {
             ViewError::Parent(_) => "parent",
             ViewError::Rect(_) => "rect",
+            ViewError::Viewport(_) => "viewport",
             ViewError::Window(_) => "window",
             ViewError::Gpu(_) => "gpu",
             ViewError::Gone => "gone",
@@ -199,11 +231,13 @@ impl ViewError {
     }
 }
 
-/// What happened to a view, as it is reported to whoever made it, for its log.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What happened to a view, as it is reported to whoever made it: for its log, and what the
+/// pointer did on it, where it is asked to take it.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// The graphics card is ready to draw: the name of its adapter and of the API, and how the
-    /// process is aware of the DPI of monitors (`per_monitor_v2` on Windows, as it must be).
+    /// The graphics card is ready to draw in the window, at first and on each card given since:
+    /// the name of its adapter and of the API, and how the process is aware of the DPI of
+    /// monitors (`per_monitor_v2` on Windows, as it must be).
     Ready {
         adapter: String,
         backend: String,
@@ -213,13 +247,46 @@ pub enum Event {
     Stalled,
     /// The frame that stalled returned, after so many milliseconds.
     Recovered { millis: u64 },
-    /// The device was lost, and is made again.
+    /// The device of the card that the view draws with was lost: the view draws again once it
+    /// is given another ([`View::use_gpu`]).
     DeviceLost { message: String },
     /// The surface of the window was lost, and is made again.
     SurfaceLost,
+    /// The native window was destroyed. Emitted once, after releasing the view state lock.
+    Gone,
+    /// Internal successful-present wakeup; emitted only after releasing Shared.
+    Presented(Presentation),
+    /// What the view shows changed, as the monitor or the view was set: whether Windows has HDR
+    /// on for the monitor of the window, whether the view shows HDR, and the peak and white of
+    /// SDR of the monitor, in nits, where it says them (rounded; [`View::display`] has them as
+    /// they were read).
+    Display {
+        hdr_on: bool,
+        hdr_shown: bool,
+        peak_nits: Option<u32>,
+        sdr_white_nits: Option<u32>,
+    },
     /// Something went wrong that the view goes on from: a picture that cannot be drawn, an
     /// error of the card.
     Error { message: String },
+    /// The pointer did something on the view, which takes it ([`View::take_pointer`]).
+    Pointer(Pointer),
+}
+
+/// The cursor that a view that takes the pointer shows over itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cursor {
+    /// The arrow.
+    #[default]
+    Arrow,
+    /// A cross, to pick a colour.
+    Crosshair,
+    /// Arrows four ways, to move a thing.
+    Move,
+    /// Arrows left and right.
+    ResizeEw,
+    /// Arrows up and down.
+    ResizeNs,
 }
 
 /// What reports the [`Event`]s of a view. It is called on the view's threads, and must not
@@ -237,8 +304,19 @@ pub fn prepare_process() {
 /// A picture to draw, as the caller last asked.
 enum Pending {
     Nothing,
-    Picture(Arc<Picture>, i16),
+    Frame(Frame),
     Clear,
+}
+
+enum Frame {
+    Picture(Arc<NativePicture>, i16, Option<u64>),
+    /// The device identity prevents recovery from binding an old texture to a new device.
+    Texture {
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+        tag: Option<u64>,
+        overlay: Option<Arc<window_overlay::WindowOverlay>>,
+    },
 }
 
 /// What the threads of a view share.
@@ -259,6 +337,10 @@ pub(crate) struct Shared {
 pub(crate) struct State {
     /// The picture to draw next, if a new one was asked for.
     pending: Pending,
+    /// Oriented dimensions of the latest submitted picture, retained when the drawer takes
+    /// Pending into an in-flight job. Clear means no next picture. Device replacement keeps
+    /// this evidence because a CPU picture may be uploaded again without a new submission.
+    submitted_picture: Option<(u32, u32)>,
     /// Where the caller wants the window.
     rect: Rect,
     /// Whether the caller wants the window shown.
@@ -283,6 +365,22 @@ pub(crate) struct State {
     busy_since: Option<Instant>,
     /// How many frames were presented.
     presented: u64,
+    /// The card to draw with, the last one given.
+    gpu: Arc<Gpu>,
+    /// Tells the view when that card is lost.
+    gpu_watch: Option<Watch>,
+    /// Whether the view may show HDR, where the monitor has it on.
+    hdr_allowed: bool,
+    /// What the pictures given hold.
+    content: Content,
+    /// What the view shows, as its drawer last found.
+    display: Option<Display>,
+    /// Requested geometry, captured by the drawer with each job.
+    viewport: Viewport,
+    /// Geometry and identity of the last successful presentation, never of a pending frame.
+    presentation: Option<Presentation>,
+    /// Whether it takes the pointer, and the cursor that it shows then.
+    pointer: Option<Cursor>,
 }
 
 impl State {
@@ -296,6 +394,19 @@ impl State {
         self.rect
     }
 
+    /// Whether it takes the pointer, and the cursor that it shows then.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn pointer(&self) -> Option<Cursor> {
+        self.pointer
+    }
+
+    /// Where a point of the window is on the frame drawn, and whether it is on it.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn on_picture(&self, point: (i32, i32)) -> Option<((f64, f64), bool)> {
+        let map = self.presentation?.map?;
+        (self.size == map.surface).then(|| map.on_picture(point))
+    }
+
     /// The window has been given the size of its rectangle by its thread.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn sized(&mut self, size: (u32, u32)) {
@@ -305,10 +416,11 @@ impl State {
 }
 
 impl Shared {
-    fn new(rect: Rect, report: Report) -> Self {
+    fn new(rect: Rect, gpu: Arc<Gpu>, report: Report) -> Self {
         Self {
             state: Mutex::new(State {
                 pending: Pending::Nothing,
+                submitted_picture: None,
                 rect,
                 shown: true,
                 stalled: false,
@@ -321,6 +433,14 @@ impl Shared {
                 odd_rotation: None,
                 busy_since: None,
                 presented: 0,
+                gpu,
+                gpu_watch: None,
+                hdr_allowed: true,
+                content: Content::Sdr,
+                display: None,
+                viewport: Viewport::Fit,
+                presentation: None,
+                pointer: None,
             }),
             wake: Condvar::new(),
             watch: Condvar::new(),
@@ -350,8 +470,36 @@ impl Shared {
     /// The window was destroyed, by its parent or by the view.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn window_gone(&self) {
-        self.change(|state| state.gone = true);
+        let first = {
+            let mut state = self.lock();
+            let first = !state.gone;
+            state.gone = true;
+            state.presentation = None;
+            state.submitted_picture = None;
+            first
+        };
+        self.wake.notify_all();
         self.watch.notify_all();
+        if first {
+            self.report(Event::Gone);
+        }
+    }
+
+    /// Publish only after present returned, using that job's map and device. A device change
+    /// or window destruction during drawing must not resurrect an invalidated presentation.
+    fn presented(&self, gpu: &Arc<Gpu>, tag: Option<u64>, map: Option<ViewportMap>) {
+        let mut state = self.lock();
+        state.presented += 1;
+        if !state.gone && !gpu.is_lost() && Arc::ptr_eq(&state.gpu, gpu) {
+            state.presentation = Some(Presentation {
+                serial: state.presented,
+                tag,
+                map,
+            });
+            let shown = state.presentation.expect("set above");
+            drop(state);
+            self.report(Event::Presented(shown));
+        }
     }
 
     pub(crate) fn report(&self, event: Event) {
@@ -403,16 +551,16 @@ pub struct View {
 }
 
 impl View {
-    /// Make a view in `parent`, at `rect` of its client area, and make the graphics card ready
-    /// to draw in it; it is shown, black. This waits for the window to be made, by a thread of
-    /// the view, and for the card, which takes some 100 ms: call it where blocking is allowed.
+    /// Make a view in `parent`, at `rect` of its client area, and make `gpu`, the engine's
+    /// graphics card, ready to draw in it; it is shown, black. This waits for the window to be
+    /// made, by a thread of the view, and for its surface: call it where blocking is allowed.
     ///
     /// # Errors
     /// The parent is not a window of this platform ([`ViewError::Parent`],
-    /// [`ViewError::Unsupported`]), the rectangle is too large, the window cannot be made, or no
-    /// graphics card can draw in it ([`ViewError::Gpu`]).
-    pub fn attach(parent: RawParent, rect: Rect) -> Result<View, ViewError> {
-        Self::attach_reporting(parent, rect, Arc::new(|_| {}))
+    /// [`ViewError::Unsupported`]), the rectangle is too large, the window cannot be made, or the
+    /// card cannot draw in it ([`ViewError::Gpu`]).
+    pub fn attach(parent: RawParent, rect: Rect, gpu: Arc<Gpu>) -> Result<View, ViewError> {
+        Self::attach_reporting(parent, rect, gpu, Arc::new(|_| {}))
     }
 
     /// As [`View::attach`], reporting what happens to the view to `report`.
@@ -422,11 +570,31 @@ impl View {
     pub fn attach_reporting(
         parent: RawParent,
         rect: Rect,
+        gpu: Arc<Gpu>,
         report: Report,
+    ) -> Result<View, ViewError> {
+        Self::attach_with_hdr(parent, rect, gpu, report, true)
+    }
+
+    /// As [`View::attach_reporting`], allowed HDR or not from its first frame
+    /// ([`View::allow_hdr`]).
+    ///
+    /// # Errors
+    /// As [`View::attach`].
+    pub fn attach_with_hdr(
+        parent: RawParent,
+        rect: Rect,
+        gpu: Arc<Gpu>,
+        report: Report,
+        hdr_allowed: bool,
     ) -> Result<View, ViewError> {
         let rect = rect.checked()?;
         prepare_process();
-        let shared = Arc::new(Shared::new(rect, report));
+        let shared = Arc::new(Shared::new(rect, Arc::clone(&gpu), report));
+        shared.lock().hdr_allowed = hdr_allowed;
+        let watch = watch_gpu(&shared, &gpu);
+        shared.lock().gpu_watch = Some(watch);
+        drop(gpu);
         let native = native::Native::open(parent, rect, &shared)?;
         let syncer = native.syncer();
         let (ready, readied) = mpsc::channel();
@@ -515,7 +683,16 @@ impl View {
     /// picture that comes before the last one was drawn takes its place. The view keeps the
     /// picture it drew last, to draw it again as the window changes, until the next one or
     /// [`View::clear`].
-    pub fn present(&self, picture: Arc<Picture>, rotation: i16) {
+    pub fn present(&self, picture: Arc<NativePicture>, rotation: i16) {
+        self.present_picture(picture, rotation, None);
+    }
+
+    /// As [`View::present`], carrying an opaque producer frame identity through redraws.
+    pub fn present_tagged(&self, picture: Arc<NativePicture>, rotation: i16, tag: u64) {
+        self.present_picture(picture, rotation, Some(tag));
+    }
+
+    fn present_picture(&self, picture: Arc<NativePicture>, rotation: i16, tag: Option<u64>) {
         let mut odd = None;
         self.shared.change(|state| {
             if rotation.rem_euclid(90) == 0 {
@@ -524,7 +701,12 @@ impl View {
                 state.odd_rotation = Some(rotation);
                 odd = Some(rotation);
             }
-            state.pending = Pending::Picture(picture, rotation);
+            state.submitted_picture = Some(if quarter_turns(rotation) % 2 == 1 {
+                (picture.height, picture.width)
+            } else {
+                (picture.width, picture.height)
+            });
+            state.pending = Pending::Frame(Frame::Picture(picture, rotation, tag));
             state.dirty = true;
         });
         if let Some(rotation) = odd {
@@ -536,6 +718,80 @@ impl View {
         }
     }
 
+    /// Present an already composed, gamma-encoded RGBA frame from the engine's shared GPU,
+    /// fitted with black bars. Composition must be submitted before this call. Keep the
+    /// texture's contents unchanged while the view holds it; use another target for the next
+    /// frame. The view holds its own reference until replacement or clearing.
+    ///
+    /// # Errors
+    /// The window is gone, or `gpu` is not the view's current device (including recovery from
+    /// device loss). The caller must recompose on the replacement device before retrying.
+    pub fn present_texture(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+    ) -> Result<(), ViewError> {
+        self.present_rgb(texture, gpu, None, None)
+    }
+
+    /// As [`View::present_texture`], carrying an opaque producer frame identity.
+    ///
+    /// # Errors
+    /// As for [`View::present_texture`].
+    pub fn present_texture_tagged(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+        tag: u64,
+    ) -> Result<(), ViewError> {
+        self.present_rgb(texture, gpu, Some(tag), None)
+    }
+
+    /// Submit one composed frame with its evaluated Window controls. The overlay shares the
+    /// texture's lifetime and producer tag; it is drawn only on the final display surface.
+    /// `None` suppresses Window OSC (for example when Image Wipe or Split owns the view).
+    ///
+    /// # Errors
+    /// As for [`View::present_texture`].
+    pub fn present_texture_overlay(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+        tag: u64,
+        overlay: Option<Arc<window_overlay::WindowOverlay>>,
+    ) -> Result<(), ViewError> {
+        self.present_rgb(texture, gpu, Some(tag), overlay)
+    }
+
+    fn present_rgb(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+        tag: Option<u64>,
+        overlay: Option<Arc<window_overlay::WindowOverlay>>,
+    ) -> Result<(), ViewError> {
+        let mut state = self.shared.lock();
+        if state.gone {
+            return Err(ViewError::Gone);
+        }
+        if !Arc::ptr_eq(&state.gpu, &gpu) || gpu.is_lost() {
+            return Err(ViewError::Gpu(
+                "the composed frame is not on the view's current device".into(),
+            ));
+        }
+        state.submitted_picture = Some((texture.width(), texture.height()));
+        state.pending = Pending::Frame(Frame::Texture {
+            texture,
+            gpu,
+            tag,
+            overlay,
+        });
+        state.dirty = true;
+        drop(state);
+        self.shared.wake.notify_all();
+        Ok(())
+    }
+
     /// Whether the window of the view was destroyed, with its parent: then nothing more is
     /// drawn, [`View::place`] and [`View::show`] fail with [`ViewError::Gone`], and the view is
     /// to be let go and attached again.
@@ -544,15 +800,91 @@ impl View {
         self.shared.lock().gone
     }
 
+    /// Draw with `gpu` from now on: the card that the engine made in place of one that was
+    /// lost ([`Event::DeviceLost`]). The surface is made again on it, and the last picture drawn
+    /// again, as the view is next drawn. It returns at once; a card that is the one the view
+    /// draws with already changes nothing.
+    pub fn use_gpu(&self, gpu: Arc<Gpu>) {
+        if Arc::ptr_eq(&self.shared.lock().gpu, &gpu) {
+            return;
+        }
+        // Watched before it is given, unlocked: one that is lost already is reported at once.
+        let watch = watch_gpu(&self.shared, &gpu);
+        let old = {
+            let mut state = self.shared.lock();
+            state.gpu = gpu;
+            state.presentation = None;
+            state.dirty = true;
+            state.gpu_watch.replace(watch)
+        };
+        drop(old);
+        self.shared.wake.notify_all();
+    }
+
+    /// The card that the view draws with, the last one given.
+    #[must_use]
+    pub fn gpu(&self) -> Arc<Gpu> {
+        Arc::clone(&self.shared.lock().gpu)
+    }
+
     /// Draw black, and let the last picture go.
     pub fn clear(&self) {
         self.shared.change(|state| {
             state.pending = Pending::Clear;
+            state.submitted_picture = None;
             state.dirty = true;
         });
     }
 
-    /// The name of the graphics adapter that draws.
+    /// Take the pointer, showing `cursor` over the view, or let it go (none), as it is at first.
+    /// While it takes it, the mouse over the view is the view's, not the page's beneath it, and
+    /// what it does there is reported ([`Event::Pointer`]). It returns at once; the window's thread
+    /// enables or disables the window.
+    ///
+    /// # Errors
+    /// The window was destroyed with its parent.
+    pub fn take_pointer(&self, cursor: Option<Cursor>) -> Result<(), ViewError> {
+        self.alive(|state| state.pointer = cursor)
+    }
+
+    /// Whether the view takes the pointer, and the cursor that it shows then.
+    #[must_use]
+    pub fn pointer(&self) -> Option<Cursor> {
+        self.shared.lock().pointer
+    }
+
+    /// Allow the view to show HDR where Windows has HDR on for the monitor that its window is on,
+    /// or keep it to SDR ("Display HDR On Viewers If Available", RM20 p244). Allowed unless told
+    /// otherwise. It returns at once; the picture is drawn again as it is to be shown.
+    pub fn allow_hdr(&self, allowed: bool) {
+        self.shared.change(|state| {
+            if state.hdr_allowed != allowed {
+                state.hdr_allowed = allowed;
+                state.dirty = true;
+            }
+        });
+    }
+
+    /// Say what the pictures given to the view hold: SDR (as unless told otherwise), or HDR of a
+    /// transfer and peak, so that they are mapped onto the monitor as they are to be. It returns
+    /// at once; the picture is drawn again.
+    pub fn set_content(&self, content: Content) {
+        self.shared.change(|state| {
+            if state.content != content {
+                state.content = content;
+                state.dirty = true;
+            }
+        });
+    }
+
+    /// What the view shows, and what the monitor of its window said of itself, as the drawer last
+    /// found as it drew: none before its first frame.
+    #[must_use]
+    pub fn display(&self) -> Option<Display> {
+        self.shared.lock().display
+    }
+
+    /// The name of the graphics adapter that the view was made with.
     #[must_use]
     pub fn adapter(&self) -> &str {
         &self.adapter
@@ -577,7 +909,67 @@ impl View {
         self.shared.lock().presented
     }
 
-    /// Lose the device, as a driver reset would: for the tests, which see it made again.
+    /// The last successful presentation; none before the first, or after surface invalidation.
+    #[must_use]
+    pub fn presentation(&self) -> Option<Presentation> {
+        self.shared.lock().presentation
+    }
+
+    /// Prepare or accept navigation while checking the actual surface and successful map
+    /// under the same state lock. Returning a setting acknowledges the request, not a present.
+    ///
+    /// # Errors
+    /// A lost window, absent/stale presentation, changed pan dimensions, or invalid input.
+    pub fn navigate(
+        &self,
+        operation: Option<Navigation>,
+    ) -> Result<(Viewport, ViewportMap), ViewError> {
+        let mut state = self.shared.lock();
+        if state.gone {
+            return Err(ViewError::Gone);
+        }
+        let shown = state
+            .presentation
+            .and_then(|p| p.map)
+            .filter(|map| {
+                map.surface == state.size && map.surface == (state.rect.width, state.rect.height)
+                    && state.submitted_picture == Some(map.picture)
+            })
+            .ok_or_else(|| {
+                ViewError::Viewport(
+                    "navigation needs a successful map of the current surface and submitted picture".into(),
+                )
+            })?;
+        if let Some(operation) = operation {
+            state.viewport = operation
+                .apply(state.viewport, shown)
+                .map_err(|message| ViewError::Viewport(message.into()))?;
+            state.dirty = true;
+        }
+        let requested = state.viewport;
+        drop(state);
+        if operation.is_some() {
+            self.shared.wake.notify_all();
+        }
+        Ok((requested, shown))
+    }
+
+    /// Change only the viewer geometry. The old map remains current until the redraw presents.
+    ///
+    /// # Errors
+    /// Invalid numeric geometry, or a window that has gone.
+    pub fn set_viewport(&self, viewport: Viewport) -> Result<(), ViewError> {
+        let viewport = viewport
+            .checked()
+            .map_err(|message| ViewError::Viewport(message.into()))?;
+        self.alive(|state| {
+            state.viewport = viewport;
+            state.dirty = true;
+        })
+    }
+
+    /// Lose the device of the card that the view draws with, as a driver reset would: for the
+    /// tests, which see it reported, give the view another card, and see it draw again.
     #[cfg(feature = "test-hooks")]
     pub fn lose_device(&self) {
         self.shared.change(|state| {
@@ -647,6 +1039,27 @@ fn watchdog(shared: &Shared, syncer: &native::Syncer) {
     }
 }
 
+/// Report [`Event::DeviceLost`] once `gpu`, given to the view, is lost (at once, if it is lost
+/// already), and wake the drawer, to let the surface on it go.
+fn watch_gpu(shared: &Arc<Shared>, gpu: &Gpu) -> Watch {
+    let shared = Arc::downgrade(shared);
+    gpu.when_lost(move |why: &str| {
+        if let Some(shared) = shared.upgrade() {
+            // Clear before the reporter can supply a replacement device. A late callback
+            // from the previous device must not erase a healthy device's presentation.
+            shared.change(|state| {
+                state.dirty = true;
+                if state.gpu.is_lost() {
+                    state.presentation = None;
+                }
+            });
+            shared.report(Event::DeviceLost {
+                message: why.to_owned(),
+            });
+        }
+    })
+}
+
 /// A frame is begun: the watchdog watches it.
 pub(crate) fn frame_begun(shared: &Shared) {
     shared.lock().busy_since = Some(Instant::now());
@@ -655,12 +1068,9 @@ pub(crate) fn frame_begun(shared: &Shared) {
 
 /// A frame has ended, presented or not: a window that the watchdog hid is shown again, if it is
 /// meant to be, and drawn.
-pub(crate) fn frame_ended(shared: &Shared, syncer: &native::Syncer, presented: bool) {
+pub(crate) fn frame_ended(shared: &Shared, syncer: &native::Syncer) {
     let mut state = shared.lock();
     let since = state.busy_since.take();
-    if presented {
-        state.presented += 1;
-    }
     let recovered = state.stalled;
     if recovered {
         state.stalled = false;
@@ -681,6 +1091,100 @@ pub(crate) fn frame_ended(shared: &Shared, syncer: &native::Syncer, presented: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gone_is_reported_once_and_without_the_view_state_lock() {
+        let Some(gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let shared = Arc::new_cyclic(|weak: &std::sync::Weak<Shared>| {
+            let weak = weak.clone();
+            let count = Arc::clone(&count);
+            Shared::new(
+                Rect::default(),
+                Arc::clone(&gpu),
+                Arc::new(move |event| {
+                    if matches!(event, Event::Gone) {
+                        let shared = weak.upgrade().unwrap();
+                        let state = shared
+                            .state
+                            .try_lock()
+                            .expect("Gone callback can reenter the view");
+                        assert!(state.gone);
+                        assert!(state.presentation.is_none());
+                        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }),
+            )
+        });
+        shared.window_gone();
+        shared.window_gone();
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_lost_or_replaced_device_cannot_publish_a_presentation_from_its_old_job() {
+        let Some(old_gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let new_gpu = Gpu::new(columbina_compose::Preference::HighPerformance).unwrap();
+        let shared = Arc::new(Shared::new(
+            Rect::default(),
+            Arc::clone(&old_gpu),
+            Arc::new(|_| {}),
+        ));
+        let map = Viewport::Fit.map((100, 100), (100, 50), 0);
+        shared.presented(&old_gpu, Some(1), map);
+        {
+            let mut state = shared.lock();
+            state.gpu = Arc::clone(&new_gpu);
+            state.presentation = None;
+        }
+        shared.presented(&old_gpu, Some(2), map);
+        assert!(shared.lock().presentation.is_none());
+        let _watch = watch_gpu(&shared, &new_gpu);
+        shared.presented(&new_gpu, Some(3), map);
+        assert_eq!(shared.lock().presentation.unwrap().tag, Some(3));
+        new_gpu.mark_lost("presentation regression test");
+        assert!(shared.lock().presentation.is_none());
+        shared.presented(&new_gpu, Some(4), map);
+        assert!(shared.lock().presentation.is_none());
+    }
+
+    #[test]
+    fn only_a_successful_presentation_publishes_its_geometry_and_old_jobs_cannot_restore_a_gone_surface(
+    ) {
+        let Some(gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let shared = Shared::new(Rect::default(), Arc::clone(&gpu), Arc::new(|_| {}));
+        let old = Viewport::Fit.map((100, 100), (100, 50), 0).unwrap();
+        shared.lock().sized((100, 100));
+        assert!(shared.lock().on_picture((0, 25)).is_none());
+        shared.presented(&gpu, Some(7), Some(old));
+        let first = shared.lock().presentation.unwrap();
+        {
+            let mut state = shared.lock();
+            state.viewport = Viewport::Scale {
+                scale: 3.0,
+                center: [0.0, 0.0],
+            };
+            state.pending = Pending::Clear;
+            assert_eq!(state.presentation, Some(first));
+            assert_eq!(state.on_picture((0, 25)), Some(((0.5, 0.5), true)));
+            state.sized((101, 100));
+            assert!(state.on_picture((0, 25)).is_none());
+        }
+        let next = Viewport::Fit.map((101, 100), (50, 100), 0).unwrap();
+        shared.presented(&gpu, Some(8), Some(next));
+        assert_eq!(shared.lock().presentation.unwrap().tag, Some(8));
+        shared.presented(&gpu, None, None);
+        assert!(shared.lock().presentation.unwrap().map.is_none());
+        shared.window_gone();
+        shared.presented(&gpu, Some(7), Some(old));
+        assert!(shared.lock().presentation.is_none());
+    }
 
     #[test]
     fn a_parent_is_read_in_decimal_as_this_platform_has_it() {

@@ -1,0 +1,27 @@
+[package]
+name = "columbina-stretch"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+build = "build.rs"
+links = "columbina_stretch_shim"
+
+[lints]
+workspace = true
+
+[features]
+# For the tests: the allocation functions of C++ replaced by ones that count what each thread
+# takes and gives back while it is armed (`allocations`), so that a test sees that the stretch takes
+# no memory where the sound is made. Never for the engine itself.
+count-allocations = []
+
+[dependencies]
+thiserror.workspace = true
+
+[build-dependencies]
+# The shim of C++ between Signalsmith Stretch and Rust (src/shim.cpp).
+cc = "1.2"
+
+[dev-dependencies]
+# The crate itself with the count of the allocations of C++, for the tests in tests/.
+columbina-stretch = { path = ".", features = ["count-allocations"] }

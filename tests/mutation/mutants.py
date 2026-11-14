@@ -19,7 +19,10 @@ only of the sources of context. Nothing asks for the others. A fifth: letting th
 library that renders the lines of a conversation read markup. It reads markup in
 plain strings only, and the lines that it is handed are no plain strings. A sixth:
 an adapter that says that a reply stopped where it calls tools, or the other way
-round. The model service goes by what the reply holds.
+round. The model service goes by what the reply holds. A seventh: telling the agent that the
+team of ultra is over where the last word of that source that the model sees says so already.
+A summary takes the oldest part of a conversation, so that word is the last one given, and the
+same text is not written twice.
 
 A mutant of code that only one platform runs says which. On another platform
 no test can notice it, and ``mutate.py`` passes it over.
@@ -177,6 +180,7 @@ COMMAND_MCP = "src/columbina/commands/mcp.py"
 SERVE_RPC = "src/columbina/apps/serve/rpc.py"
 SERVE_WIRE = "src/columbina/apps/serve/wire.py"
 SERVE_SERVER = "src/columbina/apps/serve/server.py"
+SERVE_PLUGIN = "src/columbina/apps/serve/__init__.py"
 SERVE_BUNDLE = "src/columbina/bundles/serve.yml"
 EFFORT_APP = "src/columbina/apps/effort.py"
 WITHHELD = "src/columbina/withheld.py"
@@ -18637,8 +18641,8 @@ _SERVICES = (
     mutant(
         "a variable that is set to nothing names an address of nothing",
         SERVICES,
-        "        base_url = env.get(service.base_url_env) or base_url\n",
-        "        base_url = env.get(service.base_url_env, base_url)\n",
+        "        return env.get(service.base_url_env) or service.base_url\n",
+        "        return env.get(service.base_url_env, service.base_url)\n",
     ),
     mutant(
         "an adapter is told of a variable that its service has not",
@@ -18685,13 +18689,17 @@ _SERVICES = (
     mutant(
         "every adapter is told the name of the limit of a reply",
         SERVICES,
-        '    if service.max_tokens_field != "max_tokens":\n',
+        '    if service.max_tokens_field != "max_tokens" and (\n'
+        '        protocol_at(service, env) != "openai-responses"\n'
+        "    ):\n",
         "    if True:\n",
     ),
     mutant(
         "no adapter is told the name of the limit of a reply",
         SERVICES,
-        '    if service.max_tokens_field != "max_tokens":\n',
+        '    if service.max_tokens_field != "max_tokens" and (\n'
+        '        protocol_at(service, env) != "openai-responses"\n'
+        "    ):\n",
         "    if False:\n",
     ),
     # What was chosen, read and written
@@ -23416,8 +23424,8 @@ _DOCTOR = (
     mutant(
         "an adapter that is disabled is asked",
         DOCTOR,
-        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC) and not entry.disabled\n",
-        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC)\n",
+        "            if entry.plugin in _CONFIGS and not entry.disabled\n",
+        "            if entry.plugin in _CONFIGS\n",
     ),
     mutant(
         "the adapter of another provider is asked",
@@ -24621,21 +24629,51 @@ _EFFORT = (
     ),
     mutant(
         "ultra tells the agent nothing",
-        SERVE_SERVER,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        "        return text\n",
+        EFFORT_APP,
+        '    if effort == "ultra":\n        return ULTRA\n',
+        "",
     ),
     mutant(
         "every level tells the agent of the team",
-        SERVE_SERVER,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        '        return f"{text}\\n\\n{ULTRA}"\n',
+        EFFORT_APP,
+        '    if effort == "ultra":\n',
+        "    if True:\n",
     ),
     mutant(
-        "the agent of the conversation hears nothing of the team",
-        SERVE_SERVER,
-        "        agent.ctx.on(SYSTEM_PROMPT_ASSEMBLE, self._with_the_effort)\n",
+        "the agent is never told that the team is over",
+        EFFORT_APP,
+        "    return LEFT if _team_in_view(session) else None\n",
+        "    return None\n",
+    ),
+    mutant(
+        "the agent is told that the team is over where it was never told of it",
+        EFFORT_APP,
+        "    return LEFT if _team_in_view(session) else None\n",
+        "    return LEFT\n",
+    ),
+    mutant(
+        "what the agent is told of the team is said once and not again",
+        EFFORT_APP,
+        '    return ContextSource(render, order=_ORDER, kind="append")\n',
+        '    return ContextSource(render, order=_ORDER, kind="note")\n',
+    ),
+    mutant(
+        "what the agent is told of the team says that it takes the place of what came before",
+        EFFORT_APP,
+        '    return ContextSource(render, order=_ORDER, kind="append")\n',
+        '    return ContextSource(render, order=_ORDER, kind="replace")\n',
+    ),
+    mutant(
+        "the agent of the conversation is told nothing of the team",
+        SERVE_PLUGIN,
+        "    ctx.use(AGENTS).context.add(ctx, SOURCE, told_by(server.how_to_work))\n",
         "",
+    ),
+    mutant(
+        "every agent is told how the agent of the conversation works",
+        SERVE_SERVER,
+        "        return told_at(self._chosen_effort(), agent.session) if agent is self._agent else None\n",
+        "        return told_at(self._chosen_effort(), agent.session)\n",
     ),
     mutant(
         "the status tells of no levels",
@@ -24711,14 +24749,14 @@ _EFFORT = (
     mutant(
         "ultra tells the agent at the terminal nothing",
         CLI_FRONTEND,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        "        return text\n",
+        "    ctx.use(AGENTS).context.add(ctx, SOURCE, told_by(cli.how_to_work))\n",
+        "",
     ),
     mutant(
-        "every level tells the agent at the terminal of the team",
+        "the agent at the terminal is told of the team at the level of the config",
         CLI_FRONTEND,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        '        return f"{text}\\n\\n{ULTRA}"\n',
+        "        return told_at(self._chosen_effort(), agent.session) if agent is self._agent else None\n",
+        '        return told_at("default", agent.session) if agent is self._agent else None\n',
     ),
     mutant(
         "a session that is begun anew at the terminal asks what the run began with",
@@ -26129,8 +26167,38 @@ _ANTHROPIC = (
     mutant(
         "empty instructions are sent",
         ANTHROPIC_MESSAGES,
-        '    if system:\n        body["system"] = system\n',
-        '    body["system"] = system\n',
+        "    if system:\n        stable = ",
+        "    if True:\n        stable = ",
+    ),
+    mutant(
+        "the tools and the instructions keep no breakpoint of their own",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n',
+        "",
+    ),
+    mutant(
+        "the breakpoint is put on the first tool",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n',
+        '            stable[0]["cache_control"] = dict(control)\n',
+    ),
+    mutant(
+        "tools without instructions keep no breakpoint",
+        ANTHROPIC_MESSAGES,
+        "        stable = tools\n",
+        "",
+    ),
+    mutant(
+        "the breakpoint of the tools and the instructions is kept for five minutes",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n',
+        '            stable[-1]["cache_control"] = {"type": "ephemeral"}\n',
+    ),
+    mutant(
+        "no breakpoint moves with the conversation",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n        body["cache_control"] = control\n',
+        '            stable[-1]["cache_control"] = dict(control)\n',
     ),
     mutant(
         "the tools are offered without what they take",
@@ -27050,8 +27118,8 @@ _ANTHROPIC_APPS = (
     mutant(
         "Claude is loaded with the adapter of OpenAI",
         LAUNCHER,
-        '_ADAPTERS = {"openai-chat": _SPEAKS_OPENAI, "anthropic": _SPEAKS_ANTHROPIC}\n',
-        '_ADAPTERS = {"openai-chat": _SPEAKS_OPENAI, "anthropic": _SPEAKS_OPENAI}\n',
+        '    "anthropic": _SPEAKS_ANTHROPIC,\n}\n',
+        '    "anthropic": _SPEAKS_OPENAI,\n}\n',
     ),
     mutant(
         "the adapter of the profile talks to every service",
@@ -27086,14 +27154,15 @@ _ANTHROPIC_APPS = (
     mutant(
         "the doctor reads every entry as one for OpenAI",
         DOCTOR,
-        "            if entry.plugin == _SPEAKS_OPENAI\n            else _config(entry, AnthropicConfig, env)\n",
-        "            if entry.plugin\n            else _config(entry, AnthropicConfig, env)\n",
+        "            _config(entry, _CONFIGS[entry.plugin], env)\n",
+        "            _config(entry, AdapterConfig, env)\n",
     ),
     mutant(
         "the doctor asks Claude as it asks OpenAI",
         DOCTOR,
-        "        AnthropicMessages(config) if isinstance(config, AnthropicConfig) else OpenAIChat(config)\n",
-        "        OpenAIChat(config)\n",
+        "    if isinstance(config, AnthropicConfig):\n        adapter = AnthropicMessages(config)\n"
+        "    elif isinstance(config, ResponsesConfig):\n",
+        "    if isinstance(config, ResponsesConfig):\n",
     ),
     mutant(
         "the doctor says that Claude keeps its list where OpenAI does",
@@ -27104,14 +27173,14 @@ _ANTHROPIC_APPS = (
     mutant(
         "the doctor passes over the entries for Claude",
         DOCTOR,
-        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC) and not entry.disabled\n",
-        "            if entry.plugin in (_SPEAKS_OPENAI,) and not entry.disabled\n",
+        "            if entry.plugin in _CONFIGS and not entry.disabled\n",
+        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_RESPONSES) and not entry.disabled\n",
     ),
     mutant(
         "a key for Claude is checked as one for OpenAI",
         SETUP_APP,
-        '    if service.protocol == "anthropic":\n        adapter = AnthropicMessages(',
-        '    if service.protocol == "openai":\n        adapter = AnthropicMessages(',
+        '    if protocol == "anthropic":\n        adapter = AnthropicMessages(',
+        '    if protocol == "openai":\n        adapter = AnthropicMessages(',
     ),
 )
 

@@ -147,9 +147,18 @@ patch:
           file: ${COLUMBINA_PET_STATE:-}
       # Tools that edit video by what is said in it, with the ffmpeg of the system: given where
       # COLUMBINA_VIDEO is 1. COLUMBINA_WHISPER_MODEL names a directory with a model of
-      # faster-whisper to transcribe with. See docs/video.md.
+      # faster-whisper to transcribe with. Windows only, for now: elsewhere the tools are not
+      # offered, and the model is told why. See docs/video.md.
       - id: video
         plugin: columbina.video
         config:
           enabled: ${COLUMBINA_VIDEO:-0}
           whisper_model: ${COLUMBINA_WHISPER_MODEL:-}
+          engine: ${COLUMBINA_ENGINE:-}
+      # The tool computer, with which the model sees the screen of this machine and uses
+      # its pointer and its keyboard: given where COLUMBINA_COMPUTER is 1, and where the
+      # desktop can be reached. Elsewhere the model is told why not. See docs/computer.md.
+      - id: computer
+        plugin: columbina.computer
+        config:
+          enabled: ${COLUMBINA_COMPUTER:-0}

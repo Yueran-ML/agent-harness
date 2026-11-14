@@ -1,11 +1,16 @@
 // Try the engine of the studio in the package that electron/package.mjs made on Windows, as on a
 // system with nothing else installed: with Windows alone on PATH, and no FFMPEG_DIR,
 // COLUMBINA_ENGINE or COLUMBINA_PROXY_FFMPEG.
-//   - resources/engine holds exactly the engine, the libraries of FFmpeg, its ffmpeg and the notices;
+//   - resources/engine holds exactly the engine, the libraries of FFmpeg, its ffmpeg, Microsoft's DXC
+//     (dxcompiler.dll and dxil.dll of one version, 1.8.2502 or later, unless the package was made with
+//     COLUMBINA_DXC=none, which is then set here too) and the notices;
+//   - the notices hold the license files of FFmpeg, of the DXC, of OpenColorIO and the libraries linked
+//     with it, and of each crate, which THIRD_PARTY_ENGINE.md lists;
 //   - the engine needs no C runtime beside it (it is linked with it statically);
 //   - each library says that it is of the LGPL, and that ffmpeg starts and is an LGPL build;
-//   - a headless engine starts with the libraries beside it, says where it listens, and ends by
-//     itself once it has been idle;
+//   - a headless engine starts with the libraries beside it, says that it will compile its shaders
+//     with the DXC beside it (FXC without one), says where it listens, and ends by itself once it
+//     has been idle;
 //   - an engine of the desktop's kind takes in a film of 4K HEVC of 10 bits, finds the ffmpeg
 //     beside it, and makes the film's proxy with it.
 // The film is made by an ffmpeg with libx265: COLUMBINA_TEST_FFMPEG by its whole path, else the
@@ -22,7 +27,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { cleanEnvironment, lgplConfiguration, libraryLicense, runtimeImports } from '../electron/engine-bundle.mjs';
+import { cleanEnvironment, DXC_FILES, dxcIn, lgplConfiguration, libraryLicense, runtimeImports } from '../electron/engine-bundle.mjs';
+import { OCIO_PARTS, OCIO_VERSION } from './engine-notices.mjs';
 
 if (process.platform !== 'win32') {
   console.log('Packages bring an engine only on Windows, for now: there is nothing to try here.');
@@ -38,23 +44,39 @@ function fail(why) {
 }
 
 // What the folder holds: no more, no less.
+const withDxc = process.env.COLUMBINA_DXC?.toLowerCase() !== 'none';
 const expected = [
   'THIRD_PARTY_ENGINE.md', 'avcodec-62.dll', 'avdevice-62.dll', 'avfilter-11.dll', 'avformat-62.dll', 'avutil-60.dll',
-  'columbina-engine.exe', 'ffmpeg.exe', 'licenses', 'swresample-6.dll', 'swscale-9.dll',
-];
+  'columbina-engine.exe', 'ffmpeg.exe', 'licenses', 'swresample-6.dll', 'swscale-9.dll', ...(withDxc ? DXC_FILES : []),
+].sort();
 const found = (await readdir(folder).catch(() => fail(`there is no ${folder}`))).sort();
 if (JSON.stringify(found) !== JSON.stringify(expected)) fail(`it holds ${found.join(', ')}, and not ${expected.join(', ')}`);
-for (const notice of ['licenses/FFmpeg/LICENSE.txt', 'licenses/FFmpeg/GPL-3.0.txt']) {
+const notices = ['licenses/FFmpeg/LICENSE.txt', 'licenses/FFmpeg/GPL-3.0.txt', ...(withDxc ? ['licenses/DirectXShaderCompiler/THIRD-PARTY-NOTICES.txt'] : [])];
+for (const notice of notices) {
   if (!existsSync(path.join(folder, notice))) fail(`it has no ${notice}`);
 }
+const dxc = withDxc ? dxcIn(folder) : undefined;
+if (dxc?.why) fail(`its DXC will not do: ${dxc.why}`);
+if (dxc && !(await readFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), 'utf8')).includes(`are of version ${dxc.version}`)) {
+  fail('THIRD_PARTY_ENGINE.md does not give the terms and the version of the DXC beside the engine');
+}
+// OpenColorIO, linked into the engine: the license files of it and of each library linked with it.
+for (const part of OCIO_PARTS) {
+  for (const file of part.files) {
+    if (!existsSync(path.join(folder, 'licenses', part.name, file))) fail(`it has no licenses/${part.name}/${file}, of the ${part.name} linked into the engine`);
+  }
+}
+const told = await readFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), 'utf8');
+if (!told.includes(`linked statically with OpenColorIO ${OCIO_VERSION}`)) fail(`THIRD_PARTY_ENGINE.md does not list OpenColorIO ${OCIO_VERSION} and the libraries linked with it`);
+// The crates, as many rows of the list of crates as folders of their licenses.
 const crates = await readdir(path.join(folder, 'licenses', 'crates'));
-const listed = (await readFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), 'utf8')).match(/^\| \S+ \| \d\S* \|/gm) ?? [];
+const listed = told.slice(told.indexOf('## Rust crates in the engine')).match(/^\| \S+ \| \d\S* \|/gm) ?? [];
 if (crates.length === 0 || listed.length !== crates.length) fail(`THIRD_PARTY_ENGINE.md lists ${listed.length} crates, and licenses/crates holds ${crates.length}`);
 
 const runtime = runtimeImports(engine);
 if (runtime.length > 0) fail(`the engine imports ${runtime.join(', ')}, and is to have the C runtime in itself`);
 // The libraries, and the ffmpeg of the package with nothing but Windows on PATH, are of the LGPL.
-for (const name of found.filter((one) => one.endsWith('.dll'))) libraryLicense(path.join(folder, name));
+for (const name of found.filter((one) => one.endsWith('.dll') && !DXC_FILES.includes(one))) libraryLicense(path.join(folder, name));
 lgplConfiguration(path.join(folder, 'ffmpeg.exe'));
 const env = cleanEnvironment();
 for (const name of Object.keys(env)) if (/^(FFMPEG_DIR|COLUMBINA_)/i.test(name)) delete env[name];
@@ -89,12 +111,21 @@ try {
   const headless = spawn(engine, ['--project', path.join(work, 'headless'), '--headless', '--idle-seconds', '2'], { env, cwd: work, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   const headlessLog = logOf(headless);
   const said = await firstLine(headless, 30);
-  if (typeof said.listening !== 'string' || said.protocol !== 1) fail(`the headless engine said ${JSON.stringify(said)}`);
+  if (typeof said.listening !== 'string' || said.protocol !== 2) fail(`the headless engine said ${JSON.stringify(said)}`);
   const ending = setTimeout(() => headless.kill(), 30_000);
   const [code] = await once(headless, 'exit');
   clearTimeout(ending);
   if (code !== 0) fail(`the headless engine ended with ${code} after it was idle:\n${JSON.stringify(headlessLog)}`);
-  console.log(`A headless engine listened at ${said.listening} and ended by itself once idle.`);
+  // Which compiler of shaders it chose, at its start (no card is made for it).
+  const compiler = headlessLog.find((event) => event.event === 'shader_compiler');
+  const wanted = withDxc
+    ? { compiler: 'dxc', path: path.join(folder, 'dxcompiler.dll'), by: 'beside the executable' }
+    : { compiler: 'fxc', path: null, by: 'default' };
+  if (compiler?.compiler !== wanted.compiler || compiler.by !== wanted.by
+    || (compiler.path ?? null)?.toLowerCase() !== wanted.path?.toLowerCase()) {
+    fail(`the headless engine chose to compile its shaders as ${JSON.stringify(compiler)}, and not as ${JSON.stringify(wanted)}`);
+  }
+  console.log(`A headless engine listened at ${said.listening}, would compile its shaders with ${compiler.compiler}${dxc ? ` ${dxc.version}` : ''}, and ended by itself once idle.`);
 
   // A film of 4K HEVC of 10 bits, in long groups of frames: one that is given a proxy.
   const maker = process.env.COLUMBINA_TEST_FFMPEG || 'ffmpeg';
@@ -133,7 +164,7 @@ try {
       if (answer.error) fail(`${method} was answered with ${JSON.stringify(answer.error)}`);
       return answer.result;
     };
-    const hello = await ask('hello', { client: 'cli', protocol: 1 });
+    const hello = await ask('hello', { client: 'cli', protocol: 2 });
     if (hello.headless !== false) fail(`the engine of the desktop said hello with ${JSON.stringify(hello)}`);
     const { added: [media] } = await ask('media.import', { paths: [film] });
     const started = Date.now();

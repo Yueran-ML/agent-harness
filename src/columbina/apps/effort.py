@@ -20,15 +20,33 @@ offered, and ``ultra`` asks for the team alone.
 
 Until a level is chosen in a run, a call asks what its config asks, whichever level that
 stands for.
+
+What the agent is told at ``ultra`` is a message of its own, from the source of context
+``effort``, and no part of the system prompt. The system prompt, the tools and the
+conversation so far are then the same at every level: only what a request asks of the
+reasoning differs, and what follows the conversation. How much of the rest a service reads
+from its cache where the reasoning that it is asked for changes is the business of the
+service. The message is written before the input of the first turn at
+``ultra``, and stays where it was written. Where a summary has taken it from what the model
+sees, it is written again, as the text of every source of context is. Once the level is
+another, the model is told that the team is over, where it still sees the message that began
+it. Only the agent that the user talks to is told: a subagent works as it is told by its
+task. The message is no input of the user, so the terminal, a page that is exported and the
+desktop application show nothing of it.
 """
 
+from collections.abc import Awaitable, Callable
 from typing import Literal, get_args
 
+from columbina.agent import CONTEXT_PREFIX, Agent, ContextSource
 from columbina.kernel import Context
 from columbina.llm import LLM
+from columbina.session import Session, UserMessageEvent
 
 __all__ = [
     "EFFORTS",
+    "LEFT",
+    "SOURCE",
     "ULTRA",
     "Effort",
     "Reasoning",
@@ -38,6 +56,8 @@ __all__ = [
     "offered",
     "reasoning_of",
     "style_of",
+    "told_at",
+    "told_by",
 ]
 
 Effort = Literal["default", "off", "low", "high", "max", "ultra"]
@@ -159,3 +179,51 @@ ULTRA = (
     "A simple question is answered as it is, without a plan or subagents."
 )
 """What the agent that the user talks to is told at ``ultra``."""
+
+LEFT = (
+    "The effort is no longer ultra. What you were told about working at full depth with a "
+    "plan, subagents and a review no longer holds: work as you did before it, and hand a part "
+    "of the work to a subagent only where that helps."
+)
+"""What the agent is told when the level is no longer ``ultra``."""
+
+SOURCE = "effort"
+"""The name of the source of context that tells the agent how to work at ``ultra``."""
+
+_ORDER = 160
+"""Where the source stands among the others: after the list of things to do, and so last
+before the input of the turn."""
+
+
+def _team_in_view(session: Session) -> bool:
+    """Tell whether the last message of the source that the model sees is the one of ``ultra``."""
+    source = CONTEXT_PREFIX + SOURCE
+    for seq in reversed(session.surface):
+        data = session.events[seq].data
+        if isinstance(data, UserMessageEvent) and data.source == source:
+            return any(ULTRA in block.text for block in data.message.content)
+    return False
+
+
+def told_at(effort: Effort, session: Session) -> str | None:
+    """Return what the agent of a session is told of how to work at a level, if anything.
+
+    At ``ultra`` it is told to work as a team. At another level it is told that this is over,
+    where the model still sees that it was told to, and nothing otherwise.
+    """
+    if effort == "ultra":
+        return ULTRA
+    return LEFT if _team_in_view(session) else None
+
+
+def told_by(render: Callable[[Agent], Awaitable[str | None]]) -> ContextSource:
+    """Return the source of context that tells the agent that the user talks to how to work.
+
+    Its text holds until it changes: it is written where it differs from what the source gave
+    last, after the conversation so far, and again where a summary took it from the model.
+
+    Args:
+        render: Returns what :func:`told_at` says for the agent that the user talks to, and
+            ``None`` for every other agent.
+    """
+    return ContextSource(render, order=_ORDER, kind="append")

@@ -387,6 +387,7 @@ def test_the_composition_can_be_printed_instead_of_run(
         "mcp",
         "pets",
         "video",
+        "computer",
         "frontend",
     ]
     assert entries["pets"] == {
@@ -401,7 +402,14 @@ def test_the_composition_can_be_printed_instead_of_run(
         "config": {
             "enabled": "${COLUMBINA_VIDEO:-0}",
             "whisper_model": "${COLUMBINA_WHISPER_MODEL:-}",
+            "engine": "${COLUMBINA_ENGINE:-}",
         },
+    }
+    # And so is the tool that uses the pointer and the keyboard of the machine.
+    assert entries["computer"] == {
+        "id": "computer",
+        "plugin": "columbina.computer",
+        "config": {"enabled": "${COLUMBINA_COMPUTER:-0}"},
     }
     assert entries["spill"] == {
         "id": "spill",

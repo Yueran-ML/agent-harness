@@ -444,7 +444,9 @@ def test_the_model_is_told_where_it_runs_and_what_it_may_do(program: Program) ->
         "do.\n"
         f"commands are run by: {RUN_BY[shell.NAME]}\n"
         "sandbox mode: workspace-write. Files in the working directory can be written, except "
-        "in .git and .columbina. Outside it no file can be read or written.\n"
+        "in .git and .columbina. Studio video tools may manage .columbina/studio, and edit/write "
+        "may change its story/t<N>.md files. Outside the working directory no file can be read or "
+        "written.\n"
         f"working directory: {program.work}"
     ]
 

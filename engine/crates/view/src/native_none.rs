@@ -34,13 +34,6 @@ const UNSUPPORTED: &str = if cfg!(target_os = "macos") {
     "views are made on Windows only"
 };
 
-/// The backends that pictures are drawn with on this platform, offscreen.
-pub(crate) const BACKENDS: wgpu::Backends = if cfg!(target_os = "macos") {
-    wgpu::Backends::METAL
-} else {
-    wgpu::Backends::empty()
-};
-
 pub(crate) fn prepare_process() {}
 
 pub(crate) fn dpi_awareness() -> String {

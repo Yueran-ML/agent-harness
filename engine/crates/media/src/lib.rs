@@ -1,5 +1,6 @@
 //! Sources: what a file is and what it holds, and the pictures in it, read with libav
-//! (FFmpeg's libraries), on the graphics card where it can.
+//! (FFmpeg's libraries), on the graphics card where it can; and files written, their pictures
+//! encoded on the graphics card where it has an encoder.
 //!
 //! - [`identity`] tells a file from another one at the same path, as the editing of Python
 //!   does.
@@ -9,6 +10,9 @@
 //!   and the key frame at or before a frame, to be shown first while a frame is sought.
 //! - [`AudioDecoder`] gives the samples of its sound from any place, converted to the rate and
 //!   the channels that they are played with.
+//! - [`Writer`] writes a picture and its sound into a file of MP4 or `QuickTime`: the picture in
+//!   H.264 or HEVC by an encoder of the graphics card ([`encoders_for`]), or in `ProRes`, the
+//!   sound in AAC.
 //!
 //! # Times
 //!
@@ -31,6 +35,19 @@
 //! its rates). Where frames come at changing times, a number may be had by none of them, and
 //! then the frame shown there is the one before; or by two, and then
 //! [`VideoDecoder::frame_at`] gives the first and [`VideoDecoder::next`] the second.
+//!
+//! # Colours
+//!
+//! [`VideoFacts::color`] is what a file says of the colours of its picture: the primaries, the
+//! transfer and the matrix as H.273 numbers them (the NCLC of `QuickTime`, the VUI of H.264 and
+//! HEVC), its range, the siting of its chroma, and the side data of HDR (the mastering display
+//! of SMPTE ST 2086 and the light levels of CTA-861.3), from the parameters of its stream and,
+//! for PQ and HLG, from its first frame where the stream lacks them. [`input_space`] decides
+//! from them the colour space that the picture is in, as `DaVinci Resolve` does; [`YuvMatrix`]
+//! and [`levels`] how its Y'CbCr is made R'G'B'.
+//!
+//! A [`Picture`] is always 4:2:0. A [`NativePicture`] ([`Converter::native`]) keeps the chroma
+//! of 4:2:2 and 4:4:4 in 16 bits (P216 and P416), and says the matrix and range of its codes.
 //!
 //! # Rotation
 //!
@@ -61,20 +78,36 @@
 //! stderr carries lines of JSON only.
 
 mod audio;
+mod color;
 mod decode;
+mod encode;
 mod error;
 #[allow(unsafe_code)]
 mod ffi;
 mod identity;
+mod native;
 mod probe;
 mod timing;
 
-pub use audio::{AudioDecoder, AudioFormat, Samples};
-pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
-pub use decode::{video_start, Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
+pub use audio::{sound_start, AudioDecoder, AudioFormat, AudioStreams, Samples};
+pub use color::{levels, YuvMatrix};
+pub use columbina_model::{
+    input_space, AudioFacts, Basis, ColorFacts, ColorRange, Facts, Gamma, Gamut, Identity,
+    InputSpace, Rate, Time, VideoFacts,
+};
+pub use decode::{
+    video_start, Converter, Decoded, Hardware, HardwarePath, Picture, Rgba, VideoDecoder,
+};
+pub use encode::{
+    encoders_for, AudioCodec, AudioSettings, Codec, ColorTags, ContentLight, EncoderPath,
+    Mastering, Quality, SoundWriter, VideoSettings, Writer, AUDIO_BIT_RATE,
+};
 pub use error::MediaError;
 pub use identity::identity;
-pub use probe::{frame_numbers, gop, probe, Gop, DEMUXERS};
+pub use native::{Alpha, NativePicture, PictureFormat};
+pub use probe::{
+    frame_count, frame_numbers, gop, probe, sounds, Gop, SoundStream, Sounds, DEMUXERS,
+};
 
 /// Make libav ready to be used, once: its log is turned off.
 fn init() {

@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import {
-  applyOp, callEngine, deviceRect, EngineError, ProjectCopy,
-  type Clip, type EngineAnswer, type EngineEvent, type Media, type Op, type Project, type ProjectChanged, type Proxy,
+  applyOp, callEngine, deviceRect, emptyGrade, EngineError, ProjectCopy,
+  type Clip, type ClipTrack, type EngineAnswer, type EngineEvent, type Media, type Op, type Project, type ProjectChanged, type Proxy,
 } from '../src/studio/engine';
 
 const SCALE = 15360;
-const empty = (): Project => ({ schema: 1, next_id: 1, media: [], timelines: [] });
+const empty = (): Project => ({ schema: 5, groups: [], bins: [], next_id: 1, media: [], timelines: [] });
 const media = (id: string, audio = true): Media => ({
-  id, path: `C:\\media\\${id}.mp4`,
+  id, name: `${id}.mp4`, bin: null, mark_in: null, mark_out: null, path: `C:\\media\\${id}.mp4`,
   identity: { size: 1000, modified_us: 1_790_000_000_000_000, digest: '0'.repeat(64) },
   facts: {
     duration: { ticks: 10 * SCALE, scale: SCALE },
@@ -16,7 +16,7 @@ const media = (id: string, audio = true): Media => ({
     audio: audio ? { rate: 48000, channels: 2, codec: 'aac' } : null,
   },
 });
-const clip = (id: string, start: number, length: number, from = 'm1', ticks = 0): Clip => ({ id, media: from, source_in: { ticks, scale: SCALE }, start, length });
+const clip = (id: string, start: number, length: number, from = 'm1', ticks = 0): Clip => ({ id, source: { kind: 'media', media: from, in: { ticks, scale: SCALE } }, start, length, enabled: true, speed: { num: 1, den: 1 }, reverse: false, link: null, transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }, gain_db: 0, pan: 0, fade_in: 0, fade_out: 0, grade: emptyGrade(), group: null });
 const proxy: Proxy = { path: 'C:\\film\\.columbina\\studio\\cache\\proxies\\m1-000000000000.mov', width: 1920, height: 1080, codec: 'hevc', digest_of_source: '0'.repeat(64) };
 
 /** A bridge of the engine whose engine has the project that a test sets, at its revision. */
@@ -52,6 +52,27 @@ const settle = async () => { for (let at = 0; at < 10; at += 1) await new Promis
 const change = (revision: number, next_id: number, ...done: Op[]): ProjectChanged => ({ revision, by: 'agent', made_by: 'agent', done, next_id });
 
 describe('the copy of the project', () => {
+  it('keeps the two monitors separate and clears both when the engine ends', async () => {
+    const engine = engineOf({ revision: 0, project: empty() });
+    const copy = new ProjectCopy(engine.bridge);
+    engine.opened();
+    await settle();
+    const source = { monitor: 'source', media: 'm1', frame: 37 };
+    const timeline = { monitor: 'timeline', timeline: 't1', frame: 190, late: 2 };
+    for (const state of [source, timeline]) engine.tell({ kind: 'notification', session: 1, method: 'transport.state', params: state });
+    engine.tell({ kind: 'attached', session: 1, monitor: 'source', adapter: 'A', backend: 'Dx12' });
+    engine.tell({ kind: 'unsupported', session: 1, monitor: 'timeline', reason: 'unsupported', message: 'no view' });
+    expect(copy.getSnapshot()).toMatchObject({
+      transports: { source, timeline },
+      views: { source: { state: 'attached' }, timeline: { state: 'unsupported' } },
+    });
+    engine.tell({ kind: 'exited', session: 1, expected: false, code: 1, signal: null });
+    expect(copy.getSnapshot()).toMatchObject({
+      transports: { source: null, timeline: null }, views: { source: { state: 'none' }, timeline: { state: 'none' } },
+    });
+    copy.dispose();
+  });
+
   it('applies each operation as the engine did it, and comes to the project that the engine has', async () => {
     const engine = engineOf({ revision: 0, project: empty() });
     const copy = new ProjectCopy(engine.bridge);
@@ -62,10 +83,10 @@ describe('the copy of the project', () => {
       // Media imported: two files, one transaction.
       change(1, 3, { op: 'add_media', media: media('m1'), index: 0 }, { op: 'add_media', media: media('m2', false), index: 1 }),
       // A timeline with a track of picture, whose clips come in the order of their start.
-      change(2, 6, { op: 'add_timeline', index: 0, timeline: { id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, tracks: [
-        { id: 'V1', kind: 'video', clips: [clip('c5', 100, 20), clip('c4', 0, 50)] },
+      change(2, 6, { op: 'add_timeline', index: 0, timeline: { id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [
+        { id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c5', 100, 20), clip('c4', 0, 50)] },
       ] } }),
-      change(3, 6, { op: 'add_track', timeline: 't3', index: 1, track: { id: 'A1', kind: 'audio', clips: [] } }),
+      change(3, 6, { op: 'add_track', timeline: 't3', index: 1, track: { id: 'A1', name: 'A1', enabled: true, locked: false, transitions: [], kind: 'audio', clips: [] } }),
       // A clip put between two others by its start.
       change(4, 8, { op: 'insert_clip', timeline: 't3', track: 'V1', clip: clip('c6', 200, 25) },
         { op: 'insert_clip', timeline: 't3', track: 'V1', clip: clip('c7', 60, 10) }),
@@ -77,10 +98,10 @@ describe('the copy of the project', () => {
       change(8, 8, { op: 'remove_clip', timeline: 't3', id: 'c6' }),
       change(9, 9, { op: 'insert_clip', timeline: 't3', track: 'A1', clip: clip('c8', 0, 25) }),
       // A timeline put before the first, and a track that is taken away with its clips.
-      change(10, 10, { op: 'add_timeline', index: 0, timeline: { id: 't9', name: 'Other', rate: { num: 30000, den: 1001 }, tracks: [] } },
+      change(10, 10, { op: 'add_timeline', index: 0, timeline: { id: 't9', name: 'Other', rate: { num: 30000, den: 1001 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [] } },
         { op: 'remove_track', timeline: 't3', id: 'A1' }),
       // A clip moved onto a track of its kind on which it starts first.
-      change(11, 10, { op: 'add_track', timeline: 't3', track: { id: 'V2', kind: 'video', clips: [clip('c9', 20, 5, 'm2')] } },
+      change(11, 10, { op: 'add_track', timeline: 't3', track: { id: 'V2', name: 'V2', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c9', 20, 5, 'm2')] } },
         { op: 'move_clip', timeline: 't3', id: 'c7', track: 'V2', start: 0 }),
       change(12, 10, { op: 'set_proxy', media: 'm1', proxy: null }, { op: 'remove_clip', timeline: 't3', id: 'c9' },
         { op: 'remove_media', id: 'm2' }, { op: 'remove_timeline', id: 't9' }),
@@ -89,12 +110,12 @@ describe('the copy of the project', () => {
     ];
     for (const each of script) engine.changed(each);
     const expected: Project = {
-      schema: 1, next_id: 10,
+      schema: 5, groups: [], bins: [], next_id: 10,
       media: [media('m1'), media('m2', false)],
       timelines: [{
-        id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, tracks: [
-          { id: 'V1', kind: 'video', clips: [clip('c4', 10, 40, 'm1', SCALE), clip('c5', 100, 20)] },
-          { id: 'V2', kind: 'video', clips: [clip('c7', 0, 10)] },
+        id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [
+          { id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c4', 10, 40, 'm1', SCALE), clip('c5', 100, 20)] },
+          { id: 'V2', name: 'V2', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c7', 0, 10)] },
         ],
       }],
     };
@@ -109,16 +130,16 @@ describe('the copy of the project', () => {
   });
 
   it('holds the proxy of media while it is set, and the order of the clips of a track by their start', () => {
-    let project: Project = { ...empty(), media: [media('m1')], timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, tracks: [{ id: 'V1', kind: 'video', clips: [] }] }] };
+    let project: Project = { ...empty(), media: [media('m1')], timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [{ id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [] }] }] };
     project = applyOp(project, { op: 'set_proxy', media: 'm1', proxy });
     expect(project.media[0].proxy).toEqual(proxy);
     for (const [id, start] of [['c1', 50], ['c2', 10], ['c3', 30], ['c4', 0]] as const) {
       project = applyOp(project, { op: 'insert_clip', timeline: 't1', track: 'V1', clip: clip(id, start, 5) });
     }
-    expect(project.timelines[0].tracks[0].clips.map(each => each.id)).toEqual(['c4', 'c2', 'c3', 'c1']);
+    expect((project.timelines[0].tracks[0] as ClipTrack).clips.map(each => each.id)).toEqual(['c4', 'c2', 'c3', 'c1']);
     // What did not change is the same object: a view of it need not be drawn again.
     const before = project;
-    const after = applyOp(project, { op: 'add_timeline', timeline: { id: 't2', name: 'U', rate: { num: 25, den: 1 }, tracks: [] } });
+    const after = applyOp(project, { op: 'add_timeline', timeline: { id: 't2', name: 'U', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [] } });
     expect(after.timelines[0]).toBe(before.timelines[0]);
     expect(after.media).toBe(before.media);
     expect(before.timelines).toHaveLength(1);
@@ -130,7 +151,7 @@ describe('the copy of the project', () => {
       { op: 'move_clip', timeline: 't1', id: 'c9', track: 'V1', start: 0 }, { op: 'add_media', media: media('m2'), index: 5 },
       { op: 'set_proxy', media: 'm9', proxy: null }, { op: 'remove_track', timeline: 't1', id: 'A1' }, { op: 'paint' },
     ] as Op[]) {
-      expect(() => applyOp({ ...empty(), timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, tracks: [{ id: 'V1', kind: 'video', clips: [] }] }] }, op)).toThrow();
+      expect(() => applyOp({ ...empty(), timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [{ id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [] }] }] }, op)).toThrow();
     }
   });
 
@@ -157,10 +178,15 @@ describe('the copy of the project', () => {
     engine.opened();
     await settle();
     engine.have(1, { ...empty(), next_id: 2 });
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
     engine.changed(change(1, 2, { op: 'remove_media', id: 'm1' }));
     await settle();
     expect(engine.call).toHaveBeenCalledTimes(2);
     expect(copy.getSnapshot()).toMatchObject({ revision: 1, project: { next_id: 2 } });
+    // It is not silent: it says which operation of which revision it could not apply.
+    expect(warned).toHaveBeenCalledOnce();
+    expect(warned.mock.calls[0][0]).toContain('remove_media (operation 1 of revision 1)');
+    warned.mockRestore();
   });
 
   it('applies what it is told while it fetches after the fetch, from the revision that the fetch answered', async () => {
@@ -183,10 +209,10 @@ describe('the copy of the project', () => {
     const copy = new ProjectCopy(engine.bridge);
     engine.opened();
     await settle();
-    engine.tell({ kind: 'notification', session: 1, method: 'transport.state', params: { media: 'm1', frame: 0 } });
-    engine.tell({ kind: 'attached', session: 1, adapter: 'A', backend: 'Dx12' });
+    engine.tell({ kind: 'notification', session: 1, method: 'transport.state', params: { monitor: 'source', media: 'm1', frame: 0 } });
+    engine.tell({ kind: 'attached', session: 1, monitor: 'source', adapter: 'A', backend: 'Dx12' });
     engine.tell({ kind: 'exited', session: 1, expected: false, code: 1, signal: null });
-    expect(copy.getSnapshot()).toMatchObject({ status: 'disconnected', revision: 0, project: empty(), transport: null, view: { state: 'none' } });
+    expect(copy.getSnapshot()).toMatchObject({ status: 'disconnected', revision: 0, project: empty(), transports: { source: null, timeline: null }, views: { source: { state: 'none' }, timeline: { state: 'none' } } });
     // What is told now is passed over: a new engine is fetched from.
     engine.changed(change(1, 2, { op: 'add_media', media: media('m1') }));
     expect(copy.getSnapshot().revision).toBe(0);
@@ -215,19 +241,19 @@ describe('the copy of the project', () => {
     const copy = new ProjectCopy(engine.bridge);
     engine.opened();
     await settle();
-    const state = { media: 'm1', frame: 37, playing: false, speed: 1, exact: true, shown: 37, last: 99, sound: 'off', source: 'proxy', proxies: true };
+    const state = { monitor: 'source', media: 'm1', frame: 37, playing: false, speed: 1, exact: true, shown: 37, last: 99, sound: 'off', source: 'proxy', proxies: true };
     engine.tell({ kind: 'notification', session: 1, method: 'transport.state', params: state });
-    engine.tell({ kind: 'notification', session: 1, method: 'media.proxy', params: { media: 'm1', state: 'running', progress: 0.5 } });
+    engine.tell({ kind: 'notification', session: 1, method: 'media.proxy', params: { monitor: 'source', media: 'm1', state: 'running', progress: 0.5 } });
     engine.tell({ kind: 'notification', session: 1, method: 'media.proxy', params: { media: 'm2', state: 'queued' } });
-    engine.tell({ kind: 'notification', session: 1, method: 'media.proxy', params: { media: 'm1', state: 'done' } });
+    engine.tell({ kind: 'notification', session: 1, method: 'media.proxy', params: { monitor: 'source', media: 'm1', state: 'done' } });
     engine.tell({ kind: 'notification', session: 1, method: 'engine.error', params: { message: 'the project could not be saved', kind: 'save' } });
-    engine.tell({ kind: 'unsupported', session: 1, reason: 'headless', message: 'no such method' });
+    engine.tell({ kind: 'unsupported', session: 1, monitor: 'source', reason: 'headless', message: 'no such method' });
     expect(copy.getSnapshot()).toMatchObject({
-      transport: state, proxies: { m1: { media: 'm1', state: 'done' }, m2: { media: 'm2', state: 'queued' } },
-      error: 'the project could not be saved', view: { state: 'unsupported', reason: 'headless' },
+      transports: { source: state }, proxies: { m1: { media: 'm1', state: 'done' }, m2: { media: 'm2', state: 'queued' } },
+      error: 'the project could not be saved', views: { source: { state: 'unsupported', reason: 'headless' } },
     });
-    engine.tell({ kind: 'attached', session: 1, adapter: 'A', backend: 'Dx12' });
-    expect(copy.getSnapshot().view).toEqual({ state: 'attached', adapter: 'A', backend: 'Dx12' });
+    engine.tell({ kind: 'attached', session: 1, monitor: 'source', adapter: 'A', backend: 'Dx12' });
+    expect(copy.getSnapshot().views.source).toEqual({ state: 'attached', adapter: 'A', backend: 'Dx12' });
     engine.tell({ kind: 'error', session: 1, message: 'the view could not be made' });
     expect(copy.getSnapshot().error).toBe('the view could not be made');
   });
@@ -329,6 +355,11 @@ describe('the copy of the project', () => {
 });
 
 describe('calling the engine from the page', () => {
+  it('carries an expected session outside the engine params', async () => {
+    const call = vi.fn(async () => ({ ok: true as const, result: {} }));
+    await callEngine({ call }, 'transaction.apply', { ops: [] }, { expectedSession: 7 });
+    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [] }, { expectedSession: 7 });
+  });
   it('gives the result, or an error with the code and data that the engine gave', async () => {
     const call = vi.fn(async (): Promise<EngineAnswer> => ({ ok: true, result: { revision: 3, done: [], next_id: 4, names: { $c: 'c3' } } }));
     await expect(callEngine({ call }, 'transaction.apply', { ops: [] })).resolves.toEqual({ revision: 3, done: [], next_id: 4, names: { $c: 'c3' } });

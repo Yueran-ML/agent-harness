@@ -284,7 +284,7 @@ describe('what the packed application holds of the shell', () => {
       .flatMap(found => (found[2].includes('${kind}') ? kinds.map(kind => found[2].replace('${kind}', kind)) : [found[2]]));
     expect(new Set(named)).toEqual(new Set([
       'icon.ico', 'preload.cjs', 'key-preload.cjs', 'feishu-preload.cjs', 'wecom-preload.cjs', 'qq-preload.cjs',
-      'pet-preload.cjs', 'mock-service.mjs',
+      'pet-preload.cjs', 'scopes-preload.cjs', 'mock-service.mjs',
     ]));
     const packer = read('electron/package.mjs');
     // The pets are a part of the shell of their own, which it requires beside itself.
@@ -292,13 +292,14 @@ describe('what the packed application holds of the shell', () => {
     for (const file of ['main.cjs', 'pets.cjs', ...named]) expect(packer, file).toContain(`'/electron/${file}'`);
   });
 
-  it('is the six pages of the build', () => {
+  it('is the seven pages of the build', () => {
     const config = read('vite.config.ts');
-    expect(config).toContain("input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html', pet: 'pet.html' }");
+    expect(config).toContain("input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html', pet: 'pet.html', scopes: 'scopes.html' }");
     const shell = read('electron/main.cjs');
     expect(shell).toContain("path.resolve(__dirname, '../dist/index.html')");
     expect(shell).toContain("path.resolve(__dirname, '../dist/key.html')");
     expect(shell).toContain("path.resolve(__dirname, '../dist/pet.html')");
+    expect(shell).toContain("path.resolve(__dirname, '../dist/scopes.html')");
     // The pets that come with the application are in the build, from its public folder.
     expect(shell).toContain("path.resolve(__dirname, '../dist/pets')");
     // The page of each assistant has the name of its command.

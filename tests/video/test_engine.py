@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from columbina.video import engine
+from columbina.video import edits, engine
 from columbina.video.engine import (
     NOT_FOUND,
     UNEXPECTED,
@@ -22,8 +22,14 @@ from columbina.video.engine import (
     Applied,
     Changed,
     Changes,
+    Channel,
+    Chroma,
     Engine,
     EngineError,
+    Lut,
+    Normalization,
+    Progress,
+    RenderAudio,
     not_found,
     program_of,
 )
@@ -32,8 +38,7 @@ from support.fake_engine import LIMIT, served
 from support.media import made, real_engine
 
 FAKE = Path(fake_engine.__file__)
-TIMELINE: dict[str, Any] = {"id": "$t", "name": "Cut", "rate": {"num": 25, "den": 1}, "tracks": []}
-ADD = {"op": "add_timeline", "timeline": TIMELINE}
+ADD = edits.add_timeline("Cut", edits.Rate(num=25, den=1), id="$t")
 
 
 def as_program(monkeypatch: pytest.MonkeyPatch, *mode: str) -> None:
@@ -135,6 +140,111 @@ async def test_every_client_is_told_of_every_change(tmp_path: Path) -> None:
         assert other.revision == 3
 
 
+async def test_inspection_does_not_import_or_change_history(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        items = await connected.inspected([FAKE])
+        assert len(items) == 1
+        assert items[0]["id"] == ""
+        assert items[0]["path"] == str(FAKE)
+        assert fake.project["media"] == []
+        assert fake.steps == []
+        fake.results["media.inspect"] = {"media": [None]}
+        with pytest.raises(EngineError, match="no media"):
+            await connected.inspected([FAKE])
+
+
+async def test_the_statistics_of_a_monitor_are_read_into_their_figures(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        with pytest.raises(EngineError) as headless:
+            await connected.statistics()
+        assert headless.value.code == -32601
+        fake.headless = False
+        figures = await connected.statistics("source", bins=16)
+        assert fake.looked[-1] == ("scopes.statistics", {"view": "source", "bins": 16})
+        assert (figures.view, figures.frame, figures.width, figures.height) == ("source", 12, 4, 2)
+        assert figures.samples == 8
+        grey = 128 / 255
+        assert figures.luma == Channel(min=grey, max=grey, mean=grey)
+        assert figures.chroma == Chroma(
+            centroid=(0.0, 0.0), spread=(0.0, 0.0), radius=0.0, saturation=0.0, hue=0.0
+        )
+        assert figures.percentiles["red"]["50"] == grey
+        assert figures.bins == 16
+        assert sum(figures.histogram["luma"]) == 8
+        await connected.statistics()
+        assert fake.looked[-1] == ("scopes.statistics", {"view": "timeline"})
+        fake.results["scopes.statistics"] = {"view": "timeline", "frame": 0}
+        with pytest.raises(EngineError) as odd:
+            await connected.statistics()
+        assert odd.value.code == UNEXPECTED
+
+
+async def test_the_library_of_luts_is_read_into_its_roots_and_files(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        library = await connected.luts()
+        assert fake.looked[-1] == ("luts.list", {})
+        assert [(root.place, root.exists) for root in library.roots] == [
+            ("project", True),
+            ("library", False),
+        ]
+        assert library.luts == [
+            Lut(
+                name="LUTs/film.cube",
+                root=0,
+                size=120,
+                modified_us=1_790_000_000_000_000,
+                shadowed=False,
+                kind="3d",
+                status="ok",
+            )
+        ]
+        assert not library.truncated
+        await connected.luts("LUTs")
+        assert fake.looked[-1] == ("luts.list", {"folder": "LUTs"})
+        with pytest.raises(EngineError) as outside:
+            await connected.luts("../elsewhere")
+        assert outside.value.code == -32602
+        assert outside.value.data == {"reason": "outside_roots", "folder": "../elsewhere"}
+        fake.results["luts.list"] = {"roots": [], "luts": [{"name": "x.cube"}], "truncated": False}
+        with pytest.raises(EngineError) as odd:
+            await connected.luts()
+        assert odd.value.code == UNEXPECTED
+
+
+async def test_each_lut_says_its_kind_and_whether_it_parses(tmp_path: Path) -> None:
+    root = {"place": "project", "path": str(tmp_path), "exists": True}
+    lut = {"name": "a.cube", "root": 0, "size": 9, "modified_us": None, "shadowed": False}
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        fake.results["luts.list"] = {
+            "roots": [root],
+            "luts": [
+                {**lut, "kind": "shaper+3d", "status": "ok"},
+                {**lut, "kind": "3d", "status": "error", "message": "line 3: too few"},
+                {**lut, "kind": None, "status": "unchecked"},
+                # An engine from before the kind and the status: unchecked, of no kind.
+                lut,
+            ],
+            "truncated": False,
+        }
+        said = [(one.kind, one.status, one.message) for one in (await connected.luts()).luts]
+        assert said == [
+            ("shaper+3d", "ok", None),
+            ("3d", "error", "line 3: too few"),
+            (None, "unchecked", None),
+            (None, "unchecked", None),
+        ]
+        for odd in (
+            {**lut, "kind": "2d", "status": "ok"},
+            {**lut, "status": "broken"},
+            {**lut, "status": "error"},
+            {**lut, "status": "error", "message": 3},
+        ):
+            fake.results["luts.list"] = {"roots": [root], "luts": [odd], "truncated": False}
+            with pytest.raises(EngineError) as unexpected:
+                await connected.luts()
+            assert unexpected.value.code == UNEXPECTED, odd
+
+
 async def test_a_refusal_keeps_what_the_engine_said_of_it(tmp_path: Path) -> None:
     async with served(tmp_path / "film") as fake:
         connected = await attached(tmp_path / "film")
@@ -210,6 +320,8 @@ async def test_answers_that_are_not_of_the_protocol_are_refused(tmp_path: Path) 
             "media.import": {"revision": 1, "added": [1]},
             "history.undo": {"revision": "x", "done": None},
             "history.redo": None,
+            "timeline.duration": {"frames": "x"},
+            "render.start": {"job": 7},
         }
 
         for call in (
@@ -218,6 +330,8 @@ async def test_answers_that_are_not_of_the_protocol_are_refused(tmp_path: Path) 
             connected.imported([FAKE]),
             connected.undo(),
             connected.redo(),
+            connected.duration("t1"),
+            connected.render("t1", tmp_path / "film.mp4"),
         ):
             with pytest.raises(EngineError) as refused:
                 await call
@@ -315,6 +429,27 @@ async def test_a_lost_connection_fails_what_waits_and_is_made_again(tmp_path: Pa
         assert (changed.method, changed.revision) == ("project.changed", 1)
         assert changed.params["by"] == "desktop"
         assert fake.asked[-3:] == ["hello", "project.get", "project.get"]
+        await connected.aclose()
+
+
+async def test_a_revision_read_from_another_engine_is_refused_without_sending(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        revision, _ = await connected.project()
+        session = connected.session
+        # An engine started anew counts its revisions from 0 again: the same number of another
+        # engine says nothing of the project that was read.
+        connected._drop()  # pyright: ignore[reportPrivateUsage]
+
+        with pytest.raises(EngineError) as refused:
+            await connected.apply([ADD], revision=revision, session=session)
+        done = await connected.apply([ADD], revision=revision, session=connected.session)
+
+        assert refused.value.data == {"reason": "stale_revision", "session": session + 1}
+        assert fake.asked.count("transaction.apply") == 1
+        assert done.revision == revision + 1
         await connected.aclose()
 
 
@@ -474,6 +609,336 @@ def test_a_line_too_long_is_not_read_and_nothing_is_heard_after_the_end(
     assert "the project is too large to be read here" in str(lost[0])
 
 
+# Edits, renders and durations
+
+
+async def timeline_with_a_clip(connected: Engine) -> str:
+    """A timeline with a track of picture and a clip of a colour on it, and its id."""
+    applied = await connected.apply(
+        [
+            ADD,
+            edits.add_track("$t", "video"),
+            edits.append("$t", edits.of_color("#000000ff", 50)),
+        ]
+    )
+    return applied.names["$t"]
+
+
+async def test_a_transaction_of_edits_is_answered_with_operations_and_what_was_clamped(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        changes = connected.changes()
+        timeline = await timeline_with_a_clip(connected)
+        await next_of(changes)
+        fake.clamped = [1]
+
+        applied = await connected.apply(
+            [edits.blade(timeline, 10), edits.trim(timeline, "c2", "out", 100)]
+        )
+        told = await next_of(changes)
+        await connected.apply([edits.set_track(timeline, "V1", locked=True)])
+        with pytest.raises(EngineError) as locked:
+            await connected.apply([edits.ripple_delete(timeline, ["c2"])])
+        fake.results["transaction.apply"] = {
+            "revision": 9, "done": [], "next_id": 3, "names": {}, "clamped": ["1"],
+        }  # fmt: skip
+        with pytest.raises(EngineError) as odd:
+            await connected.apply([ADD])
+        undone = await connected.undo()
+        await connected.aclose()
+
+        assert applied.clamped == [1]
+        assert all("op" in one and "edit" not in one for one in applied.done)
+        assert told.params["done"] == applied.done
+        assert [one["edit"] for one in fake.edits[:3]] == ["add_track", "append", "blade"]
+        assert locked.value.code == -32001
+        assert locked.value.data == {
+            "index": 0, "reason": "locked", "track": "V1", "message": "track V1 is locked",
+        }  # fmt: skip
+        assert odd.value.code == UNEXPECTED
+        assert undone is not None
+        assert undone.clamped == []
+
+
+async def test_how_long_a_timeline_lasts_is_asked_of_the_engine(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+
+        frames = await connected.duration(timeline)
+        with pytest.raises(EngineError) as missing:
+            await connected.duration("t99")
+        await connected.aclose()
+
+        assert frames == 50
+        assert missing.value.code == -32602
+        assert fake.asked.count("timeline.duration") == 2
+
+
+async def test_a_render_is_followed_until_it_is_done(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        await connected.apply([edits.add_track(timeline, "subtitle")])
+        film = tmp_path / "out" / "cut.mp4"
+        film.parent.mkdir()
+        heard: list[Progress] = []
+
+        rendering = await connected.render(
+            timeline,
+            film,
+            codec="hevc",
+            quality="small",
+            frames=(0, 50),
+            subtitle_tracks=["S1"],
+        )
+        ended = await asyncio.wait_for(rendering.finished(heard.append), 5)
+        again = [one async for one in rendering.progress()]
+        await connected.aclose()
+
+        assert fake.rendered == [
+            {
+                "timeline": timeline,
+                "path": str(film),
+                "codec": "hevc",
+                "quality": "small",
+                "subtitle_tracks": ["S1"],
+                "replace": False,
+                "range": {"from": 0, "to": 50},
+            }
+        ]
+        assert [(one.state, one.frame) for one in heard] == [
+            ("running", 0),
+            ("running", 25),
+            ("done", 50),
+        ]
+        assert ended == heard[-1] == rendering.last
+        assert (ended.path, ended.encoder, ended.frames, ended.over) == (
+            str(film),
+            "h264_fake",
+            50,
+            True,
+        )
+        assert again == [ended]
+        assert film.read_bytes() == b"a film of the fake engine"
+        # What the render told was heard by a reader of its own, which is closed with it.
+        assert list(connected._readers) == []  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_render_that_fails_or_is_cancelled_says_so(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        fake.render_end = "failed"
+
+        failed = await (await connected.render(timeline, tmp_path / "a.mp4")).finished()
+        fake.render_hold = True
+        held = await connected.render(timeline, tmp_path / "b.mp4")
+        first = await asyncio.wait_for(anext(held.progress()), 5)
+        await held.cancel()
+        cancelled = await asyncio.wait_for(held.finished(), 5)
+        with pytest.raises(EngineError) as unknown:
+            await connected._call("render.cancel", {"job": "r9"})  # pyright: ignore[reportPrivateUsage]
+        await connected.aclose()
+
+        assert (failed.state, failed.message, failed.path) == (
+            "failed",
+            "the encoder failed",
+            None,
+        )
+        assert (first.state, first.over) == ("running", False)
+        assert cancelled.state == "cancelled"
+        assert unknown.value.data is not None
+        assert unknown.value.data["reason"] == "missing"
+        assert not (tmp_path / "a.mp4").exists()
+        assert not (tmp_path / "b.mp4").exists()
+
+
+async def test_an_analysis_of_sound_is_followed_until_it_is_done(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        fake.sound_found = {"results": [{"target": {"bus": "B1"}, "integrated": -23.0}]}
+        params = {"timeline": "t1", "targets": [{"bus": "B1"}]}
+
+        found = await asyncio.wait_for(connected.analyze_sound("audio.analyze", params), 5)
+        fake.sound_end = "failed"
+        with pytest.raises(EngineError) as failed:
+            await asyncio.wait_for(
+                connected.analyze_sound("audio.normalize", {"timeline": "t1", "clips": ["c1"]}), 5
+            )
+        fake.sound_end = "done"
+        fake.sound_hold = True
+        waiting = asyncio.create_task(
+            connected.analyze_sound(
+                "audio.level_match", {"timeline": "t1", "reference": "c1", "clips": ["c2"]}
+            )
+        )
+        await until(lambda: "audio.level_match" in fake.asked and "audio-3" in fake.jobs)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await until(lambda: fake.jobs["audio-3"] == "cancelled")
+        await connected.aclose()
+
+        assert found["method"] == "audio.analyze"
+        assert found["results"] == [{"target": {"bus": "B1"}, "integrated": -23.0}]
+        assert [method for method, _ in fake.sounds] == [
+            "audio.analyze",
+            "audio.normalize",
+            "audio.level_match",
+        ]
+        assert fake.sounds[0][1] == params
+        assert failed.value.code == UNEXPECTED
+        assert failed.value.data is not None
+        assert failed.value.data["state"] == "failed"
+        assert "a clip cannot be read" in str(failed.value)
+        assert "audio.cancel" in fake.asked
+
+
+async def test_an_analysis_given_up_before_it_is_named_is_cancelled(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        fake.sound_hold = True
+        # Its answer is held until another request comes.
+        fake.hold = 2
+        waiting = asyncio.create_task(
+            connected.analyze_sound("audio.analyze", {"timeline": "t1", "targets": [{"bus": "B1"}]})
+        )
+        await until(lambda: "audio.analyze" in fake.asked)
+        waiting.cancel()
+        with contextlib.suppress(EngineError):
+            await connected.duration("t9")
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await until(lambda: fake.jobs.get("audio-1") == "cancelled")
+        await connected.aclose()
+
+        assert "audio.cancel" in fake.asked
+
+
+async def test_sum_candidate_analysis_round_trips_without_caching_or_applying(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        target = {"sum": ["A1"]}
+        fake.sound_found = {"candidate": True, "results": [{"target": target, "integrated": -27.0}]}
+        params = {
+            "timeline": "t1",
+            "targets": [target],
+            "revision": 0,
+            "candidate": [{"op": "set_clip", "timeline": "t1", "id": "c1", "gain_db": -12}],
+        }
+        found = await connected.analyze_sound("audio.analyze", params, session=connected.session)
+        assert found["results"][0]["target"] == target
+        assert found["candidate"] is True
+        assert fake.sounds[-1][1] == params
+        assert "transaction.apply" not in fake.asked
+        await connected.aclose()
+
+
+async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        (tmp_path / "there.mp4").write_bytes(b"")
+
+        with pytest.raises(EngineError) as there:
+            await connected.render(timeline, tmp_path / "there.mp4")
+        with pytest.raises(EngineError) as relative:
+            await connected.render(timeline, Path("film.mp4"))
+        revision, _ = await connected.project()
+        with pytest.raises(EngineError) as stale:
+            await connected.render(
+                timeline, tmp_path / "there.mp4", replace=True, revision=revision - 1
+            )
+        replaced = await connected.render(
+            timeline, tmp_path / "there.mp4", replace=True, revision=revision
+        )
+        done = await asyncio.wait_for(replaced.finished(), 5)
+        fake.render_hold = True
+        lost = await connected.render(timeline, tmp_path / "lost.mp4")
+        await asyncio.wait_for(anext(lost.progress()), 5)
+        fake.drop = "project.get"
+        with pytest.raises(EngineError):
+            await connected.project()
+        with pytest.raises(EngineError, match="closed the connection") as gone:
+            await asyncio.wait_for(lost.finished(), 5)
+        await lost.aclose()
+        await connected.aclose()
+
+        assert (there.value.code, there.value.data) == (
+            -32002,
+            {"path": str(tmp_path / "there.mp4"), "reason": "exists"},
+        )
+        assert relative.value.code == -32602
+        assert (stale.value.code, stale.value.data) == (
+            -32001,
+            {"reason": "stale_revision", "expected": revision - 1, "actual": revision},
+        )
+        assert fake.rendered[-3]["revision"] == revision - 1
+        assert done.state == "done"
+        assert gone.value.code == UNREACHABLE
+        assert list(connected._readers) == []  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_the_sound_of_a_render_is_asked_for_as_the_protocol_says_it(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        normalized = RenderAudio(
+            bus="B2",
+            rate=96000,
+            codec="aac",
+            bitrate=256000,
+            normalize=Normalization("spotify", "optimize", target=-16.0),
+        )
+
+        film = await connected.render(timeline, tmp_path / "film.mp4", audio=normalized)
+        await asyncio.wait_for(film.finished(), 5)
+        alone = await connected.render(
+            timeline, tmp_path / "sound.wav", audio=RenderAudio(codec="pcm_f32le"), video=False
+        )
+        await asyncio.wait_for(alone.finished(), 5)
+        await connected.aclose()
+
+        assert fake.rendered[0]["audio"] == {
+            "bus": "B2",
+            "rate": 96000,
+            "codec": "aac",
+            "bitrate": 256000,
+            "normalize": {"standard": "spotify", "mode": "optimize", "target": -16.0},
+        }
+        assert (fake.rendered[0]["codec"], fake.rendered[0]["quality"]) == ("h264", "high")
+        assert fake.rendered[1]["video"] is None
+        assert fake.rendered[1]["audio"] == {"codec": "pcm_f32le"}
+        assert {"codec", "quality"} & set(fake.rendered[1]) == set()
+        # Nothing of the sound is sent where nothing is asked of it.
+        assert RenderAudio().params() == {}
+        assert Normalization("ebu-r128").params() == {"standard": "ebu-r128", "mode": "normalize"}
+
+
+def test_what_a_render_tells_is_read_as_the_protocol_says_it() -> None:
+    said = {"job": "r1", "state": "running", "frame": 3, "frames": 9, "fps": 24}
+
+    assert Progress.of(said) == Progress("r1", "running", 3, 9, 24.0)
+    measuring = {"pass": 1, "passes": 2, "frame": 4800, "frames": 96000}
+    normalization = {"standard": "ebu-r128", "gain_db": 3.5, "met": True}
+    read = Progress.of({**said, "measuring": measuring, "normalization": normalization})
+    assert read is not None
+    assert (read.measuring, read.normalization) == (measuring, normalization)
+    assert Progress.of({**said, "measuring": [1], "normalization": "loud"}) == Progress(
+        "r1", "running", 3, 9, 24.0
+    )
+    assert Progress.of({**said, "frame": "3", "fps": True, "path": 7}) == Progress(
+        "r1", "running", 0, 9, 0.0
+    )
+    assert Progress.of({**said, "state": "paused"}) is None
+    assert Progress.of({**said, "job": 1}) is None
+
+
 # Reaching the engine
 
 
@@ -581,7 +1046,7 @@ async def test_an_engine_that_cannot_be_reached_is_given_up(
     [
         ("error", "project.json cannot be read", 2),
         ("exit", "ended with exit code 5 before it listened", 5),
-        ("babble", "did not say where it listens in protocol 1, at an add", None),
+        ("babble", "did not say where it listens in protocol 2, at an add", None),
         ("elsewhere", r"where an engine listens: b'{\"listening\"", None),
         ("silent", "did not say where it listens within 0.5 seconds", None),
     ],
@@ -657,13 +1122,20 @@ async def test_an_engine_of_another_project_or_protocol_is_not_used(tmp_path: Pa
         with pytest.raises(EngineError, match="another project open") as other:
             await attached(tmp_path / "film")
         fake.project_dir = None
-        fake.refusals["hello"] = {"code": -32602, "message": "no", "data": {"protocol": 2}}
+        fake.refusals["hello"] = {
+            "code": -32600,
+            "message": "no",
+            "data": {"reason": "protocol", "supported": [3]},
+        }
         with pytest.raises(EngineError) as protocol:
             await attached(tmp_path / "film")
         await until(lambda: not fake.connections)
 
         assert other.value.code == UNEXPECTED
-        assert (protocol.value.code, protocol.value.data) == (-32602, {"protocol": 2})
+        assert (protocol.value.code, protocol.value.data) == (
+            -32600,
+            {"reason": "protocol", "supported": [3]},
+        )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="named pipes are of Windows")
@@ -873,7 +1345,7 @@ def clip(tmp_path: Path) -> Path:
 
 
 async def test_the_engine_edits_a_project_for_two_clients_and_ends_by_itself(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clip: Path
+    tmp_path: Path, clip: Path
 ) -> None:
     program = real_engine()
     project = tmp_path / "film"
@@ -881,40 +1353,221 @@ async def test_the_engine_edits_a_project_for_two_clients_and_ends_by_itself(
     first = await Engine.attach(project, program=program, idle_seconds=1)
     assert (project / "engine.lock").exists()
     revision, added = await first.imported([clip])
-    _, imported = await first.project()
-    scale = imported["media"][0]["facts"]["duration"]["scale"]
+    timeline = (await first.apply([ADD, edits.add_track("$t", "video")])).names["$t"]
     applied = await first.apply(
         [
-            ADD,
-            {"op": "add_track", "timeline": "$t",
-             "track": {"id": "$v", "kind": "video", "clips": []}},
-            {"op": "insert_clip", "timeline": "$t", "track": "$v",
-             "clip": {"id": "$c", "media": added[0], "source_in": {"ticks": 0, "scale": scale},
-                      "start": 0, "length": 25}},
+            edits.insert(timeline, edits.of_media(added[0], length=25), 0, audio_track=None),
+            edits.blade(timeline, 10),
         ]
-    )  # fmt: skip
+    )
     _, edited = await first.project()
+    frames = await first.duration(timeline)
     second = await Engine.attach(project, program=program, client="cli")
     told = second.changes()
     undone = await first.undo()
     changed = await next_of(told)
     _, after = await second.project()
     with pytest.raises(EngineError) as refused:
-        await second.apply([{"op": "remove_media", "id": "m99"}])
+        await second.apply([edits.remove_media("m99")])
+    with pytest.raises(EngineError) as locked:
+        await second.apply(
+            [edits.set_track(timeline, "V1", locked=True), edits.blade(timeline, 5, tracks=["V1"])]
+        )
     pid = first.hello["pid"]
     await asyncio.gather(first.aclose(), second.aclose())
     await until(lambda: not (project / "engine.lock").exists(), 15)
 
     assert revision == 1
-    assert set(applied.names) == {"$t", "$v", "$c"}
-    assert edited["timelines"][0]["tracks"][0]["clips"][0]["media"] == added[0]
+    assert all("op" in one for one in applied.done)
+    assert applied.clamped == []
+    clips = edited["timelines"][0]["tracks"][0]["clips"]
+    assert [(one["start"], one["length"]) for one in clips] == [(0, 10), (10, 15)]
+    assert clips[0]["source"]["media"] == added[0]
+    assert frames == 25
     assert second.hello["pid"] == pid
+    assert second.hello["protocol"] == 2
     assert undone is not None
-    assert changed.revision == undone.revision == 3
+    assert changed.revision == undone.revision == 4
     assert (changed.params["by"], changed.params["made_by"]) == ("agent", "agent")
-    assert after["timelines"] == []
+    assert after["timelines"][0]["tracks"][0]["clips"] == []
     assert refused.value.code == -32001
     assert refused.value.data is not None
     assert refused.value.data["reason"] == "missing"
+    assert locked.value.data is not None
+    assert (locked.value.data["index"], locked.value.data["reason"]) == (1, "locked")
     assert (project / "project.json").exists()
     assert len(logs(project)) == 1
+
+
+async def test_the_engine_renders_a_timeline_and_tells_how_far_it_has_come(
+    tmp_path: Path, clip: Path
+) -> None:
+    program = real_engine()
+    film = tmp_path / "out" / "cut.mov"
+    film.parent.mkdir()
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        _, added = await one.imported([clip])
+        timeline = (await one.apply([ADD, edits.add_track("$t", "video")])).names["$t"]
+        await one.apply([edits.append(timeline, edits.of_media(added[0], length=25))])
+        heard: list[Progress] = []
+        # Held to a revision, it is refused where the project is not at it, and taken where it is.
+        revision, _ = await one.project()
+        with pytest.raises(EngineError) as stale:
+            await one.render(timeline, film, codec="prores", quality="small", revision=revision + 1)
+        rendering = await one.render(
+            timeline, film, codec="prores", quality="small", revision=revision
+        )
+        ended = await asyncio.wait_for(rendering.finished(heard.append), 120)
+
+    assert stale.value.data == {
+        "reason": "stale_revision",
+        "expected": revision + 1,
+        "actual": revision,
+    }
+    assert (ended.state, ended.frames, ended.path) == ("done", 25, str(film)), ended.message
+    assert ended.encoder
+    assert all(one.job == rendering.job for one in heard)
+    assert film.stat().st_size > 0
+
+
+async def test_the_engine_renders_the_sound_alone_normalized_as_it_is_asked(
+    tmp_path: Path,
+) -> None:
+    program = real_engine()
+    tone = made(
+        tmp_path / "raw", "tone.wav",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+        "-af", "volume=-30dB", "-c:a", "pcm_s16le",
+    )  # fmt: skip
+    sound = tmp_path / "out" / "mix.wav"
+    sound.parent.mkdir()
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        _, added = await one.imported([tone])
+        timeline = (await one.apply([ADD, edits.add_track("$t", "audio")])).names["$t"]
+        await one.apply([edits.append(timeline, edits.of_media(added[0], length=25))])
+        asked = RenderAudio(codec="pcm_f32le", normalize=Normalization("ebu-r128"))
+        rendering = await one.render(timeline, sound, audio=asked, video=False)
+        ended = await asyncio.wait_for(rendering.finished(), 120)
+
+    assert (ended.state, ended.frames, ended.path) == ("done", 25, str(sound)), ended.message
+    assert ended.normalization is not None
+    assert (ended.normalization["standard"], ended.normalization["mode"]) == (
+        "ebu-r128",
+        "normalize",
+    )
+    # A sine at -30 dBFS is brought up towards -23 LUFS.
+    assert ended.normalization["gain_db"] > 0
+    assert sound.read_bytes()[:4] == b"RIFF"
+
+
+async def test_the_engine_takes_the_sound_of_a_timeline_as_it_is_written(tmp_path: Path) -> None:
+    program = real_engine()
+    second = edits.Time(ticks=48000, scale=48000)
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        applied = await one.apply(
+            [ADD, edits.add_track("$t", "audio"), edits.add_track("$t", "audio")]
+        )
+        timeline = applied.names["$t"]
+        _, before = await one.project()
+        every = [
+            edits.set_track_audio(timeline, "A1", {"strip": {"fader_db": -6.0}}),
+            edits.set_track(timeline, "A2", mute=True),
+            edits.add_bus(
+                timeline, {"id": "B2", "name": "Dialogue", "color": "#ff8800ff", "format": "stereo"}
+            ),
+            edits.set_bus(timeline, "B2", {"strip": {"fader_db": -3.0}}),
+            edits.add_insert(timeline, {"track": "A1"}, {"effect": {"kind": "gain"}}),
+            edits.set_insert(timeline, {"track": "A1"}, 0, None),
+            edits.add_vca(timeline, {"id": "", "name": "Music"}),
+            edits.add_track_group(timeline, {"id": "", "name": "Dialogue", "members": ["A1"]}),
+            edits.lane_points(
+                timeline, {"track": "A1"}, "fader_db", "add", points=[(second, -10.0)]
+            ),
+            edits.set_lane(
+                timeline,
+                {"track": "A1"},
+                "pan.x",
+                {"points": [{"at": second.model_dump(), "value": 0.5}]},
+            ),
+            edits.lane_range(
+                timeline,
+                {"track": "A1"},
+                "pan.x",
+                edits.Time(ticks=0, scale=48000),
+                edits.Time(ticks=96000, scale=48000),
+                "shift_value",
+                delta=0.1,
+            ),
+            edits.clear_lanes(timeline, {"track": "A1"}),
+            edits.set_timeline_audio(timeline, {"follows_edit": False}),
+        ]
+        await one.apply(every)
+        _, after = await one.project()
+        await one.undo()
+        _, undone = await one.project()
+
+    (cut,) = after["timelines"]
+    a1, a2 = cut["tracks"]
+    assert a1["strip"]["fader_db"] == -6.0
+    assert (a1["strip"]["inserts"], a1["lanes"]) == ([], {})
+    assert a2["mute"] is True
+    assert [bus["id"] for bus in cut["buses"]] == ["B1", "B2"]
+    assert cut["buses"][1]["strip"]["fader_db"] == -3.0
+    assert [vca["id"] for vca in cut["vcas"]] == ["VCA1"]
+    assert cut["track_groups"][0]["members"] == ["A1"]
+    assert cut["audio"]["follows_edit"] is False
+    # One step, taken back whole.
+    assert undone["timelines"] == before["timelines"]
+
+
+async def test_the_engine_bakes_a_grade_into_a_lut_of_the_project(tmp_path: Path) -> None:
+    program = real_engine()
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        timeline = (await one.apply([ADD])).names["$t"]
+        grade = {"level": "timeline", "timeline": timeline}
+        baked = await one.export_lut(grade, "flat.cube", size=17)
+        with pytest.raises(EngineError) as there:
+            await one.export_lut(grade, "flat.cube", size=17)
+        with pytest.raises(EngineError) as size:
+            await one.export_lut(grade, "odd.cube", size=18)  # type: ignore[arg-type]
+
+    assert (baked["size"], baked["nodes"], baked["ignored"]) == (17, [], [])
+    written = Path(baked["path"])
+    assert written.is_file()
+    assert "LUT_3D_SIZE 17" in written.read_text(encoding="utf-8")
+    assert there.value.code == -32001
+    assert size.value.code == -32602
+
+
+async def test_the_engine_lists_the_luts_of_the_project_and_has_no_scopes_headless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    program = real_engine()
+    project = tmp_path / "film"
+    library = tmp_path / "library"
+    cube = "LUT_3D_SIZE 2\n" + "0 0 0\n" * 8
+    (project / "LUTs").mkdir(parents=True)
+    (project / "LUTs" / "film.cube").write_text(cube, newline="\n")
+    (library / "looks").mkdir(parents=True)
+    (library / "looks" / "warm.cube").write_text(cube, newline="\n")
+    monkeypatch.setenv("COLUMBINA_LUTS", str(library))
+
+    async with await Engine.attach(project, program=program, idle_seconds=1) as one:
+        listed = await one.luts()
+        with pytest.raises(EngineError) as headless:
+            await one.statistics()
+        with pytest.raises(EngineError) as outside:
+            await one.luts("..")
+
+    assert [root.place for root in listed.roots] == ["project", "library"]
+    assert Path(listed.roots[1].path) == library
+    assert [(lut.name, lut.root, lut.size) for lut in listed.luts] == [
+        ("LUTs/film.cube", 0, len(cube)),
+        ("looks/warm.cube", 1, len(cube)),
+    ]
+    assert headless.value.code == -32601
+    assert outside.value.data == {"reason": "outside_roots", "folder": ".."}

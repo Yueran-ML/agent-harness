@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from columbina.llm import Chunk, LlmRequest, SystemMessage, UserMessage
 from columbina.llm.adapters.scripted import Scripted
 
-__all__ = ["Thinking", "instructions_now", "system_text"]
+__all__ = ["Thinking", "instructions_now", "system_text", "told_of_the_effort"]
 
 
 class Thinking:
@@ -43,3 +43,18 @@ def instructions_now(request: LlmRequest) -> str:
             if text.startswith(_INSTEAD):
                 return text
     return system_text(request)
+
+
+_EFFORT = '<context source="effort">\n'
+_END = "\n</context>"
+
+
+def told_of_the_effort(request: LlmRequest) -> list[str]:
+    """Return what a request tells the model of how to work at the level of effort, in order."""
+    told: list[str] = []
+    for message in request.messages:
+        if isinstance(message, UserMessage):
+            text = "\n".join(block.text for block in message.content)
+            if text.startswith(_EFFORT):
+                told.append(text.removeprefix(_EFFORT).removesuffix(_END))
+    return told

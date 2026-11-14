@@ -74,9 +74,9 @@ describe('starting the engine of a project', () => {
     expect(session.owned).toBe(true);
     expect(session.pid).toBe(child.pid);
     expect(session.address).toBe(PIPE_A);
-    expect(session.hello).toMatchObject({ protocol: 1, revision: 0, project: PROJECT });
+    expect(session.hello).toMatchObject({ protocol: 2, revision: 0, project: PROJECT });
     expect(engine.world.net.connect.mock.calls).toEqual([[PIPE_A], [PIPE_A]]);
-    for (const socket of engine.reached()) expect(socket.written).toEqual([{ jsonrpc: '2.0', id: 1, method: 'hello', params: { client: 'desktop', protocol: 1 } }]);
+    for (const socket of engine.reached()) expect(socket.written).toEqual([{ jsonrpc: '2.0', id: 1, method: 'hello', params: { client: 'desktop', protocol: 2 } }]);
   });
 
   it('appends what the engine logs to its log as it comes, and never leaves it unread', async () => {
@@ -99,12 +99,12 @@ describe('starting the engine of a project', () => {
 
   it('refuses a first line that is not of this protocol, or names no address of an engine, and ends that engine', async () => {
     for (const first of [
-      'not json', '{"listening": "\\\\\\\\.\\\\pipe\\\\columbina-engine-0123456789abcdef", "pid": 5, "protocol": 2}',
-      '{"listening": "\\\\\\\\.\\\\pipe\\\\somebody-else", "pid": 5, "protocol": 1}',
-      '{"listening": "\\\\\\\\server\\\\pipe\\\\columbina-engine-0123456789abcdef", "pid": 5, "protocol": 1}',
+      'not json', '{"listening": "\\\\\\\\.\\\\pipe\\\\columbina-engine-0123456789abcdef", "pid": 5, "protocol": 1}',
+      '{"listening": "\\\\\\\\.\\\\pipe\\\\somebody-else", "pid": 5, "protocol": 2}',
+      '{"listening": "\\\\\\\\server\\\\pipe\\\\columbina-engine-0123456789abcdef", "pid": 5, "protocol": 2}',
     ]) {
       const engine = engineHarness({ starts: [{ first }] });
-      await expect(engine.open()).rejects.toThrow('did not say where it listens in protocol 1');
+      await expect(engine.open()).rejects.toThrow('did not say where it listens in protocol 2');
       expect(engine.kill).toHaveBeenCalledWith(engine.world.children[0]);
       expect(engine.world.net.connect).not.toHaveBeenCalled();
     }
@@ -265,9 +265,9 @@ describe('a session with the engine', () => {
     const session = await engine.open();
     const [main, view] = engine.reached();
     const server = engine.world.servers.get(PIPE_A)!;
-    server.answers.set('project.get', () => ({ result: { revision: 0, next_id: 1, project: { schema: 1, next_id: 1, media: [], timelines: [] } } }));
+    server.answers.set('project.get', () => ({ result: { revision: 0, next_id: 1, project: { schema: 5, groups: [], bins: [], next_id: 1, media: [], timelines: [] } } }));
     server.answers.set('view.attach', () => 'hold');
-    const attaching = session.view('view.attach', { parent: '1', x: 0, y: 0, width: 1, height: 1 });
+    const attaching = session.view('view.attach', { monitor: 'source', parent: '1', x: 0, y: 0, width: 1, height: 1 });
     // The main connection answers while the view is being made.
     await expect(session.call('project.get')).resolves.toMatchObject({ revision: 0 });
     expect(main.methods()).toEqual(['hello', 'project.get']);

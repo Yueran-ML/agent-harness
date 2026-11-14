@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c409f51dc091a5d4e24549b02d4badd5e50751cb3098c913c87365a5499901d6 # shrinks to lane = [(0, 0.0)], start = 5585, values = [-23.98281613536591, -7.304378735987619, 9.527919654749956], glide = 0

@@ -743,3 +743,59 @@ async def test_a_provider_leaves_with_the_plugin_that_brought_it(
     assert list(sandbox.providers) == ["none", "docker"]
     with pytest.raises(SandboxUnavailableError):
         await sandbox.run(["python", "check.py"], session=session, cwd=work, timeout_seconds=5)
+
+
+@pytest.mark.parametrize(
+    ("tool", "path", "allowed"),
+    [
+        ("video_edit", ".columbina/studio", True),
+        ("video_import", ".columbina/studio", True),
+        ("edit", ".columbina/studio/story/t12.md", True),
+        ("write", ".columbina/studio/story/t12.md", True),
+        ("edit", ".columbina/studio/project.json", False),
+        ("write", ".columbina/studio/engine.lock", False),
+        ("video_edit", ".columbina/permissions.yml", False),
+        ("video_edit", ".git", False),
+        ("edit", ".columbina/studio/story/permissions.yml", False),
+    ],
+)
+async def test_studio_exception_is_limited_to_engine_tools_and_story_files(
+    ctx: Context,
+    tmp_path: Path,
+    work: Path,
+    tool: str,
+    path: str,
+    allowed: bool,
+) -> None:
+    sessions, fs, sandbox = await program(ctx, tmp_path)
+    session = sessions.create(ctx, work)
+    access = Access(
+        session=session, cwd=work, where=fs.locate(session, work, path), kind="write", tool=tool
+    )
+    assert (sandbox.restricts(access) is None) == allowed
+    sandbox.set_mode(session, "read-only")
+    refusal = sandbox.restricts(access)
+    assert refusal is not None
+    assert refusal.code == "READ_ONLY"
+
+
+async def test_studio_link_cannot_make_agent_settings_writable(
+    ctx: Context,
+    tmp_path: Path,
+    work: Path,
+) -> None:
+    (work / ".columbina").mkdir()
+    (work / ".columbina" / "settings").mkdir()
+    link_directory(work / ".columbina" / "studio", work / ".columbina" / "settings")
+    sessions, fs, sandbox = await program(ctx, tmp_path)
+    session = sessions.create(ctx, work)
+    access = Access(
+        session=session,
+        cwd=work,
+        where=fs.locate(session, work, ".columbina/studio"),
+        kind="write",
+        tool="video_edit",
+    )
+    refusal = sandbox.restricts(access)
+    assert refusal is not None
+    assert refusal.code == "PROTECTED"

@@ -148,6 +148,19 @@ the application last quit.
 The first start begins with a short film. Any key or a click leaves it, and the starts
 after that go without it unless the settings say that it is to play every time.
 
+## The editing studio
+
+*Studio* in the side bar opens the editing studio of the project folder, on Windows. It is made
+after DaVinci Resolve, with a Media, a Cut and an Edit page, and its project,
+`.columbina/studio`, is the one that the agent's video tools edit too. The shell starts
+`columbina-engine` for the folder, which draws the source and timeline viewers in windows of its
+own laid over the page; the page sends its edits to the engine, and never a path to write: an
+export asks for its file in the save dialog of the system, through the shell. When the studio
+opens a folder, the shell runs `columbina video migrate` in the background, and the page tells
+what came of it. [Editing video](../docs/video.md) says what the pages do, with the keys of the
+studio. On macOS and Linux the entry is greyed out and says that the studio comes to macOS
+later; the shell starts no engine there.
+
 ## The service of the model, and its key
 
 The settings list the services that are set up and say where the key of each comes

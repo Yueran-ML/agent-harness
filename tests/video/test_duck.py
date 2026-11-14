@@ -198,7 +198,7 @@ async def test_short_and_silent_intervals_use_matching_loudness_metrics(
 
 def amount(params: dict[str, Any]) -> float:
     """The candidate's Ducker amount, or 0 for a measurement without a candidate."""
-    ops = params.get("candidate") or []
+    ops: list[Any] = params.get("candidate") or []
     return ops[0]["patch"]["strip"]["track_fx"]["amount_db"] if ops else 0
 
 

@@ -20,6 +20,7 @@ from columbina.apps.doctor import Finding, State, looked, shown
 from columbina.apps.launcher import main
 from columbina.builtin_tools.shell import NAME as SHELL
 from columbina.kernel import Entry
+from columbina.llm.adapters.openai_responses import OpenAIResponses
 from columbina.llm.credentials import CredentialsError, keep, origin_of
 from support.model_service import Service, listing, serving
 
@@ -488,7 +489,7 @@ async def test_openai_is_asked_for_its_models_by_the_adapter_of_its_responses(
 ) -> None:
     service.answers(200, listing("gpt-tiny"))
     made: list[str] = []
-    real = doctor.OpenAIResponses
+    real = OpenAIResponses
 
     def responses(config: Any) -> Any:
         made.append(config.base_url)

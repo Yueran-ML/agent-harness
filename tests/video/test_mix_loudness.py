@@ -3,7 +3,7 @@
 import asyncio
 import copy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -311,7 +311,9 @@ async def test_cancelling_candidate_analysis_never_applies_or_rolls_back_live_ch
 
 
 @pytest.mark.parametrize("mode", ["independent", "relative"])
-async def test_track_fader_within_tolerance_is_idempotent(mode: str) -> None:
+async def test_track_fader_within_tolerance_is_idempotent(
+    mode: Literal["independent", "relative"],
+) -> None:
     project = mix()
     tracks = project["timelines"][0]["tracks"]
     tracks.append({**copy.deepcopy(tracks[0]), "id": "A2"})

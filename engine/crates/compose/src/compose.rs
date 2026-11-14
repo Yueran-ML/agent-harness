@@ -6,7 +6,9 @@
 //! `yuv.wgsl`, by its matrix and range; a title drawn into pixels on the processor, see
 //! `text.rs`, and kept for as long as the same text is drawn; a colour), goes through its input
 //! transform and its grade, is fitted to the canvas, put on it by its transform, and laid over
-//! what is there by its opacity, premultiplied: `out = layer + (1 - alpha of layer) * under`. A
+//! what is there by its opacity, premultiplied: `out = layer + (1 - alpha of layer) * under`. Its
+//! crop cuts it in its own frame, before its transform, and a composite mode other than Normal
+//! blends it with what is under it (see [`SceneLayer`], and `Compositor::draw_calls`). A
 //! layer whose operations read the pixels about each one is drawn first into textures of its
 //! own, one for each such neighbourhood, at the size of its picture, and those are filtered
 //! (`color.rs`); the others are drawn in their one pass. The canvas is black at first, and of
@@ -18,17 +20,19 @@
 //! Subtitles are drawn over the timeline grade, in a preview only: white with a black outline, in
 //! the middle at the bottom, letters a twentieth of the height of the canvas high.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use columbina_media::{NativePicture, Picture, PictureFormat};
+use columbina_model::grade::Composite;
 use columbina_model::project::{Rgba, TextAlign};
 
 use crate::color::{self, Filter, Inputs, LayerColor, Part, Program, Stage, TextureKind};
 use crate::geometry::{
     fit, minification, picture_stride, placement, raster_scale, samples, shown_size,
-    subtitle_origin, subtitle_size, text_window, title_origin, Affine, Transform,
+    subtitle_origin, subtitle_size, text_window, title_origin, Affine, Crop, Transform, UNCUT,
 };
 use crate::gpu::Gpu;
 use crate::neighbourhood::{self, Pass};
@@ -38,6 +42,15 @@ use crate::yuv::{self, Texel};
 
 /// The shader of layers of R'G'B'A.
 const LAYER_SHADER: &str = include_str!("layer.wgsl");
+
+/// What a shader of layers lays a layer on the canvas by, as it is, between these lines; and
+/// what is put in their place for a layer that is blended with what is under it.
+const BLEND_BEGIN: &str = "// blend: begin";
+const BLEND_END: &str = "// blend: end";
+const BLEND_SHADER: &str = include_str!("blend.wgsl");
+
+/// The shader that makes a canvas opaque, once layers that are blended are on it.
+const OPAQUE_SHADER: &str = include_str!("opaque.wgsl");
 
 /// The shader that makes the canvas Y'CbCr for an encoder.
 const CONVERT_SHADER: &str = include_str!("convert.wgsl");
@@ -62,7 +75,7 @@ const SPARES_KEPT_FOR: u64 = 60;
 pub const WORKING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The bytes of the uniform of `layer.wgsl`.
-const LAYER_PARAMS_SIZE: u64 = 96;
+const LAYER_PARAMS_SIZE: u64 = 128;
 
 /// The bytes of the uniform of `convert.wgsl`.
 const CONVERT_PARAMS_SIZE: u64 = 32;
@@ -107,6 +120,12 @@ pub struct Scene {
     /// The output transform: from the working space of the timeline into the space of the
     /// output, done last, over the subtitles too.
     pub output: Stage,
+    /// The weights of R, G and B in the luma of the working space of the timeline, which the
+    /// composite modes that go by luma read (Hue, Saturation, Color, Luminosity, Darker Color
+    /// and Lighter Color): those that its grades are made with
+    /// ([`crate::grade::GradeOptions::luma`]), so that a layer is blended on the timeline as
+    /// a Layer Mixer blends it in a grade. Those of BT.709 by default.
+    pub luma: [f32; 3],
 }
 
 impl Default for Scene {
@@ -120,6 +139,7 @@ impl Default for Scene {
             subtitles: Vec::new(),
             grade: Stage::default(),
             output: Stage::default(),
+            luma: crate::grade::REC709_LUMA,
         }
     }
 }
@@ -157,6 +177,14 @@ pub struct SceneLayer {
     pub opacity: f32,
     /// How its picture is decoded, and its input transform and grade.
     pub color: LayerColor,
+    /// How much of its picture is cut away at each side, in its own frame, before `transform`
+    /// puts it on the canvas: of a picture, the picture as it is fitted; of a colour and of a
+    /// title, the canvas. What is cut away shows what is under the layer.
+    pub crop: Crop,
+    /// How it is laid over the layers under it: as it is ([`Composite::Normal`]), or blended
+    /// with the canvas as they left it, by the maths of the Layer Mixer of a grade
+    /// ([`crate::grade`]), after its own grade. Where nothing is under it, it is laid as it is.
+    pub composite: Composite,
 }
 
 /// Why a frame could not be composed, or read back.
@@ -710,6 +738,28 @@ enum Pipe {
     Yuv(Texel),
     Rgba,
     Stage,
+    /// A picture blended with what is under it on the canvas, by its composite mode.
+    YuvBlended(Texel),
+    /// A title or a colour blended with what is under it.
+    RgbaBlended,
+}
+
+impl Pipe {
+    /// The kind that draws the same layer blended with what is under it: another shader, which
+    /// reads the canvas as it was before the layer (group 2). A layer that is not blended is
+    /// drawn by the kind it always was, and binds nothing more.
+    fn blended(self) -> Pipe {
+        match self {
+            Pipe::Yuv(texel) => Pipe::YuvBlended(texel),
+            Pipe::Rgba => Pipe::RgbaBlended,
+            other => other,
+        }
+    }
+
+    /// Whether it draws a layer blended with what is under it.
+    fn is_blended(self) -> bool {
+        matches!(self, Pipe::YuvBlended(_) | Pipe::RgbaBlended)
+    }
 }
 
 /// What a pipeline is known by: its kind, the format it draws into, and its program of colour.
@@ -740,11 +790,28 @@ impl Waiting {
     }
 }
 
-/// The kind of pipeline that draws `draw`.
+/// The kind of pipeline that draws `draw` alone, as it is: into the textures of its
+/// neighbourhoods, and onto the canvas where it is not blended.
 fn pipe_of(draw: &Draw) -> Pipe {
     match draw {
         Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
-        Draw::Texture(_) => Pipe::Rgba,
+        Draw::Texture(..) => Pipe::Rgba,
+    }
+}
+
+/// Whether `draw` is blended with what is under it on the canvas.
+fn is_blended(draw: &Draw) -> bool {
+    match draw {
+        Draw::Picture { blended, .. } | Draw::Texture(_, blended) => *blended,
+    }
+}
+
+/// The kind of pipeline that lays `draw` on the canvas.
+fn canvas_pipe_of(draw: &Draw) -> Pipe {
+    if is_blended(draw) {
+        pipe_of(draw).blended()
+    } else {
+        pipe_of(draw)
     }
 }
 
@@ -824,6 +891,8 @@ enum Role {
     Source,
     /// The first pass of its filter.
     Between,
+    /// The canvas as it is before a layer that is blended with it is drawn.
+    Backdrop,
 }
 
 /// The textures of neighbourhoods, kept from frame to frame by their sizes: those lent to a
@@ -891,11 +960,15 @@ impl Spares {
 
 /// A layer, or the subtitles, to be drawn.
 struct Call {
+    /// The kind of pipeline that draws it as it is.
     pipe: Pipe,
     program: Option<usize>,
     bind: wgpu::BindGroup,
     offset: u32,
     colour: Option<wgpu::BindGroup>,
+    /// Whether it is blended with what is under it on the canvas, by the pipeline of
+    /// [`Pipe::blended`].
+    blended: bool,
 }
 
 /// The shape of the planes of a picture: their sizes and formats follow from it.
@@ -970,10 +1043,15 @@ enum Put {
 /// that.
 type Fitted = ([f64; 4], wgpu::TextureView, (u32, u32));
 
-/// What is drawn for a layer.
+/// What is drawn for a layer; and whether it is blended with what is under it on the canvas
+/// (its composite mode is not Normal, and a layer is drawn before it).
 enum Draw {
-    Picture { shape: Shape, planes: Planes },
-    Texture(wgpu::TextureView),
+    Picture {
+        shape: Shape,
+        planes: Planes,
+        blended: bool,
+    },
+    Texture(wgpu::TextureView, bool),
 }
 
 /// Puts the layers of scenes together on a card. It keeps what it made from frame to frame: the
@@ -1027,6 +1105,9 @@ pub struct Compositor {
     /// The uniforms of the passes of filters of a frame, one slot of `slot` bytes each.
     filter_uniform: wgpu::Buffer,
     spares: Spares,
+    /// The pipelines that make a canvas opaque (`opaque.wgsl`), by its format, made as they
+    /// are first needed: by a frame with a layer that is blended.
+    opaque: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     /// The number of the frame being composed.
     frame: u64,
 }
@@ -1209,6 +1290,7 @@ impl Compositor {
             filter: None,
             filter_uniform,
             spares: Spares::default(),
+            opaque: HashMap::new(),
             yuv_layouts,
             rgba_layout,
             stage_layout: stage_layout(device),
@@ -1376,7 +1458,7 @@ impl Compositor {
                         1,
                         Some([1.0; 4]),
                     ));
-                    draws.push(Draw::Texture(view));
+                    draws.push(Draw::Texture(view, false));
                     colours.push(None);
                 }
                 Ok(None) => {}
@@ -1431,8 +1513,9 @@ impl Compositor {
         }
         let mut calls = Vec::with_capacity(draws.len());
         for (draw, offset) in draws.iter_mut().zip(offsets) {
+            let blended = is_blended(draw);
             let (pipe, bind) = match draw {
-                Draw::Picture { shape, planes } => {
+                Draw::Picture { shape, planes, .. } => {
                     let bind = match &planes.bind {
                         Some((generation, bind)) if *generation == self.generation => bind.clone(),
                         _ => {
@@ -1443,7 +1526,7 @@ impl Compositor {
                     };
                     (Pipe::Yuv(shape.texel), bind)
                 }
-                Draw::Texture(view) => (Pipe::Rgba, self.texture_bind(view)),
+                Draw::Texture(view, _) => (Pipe::Rgba, self.texture_bind(view)),
             };
             calls.push(Call {
                 pipe,
@@ -1451,8 +1534,23 @@ impl Compositor {
                 bind,
                 offset,
                 colour: None,
+                blended,
             });
         }
+        // What the layers that are blended read of the canvas under them: a texture of its
+        // size that the canvas is copied into before each is drawn, bound as their group 2;
+        // and the pipeline that makes the canvas opaque after them. A frame without such a
+        // layer has neither.
+        let backdrop = if calls.iter().any(|call| call.blended) {
+            if let Entry::Vacant(opaque) = self.opaque.entry(format) {
+                opaque.insert(opaque_pipeline(self.gpu.device(), format));
+            }
+            let texture = self.spares.shared(&self.gpu, size, Role::Backdrop);
+            let bind = stage_bind(self.gpu.device(), &self.stage_layout, &texture);
+            Some((texture, bind))
+        } else {
+            None
+        };
         // What the programs of colour read: those of the layers, of the stages, and of the
         // neighbourhoods of the layers and of the stages, in that order.
         let stage_taps = [&grade, &output]
@@ -1524,7 +1622,8 @@ impl Compositor {
         } else {
             calls.len()
         };
-        self.draw_calls(&mut encoder, current, &calls[..first], format, true);
+        let under = backdrop.as_ref();
+        self.draw_calls(&mut encoder, current, &calls[..first], format, true, under);
         if let (Some(work), Some(colour)) = (&grade, &grade_bind) {
             for (tap, bind) in work.taps.iter().zip(&mut tap_binds) {
                 self.stage_pass(&mut encoder, current, &tap.source, tap.program, &bind);
@@ -1534,7 +1633,7 @@ impl Compositor {
             self.stage_pass(&mut encoder, current, next, work.program, colour);
             current = next;
             if first < calls.len() {
-                self.draw_calls(&mut encoder, current, &calls[first..], format, false);
+                self.draw_calls(&mut encoder, current, &calls[first..], format, false, under);
             }
         }
         if let (Some(work), Some(colour)) = (&output, &output_bind) {
@@ -1820,6 +1919,17 @@ impl Compositor {
     }
 
     /// Draw `calls` into `canvas`, cleared to black first or drawn over.
+    ///
+    /// A call that is blended with what is under it reads the canvas as it is before it, which
+    /// cannot be read while it is drawn into: the pass ends before such a call, the canvas is
+    /// copied into the texture of `backdrop` (bound as the call's group 2), and a pass that
+    /// keeps what is on the canvas goes on from the call. Calls of which none is blended are
+    /// drawn in one pass, by the commands that drew them before layers could be blended.
+    ///
+    /// A canvas with a call that is blended is cleared to nothing rather than to black, so that
+    /// its alpha says where the layers under such a call lie (over nothing, a layer is laid as
+    /// it is), and is made opaque once all its calls are drawn: what it would have been over
+    /// black, its colours being premultiplied.
     fn draw_calls(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1827,35 +1937,76 @@ impl Compositor {
         calls: &[Call],
         format: wgpu::TextureFormat,
         clear: bool,
+        backdrop: Option<&(wgpu::Texture, wgpu::BindGroup)>,
     ) {
         let view = canvas.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("columbina layers"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: if clear {
-                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                    } else {
-                        wgpu::LoadOp::Load
-                    },
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        for call in calls {
-            pass.set_pipeline(&self.pipelines[&(call.pipe, format, call.program)]);
-            pass.set_bind_group(0, &call.bind, &[call.offset]);
-            if let Some(colour) = &call.colour {
-                pass.set_bind_group(1, colour, &[]);
+        let through = clear && calls.iter().any(|call| call.blended);
+        let mut load = match (clear, through) {
+            (false, _) => wgpu::LoadOp::Load,
+            (true, false) => wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            (true, true) => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+        };
+        let mut from = 0;
+        loop {
+            // As far as the next call that is blended, which begins a pass of its own.
+            let to = calls[from..]
+                .iter()
+                .skip(1)
+                .position(|call| call.blended)
+                .map_or(calls.len(), |next| from + 1 + next);
+            // The first call of a canvas that is cleared has nothing under it to copy (and
+            // is not blended: `Compositor::layers`).
+            let reads = calls.get(from).is_some_and(|call| call.blended) && (from > 0 || !clear);
+            if let (true, Some((texture, _))) = (reads, backdrop) {
+                encoder.copy_texture_to_texture(
+                    canvas.as_image_copy(),
+                    texture.as_image_copy(),
+                    canvas.size(),
+                );
             }
-            pass.draw(0..6, 0..1);
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("columbina layers"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                for call in &calls[from..to] {
+                    let pipe = if call.blended {
+                        call.pipe.blended()
+                    } else {
+                        call.pipe
+                    };
+                    pass.set_pipeline(&self.pipelines[&(pipe, format, call.program)]);
+                    pass.set_bind_group(0, &call.bind, &[call.offset]);
+                    if let Some(colour) = &call.colour {
+                        pass.set_bind_group(1, colour, &[]);
+                    }
+                    if let (true, Some((_, under))) = (call.blended, backdrop) {
+                        pass.set_bind_group(2, under, &[]);
+                    }
+                    pass.draw(0..6, 0..1);
+                }
+                if through && to == calls.len() {
+                    pass.set_pipeline(&self.opaque[&format]);
+                    pass.draw(0..3, 0..1);
+                }
+            }
+            load = wgpu::LoadOp::Load;
+            from = to;
+            if from >= calls.len() {
+                break;
+            }
         }
     }
 
@@ -1931,7 +2082,7 @@ impl Compositor {
             wanted.push((
                 For::Draw(number, layer),
                 (
-                    pipe_of(draw),
+                    canvas_pipe_of(draw),
                     format,
                     colour.as_ref().map(|colour| colour.program),
                 ),
@@ -2023,7 +2174,7 @@ impl Compositor {
     ) -> Result<(), ComposeError> {
         let mut shown = HashMap::new();
         for &number in waiting {
-            let pipe = pipe_of(&draws[number]);
+            let pipe = canvas_pipe_of(&draws[number]);
             let layer = colours[number].as_ref().map(|colour| colour.layer);
             taps.retain(|taps| taps.draw != number);
             let stand_in = layer.and_then(|layer| {
@@ -2063,7 +2214,7 @@ impl Compositor {
             shown.insert(
                 colour.layer,
                 ShownLayer {
-                    pipe: pipe_of(draw),
+                    pipe: canvas_pipe_of(draw),
                     input: input_code(layer),
                     program: colour.program,
                     inputs: copied(&colour.inputs),
@@ -2223,6 +2374,10 @@ impl Compositor {
                 layer: index,
                 message,
             };
+            // Blended with what is under it, where its mode is not Normal and a layer is
+            // drawn before it: the first has nothing under it, and is laid as it is.
+            let blended = layer.composite != Composite::Normal && !laid.draws.is_empty();
+            let blend = blended.then(|| blend_of(layer.composite, scene.luma));
             // Its input transform and its grade, after it is decoded; with what is done first
             // for their neighbourhoods, where they read any, once the size of its picture is
             // known.
@@ -2283,6 +2438,11 @@ impl Compositor {
                     if frame.0 <= 0.0 || frame.1 <= 0.0 {
                         continue;
                     }
+                    // Its crop, of the picture as it is fitted; nothing is drawn of one that
+                    // is all cut away.
+                    let Some(kept) = layer.crop.kept(frame) else {
+                        continue;
+                    };
                     let shape = Shape {
                         width: picture.width,
                         height: picture.height,
@@ -2293,7 +2453,11 @@ impl Compositor {
                     let planes = self.take_planes(shape);
                     let uploaded = yuv::upload(self.gpu.queue(), &planes.textures, picture);
                     let draw = laid.draws.len();
-                    laid.draws.push(Draw::Picture { shape, planes });
+                    laid.draws.push(Draw::Picture {
+                        shape,
+                        planes,
+                        blended,
+                    });
                     uploaded.map_err(failed)?;
                     let mut decoded = yuv::picture_params(
                         [0.0; 4],
@@ -2318,8 +2482,7 @@ impl Compositor {
                     let units = neighbourhood::units(own.1, frame.1, canvas.1);
                     neighbourhoods(self, laid, draw, shown, units, alone);
                     laid.colours.push(graded);
-                    let mut values = decoded.to_vec();
-                    values.extend(layer_uniform(
+                    let mut placed = layer_uniform(
                         &placement(canvas, frame, &layer.transform),
                         canvas,
                         [0.0, 0.0, frame.0, frame.1],
@@ -2327,10 +2490,17 @@ impl Compositor {
                         scale,
                         samples(minification(shown, frame, scale)),
                         None,
-                    ));
+                    );
+                    cut_and_blend(&mut placed, kept, layer.crop.fade(frame.1), blend);
+                    let mut values = decoded.to_vec();
+                    values.extend(placed);
                     laid.uniforms.push(values);
                 }
                 Source::Color(rgba) => {
+                    // Its crop, of the canvas, which is its picture.
+                    let Some(kept) = layer.crop.kept(canvas) else {
+                        continue;
+                    };
                     let tint = rgba.map(|channel| channel.clamp(0.0, 1.0));
                     // Uniform colour stays one texel unless a spatial key changes it.
                     let pixels = if spatial {
@@ -2351,7 +2521,7 @@ impl Compositor {
                     let units = neighbourhood::units(own.1, canvas.1, canvas.1);
                     let draw = laid.draws.len();
                     neighbourhoods(self, laid, draw, pixels, units, alone);
-                    laid.uniforms.push(layer_uniform(
+                    let mut values = layer_uniform(
                         &placement(canvas, canvas, &layer.transform),
                         canvas,
                         whole,
@@ -2359,11 +2529,18 @@ impl Compositor {
                         scale,
                         1,
                         Some(tint),
-                    ));
-                    laid.draws.push(Draw::Texture(self.white.clone()));
+                    );
+                    cut_and_blend(&mut values, kept, layer.crop.fade(canvas.1), blend);
+                    laid.uniforms.push(values);
+                    laid.draws.push(Draw::Texture(self.white.clone(), blended));
                     laid.colours.push(graded);
                 }
                 Source::Title(title) => {
+                    // Its crop, of the canvas: the picture of a title is the frame of the
+                    // timeline, of which its quad is only the block of its text.
+                    let Some(kept) = layer.crop.kept(canvas) else {
+                        continue;
+                    };
                     let style = &title.style;
                     let place = placement(canvas, canvas, &layer.transform);
                     #[allow(clippy::cast_possible_truncation, reason = "a size of letters")]
@@ -2402,8 +2579,9 @@ impl Compositor {
                         let mut values =
                             layer_uniform(&place, canvas, quad, opacity, scale, 1, Some([1.0; 4]));
                         window_canvas(&mut values, quad, canvas);
+                        cut_and_blend(&mut values, kept, layer.crop.fade(canvas.1), blend);
                         laid.uniforms.push(values);
-                        laid.draws.push(Draw::Texture(view));
+                        laid.draws.push(Draw::Texture(view, blended));
                         laid.colours.push(graded);
                     }
                 }
@@ -2437,7 +2615,7 @@ impl Compositor {
     /// Keep the planes of the draws of a frame, for the next.
     fn give_back(&mut self, draws: Vec<Draw>) {
         for draw in draws {
-            if let Draw::Picture { shape, planes } = draw {
+            if let Draw::Picture { shape, planes, .. } = draw {
                 self.planes.entry(shape).or_default().push(planes);
             }
         }
@@ -2617,8 +2795,12 @@ impl Compositor {
         let (shader, layout) = match pipe {
             Pipe::Yuv(texel) => (texel.shader(), &self.yuv_layouts[&texel]),
             Pipe::Rgba => (LAYER_SHADER.to_owned(), &self.rgba_layout),
+            Pipe::YuvBlended(texel) => (blended_shader(&texel.shader()), &self.yuv_layouts[&texel]),
+            Pipe::RgbaBlended => (blended_shader(LAYER_SHADER), &self.rgba_layout),
             Pipe::Stage => (STAGE_SHADER.to_owned(), &self.stage_layout),
         };
+        // What binds the canvas under a layer that is blended: a texture, as a stage reads one.
+        let backdrop = pipe.is_blended().then(|| self.stage_layout.clone());
         let (source, colour) = match program {
             Some(number) => {
                 let program = &self.programs[number];
@@ -2629,7 +2811,7 @@ impl Compositor {
             }
             None => (shader, None),
         };
-        let making = maker(pipe, source, layout.clone(), colour, format);
+        let making = maker(pipe, source, layout.clone(), colour, backdrop, format);
         if program.is_none() {
             let made = making(self.gpu.device());
             self.keep(vec![(key, made)]);
@@ -2783,14 +2965,16 @@ impl Compositor {
 }
 
 /// What makes the pipeline of `pipe` of the shader `source` that draws into targets of
-/// `format`, `layout` binding what it reads and `colour` what its program of colour reads, where
-/// it has one: on whatever thread, the errors of its validation caught in a scope of that
-/// thread, as the code of a program is not the compositor's.
+/// `format`, `layout` binding what it reads, `colour` what its program of colour reads, where
+/// it has one, and `backdrop` the canvas under a layer that is blended: on whatever thread, the
+/// errors of its validation caught in a scope of that thread, as the code of a program is not
+/// the compositor's.
 fn maker(
     pipe: Pipe,
     source: String,
     layout: wgpu::BindGroupLayout,
     colour: Option<wgpu::BindGroupLayout>,
+    backdrop: Option<wgpu::BindGroupLayout>,
     format: wgpu::TextureFormat,
 ) -> Make {
     Box::new(move |device: &wgpu::Device| {
@@ -2800,7 +2984,8 @@ fn maker(
         let pipeline = if pipe == Pipe::Stage {
             stage_pipeline(device, &source, &layout, colour.as_ref(), format)
         } else {
-            layer_pipeline(device, &source, &layout, colour.as_ref(), format)
+            let groups = (colour.as_ref(), backdrop.as_ref());
+            layer_pipeline(device, &source, &layout, groups, format)
         };
         if let Some(scope) = scope {
             if let Some(error) = pollster::block_on(scope.pop()) {
@@ -2812,21 +2997,32 @@ fn maker(
 }
 
 /// A pipeline that draws layers of the shader `source` into targets of `format`, laid over what
-/// is there, premultiplied; with what a program of colour reads as group 1, where it has one.
+/// is there, premultiplied; with what a program of colour reads as group 1, where it has one,
+/// and the canvas under the layer as group 2, where it is blended with it (`groups`, in that
+/// order). A layer that is not blended has the two groups that it always had.
 fn layer_pipeline(
     device: &wgpu::Device,
     source: &str,
     layout: &wgpu::BindGroupLayout,
-    colour: Option<&wgpu::BindGroupLayout>,
+    groups: (
+        Option<&wgpu::BindGroupLayout>,
+        Option<&wgpu::BindGroupLayout>,
+    ),
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("columbina layer"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
+    let (colour, backdrop) = groups;
+    let all = [Some(layout), colour, backdrop];
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("columbina layer"),
-        bind_group_layouts: &[Some(layout), colour],
+        bind_group_layouts: if backdrop.is_some() {
+            &all[..]
+        } else {
+            &all[..2]
+        },
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2854,6 +3050,66 @@ fn layer_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// The pipeline that makes a canvas of `format` opaque (`opaque.wgsl`): it writes alpha alone,
+/// 1 everywhere, and leaves the colours as they are.
+fn opaque_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("columbina opaque"),
+        source: wgpu::ShaderSource::Wgsl(OPAQUE_SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("columbina opaque"),
+        bind_group_layouts: &[],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("columbina opaque"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALPHA,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// A shader of layers (`layer.wgsl`, `yuv.wgsl`) for a layer that is blended with what is under
+/// it: the function that lays a layer as it is, between "blend: begin" and "blend: end", put in
+/// place by the maths of the composite modes ([`crate::grade::composite_library`], that of the
+/// Layer Mixer of a grade, not written a second time) and the function of `blend.wgsl`, which
+/// blends by it. The shader of a layer that is not blended has none of this in it.
+fn blended_shader(shader: &str) -> String {
+    let begin = shader
+        .find(BLEND_BEGIN)
+        .expect("a shader of layers has a function that lays them");
+    let end = shader[begin..]
+        .find(BLEND_END)
+        .map(|at| begin + at + BLEND_END.len())
+        .expect("a shader of layers has a function that lays them");
+    format!(
+        "{}{}{BLEND_SHADER}{}",
+        &shader[..begin],
+        crate::grade::composite_library(),
+        &shader[end..]
+    )
 }
 
 /// A pipeline of a stage over the canvas (`stage.wgsl`, with its program of colour put in, or as
@@ -3069,7 +3325,8 @@ fn text_texture(gpu: &Gpu, raster: &Raster) -> wgpu::TextureView {
 /// The uniform of a layer that puts the quad `quad` of its frame on a canvas by `place`, at
 /// `opacity`, the frame made `scale` times larger, each pixel made of `samples` × `samples`
 /// points of it: the second half of the uniform of `yuv.wgsl`, or, with a `tint`, the uniform of
-/// `layer.wgsl`.
+/// `layer.wgsl`. Nothing of it is cut away, and it is not blended: [`cut_and_blend`] says
+/// otherwise. Its last eight values are its crop and its composite mode, in both shaders.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "pixels and shares, as the card takes them"
@@ -3096,7 +3353,38 @@ fn layer_uniform(
         values.extend(tint);
         values.extend([0.0, 0.0, 1.0, 1.0]);
     }
+    // No side cut ([`Crop::kept`] of no crop), and no composite mode.
+    let far = UNCUT as f32;
+    values.extend([-far, -far, far, far]);
+    values.extend([0.0; 4]);
     values
+}
+
+/// Where the softness of the crop of a layer is in its uniform, as [`layer_uniform`] makes it:
+/// the fourth value of `extra`.
+const FADE_AT: usize = 15;
+
+/// The composite mode of a layer as its uniform has it: the number of the mode, as the maths
+/// of a grade numbers them, and the weights `luma` of R, G and B in luma.
+fn blend_of(mode: Composite, luma: [f32; 3]) -> [f32; 4] {
+    let number = u8::try_from(crate::grade::layout::composite(mode)).unwrap_or(0);
+    [f32::from(number), luma[0], luma[1], luma[2]]
+}
+
+/// Cut the layer of `uniform` (as [`layer_uniform`] makes it) to `kept` of its frame
+/// ([`Crop::kept`]), each cut edge fading over `fade` pixels of the frame; and blend it with
+/// what is under it by `blend` ([`blend_of`]), where it is blended.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "pixels of a frame, as the card takes them"
+)]
+fn cut_and_blend(uniform: &mut [f32], kept: [f64; 4], fade: f64, blend: Option<[f32; 4]>) {
+    let end = uniform.len();
+    uniform[FADE_AT] = fade as f32;
+    uniform[end - 8..end - 4].copy_from_slice(&kept.map(|side| side as f32));
+    if let Some(blend) = blend {
+        uniform[end - 4..].copy_from_slice(&blend);
+    }
 }
 
 /// Map a title's visible texture into its complete transparent source canvas. The same map
@@ -3130,13 +3418,17 @@ mod tests {
             3,
             None,
         );
+        #[allow(clippy::cast_possible_truncation, reason = "as the card takes it")]
+        let far = UNCUT as f32;
         assert_eq!(
-            values,
+            values[..16],
             [
                 1.0, 0.0, 50.0, 200.0, 0.0, 1.0, 0.0, 100.0, 0.0, 0.0, 100.0, 100.0, 0.5, 1.0, 3.0,
                 0.0
             ]
         );
+        // No side is cut, and it is not blended.
+        assert_eq!(values[16..], [-far, -far, far, far, 0.0, 0.0, 0.0, 0.0]);
         let tinted = layer_uniform(
             &place,
             (200.0, 100.0),
@@ -3154,6 +3446,74 @@ mod tests {
         assert_eq!(tinted[13], 2.0);
         assert_eq!(tinted[16..20], [0.1; 4]);
         assert_eq!(tinted[20..24], [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(tinted[24..], [-far, -far, far, far, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_crop_and_a_composite_mode_are_the_last_values_of_the_uniform_of_a_layer() {
+        let canvas = (200.0, 100.0);
+        let place = placement(canvas, canvas, &Transform::NONE);
+        let crop = Crop {
+            left: 0.25,
+            bottom: 0.5,
+            softness: 0.1,
+            ..Crop::NONE
+        };
+        let kept = crop.kept(canvas).unwrap();
+        let blend = blend_of(Composite::Multiply, [0.25, 0.5, 0.25]);
+        assert_eq!(blend, [19.0, 0.25, 0.5, 0.25]);
+        #[allow(clippy::cast_possible_truncation, reason = "as the card takes it")]
+        let far = UNCUT as f32;
+        // Of a picture, after what decodes it; of a title or a colour, after its tint.
+        for tint in [None, Some([1.0; 4])] {
+            let whole = [0.0, 0.0, canvas.0, canvas.1];
+            let plain = layer_uniform(&place, canvas, whole, 1.0, 1.0, 1, tint);
+            let mut values = plain.clone();
+            cut_and_blend(&mut values, kept, crop.fade(canvas.1), Some(blend));
+            let end = values.len();
+            assert_eq!(values[FADE_AT], 10.0);
+            assert_eq!(values[end - 8..end - 4], [50.0, -far, far, 50.0]);
+            assert_eq!(values[end - 4..], blend);
+            // Nothing else of it is changed.
+            assert_eq!(values[..FADE_AT], plain[..FADE_AT]);
+            assert_eq!(values[FADE_AT + 1..end - 8], plain[FADE_AT + 1..end - 8]);
+            // A layer that is not blended keeps no mode.
+            let mut values = plain.clone();
+            cut_and_blend(&mut values, kept, 0.0, None);
+            assert_eq!(values[end - 4..], [0.0; 4]);
+        }
+        assert_eq!(blend_of(Composite::Normal, [0.0; 3])[0], 0.0);
+        assert_eq!(blend_of(Composite::VividLight, [0.0; 3])[0], 26.0);
+    }
+
+    #[test]
+    fn the_shader_of_a_layer_that_is_blended_has_the_maths_of_the_modes_and_the_others_do_not() {
+        for shader in [LAYER_SHADER.to_owned(), Texel::Float.shader()] {
+            // As it is written: the layer is laid as it is, and nothing reads the canvas.
+            assert_eq!(shader.matches(BLEND_BEGIN).count(), 1);
+            assert_eq!(shader.matches(BLEND_END).count(), 1);
+            assert!(!shader.contains("layer_composite"));
+            assert!(!shader.contains("backdrop"));
+            let blended = blended_shader(&shader);
+            assert!(!blended.contains(BLEND_BEGIN));
+            assert!(!blended.contains(BLEND_END));
+            assert_eq!(blended.matches("fn laid(").count(), 1);
+            assert_eq!(blended.matches("fn layer_composite(").count(), 1);
+            assert_eq!(blended.matches("fn layer_luma(").count(), 1);
+            assert!(blended.contains("@group(2) @binding(0) var backdrop"));
+            // By names of its own, which those of the grade of a layer do not meet.
+            assert!(!blended.contains("grade_"));
+            assert!(!blended.contains("GRADE_"));
+            assert!(blended.contains("var<private> LAYER_LUMA: vec3<f32>;"));
+            // The function of colour of the layer is still where a program is put.
+            assert_eq!(blended.matches(color::IDENTITY_BEGIN).count(), 1);
+            assert_eq!(blended.matches(color::IDENTITY_END).count(), 1);
+            // Nothing else of the shader is changed.
+            let begin = shader.find(BLEND_BEGIN).unwrap();
+            let end = shader.find(BLEND_END).unwrap() + BLEND_END.len();
+            assert!(blended.starts_with(&shader[..begin]));
+            assert!(blended.ends_with(&shader[end..]));
+        }
     }
 
     #[test]

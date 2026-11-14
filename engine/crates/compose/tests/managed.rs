@@ -73,6 +73,8 @@ fn scene_of(picture: NativePicture, input: Stage, output: Stage) -> Scene {
                 unclamped: true,
                 ..LayerColor::default()
             },
+            crop: columbina_compose::Crop::NONE,
+            composite: columbina_compose::Composite::Normal,
         }],
         output,
         ..Scene::default()
@@ -430,6 +432,8 @@ fn superwhites_and_superblacks_are_kept_only_where_colour_is_managed() {
                         unclamped,
                         ..LayerColor::default()
                     },
+                    crop: columbina_compose::Crop::NONE,
+                    composite: columbina_compose::Composite::Normal,
                 }],
                 ..Scene::default()
             };

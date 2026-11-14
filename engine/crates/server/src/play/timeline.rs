@@ -2095,6 +2095,8 @@ impl Worker {
                 transform: layer.transform.into(),
                 opacity: layer.opacity,
                 color,
+                crop: layer.crop.into(),
+                composite: layer.composite,
             });
             origins.push((clip.clone(), origin, editable));
             clips.push(clip);
@@ -2711,6 +2713,8 @@ mod tests {
                 transform: Transform::NONE,
                 opacity: 1.0,
                 color: LayerColor::default(),
+                crop: columbina_compose::Crop::NONE,
+                composite: columbina_compose::Composite::Normal,
             }],
             ..Scene::default()
         }

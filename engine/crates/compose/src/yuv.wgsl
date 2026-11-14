@@ -11,7 +11,8 @@
 //   is fitted (`dest`), over black where it has alpha;
 // - the compositor's (`vs_layer`, `fs_layer`): the picture is a layer, a quad of the frame that it
 //   is fitted into on the canvas, put on the canvas by an affine map (`row0`, `row1`), with its
-//   edges smoothed over a pixel and its opacity, premultiplied.
+//   edges smoothed over a pixel and its opacity, premultiplied; cut by its crop (`kept`), and
+//   blended with what is under it by its composite mode (`laid`).
 //
 // The planes are read texel by texel and blended here, two by two, rather than sampled: so that
 // planes of 16-bit integers, where a card has no 16-bit normalized formats, are read the same
@@ -59,9 +60,16 @@ struct Params {
     row1: vec4<f32>,
     // The quad drawn, from (x0, y0) to (x1, y1) of the frame: the whole of it, for a picture.
     quad: vec4<f32>,
-    // The opacity of the layer, the pixels of the canvas to a pixel of the frame, and how many
-    // points across and down each pixel is made of.
+    // The opacity of the layer, the pixels of the canvas to a pixel of the frame, how many
+    // points across and down each pixel is made of, and over how many pixels of the frame each
+    // cut edge of its crop fades.
     extra: vec4<f32>,
+    // What its crop keeps of the frame, from (x0, y0) to (x1, y1) in its pixels; a side that is
+    // not cut lies far beyond the frame.
+    crop: vec4<f32>,
+    // Its composite mode, numbered as `grade/layout.rs` numbers them, and the weights of R, G
+    // and B in the luma of the working space: read by a layer that is blended alone.
+    blend: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -309,6 +317,36 @@ fn coverage(local: vec2<f32>) -> f32 {
     return clamp(inside + 0.5, 0.0, 1.0);
 }
 
+// How much of the pixel at `local` the crop keeps: from how far inside the nearest cut edge its
+// centre is, across and down, the two multiplied. With no softness an edge is smoothed over a
+// pixel of the canvas, as those of the quad are; with it, the layer fades over `extra.w` pixels
+// of the frame, inward from the cut.
+//
+// A side that is not cut lies 1e30 pixels beyond the frame (`geometry.rs`), so that the pixel is
+// that far inside it, which is more than any width a ramp is divided by: both ramps are then
+// held to exactly 1, and a layer without a crop is multiplied by exactly 1, and drawn as it was
+// before there were crops, to the bit.
+fn kept(local: vec2<f32>) -> f32 {
+    let pixel = 1.0 / params.extra.y;
+    let inside = min(local - params.crop.xy, params.crop.zw - local);
+    let ramp = clamp(
+        (inside + vec2<f32>(0.5 * pixel)) / max(params.extra.w, pixel),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    return ramp.x * ramp.y;
+}
+
+// The composite mode of the layer (`compose.rs`): the lines from "blend: begin" to "blend: end"
+// are put in place by those of `blend.wgsl` for a layer that is blended with what is under it.
+// As they are written, the layer is laid as it is: `over` is its colour, premultiplied, and
+// `position` where its pixel is on the canvas.
+// blend: begin
+fn laid(over: vec4<f32>, position: vec4<f32>) -> vec4<f32> {
+    return over;
+}
+// blend: end
+
 // A picture drawn smaller than it is is not read at one point of each pixel, which would pick
 // some of its pixels and pass over the others (fine stripes would come out as stripes again, or
 // as one of their colours): each pixel is made of `extra.z` × `extra.z` points of it, over the
@@ -344,14 +382,17 @@ fn fs_layer(layer: Layer) -> @location(0) vec4<f32> {
         }
         sampled = sum / weights;
     }
-    let alpha = coverage(layer.local) * params.extra.x;
+    let alpha = coverage(layer.local) * params.extra.x * kept(layer.local);
     colour_at = clamp(shown, vec2<f32>(0.0), vec2<f32>(1.0));
     if params.kind.y < 0.5 {
-        return vec4<f32>(colour(rgb_of(sampled.xyz)) * alpha, alpha);
+        return laid(vec4<f32>(colour(rgb_of(sampled.xyz)) * alpha, alpha), layer.position);
     }
     if sampled.w <= 0.0 {
         return vec4<f32>(0.0);
     }
     let seen = sampled.w * alpha;
-    return vec4<f32>(colour(rgb_of(unpremultiplied(sampled))) * seen, seen);
+    return laid(
+        vec4<f32>(colour(rgb_of(unpremultiplied(sampled))) * seen, seen),
+        layer.position,
+    );
 }

@@ -866,6 +866,8 @@ fn how_long_graded_frames_of_4k_take() {
         source: LayerSource::Picture(Arc::clone(&picture), 0),
         transform,
         opacity,
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     };
     let scene = || Scene {
         width,

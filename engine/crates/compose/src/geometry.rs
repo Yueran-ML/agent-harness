@@ -51,6 +51,118 @@ impl From<columbina_model::project::Placed> for Transform {
     }
 }
 
+/// How much of the picture of a layer is cut away at each of its sides, before its transform
+/// puts it on the canvas: the crop of a clip. The picture of a layer is its frame: a picture as
+/// it is fitted to the canvas; of a colour and of a title, the whole canvas. What is cut away
+/// shows what is under the layer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crop {
+    /// The share of the width of the picture cut away at its left, from 0 to 1.
+    pub left: f64,
+    /// The share of the width cut away at its right.
+    pub right: f64,
+    /// The share of the height cut away at its top.
+    pub top: f64,
+    /// The share of the height cut away at its bottom.
+    pub bottom: f64,
+    /// The share of the height of the picture over which each cut edge fades, inward from
+    /// where it is cut: from 0, a sharp edge (smoothed over a pixel of the canvas, as the edges
+    /// of the layer are), to 1.
+    pub softness: f64,
+}
+
+/// How far beyond its frame the side of a crop that cuts nothing is put, in pixels: so far that
+/// the card takes every pixel of the layer as wholly within it, at any softness (see
+/// [`Crop::kept`]).
+pub const UNCUT: f64 = 1.0e30;
+
+impl Crop {
+    /// The picture whole.
+    pub const NONE: Crop = Crop {
+        left: 0.0,
+        right: 0.0,
+        top: 0.0,
+        bottom: 0.0,
+        softness: 0.0,
+    };
+
+    /// Its sides and its softness held within 0 to 1; what is not a number is 0.
+    fn held(&self) -> Crop {
+        let within = |share: f64| {
+            if share.is_nan() {
+                0.0
+            } else {
+                share.clamp(0.0, 1.0)
+            }
+        };
+        Crop {
+            left: within(self.left),
+            right: within(self.right),
+            top: within(self.top),
+            bottom: within(self.bottom),
+            softness: within(self.softness),
+        }
+    }
+
+    /// What it keeps of a frame of `frame` pixels: from (x0, y0) to (x1, y1), in pixels of the
+    /// frame. A side that is not cut is put [`UNCUT`] beyond the frame, not on its edge: an edge
+    /// that is not cut does not fade, whatever the softness, and the layer is drawn there as one
+    /// without a crop is, to the bit (`layer.wgsl`, `kept`). None where nothing is kept: the
+    /// sides across, or those down, cut all of it between them.
+    #[must_use]
+    pub fn kept(&self, frame: (f64, f64)) -> Option<[f64; 4]> {
+        let crop = self.held();
+        if crop.left + crop.right >= 1.0 || crop.top + crop.bottom >= 1.0 {
+            return None;
+        }
+        let low = |share: f64, size: f64| {
+            if share > 0.0 {
+                share * size
+            } else {
+                -UNCUT
+            }
+        };
+        let high = |share: f64, size: f64| {
+            if share > 0.0 {
+                size - share * size
+            } else {
+                UNCUT
+            }
+        };
+        Some([
+            low(crop.left, frame.0),
+            low(crop.top, frame.1),
+            high(crop.right, frame.0),
+            high(crop.bottom, frame.1),
+        ])
+    }
+
+    /// Over how many pixels of a frame `height` pixels high each of its cut edges fades.
+    #[must_use]
+    pub fn fade(&self, height: f64) -> f64 {
+        self.held().softness * height.max(0.0)
+    }
+}
+
+impl Default for Crop {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl From<columbina_model::project::Cropped> for Crop {
+    /// The crop of a clip as it is at a frame.
+    fn from(crop: columbina_model::project::Cropped) -> Self {
+        Crop {
+            left: crop.left,
+            right: crop.right,
+            top: crop.top,
+            bottom: crop.bottom,
+            softness: crop.softness,
+        }
+    }
+}
+
 /// The quarter turns clockwise of a rotation in degrees clockwise, as the media has it: 0 to 3,
 /// taken modulo 360 (so that -90 is 3). A rotation that is not a multiple of 90 is taken as
 /// none (the model has only 0, 90, 180 and 270).
@@ -607,5 +719,84 @@ mod tests {
         for origin in [(-10_000.0, 0.0), (0.0, -10_000.0)] {
             assert_eq!(text_window(&place, canvas, origin, 1.0, (100, 100)), None);
         }
+    }
+
+    #[test]
+    fn a_crop_keeps_shares_of_its_frame_and_a_side_not_cut_is_far_beyond_it() {
+        let frame = (200.0, 100.0);
+        // Nothing cut: every side far beyond the frame, whatever the softness.
+        let soft = Crop {
+            softness: 0.5,
+            ..Crop::NONE
+        };
+        for crop in [Crop::NONE, soft] {
+            assert_eq!(crop.kept(frame), Some([-UNCUT, -UNCUT, UNCUT, UNCUT]));
+        }
+        // Each side by its own share: of the width across, of the height down.
+        let crop = Crop {
+            left: 0.25,
+            right: 0.1,
+            top: 0.5,
+            bottom: 0.2,
+            softness: 0.1,
+        };
+        assert_eq!(crop.kept(frame), Some([50.0, 50.0, 180.0, 80.0]));
+        assert_eq!(crop.fade(frame.1), 10.0);
+        // One side alone: the others are not cut.
+        let left = Crop {
+            left: 0.5,
+            ..Crop::NONE
+        };
+        assert_eq!(left.kept(frame), Some([100.0, -UNCUT, UNCUT, UNCUT]));
+        assert_eq!(left.fade(frame.1), 0.0);
+    }
+
+    #[test]
+    fn a_crop_that_cuts_all_of_a_picture_keeps_nothing_and_shares_are_held_within_0_and_1() {
+        let frame = (64.0, 36.0);
+        let across = Crop {
+            left: 0.5,
+            right: 0.5,
+            ..Crop::NONE
+        };
+        let down = Crop {
+            top: 1.0,
+            ..Crop::NONE
+        };
+        assert_eq!(across.kept(frame), None);
+        assert_eq!(down.kept(frame), None);
+        // Beyond 0 to 1, and not a number: held, as nothing is cut by less than nothing.
+        let wild = Crop {
+            left: -0.5,
+            right: f64::NAN,
+            top: 0.25,
+            bottom: 0.0,
+            softness: 7.0,
+        };
+        assert_eq!(wild.kept(frame), Some([-UNCUT, 9.0, UNCUT, UNCUT]));
+        assert_eq!(wild.fade(frame.1), 36.0);
+        // As the model has it at a frame.
+        let model = columbina_model::project::Cropped {
+            left: 0.1,
+            right: 0.2,
+            top: 0.3,
+            bottom: 0.4,
+            softness: 0.5,
+        };
+        assert_eq!(
+            Crop::from(model),
+            Crop {
+                left: 0.1,
+                right: 0.2,
+                top: 0.3,
+                bottom: 0.4,
+                softness: 0.5,
+            }
+        );
+        assert_eq!(
+            Crop::from(columbina_model::project::Cropped::NONE),
+            Crop::NONE
+        );
+        assert_eq!(Crop::default(), Crop::NONE);
     }
 }

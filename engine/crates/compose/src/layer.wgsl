@@ -1,7 +1,8 @@
 // A layer of R'G'B'A, premultiplied, put on the canvas: a title, a subtitle, or a colour (a
 // texture of one white texel, tinted). The quad of the frame that it covers is put on the canvas
 // by an affine map, as a picture is (`yuv.wgsl`), its edges smoothed over a pixel, and multiplied
-// by its opacity.
+// by its opacity. Its crop cuts it in its frame, before the map (`kept`), and its composite mode
+// blends it with what is under it (`laid`).
 
 struct Params {
     // A point (x, y) of the frame, in its pixels, is put at
@@ -11,13 +12,20 @@ struct Params {
     row1: vec4<f32>,
     // The quad drawn, from (x0, y0) to (x1, y1) of the frame, which the texture covers.
     quad: vec4<f32>,
-    // The opacity of the layer, and the pixels of the canvas to a pixel of the frame.
+    // The opacity of the layer, and the pixels of the canvas to a pixel of the frame; w: over
+    // how many pixels of the frame each cut edge of its crop fades.
     extra: vec4<f32>,
     // What the colour of each texel is multiplied by, and its opacity.
     tint: vec4<f32>,
     // The sampled quad's offset and scale in the logical source canvas. Only spatial keys
     // use this: neighbourhoods keep colour_at in the actual cropped texture.
     window_uv: vec4<f32>,
+    // What its crop keeps of its frame (the canvas, for a colour and a title), from (x0, y0) to
+    // (x1, y1) in its pixels; a side that is not cut lies far beyond the frame.
+    crop: vec4<f32>,
+    // Its composite mode, numbered as `grade/layout.rs` numbers them, and the weights of R, G
+    // and B in the luma of the working space: read by a layer that is blended alone.
+    blend: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -61,6 +69,26 @@ fn coverage(local: vec2<f32>) -> f32 {
     return clamp(inside + 0.5, 0.0, 1.0);
 }
 
+// How much of the pixel at `local` the crop keeps: from how far inside the nearest cut edge its
+// centre is, across and down, the two multiplied. With no softness an edge is smoothed over a
+// pixel of the canvas, as those of the quad are; with it, the layer fades over `extra.w` pixels
+// of the frame, inward from the cut.
+//
+// A side that is not cut lies 1e30 pixels beyond the frame (`geometry.rs`), so that the pixel is
+// that far inside it, which is more than any width a ramp is divided by: both ramps are then
+// held to exactly 1, and a layer without a crop is multiplied by exactly 1, and drawn as it was
+// before there were crops, to the bit.
+fn kept(local: vec2<f32>) -> f32 {
+    let pixel = 1.0 / params.extra.y;
+    let inside = min(local - params.crop.xy, params.crop.zw - local);
+    let ramp = clamp(
+        (inside + vec2<f32>(0.5 * pixel)) / max(params.extra.w, pixel),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    return ramp.x * ramp.y;
+}
+
 // The input transform and the grade of the layer (`color.rs`): the lines from "colour: begin"
 // to "colour: end" are put in place by those of a layer that has them; as they are written,
 // they do nothing. `colour_at` is where the pixel lies in the texture, from 0 to 1 across and
@@ -79,6 +107,16 @@ fn colour(rgb: vec3<f32>) -> vec3<f32> {
 fn colour_size() -> vec2<f32> { return (params.quad.zw-params.quad.xy)/params.window_uv.zw; }
 fn colour_window_at() -> vec2<f32> { return params.window_uv.xy+colour_at*params.window_uv.zw; }
 
+// The composite mode of the layer (`compose.rs`): the lines from "blend: begin" to "blend: end"
+// are put in place by those of `blend.wgsl` for a layer that is blended with what is under it.
+// As they are written, the layer is laid as it is: `over` is its colour, premultiplied, and
+// `position` where its pixel is on the canvas.
+// blend: begin
+fn laid(over: vec4<f32>, position: vec4<f32>) -> vec4<f32> {
+    return over;
+}
+// blend: end
+
 // The colour of a texel premultiplied by `alpha`, graded as the colour it stands for.
 fn graded(rgb: vec3<f32>, alpha: f32) -> vec3<f32> {
     if colour_identity || alpha <= 0.0 {
@@ -93,6 +131,9 @@ fn fs_layer(layer: Layer) -> @location(0) vec4<f32> {
     let at = clamp((layer.local - params.quad.xy) / size, vec2<f32>(0.0), vec2<f32>(1.0));
     let texel = textureSample(picture, bilinear, at);
     colour_at = at;
-    let alpha = coverage(layer.local) * params.extra.x * params.tint.a;
-    return vec4<f32>(graded(texel.rgb * params.tint.rgb, texel.a), texel.a) * alpha;
+    let alpha = coverage(layer.local) * params.extra.x * params.tint.a * kept(layer.local);
+    return laid(
+        vec4<f32>(graded(texel.rgb * params.tint.rgb, texel.a), texel.a) * alpha,
+        layer.position,
+    );
 }

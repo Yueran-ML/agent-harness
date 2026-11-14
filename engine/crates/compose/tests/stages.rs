@@ -74,6 +74,8 @@ fn layer(source: Source, opacity: f32, color: LayerColor) -> SceneLayer {
         transform: Transform::NONE,
         opacity,
         color,
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 
@@ -270,6 +272,8 @@ fn busy(color: &LayerColor, grade: &Stage, output: &Stage) -> Scene {
                 },
                 opacity: 0.9,
                 color: color.clone(),
+                crop: columbina_compose::Crop::NONE,
+                composite: columbina_compose::Composite::Normal,
             },
             layer(Source::Color([0.2, 0.5, 0.9, 0.5]), 0.8, color.clone()),
             layer(
@@ -403,6 +407,8 @@ fn layers_graded_alike_read_their_own_parameters_and_change_them_from_frame_to_f
         },
         opacity: 1.0,
         color: gain(value),
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     };
     for (left, right) in [(0.5, 0.25), (0.75, 1.0)] {
         let shown = preview(
@@ -630,6 +636,8 @@ fn how_long_frames_with_stages_of_colour_take() {
                     },
                     opacity: 0.8,
                     color: color.clone(),
+                    crop: columbina_compose::Crop::NONE,
+                    composite: columbina_compose::Composite::Normal,
                 },
                 layer(Source::Color([0.0, 0.0, 0.0, 0.3]), 1.0, color.clone()),
             ]

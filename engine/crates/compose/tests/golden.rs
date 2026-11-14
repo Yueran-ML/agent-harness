@@ -94,6 +94,8 @@ fn layer(source: Source, transform: Transform, opacity: f32) -> SceneLayer {
         transform,
         opacity,
         color: LayerColor::default(),
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 

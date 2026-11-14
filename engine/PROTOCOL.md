@@ -3196,7 +3196,13 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
   later with their pictures, which is what Stretch Keyframes does. (Maintain Timing, which
   would keep them at their frames of the timeline, is not offered.)
 - A **title**, a **colour** and a **still** (one picture held) have no frames of their own: the
-  keys of their grades count the frames of the clip from its first (0), and move with its head.
+  keys of their grades, transforms and crops count the frames of the clip from its first (0).
+  An edit that moves the head of such a clip (a `trim` of its start, with or without a ripple,
+  a `roll`, a `slide`, a `blade`, and whatever else cuts it in two) moves its keys the other
+  way by as many frames, with a `set_clip` and a `set_grade` in the same step, so that each key
+  stays at its frame of the timeline, as the keys of media stay on their pictures. The basic
+  operations do not: after a `trim_clip` alone, the keys are as far from the new head as they
+  were from the old.
 - The keys of a **timeline's grade** count the frames of the timeline; they are apart from those
   of clips (p. 3394).
 
@@ -3340,7 +3346,14 @@ layer of a clip is graded by its group's pre-clip grade, its own grade and its g
 grade, in that order, after its picture is decoded and before it is moved, scaled and laid on
 the canvas with its opacity; the timeline's grade is done over the canvas once every layer is on
 it; the subtitles of the monitor are drawn over that, ungraded (p. 3330). An export burns no
-subtitles in. A grade that is not complete, or has no node, changes nothing.
+subtitles in. A grade that is not complete, or has no node, changes nothing. A layer is cut by
+its clip's `crop` in its own picture, before it is moved and scaled (of media, the picture as it
+is fitted to the frame of the timeline; of a title or a colour, that frame): each cut edge fades
+inward over `softness` of that picture's height, an edge that is not cut does not, and what is
+cut away shows the layers below. A layer whose clip's `composite` is not `normal` is laid by that
+mode over the picture of the layers below it, as a Layer Mixer lays one input over another (its
+own grade done first, its opacity scaling what the mode does, luma by the weights of the
+timeline's space), under the timeline's grade; where no layer is below it, it is laid as it is.
 
 - **What is graded**: every clip of a track of picture, titles and colours as much as media (the
   model lets any clip carry a grade; DaVinci grades a Text+ title "like any other clip", p. 1047).

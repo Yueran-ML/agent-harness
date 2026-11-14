@@ -92,6 +92,8 @@ fn layer(source: Source, transform: Transform, opacity: f32, grade: Stage) -> Sc
             grade,
             ..LayerColor::default()
         },
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 

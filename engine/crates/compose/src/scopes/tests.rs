@@ -672,6 +672,8 @@ fn a_frame_the_compositor_made_is_measured() {
             transform: crate::Transform::NONE,
             opacity: 1.0,
             color: crate::LayerColor::default(),
+            crop: crate::Crop::NONE,
+            composite: crate::Composite::Normal,
         }],
         ..crate::Scene::default()
     };

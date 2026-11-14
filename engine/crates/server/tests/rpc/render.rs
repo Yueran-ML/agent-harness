@@ -487,6 +487,8 @@ fn reference(frame: i64, decoder: &mut VideoDecoder, style: &Value) -> Scene {
             source: Source::Picture(Arc::new(picture), 0),
             transform: Transform::NONE,
             opacity,
+            crop: columbina_compose::Crop::NONE,
+            composite: columbina_compose::Composite::Normal,
         }
     };
     let mut scene = Scene {
@@ -509,6 +511,8 @@ fn reference(frame: i64, decoder: &mut VideoDecoder, style: &Value) -> Scene {
             transform: Transform::NONE,
             opacity: 1.0,
             color: LayerColor::default(),
+            crop: columbina_compose::Crop::NONE,
+            composite: columbina_compose::Composite::Normal,
         });
     }
     scene
@@ -665,6 +669,8 @@ async fn render_h264_matches_preview_original_frames_dissolve_titles_and_stereo_
                         source: Source::Picture(Arc::new(picture), 0),
                         transform: Transform::NONE,
                         opacity: 1.0,
+                        crop: columbina_compose::Crop::NONE,
+                        composite: columbina_compose::Composite::Normal,
                     }],
                     ..Scene::default()
                 },

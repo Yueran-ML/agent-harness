@@ -1766,6 +1766,8 @@ mod tests {
                     coding: YuvCoding::of_native(picture),
                     ..LayerColor::default()
                 },
+                crop: columbina_compose::Crop::NONE,
+                composite: columbina_compose::Composite::Normal,
             }],
             ..Scene::default()
         };

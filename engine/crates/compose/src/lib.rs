@@ -47,8 +47,11 @@ pub use color::{
 };
 /// How the cubes of LUTs are read between their points ([`grade::CardLuts::set_interpolation`]).
 pub use columbina_lut::Interpolation;
+/// How a layer is laid over those under it ([`SceneLayer::composite`]): the composite modes of
+/// the model.
+pub use columbina_model::grade::Composite;
 pub use compose::{ComposeError, Compositor, Scene, SceneLayer, Source, Target, WORKING_FORMAT};
-pub use geometry::{quarter_turns, Transform};
+pub use geometry::{quarter_turns, Crop, Transform};
 #[doc(hidden)]
 pub use gpu::gpu_for_tests;
 pub use gpu::{

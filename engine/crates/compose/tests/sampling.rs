@@ -152,6 +152,8 @@ fn alone(picture: NativePicture) -> Scene {
                 coding,
                 ..LayerColor::default()
             },
+            crop: columbina_compose::Crop::NONE,
+            composite: columbina_compose::Composite::Normal,
         }],
         ..Scene::default()
     }

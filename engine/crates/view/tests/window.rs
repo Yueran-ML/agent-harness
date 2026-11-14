@@ -801,6 +801,8 @@ fn composed_textures_share_the_device_and_are_replaced_after_a_device_change() {
                         transform: columbina_compose::Transform::default(),
                         opacity: 1.0,
                         color: columbina_compose::LayerColor::default(),
+                        crop: columbina_compose::Crop::NONE,
+                        composite: columbina_compose::Composite::Normal,
                     }],
                     ..Default::default()
                 },

@@ -986,6 +986,8 @@ pub(crate) fn scene_of(
             transform: layer.transform.into(),
             opacity: layer.opacity,
             color,
+            crop: layer.crop.into(),
+            composite: layer.composite,
         });
     }
     Ok((scene, clips))
@@ -1016,6 +1018,8 @@ pub(crate) fn picture_layer(picture: Arc<NativePicture>, rotation: i16) -> Scene
         source: Source::Picture(picture, rotation),
         transform: Transform::NONE,
         opacity: 1.0,
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 

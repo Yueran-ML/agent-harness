@@ -1262,6 +1262,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a scene of two layers, and each stage of it"
+    )]
     fn the_luts_of_the_project_come_after_the_input_transform_and_before_the_output_transform() {
         let Some(gpu) = columbina_compose::gpu_for_tests() else {
             return;
@@ -1313,12 +1317,16 @@ mod tests {
                             transform: columbina_compose::Transform::NONE,
                             opacity: 1.0,
                             color: columbina_compose::LayerColor::default(),
+                            crop: columbina_compose::Crop::NONE,
+                            composite: columbina_compose::Composite::Normal,
                         },
                         columbina_compose::SceneLayer {
                             source: Source::Color([1.0; 4]),
                             transform: columbina_compose::Transform::NONE,
                             opacity: 1.0,
                             color: columbina_compose::LayerColor::default(),
+                            crop: columbina_compose::Crop::NONE,
+                            composite: columbina_compose::Composite::Normal,
                         },
                     ],
                     ..Scene::default()
@@ -1374,6 +1382,8 @@ mod tests {
             transform: columbina_compose::Transform::NONE,
             opacity: 1.0,
             color: columbina_compose::LayerColor::default(),
+            crop: columbina_compose::Crop::NONE,
+            composite: columbina_compose::Composite::Normal,
         };
         let mut layers: Vec<_> = (0..media).map(|_| picture()).collect();
         layers.push(columbina_compose::SceneLayer {

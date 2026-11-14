@@ -134,6 +134,8 @@ fn layer(source: Source, grade: columbina_compose::Stage) -> SceneLayer {
             grade,
             ..LayerColor::default()
         },
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 
@@ -354,6 +356,8 @@ fn how_long_frames_of_graded_layers_take() {
                     grade: stage(1),
                     ..LayerColor::default()
                 },
+                crop: columbina_compose::Crop::NONE,
+                composite: columbina_compose::Composite::Normal,
             },
             SceneLayer {
                 opacity: 0.5,

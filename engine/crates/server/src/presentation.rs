@@ -775,6 +775,8 @@ mod tests {
                 },
                 opacity: 1.0,
                 color: columbina_compose::LayerColor::default(),
+                crop: columbina_compose::Crop::NONE,
+                composite: columbina_compose::Composite::Normal,
             }],
             ..Default::default()
         };

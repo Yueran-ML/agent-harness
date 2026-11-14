@@ -79,6 +79,8 @@ fn decoded_layer(decoder: &mut VideoDecoder, frame: i64, opacity: f32) -> SceneL
         source: Source::Picture(Arc::new(picture), 0),
         transform: Transform::NONE,
         opacity,
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 

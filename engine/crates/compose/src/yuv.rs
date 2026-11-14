@@ -21,8 +21,9 @@ use crate::geometry::quarter_turns;
 /// [`Texel::shader`] for planes of integers.
 pub const SHADER: &str = include_str!("yuv.wgsl");
 
-/// The bytes of the uniform of the shader (`Params` in `yuv.wgsl`).
-pub const PARAMS_SIZE: u64 = 176;
+/// The bytes of the uniform of the shader (`Params` in `yuv.wgsl`): the view's and the picture's
+/// part, then the compositor's, which ends with the crop of the layer and its composite mode.
+pub const PARAMS_SIZE: u64 = 208;
 
 /// The floats of the first part of the uniform, the view's and the picture's
 /// ([`picture_params`]); the compositor's part follows.

@@ -464,6 +464,8 @@ impl Grading {
             .map(|clip| self.media.get(clip.as_ref()).map(String::as_str))
             .collect();
         self.colour.apply(scene, &media);
+        // The luma that the composite modes of the layers go by: that of the grades.
+        scene.luma = self.options.luma;
         for (layer, clip) in scene.layers.iter_mut().zip(clips) {
             layer.color.grade = self.layer(clip.as_ref(), frame);
         }

@@ -111,6 +111,8 @@ fn dxc_beside_the_executable_compiles_the_shaders() {
                     grade: stage_of(&serial(nodes), 0.0, &GradeOptions::default(), &NoLuts),
                     ..LayerColor::default()
                 },
+                crop: columbina_compose::Crop::NONE,
+                composite: columbina_compose::Composite::Normal,
             }],
             ..Scene::default()
         };

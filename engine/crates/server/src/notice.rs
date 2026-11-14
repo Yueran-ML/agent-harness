@@ -271,6 +271,8 @@ mod tests {
                 transform: columbina_compose::Transform::NONE,
                 opacity: 1.0,
                 color: columbina_compose::LayerColor::default(),
+                crop: columbina_compose::Crop::NONE,
+                composite: columbina_compose::Composite::Normal,
             }],
             ..columbina_compose::Scene::default()
         };

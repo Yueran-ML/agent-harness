@@ -44,6 +44,8 @@ fn layer(picture: NativePicture) -> SceneLayer {
             coding,
             ..LayerColor::default()
         },
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 
@@ -56,6 +58,8 @@ fn scene(picture: NativePicture, below: Option<[f32; 4]>) -> Scene {
             transform: Transform::NONE,
             opacity: 1.0,
             color: LayerColor::default(),
+            crop: columbina_compose::Crop::NONE,
+            composite: columbina_compose::Composite::Normal,
         })
         .into_iter()
         .collect();

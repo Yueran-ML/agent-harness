@@ -268,6 +268,39 @@ pub fn library(options: &GradeOptions) -> String {
     )
 }
 
+/// The maths of the composite modes alone, as the Layer Mixer has it (the end of
+/// `corrector.wgsl`, and its luma), for the compositor, which blends a layer of the timeline
+/// whose composite mode is not Normal with what is under it by the same formulas
+/// (`blend.wgsl`). Its names are made `layer_…`, so that they do not meet those of the grade
+/// of the layer, which is put into the same shader; and the weights of luma are a variable,
+/// `LAYER_LUMA`, which the shader sets before it calls `layer_composite`, so that one shader
+/// does for every working space.
+///
+/// # Panics
+/// The library has no `grade_luma` or no `grade_clip_colour`, the first of the functions of
+/// the composite modes, which are the last of it.
+#[must_use]
+pub(crate) fn composite_library() -> String {
+    let luma = LIBRARY
+        .find("fn grade_luma(")
+        .expect("the library has the luma of a colour");
+    // As far as the brace that ends the function, at the start of a line.
+    let luma_end = LIBRARY[luma..]
+        .find("\n}")
+        .map(|at| luma + at + 2)
+        .expect("the luma of a colour is a function");
+    let modes = LIBRARY
+        .find("fn grade_clip_colour(")
+        .expect("the library has the composite modes");
+    format!(
+        "var<private> GRADE_LUMA: vec3<f32>;\n{}\n{}",
+        &LIBRARY[luma..luma_end],
+        &LIBRARY[modes..]
+    )
+    .replace("grade_", "layer_")
+    .replace("GRADE_", "LAYER_")
+}
+
 /// The operations of `grade` at `frame` (of the clip, from its first frame at 0; of the
 /// timeline, for its grade): an operation for the libraries of its LUTs, each once and doing
 /// nothing, and the operation of the grade. None where it changes nothing.

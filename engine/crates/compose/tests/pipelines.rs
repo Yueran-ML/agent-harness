@@ -147,6 +147,8 @@ fn scene(input: Stage, grade: Stage, over: Stage) -> Scene {
                 grade,
                 ..LayerColor::default()
             },
+            crop: columbina_compose::Crop::NONE,
+            composite: columbina_compose::Composite::Normal,
         }],
         grade: over,
         ..Scene::default()

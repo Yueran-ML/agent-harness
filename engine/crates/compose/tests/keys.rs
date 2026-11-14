@@ -150,6 +150,8 @@ fn layer(picture: &Arc<NativePicture>, grade: Stage) -> SceneLayer {
             grade,
             ..LayerColor::default()
         },
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
     }
 }
 

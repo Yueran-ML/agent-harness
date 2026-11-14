@@ -23,7 +23,7 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video import audio, duck, grading
+from columbina.video import audio, clip_keys, duck, grading
 from columbina.video.editing import Editor, chosen_subtitles, receipt, safe_name, sidecars
 from columbina.video.engine import (
     Engine,
@@ -63,6 +63,7 @@ _DEFAULT_PROJECT = ".columbina/studio"
 _FAILURES = (
     EngineError,
     grading.GradeError,
+    clip_keys.KeysError,
     ProjectError,
     StoryError,
     WordsError,
@@ -472,6 +473,16 @@ class _GradeKeys(_Graded):
         default=None,
         description='"linear", "hold" or {"bezier": ...}; left out: linear, or as the key replaced',
     )
+
+
+class _ClipKeys(_Graded):
+    # A tool of the Edit page, told as compactly as a tool of grades is.
+    clip: str = Field(description="Clip id, of a video track.")
+    path: str
+    action: grading.KeyAction = Field(description="As video_grade_keys.")
+    frame: int | None = None
+    value: float | None = None
+    interp: str | dict[str, Any] | None = Field(default=None, description="As video_grade_keys.")
 
 
 class _GradeNode(_Graded):
@@ -901,6 +912,19 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                     )
                 if isinstance(args, _Undo):
                     return await editor.undone(redo=args.redo)
+                if isinstance(args, _ClipKeys):
+                    return receipt(
+                        await clip_keys.keys(
+                            editor.engine,
+                            args.timeline,
+                            args.clip,
+                            args.path,
+                            args.action,
+                            frame=args.frame,
+                            value=args.value,
+                            interp=args.interp,
+                        )
+                    )
 
                 def readable(path: str) -> Path | None:
                     try:
@@ -1008,6 +1032,7 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             ),
         ),
         tool("video_edit", _Edit, _EDIT),
+        tool("video_clip_keys", _ClipKeys, _CLIP_KEYS),
         tool(
             "video_duck",
             _Duck,
@@ -1282,6 +1307,15 @@ rate:{num:25,den:1},width:1920,height:1080,sample_rate:48000,tracks:[]}}, follow
 batch by {edit:"add_track",timeline:"$film",kind:"video"} and an audio track as needed.
 Then insert into "$film" in that batch. Use {op:"add_bin",bin:{id:"$bin",name:"Rushes",
 parent:null}} to create a bin. Consult video_info after edits for final ids and positions."""
+
+_CLIP_KEYS = (
+    "Put, remove or clear one keyframe of a setting of a clip's picture; one undo step. path: "
+    "transform.x|y|scale|rotation|opacity or crop.left|right|top|bottom|softness. x, y: widths, "
+    "heights of the timeline's picture (right, down); scale: a factor; rotation: degrees "
+    "clockwise; opacity, crop: shares 0-1. frame: a timeline frame within the clip. The key is "
+    "kept on the picture shown there, at its frame of the clip's media (of the clip, for a title "
+    "or a still); the result gives both frames."
+)
 
 VIDEOS = ServiceKey[Videos]("videos")
 

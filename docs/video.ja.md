@@ -371,6 +371,10 @@ DaVinci Resolve と同じく、1 本のタイムラインで同時に表示で�
   各パレットの値と、ソフトクリップ、ノードの LUT です。ウィンドウとそのトラッキングはカラーページで描きます。
 - `video_grade_keys` は、ノードの数値設定 1 つのキーフレームをパス（`primaries.gain.r` など）で指定して追加・削除・消去します。ほかのキーは送りません。
   `put` は指定フレームにキーを置き（すでにあれば置き換え）、`remove` は指定フレームのキーを削除し（最後の 1 つを削除すると設定はそのキーの数値に戻ります）、`clear` はすべて消します。
+- `video_clip_keys` は、クリップの画の設定 1 つに同じことをします。設定はパスで指定します：`transform.x`、`transform.y`、`transform.scale`、
+  `transform.rotation`、`transform.opacity`、`crop.left`、`crop.right`、`crop.top`、`crop.bottom`、`crop.softness`。
+  `frame` はタイムラインのフレームで、クリップの範囲内で指定します。ツールはエンジンと同じ計算で、そこに表示されている画のメディア内のフレーム番号に変換してキーを置き、
+  結果には両方のフレームと、その設定の各キーがタイムライン上で表示されるフレームを返します。存在しないパス、範囲外の値、クリップの外のフレームは、送信前に伝えます。
 - `video_grade_node` は `append`（ノードを追加）、`add_serial`、`add_serial_before`、`add_parallel`、`add_layer`、
   `add_outside`（アウトサイドノードを追加。キーは現在のノードのキーを反転したもの）でコレクターを追加し、
   同じ手順でラベルと設定も与えられます。ノードの削除、リセット、取り出しもできます。

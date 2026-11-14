@@ -40,12 +40,16 @@ __all__ = [
     "EMPTY_GRADE",
     "GradeError",
     "Grader",
+    "KeyOps",
+    "Number",
+    "applied",
     "brief",
     "checked_patch",
     "expanded",
     "grade_at",
     "hint_of",
     "in_force",
+    "key_op",
     "luts_of",
     "missing_luts",
     "new_corrector",
@@ -53,6 +57,7 @@ __all__ = [
     "reference",
     "summary",
     "target_of",
+    "timeline_of",
     "timeline_space",
 ]
 
@@ -897,7 +902,12 @@ async def missing_luts(
 # ---------------------------------------------------------------------------------------------
 
 
-def _timeline_of(project: Mapping[str, Any], id: str | None) -> dict[str, Any]:
+def timeline_of(project: Mapping[str, Any], id: str | None) -> dict[str, Any]:
+    """The timeline of a project that a tool names, or its only one where none is named.
+
+    Raises:
+        GradeError: There is no such timeline, or none is named where there are several.
+    """
     timelines = [_object(one) for one in _items(project.get("timelines"))]
     if id is not None:
         for timeline in timelines:
@@ -958,7 +968,7 @@ def target_of(
             raise GradeError('a clip grade needs its clip: {"level": "clip", "clip": "c4"}')
         if "group" in said:
             raise GradeError("group is for the pre_clip and post_clip levels")
-        on = _timeline_of(project, said.get("timeline", timeline))
+        on = timeline_of(project, said.get("timeline", timeline))
         _picture_clip(on, str(said["clip"]))
         return {"level": "clip", "timeline": on["id"], "clip": said["clip"]}
     if level in ("pre_clip", "post_clip"):
@@ -975,7 +985,7 @@ def target_of(
     if level == "timeline":
         if "clip" in said or "group" in said:
             raise GradeError("the timeline level names only its timeline")
-        on = _timeline_of(project, said.get("timeline", timeline))
+        on = timeline_of(project, said.get("timeline", timeline))
         return {"level": "timeline", "timeline": on["id"]}
     raise GradeError(f"level is clip, pre_clip, post_clip or timeline, not {level!r}")
 
@@ -988,7 +998,7 @@ def grade_at(project: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str,
         if group is None:
             raise GradeError(f"there is no group {target['group']}; video_grade_info lists them")
         return _object(group.get("pre" if level == "pre_clip" else "post")) or EMPTY_GRADE
-    on = _timeline_of(project, target["timeline"])
+    on = timeline_of(project, target["timeline"])
     if level == "timeline":
         return _object(on.get("grade")) or EMPTY_GRADE
     _, clip = _picture_clip(on, target["clip"])
@@ -1114,9 +1124,40 @@ def _keyed_setting(node: Mapping[str, Any], path: str) -> tuple[Number, Any]:
     )
 
 
-def _key_op(
-    target: Mapping[str, Any],
-    id: str,
+@dataclass(frozen=True)
+class KeyOps:
+    """The two operations of the engine that write the keys of one setting, as its owner has them.
+
+    The keys of a setting of a node and of a setting of a clip are put, taken away and cleared
+    alike (:func:`key_op`); what differs is the operations that do it: ``set_keys`` and
+    ``splice_keys`` of a grade, ``set_clip_keys`` and ``splice_clip_keys`` of a clip.
+
+    Attributes:
+        number: The operation that leaves the setting a number, without keys.
+        splice: The operation that puts keys in the place of ``remove`` keys, from key ``at`` on.
+    """
+
+    number: Callable[[Any], dict[str, Any]]
+    splice: Callable[[int, int, list[dict[str, Any]]], dict[str, Any]]
+
+
+def _node_keys(target: Mapping[str, Any], id: str, path: str) -> KeyOps:
+    """The operations that write the keys of the setting at ``path`` of a node of a grade."""
+    op: dict[str, Any] = {"grade": dict(target), "id": id, "path": path}
+    return KeyOps(
+        number=lambda param: {"op": "set_keys", **op, "param": param},
+        splice=lambda at, remove, keys: {
+            "op": "splice_keys",
+            **op,
+            "at": at,
+            "remove": remove,
+            "keys": keys,
+        },
+    )
+
+
+def key_op(
+    ops: KeyOps,
     path: str,
     setting: tuple[Number, Any],
     action: KeyAction,
@@ -1127,12 +1168,15 @@ def _key_op(
 ) -> dict[str, Any]:
     """The operation that puts, takes away or clears the keys of a setting.
 
+    ``setting`` is what the setting takes and what it is now; ``frame`` is counted as its keys
+    are. A key put at a frame that has one takes its place, and keeps its interpolation where
+    none is given; the last key taken away leaves its value as a number.
+
     Raises:
         GradeError: What the action needs is not given, or there is no such key.
     """
     spec, now = setting
     keys = _items(_object(now).get("keys")) if _is_map(now) else []
-    op: dict[str, Any] = {"grade": dict(target), "id": id, "path": path}
     at_frames = ", ".join(str(key["frame"]) for key in keys)
     if action == "clear":
         if not keys:
@@ -1143,7 +1187,7 @@ def _key_op(
             left = _checked_number(spec, value, path)
         else:
             raise GradeError(f"{path}: value is the number that the setting is left at")
-        return {"op": "set_keys", **op, "param": left}
+        return ops.number(left)
     if type(frame) is not int:
         raise GradeError(f"{action} needs frame, the frame that the key is at")
     at = next((n for n, key in enumerate(keys) if key["frame"] >= frame), len(keys))
@@ -1154,8 +1198,8 @@ def _key_op(
             raise GradeError(f"{path} has no key at frame {frame}: {has}")
         if len(keys) == 1:
             # A setting keeps one key at least: without its last it is the number of that key.
-            return {"op": "set_keys", **op, "param": keys[0]["value"]}
-        return {"op": "splice_keys", **op, "at": at, "remove": 1, "keys": []}
+            return ops.number(keys[0]["value"])
+        return ops.splice(at, 1, [])
     if value is None:
         raise GradeError(f"put needs value, what {path} is at the key ({spec.told()})")
     given: dict[str, Any] = {"frame": frame, "value": value}
@@ -1164,13 +1208,13 @@ def _key_op(
     elif there:
         given["interp"] = keys[at]["interp"]
     (key,) = _checked_keys(spec, {"keys": [given]}, path)["keys"]
-    return {"op": "splice_keys", **op, "at": at, "remove": int(there), "keys": [key]}
+    return ops.splice(at, int(there), [key])
 
 
 def _picture_clips(
     project: Mapping[str, Any], timeline: str | None, clips: Sequence[str]
 ) -> tuple[str, list[str]]:
-    on = _timeline_of(project, timeline)
+    on = timeline_of(project, timeline)
     for clip in clips:
         _picture_clip(on, clip)
     return str(on["id"]), list(clips)
@@ -1183,6 +1227,30 @@ def _picture_clips(
 
 Build = Callable[[Mapping[str, Any]], list[dict[str, Any]]]
 """What works a change out from the project as it is: the operations and edits to send."""
+
+
+async def applied(engine: Engine, build: Build) -> tuple[Applied, dict[str, Any]]:
+    """Send what ``build`` works out, at the revision that it was worked out from.
+
+    Ids and node numbers are found in the project as it was read, and a node that is added
+    is given ``n`` and the ``next_id`` of the project, as the engine gives it. Where another
+    client changed the project meanwhile, the change is worked out again.
+
+    Returns:
+        What the engine did, and the project after it.
+    """
+    for attempt in range(_ATTEMPTS):
+        revision, project = await engine.project()
+        session = engine.session
+        ops = build(project)
+        try:
+            done = await engine.apply(ops, revision=revision, session=session)
+        except EngineError as error:
+            if (error.data or {}).get("reason") == "stale_revision" and attempt + 1 < _ATTEMPTS:
+                continue
+            raise
+        return done, (await engine.project())[1]
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 class Grader:
@@ -1206,24 +1274,8 @@ class Grader:
         self._lut_path = lut_path
 
     async def _applied(self, build: Build) -> tuple[Applied, dict[str, Any]]:
-        """Send what ``build`` works out, at the revision that it was worked out from.
-
-        Ids and node numbers are found in the project as it was read, and a node that is added
-        is given ``n`` and the ``next_id`` of the project, as the engine gives it. Where another
-        client changed the project meanwhile, the change is worked out again.
-        """
-        for attempt in range(_ATTEMPTS):
-            revision, project = await self.engine.project()
-            session = self.engine.session
-            ops = build(project)
-            try:
-                done = await self.engine.apply(ops, revision=revision, session=session)
-            except EngineError as error:
-                if (error.data or {}).get("reason") == "stale_revision" and attempt + 1 < _ATTEMPTS:
-                    continue
-                raise
-            return done, (await self.engine.project())[1]
-        raise AssertionError("unreachable")  # pragma: no cover
+        """Send what ``build`` works out, at the revision that it was worked out from."""
+        return await applied(self.engine, build)
 
     async def _missing(self, grades: Iterable[Mapping[str, Any] | None]) -> dict[str, str]:
         names: set[str] = set()
@@ -1255,11 +1307,11 @@ class Grader:
             grade = grade_at(project, target)
             told: dict[str, Any] = {"grade": target, **summary(grade, await self._missing([grade]))}
             if target["level"] == "clip":
-                _, clip = _picture_clip(_timeline_of(project, target["timeline"]), target["clip"])
+                _, clip = _picture_clip(timeline_of(project, target["timeline"]), target["clip"])
                 if clip.get("group") is not None:
                     told["group"] = clip["group"]
             return told
-        on = _timeline_of(project, timeline)
+        on = timeline_of(project, timeline)
         clips = [(track, clip) for track, clip in _clips(on) if track.get("kind") == "video"]
         used = {clip.get("group") for _, clip in clips if clip.get("group") is not None}
         groups = [one for one in _groups(project) if one.get("id") in used]
@@ -1338,9 +1390,8 @@ class Grader:
             id = node_of(grade, target, node)
             setting = _keyed_setting(_node(grade, id), path)
             targets[:] = [target]
-            return [
-                _key_op(target, id, path, setting, action, frame=frame, value=value, interp=interp)
-            ]
+            ops = _node_keys(target, id, path)
+            return [key_op(ops, path, setting, action, frame=frame, value=value, interp=interp)]
 
         done, project = await self._applied(build)
         return await self._receipt(done, project, targets)
@@ -1700,7 +1751,7 @@ class Grader:
                         {"op": "set_grade", "grade": target, "value": copy.deepcopy(EMPTY_GRADE)}
                     ]
                 return [_group_grade(project, timeline, source, group, level)]
-            on = _timeline_of(project, timeline)
+            on = timeline_of(project, timeline)
             chosen = list(clips) or [
                 str(clip["id"]) for _, clip in _clips(on) if clip.get("group") == group
             ]
@@ -1749,7 +1800,7 @@ class Grader:
         if node is not None and given is None and clip is None:
             raise GradeError("node needs the grade it is of, or the clip whose grade it is")
         _, project = await self.engine.project()
-        on = _timeline_of(project, timeline)
+        on = timeline_of(project, timeline)
         target: dict[str, Any] | None = None
         id: str | None = None
         if node is not None:
@@ -1972,7 +2023,7 @@ class Grader:
         """One attempt at a match or Auto Color; ``None`` where the project changed under it."""
         revision, project = await self.engine.project()
         session = self.engine.session
-        on = _timeline_of(project, timeline)
+        on = timeline_of(project, timeline)
         timeline_id = str(on["id"])
         still = _still_of(given)
         source: str | None = None if given is None or still is not None else _clip_of(given)

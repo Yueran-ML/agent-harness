@@ -451,6 +451,14 @@ grade's summary.
   named by its path (`primaries.gain.r`), without sending its other keys: `put` sets a key at
   a frame, in place of one that is there; `remove` takes the key at a frame away, and the
   last one leaves its value as a number; `clear` takes them all.
+- `video_clip_keys` does the same for one setting of a clip's picture on the Edit page, named
+  by its path: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`,
+  `transform.opacity`, `crop.left`, `crop.right`, `crop.top`, `crop.bottom` or `crop.softness`.
+  Its `frame` is a frame of the timeline, within the clip: the tool finds the frame of the
+  clip's media whose picture is shown there, as the engine does, keeps the key at it, and tells
+  both frames, with the frame of the timeline at which each key of the setting is shown. A path
+  that a clip does not have, a value out of the setting's bounds and a frame outside the clip
+  are told before anything is sent.
 - `video_grade_node` adds a corrector as `append` (Append Node), `add_serial`,
   `add_serial_before`, `add_parallel`, `add_layer` or `add_outside` (Add Outside Node, whose key
   is the current node's inverted) add one, with its label and settings in the same step if

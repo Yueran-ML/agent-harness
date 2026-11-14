@@ -309,6 +309,10 @@ Rec.709、Rec.2020、P3 等显示空间配各种 gamma，Rec.2100 HLG 和 ST2084
 - `video_grade_keys` 按路径（如 `primaries.gain.r`）给节点的一个数值参数加、删、清关键帧，不必重发其余的键：
   `put` 在某一帧放一个键，该帧已有键就替换；`remove` 删掉某一帧的键，删到最后一个时参数变回那个键的数值；
   `clear` 清掉全部键。
+- `video_clip_keys` 对片段画面的一个参数做同样的事，参数按路径指定：`transform.x`、`transform.y`、`transform.scale`、
+  `transform.rotation`、`transform.opacity`，以及 `crop.left`、`crop.right`、`crop.top`、`crop.bottom`、`crop.softness`。
+  `frame` 是时间线上的帧，须在片段范围内：工具按引擎的算法换算成该处所显示画面在素材里的帧号，把键放在那里，
+  并在结果里同时给出这两个帧号，以及该参数每个键在时间线上显示的帧。路径不存在、数值超出范围、帧不在片段内时，都在发出之前说明。
 - `video_grade_node` 用 `append`（追加节点）、`add_serial`、`add_serial_before`、`add_parallel`、`add_layer`、
   `add_outside`（添加外部节点，它的键是当前节点的键取反）添加校色节点，
   可以在同一步里给出标签和参数；也可以删除、重置或取出一个节点。

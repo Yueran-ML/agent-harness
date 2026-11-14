@@ -1230,6 +1230,10 @@ class Fake:
             data = {"index": index, "reason": "missing", "what": "setting", "id": path}
             raise RefusedError(-32001, message, {**data, "message": message})
         of, name = path.split(".")
+        if of == "crop":
+            # A clip that a test built without a crop has none, as one that the engine reads.
+            none = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0}
+            clip.setdefault("crop", none)
         if op["op"] == "set_clip_keys":
             clip[of][name] = op["param"]
             return

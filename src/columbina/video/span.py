@@ -2,15 +2,17 @@
 
 The engine decides which place of its media each frame of a clip shows, and the story of a track
 (:mod:`columbina.video.story`) and the cuts made by its words (:mod:`columbina.video.textcut`)
-must agree with it to the frame. So :func:`ticks_of_scaled`, :func:`source_span` and
-:func:`source_tick` count as ``engine/crates/model/src/span.rs`` of the repository counts, and
-must be kept the same as those functions are:
+must agree with it to the frame. So :func:`ticks_of_scaled`, :func:`source_span`,
+:func:`source_tick` and :func:`media_frame` count as ``engine/crates/model/src/span.rs`` of the
+repository counts, and must be kept the same as those functions are:
 
 - ``frames`` frames of a timeline of ``rate``, at ``speed``, last
   ``floor(frames * speed * rate.den * scale / rate.num)`` ticks of the ``scale`` of the media.
 - A clip shows the ticks that its length lasts: its span. Its frame ``k`` shows the place that
   many ticks of ``k`` frames after where it begins in its media; a clip that plays backward
   shows in its frame ``k`` what its frame ``length - 1 - k`` shows forward.
+- A place in media is in the frame of its picture that is read for it: frame ``n`` of a picture
+  of ``rate`` begins at ``floor(n * scale * rate.den / rate.num)`` ticks.
 
 The engine counts in 64 bits, and gives the largest count there is where one would be too large;
 no project comes near that, and whole numbers of Python are not bounded, so that is not done
@@ -29,6 +31,7 @@ __all__ = [
     "Placed",
     "first_frame_at",
     "frames_showing",
+    "media_frame",
     "placed",
     "source_span",
     "source_tick",
@@ -112,6 +115,18 @@ def source_tick(clip: Placed, k: int, rate: Rate) -> int:
     """
     frame = clip.length - 1 - k if clip.reverse else k
     return clip.begins.ticks + ticks_of_scaled(frame, clip.speed, rate, clip.begins.scale)
+
+
+def media_frame(tick: int, rate: Rate, duration: Time) -> int:
+    """The frame of a picture of ``rate`` that the place ``tick`` is in, as ``span.rs`` counts it.
+
+    ``tick`` is in ticks of the scale of ``duration``, how long the media lasts. Frame ``n``
+    begins at the tick that ``n`` frames last, rounded down, so the frame of a tick is
+    ``ceil((tick + 1) * rate.num / (scale * rate.den)) - 1``. A place before the start is in the
+    first frame, and one at the end or after it in the last.
+    """
+    kept = min(max(tick, 0), max(duration.ticks - 1, 0))
+    return ((kept + 1) * rate.num - 1) // (duration.scale * rate.den)
 
 
 def first_frame_at(clip: Placed, ticks: Fraction | int, rate: Rate) -> int:

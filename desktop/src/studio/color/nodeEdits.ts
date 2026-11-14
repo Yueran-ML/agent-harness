@@ -496,6 +496,8 @@ function onShown(change: GradeChange, shown: DefaultNode): boolean {
   if ('op' in change) {
     switch (change.op) {
       case 'add_node': case 'remove_node': case 'connect': case 'disconnect': case 'set_node': return sameTarget(change.grade, shown.target);
+      // The keys of a setting of a node (the Keyframe Editor): a keyframe put on the default node makes it first.
+      case 'set_keys': case 'splice_keys': return sameTarget(change.grade, shown.target);
       default: return false;
     }
   }

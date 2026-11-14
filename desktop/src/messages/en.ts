@@ -922,6 +922,16 @@ export const en = {
           primaries: 'Primaries', curves: 'Curves', qualifier: 'Qualifier', window: 'Window', tracker: 'Tracker', blur: 'Blur', key: 'Key',
           keyframes: 'Keyframes', scopes: 'Scopes',
         },
+        /** The Keyframe Editor (Reference Manual 20, Ch. 148, pp. 3380–3394), in DaVinci Resolve's words. */
+        keyframesPanel: {
+          title: 'Keyframe Editor', tools: 'Keyframe tools', lanes: 'Keyframe tracks', master: 'Master',
+          scope: 'Keyframe mode', scopes: { all: 'All', color: 'Color' },
+          addDynamic: 'Add Dynamic Keyframe', addStatic: 'Add Static Keyframe', deleteKey: 'Delete Keyframe', deleteAll: 'Delete All Keyframes',
+          toDynamic: 'Change to Dynamic Keyframe', toStatic: 'Change to Static Keyframe', attributes: 'Change Dynamic Attributes',
+          previous: 'Previous Keyframe', next: 'Next Keyframe', autoKey: 'Auto-Keyframe', enable: 'Enable Node',
+          dynamic: 'Dynamic keyframe', static: 'Static keyframe', keyed: 'Has keyframes',
+          start: 'Start', end: 'End', profile: 'Dynamics profile', markMenu: 'Keyframe menu', trackMenu: 'Keyframe track menu',
+        },
         timecode: 'Viewer timecode',
         timecodes: { source: 'Source Timecode', record: 'Timeline Timecode', sourceFrame: 'Source Frame', recordFrame: 'Timeline Frame' },
         realtime: 'Playing in real time', dropping: 'Dropping frames', stopped: 'Not playing',

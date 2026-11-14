@@ -1,0 +1,190 @@
+/*
+ * The Keyframe Editor of the Color page (Reference Manual 20, Ch. 148): its tool bar, the heads of
+ * its tracks, the lanes with their ruler, marks and playhead, and the dialog of Change Dynamic
+ * Attributes.
+ */
+.color-kf {
+  min-width: 0;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-caption);
+  outline: none;
+}
+
+.color-kf-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px var(--s2);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.color-kf-scope {
+  height: 22px;
+  margin-right: var(--s2);
+  font-size: var(--text-caption);
+}
+
+.color-kf-gap {
+  flex: 1;
+}
+
+.color-kf-glyph {
+  fill: currentColor;
+}
+
+.color-kf-plus {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.color-kf-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  align-content: start;
+}
+
+.color-kf-heads {
+  min-width: 0;
+  box-shadow: inset -1px 0 0 var(--line);
+}
+
+.color-kf-head {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 3px 0 var(--s2);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.color-kf-head[data-current] {
+  background: var(--accent-soft);
+}
+
+.color-kf-corner {
+  justify-content: flex-end;
+  color: var(--moon-2);
+}
+
+.color-kf-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--moon-1);
+}
+
+.color-kf-name[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.color-kf-head .icon-btn {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--moon-3);
+}
+
+.color-kf-head .icon-btn[aria-pressed='true'] {
+  color: var(--moon-1);
+}
+
+.color-kf-auto {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.color-kf-head .color-kf-auto[aria-pressed='true'] {
+  color: #ff8a1f;
+}
+
+.color-kf-lanes {
+  display: block;
+  min-width: 0;
+  touch-action: none;
+  user-select: none;
+}
+
+.color-kf-ruler {
+  fill: var(--ink-2);
+  cursor: ew-resize;
+}
+
+.color-kf-tick line {
+  stroke: var(--moon-3);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.color-kf-tick text {
+  fill: var(--moon-2);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.color-kf-row {
+  fill: transparent;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.color-kf-row[data-master] {
+  fill: var(--ink-2);
+}
+
+.color-kf-row[data-current] {
+  fill: var(--accent-soft);
+}
+
+.color-kf-mark {
+  fill: var(--moon-1);
+  stroke: var(--ink-0);
+  stroke-width: 1;
+  cursor: grab;
+}
+
+.color-kf-mark[data-selected] {
+  fill: #ff8a1f;
+}
+
+.color-kf-playhead {
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* --- Change Dynamic Attributes. */
+.color-kf-ease {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) 3ch;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+}
+
+.color-kf-ease-curve {
+  grid-column: 1 / -1;
+  justify-self: center;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: var(--r1);
+}
+
+.color-kf-ease-line {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.color-kf-ease-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}

@@ -16,6 +16,7 @@ import {
   toggleLock, toggleNodes, withDefaultNode, type AddHow, type GradeChange, type NodeCommand, type NodeWindow, type Worked,
 } from './nodeEdits';
 import type { GradeEditing } from './useGradeEditing';
+import { hasKeyframes } from './nodeKeys';
 import { carriesLut, draggedLut, LUT_MENU, lutMenuItems, setNodeLut } from './luts';
 import './nodes.css';
 
@@ -69,6 +70,12 @@ export function MatchedMark({ x, y, title }: { x: number; y: number; title: stri
   const dots = [0, 1, 2].flatMap(row => [0, 1, 2].map(column => [x + column * 3.5, y + row * 3.5] as const));
   return <g className="color-node-matched" data-test="node-matched"><title>{title}</title>
     {dots.map(([cx, cy]) => <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r={1.1} />)}</g>;
+}
+
+/** The badge of a node that has keyframes (p. 3386): a small diamond, as a dynamic keyframe is drawn in the Keyframe Editor. */
+export function KeyedMark({ x, y, title }: { x: number; y: number; title: string }) {
+  return <g className="color-node-keyed" data-test="node-keyed"><title>{title}</title>
+    <path d={`M ${x} ${y - 4} L ${x + 4} ${y} L ${x} ${y + 4} L ${x - 4} ${y} Z`} /></g>;
 }
 
 /** The ports of a node: inputs on its left side, outputs on its right; the picture's green, the key's blue (p. 3311). */
@@ -156,12 +163,14 @@ const GradeGraph = memo(function GradeGraph({ layout, zoom, shown, onLabel }: {
       const name = node.kind === 'corrector' ? node.label : node.label || labels.kinds[node.kind];
       const matched = node.kind === 'corrector' && node.params.shot_match != null;
       const locked = isLocked(node);
+      const keyed = hasKeyframes(node);
       const lit = shown.port?.node === node.id ? (shown.port.side === 'in' ? `in:${shown.port.kind}:${shown.port.input}` : `out:${shown.port.kind}`) : null;
       return <g key={node.id} className="color-node" data-node={node.id} data-number={number} data-kind={node.kind}
         data-enabled={node.enabled} data-current={node.id === shown.current || undefined} data-locked={locked || undefined}
         data-default={node.id === shown.defaultNode || undefined}
         data-chosen={(node.id !== shown.current && shown.others.has(node.id)) || undefined} data-target={shown.node === node.id || undefined}>
-        <title>{[`${numberText(number)}`, name, labels.kinds[node.kind], node.enabled ? '' : labels.disabled, locked ? labels.locked : '', matched ? labels.matched : '']
+        <title>{[`${numberText(number)}`, name, labels.kinds[node.kind], node.enabled ? '' : labels.disabled, locked ? labels.locked : '', matched ? labels.matched : '',
+          keyed ? labels.keyframesPanel.keyed : '']
           .filter(Boolean).join(' · ')}</title>
         {name && <text className="color-node-label" x={x + NODE_WIDTH / 2} y={y - 6} textAnchor="middle" data-test="node-label"
           onDoubleClick={() => onLabel(node.id)}>{shownLabel(name)}</text>}
@@ -171,6 +180,7 @@ const GradeGraph = memo(function GradeGraph({ layout, zoom, shown, onLabel }: {
         {node.kind !== 'corrector' && <text className="color-node-kind" x={x + NODE_WIDTH / 2} y={y + NODE_HEIGHT / 2 + 4} textAnchor="middle">{labels.kinds[node.kind]}</text>}
         {matched && <MatchedMark x={x + NODE_WIDTH - 20} y={y + NODE_HEIGHT - 13} title={labels.matched} />}
         {locked && <LockMark x={x + NODE_WIDTH - 16} y={y + 4} title={labels.locked} />}
+        {keyed && <KeyedMark x={x + NODE_WIDTH / 2} y={y + NODE_HEIGHT - 8} title={labels.keyframesPanel.keyed} />}
         <Ports placed={placed} lit={lit} />
       </g>;
     })}

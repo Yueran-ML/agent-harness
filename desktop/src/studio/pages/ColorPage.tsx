@@ -53,6 +53,9 @@ import { useViewerModes, type HighlightMode } from '../color/useViewerModes';
 import { BypassButton } from '../BypassColor';
 import { useGenerateLut } from '../color/generateLut';
 import { useGradedThumbnails } from '../color/gradedThumbnails';
+import { KeyframesPanel } from '../color/KeyframesPanel';
+import { TIMELINE_CLOCK, type KeySpan } from '../color/keyTracks';
+import { useKeyframeEditing } from '../color/useKeyframes';
 import '../color/color.css';
 
 /** Narrower than this, the left and center palettes are merged into one group (Reference Manual 20, p. 2976). */
@@ -261,13 +264,32 @@ export function ColorPage({
     if (failure instanceof EngineError) grades.editing.setProblem(refusalText(failure, now.current.words.hint.studio));
     else failed(failure);
   }, [grades.editing.setProblem, failed]);
+  // The Keyframe Editor (phase 4, T9): the frames of the timeline over which the grade shown is shown, with the clock of its keys
+  // (the clip's for its grade and its group's, the timeline's own frames for its grade); and its commands, with their keys.
+  const timelineEnd = useMemo(() => {
+    let end = 0;
+    for (const track of selected?.tracks ?? []) if (track.kind !== 'subtitle') for (const each of track.clips) end = Math.max(end, each.start + each.length);
+    return end;
+  }, [selected]);
+  const keySpan = useMemo<KeySpan | null>(() => {
+    if (selected === null) return null;
+    if (shownLevel === 'timeline') return { first: 0, last: Math.max(timelineEnd, 1) - 1, clock: TIMELINE_CLOCK };
+    if (!current) return null;
+    return { first: current.clip.start, last: current.clip.start + Math.max(current.clip.length, 1) - 1, clock: keyClockOf(current.clip, selected.rate, clockMedia) };
+  }, [shownLevel, timelineEnd, clockInputs, selected === null, current === null]);
+  const seekTo = useCallback((to: number) => timelineMonitor.seek(to, false), [timelineMonitor.seek]);
+  const keyframes = useKeyframeEditing({ grade: shownGrade, target: grades.target, gradeKey, current: currentNode, span: keySpan, frame,
+    editing: grades.editing, onSeek: seekTo, reset: `${session}/${selected?.id ?? ''}` });
+  // Auto-Keyframe of the current node's track (p. 3383): a change of a palette puts a keyframe of the node at the playhead first.
+  const autoKey = editedNode !== null && keyframes.auto.has(editedNode.id);
   const edited = useMemo<EditedNode | null>(() => (placed === null || editedNode === null ? null
     : {
       bridge, session, revision, target: placed.target, node: editedNode, frame: placed.frame, onFailure: paletteFailed,
       clip: current?.clip.id ?? null, clock: clockInputs, timelineFrame: frame ?? 0, playing: !!timelineState?.playing && !timelineMonitor.held,
       before: defaultNode !== null && editedNode.id === defaultNode.id ? [makeDefaultNode(defaultNode.target)] : undefined,
+      ...(autoKey ? { autoKey } : {}),
     }),
-  [bridge, session, revision, JSON.stringify(placed), editedNode, paletteFailed, defaultNode, current?.clip.id, clockInputs, frame, timelineState?.playing, timelineMonitor.held]);
+  [bridge, session, revision, JSON.stringify(placed), editedNode, paletteFailed, defaultNode, current?.clip.id, clockInputs, frame, timelineState?.playing, timelineMonitor.held, autoKey]);
   // The pickers of colour of the palettes on the viewer (T17, T21), and its Highlight modes and Bypass Color (T21, T13d).
   const pickers = usePickerHub(viewerTool, setViewerTool, edited, paletteFailed);
   const modes = useViewerModes({ bridge, session, loaded: timelineState !== null && timelineMonitor.loaded, state: timelineState,
@@ -591,7 +613,10 @@ export function ColorPage({
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
         windows={edit => <WindowPalette edit={edit} controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} notice={viewerInput.notice} points={viewerInput.points} />}
         bodies={{ qualifier: edit => <QualifierPalette key={edit.interaction} edit={edit} />, key: edit => <KeyPalette key={edit.interaction} edit={edit} edited={edited} />,
-          tracker: () => <TrackerPalette edited={edited} window={windows.selected?.id ?? null} run={tracking} /> }}
+          tracker: () => <TrackerPalette edited={edited} window={windows.selected?.id ?? null} run={tracking} />,
+          keyframes: () => <KeyframesPanel bridge={bridge} session={session} revision={revision} grade={shownGrade} target={grades.target} current={currentNode}
+            onCurrent={onCurrentNode} span={keySpan} frame={frame} keys={keyframes} editing={grades.editing} onSeek={timelineMonitor.seek}
+            onFailure={paletteFailed} hint={noTimeline} /> }}
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window' || each === 'tracker') setViewerTool('window'); if (each === 'qualifier') setViewerTool('qualifier'); }} onRight={setRight} />
       </PickerContext.Provider>
     </div>

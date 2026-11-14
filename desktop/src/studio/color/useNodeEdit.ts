@@ -4,6 +4,7 @@ import { callEngine, mergePatch, type Corrector, type GradeNode, type Param, typ
 import { fullCorrector, getAt, isKeyed, keyAt, patchOf, shownValue, withValue } from './corrector';
 import type { KeyClock } from './keyFrames';
 import type { GradeChange } from './nodeEdits';
+import { addKeyframe, autoKeyed, autoValue, autoWhole, type AutoKeyed } from './nodeKeys';
 import { windowPath, windowValue, type WindowEdit, type EditScope } from './windowEdits';
 
 /**
@@ -42,6 +43,13 @@ export interface EditedNode {
    * the node 01 it is shown with (DaVinci's default node), the `add_serial` that makes it (`withDefaultNode`).
    */
   before?: readonly GradeChange[];
+  /**
+   * Auto-Keyframe of the node's track in the Keyframe Editor (Reference Manual 20, p. 3383): a change
+   * at a frame where the node has no keyframe first puts a dynamic keyframe of the node there
+   * (`addKeyframe`), in the transaction of the change, and goes into it. Not while the timeline
+   * plays: the controls do not follow the playhead then (p. 3384). Off where it is left out.
+   */
+  autoKey?: boolean;
 }
 
 /**
@@ -64,12 +72,17 @@ export function placeOf(level: 'pre_clip' | 'clip' | 'post_clip' | 'timeline', t
 /** How long a value that was sent is shown, at most, until the engine tells of it, as the inspector's fields hold theirs. */
 export const HOLD_MS = 1500;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const resolve = (edits: Edits, base: Corrector, frame: number): [string, unknown][] => {
+/**
+ * What edits put at their paths, worked out from `base` in their order. With `auto`, `base` is the
+ * corrector with the keyframe that Auto-Keyframe puts first, and a value goes into that keyframe
+ * (`autoValue`, `autoWhole`).
+ */
+const resolve = (edits: Edits, base: Corrector, frame: number, auto?: AutoKeyed | null): [string, unknown][] => {
   const values = new Map<string, unknown>();
   let current = base;
   for (const [path, edit] of edits) {
-    const value = typeof edit === 'number' ? withValue(getAt(current, path) as Param | undefined, frame, edit)
-      : 'window' in edit ? windowValue(current, edit, frame) : edit.whole;
+    const value = typeof edit === 'number' ? (auto ? autoValue(path, edit, current, auto, frame) : withValue(getAt(current, path) as Param | undefined, frame, edit))
+      : 'window' in edit ? windowValue(current, edit, frame) : auto ? autoWhole(path, edit.whole, current, auto, frame) : edit.whole;
     if (typeof edit === 'object' && 'window' in edit && value === null) continue;
     values.set(path, value);
     current = mergePatch(current, patchOf([[path, value]])) as Corrector;
@@ -86,7 +99,19 @@ const keysOf = (params: Corrector, frame: number, paths: readonly string[]) => J
   return [path, isKeyed(param) && Array.isArray(param.keys) && param.keys.length ? param.keys[keyAt(param.keys, frame)].frame : null];
 }));
 const pathsOf = (edits: Edits, base: Corrector) => edits.map(([path, value]) => typeof value === 'object' && 'window' in value ? windowPath(base, value) : path);
-const identityOf = (at: EditedNode | null) => at === null ? '' : JSON.stringify([at.session, at.target, at.node.id, at.clip, at.clock]);
+const identityOf = (at: EditedNode | null) => at === null ? '' : JSON.stringify([at.session, at.target, at.node.id, at.clip, at.clock, ...(at.autoKey ? [true] : [])]);
+/**
+ * What Auto-Keyframe makes of a change to `params` at a frame of the node's keys: the corrector with
+ * the keyframe that the change puts first, and as it is shown; null where Auto-Keyframe is off, the
+ * timeline plays, or the node has a keyframe at the frame already.
+ */
+const autoOf = (context: EditedNode | null, params: Corrector, at: number): AutoKeyed | null => {
+  if (!context?.autoKey || context.playing || context.node.kind !== 'corrector') return null;
+  const keyed = autoKeyed(params, at);
+  return keyed === null ? null : { keyed, shown: params };
+};
+/** The keys that edits at these paths go into (`keysOf`): under Auto-Keyframe, those of the keyframe that the first of them puts. */
+const keysAt = (context: EditedNode | null, params: Corrector, at: number, paths: readonly string[]) => keysOf(autoOf(context, params, at)?.keyed ?? params, at, paths);
 
 interface Queued { edits: Edits; frame: number; keys: string; preview?: boolean }
 interface Gesture {
@@ -107,6 +132,10 @@ interface Gesture {
   failed: boolean;
   made: boolean;
   cancelled: boolean;
+  /** Under Auto-Keyframe: the corrector with the keyframe that the drag puts first, and as it was shown; null otherwise. */
+  auto: AutoKeyed | null;
+  /** The operations of that keyframe, which go with the first transaction of the drag; null once they went. */
+  keying: unknown[] | null;
 }
 interface Owner {
   id: number;
@@ -154,7 +183,7 @@ export function useNodeEdit(edited: EditedNode | null) {
   const previous = owner?.context;
   const seek = previous && edited && (previous.timelineFrame ?? previous.frame) !== (edited.timelineFrame ?? edited.frame)
     && !(previous.playing && edited.playing);
-  const changedKey = owner?.gesture && edited && owner.gesture.keys !== keysOf(committed, edited.frame, owner.gesture.dependencies);
+  const changedKey = owner?.gesture && edited && owner.gesture.keys !== keysAt(edited, committed, edited.frame, owner.gesture.dependencies);
   const external = owner && edited && !owner.sending && edited.revision > owner.confirmed;
   if (!owner || owner.identity !== identityOf(edited) || seek || (changedKey && !owner.gesture?.scope) || external) {
     if (owner) retire(owner, !external);
@@ -172,7 +201,7 @@ export function useNodeEdit(edited: EditedNode | null) {
   owner.committed = committed;
   // A queued value keeps its original key. A static value survives continuous playback.
   owner.queue = owner.queue.filter(item => {
-    const valid = edited && validScope(item.edits) && item.keys === keysOf(committed, edited.frame, pathsOf(item.edits, committed));
+    const valid = edited && validScope(item.edits) && item.keys === keysAt(edited, committed, edited.frame, pathsOf(item.edits, committed));
     if (!valid) for (const [path] of item.edits) owner.held.delete(path);
     return valid;
   });
@@ -223,8 +252,11 @@ export function useNodeEdit(edited: EditedNode | null) {
     if (queued) {
       context = who.context;
       revision = context.revision;
-      values = resolve(queued.edits, who.committed, queued.frame);
-      ops = [...(context.before ?? []), { op: 'set_node', grade: context.target, id: context.node.id, params: patchOf(values) }];
+      // Auto-Keyframe: the keyframe of the node first, then the change, which goes into it; one step to undo.
+      const auto = autoOf(context, who.committed, queued.frame);
+      values = resolve(queued.edits, auto?.keyed ?? who.committed, queued.frame, auto);
+      ops = [...(context.before ?? []), ...(auto ? addKeyframe(context.target, context.node, queued.frame, 'dynamic') : []),
+        { op: 'set_node', grade: context.target, id: context.node.id, params: patchOf(values) }];
     } else {
       if (!going || going.next === null || going.ended) return;
       gesture = going;
@@ -236,18 +268,26 @@ export function useNodeEdit(edited: EditedNode | null) {
         going.initial = who.committed;
         going.params = who.committed;
         for (const path of going.before.keys()) going.before.set(path, getAt(going.initial, path));
-        going.keys = keysOf(going.initial, going.frame, going.dependencies);
+        going.keys = keysAt(going.context, going.initial, going.frame, going.dependencies);
+        // Auto-Keyframe: the drag goes on from the corrector with its keyframe, which its first transaction puts.
+        going.auto = autoOf(going.context, going.initial, going.frame);
+        going.keying = going.auto ? addKeyframe(going.context.target, going.context.node, going.frame, 'dynamic') : null;
+        if (going.auto) going.params = going.auto.keyed;
       }
       context = going.context;
       revision = going.revision;
       end = going.ending;
-      values = resolve(going.next, going.params, going.frame);
+      values = resolve(going.next, going.params, going.frame, going.auto);
       going.next = null;
       going.ended = end;
-      const set = { op: 'set_node', grade: context.target, id: context.node.id, params: patchOf(values) };
+      // A drag taken back that put a keyframe puts the settings back whole, so the keyframe goes with it.
+      const back = end && going.cancelled && going.auto !== null;
+      const set = { op: 'set_node', grade: context.target, id: context.node.id, params: back ? going.initial : patchOf(values) };
+      const keying = going.keying ?? [];
+      going.keying = null;
       const making = !going.made && (context.before?.length ?? 0) > 0;
-      ops = making ? [...context.before!, set] : end && going.cancelled && going.made
-        ? [{ op: 'remove_node', grade: context.target, id: context.node.id }] : [set];
+      ops = making ? [...context.before!, ...keying, set] : end && going.cancelled && going.made
+        ? [{ op: 'remove_node', grade: context.target, id: context.node.id }] : [...keying, set];
       if (making) going.made = true;
     }
     who.sending = true;
@@ -297,12 +337,12 @@ export function useNodeEdit(edited: EditedNode | null) {
   const frame = edited?.frame ?? 0;
   // Also reject callbacks retained by callers across a key change, even before React unmounts a control.
   const accepts = (edits: Edits) => validScope(edits) && current(owner) && owner.context?.node.kind === 'corrector'
-    && keysOf(committed, frame, pathsOf(edits, committed)) === keysOf(owner.committed, owner.context.frame, pathsOf(edits, owner.committed));
+    && keysAt(edited, committed, frame, pathsOf(edits, committed)) === keysAt(owner.context, owner.committed, owner.context.frame, pathsOf(edits, owner.committed));
   const makeGesture = (context: EditedNode, initial: Corrector, edits: Edits, at: number): Gesture => ({
     id: `palette-${renderer}-${++gestures}`, context, revision: null, frame: at, initial, params: initial,
     before: new Map(edits.map(([path]) => [path, getAt(initial, path)])),
-    dependencies: pathsOf(edits, initial), scope: scopeOf(edits), keys: keysOf(initial, at, pathsOf(edits, initial)),
-    next: edits, last: new Map(), ending: false, ended: false, failed: false, made: false, cancelled: false,
+    dependencies: pathsOf(edits, initial), scope: scopeOf(edits), keys: keysAt(context, initial, at, pathsOf(edits, initial)),
+    next: edits, last: new Map(), ending: false, ended: false, failed: false, made: false, cancelled: false, auto: null, keying: null,
   });
   const enqueue = (edits: Edits, preview = false) => {
     const scope = scopeOf(edits);
@@ -310,15 +350,17 @@ export function useNodeEdit(edited: EditedNode | null) {
     // Retiring a control drops its queued previews only; a commit keeps its place and key.
     const queued = preview ? edits : unscoped(edits);
     if (waiting) { waiting.edits = queued; waiting.preview = preview; }
-    else owner.queue.push({ edits: queued, frame, keys: keysOf(committed, frame, pathsOf(edits, committed)), preview });
+    else owner.queue.push({ edits: queued, frame, keys: keysAt(edited, committed, frame, pathsOf(edits, committed)), preview });
   };
   const preview = (edits: Edits) => {
     if (!accepts(edits) || !edits.length) return;
     owner.local += 1;
-    const values = resolve(edits, base, frame);
+    // Under Auto-Keyframe the values are shown as they will be sent: in the keyframe that the change puts.
+    const auto = autoOf(owner.context, base, frame);
+    const values = resolve(edits, auto?.keyed ?? base, frame, auto);
     let going = owner.gesture;
     if (!going || going.ended) {
-      if (values.every(([path, value]) => same(getAt(base, path), value))) return;
+      if ((auto ? resolve(edits, base, frame) : values).every(([path, value]) => same(getAt(base, path), value))) return;
       going = makeGesture(owner.context!, base, edits, frame);
       owner.gesture = going;
     }
@@ -328,7 +370,7 @@ export function useNodeEdit(edited: EditedNode | null) {
     if (going.failed) return;
     going.dependencies = [...new Set([...going.dependencies, ...pathsOf(edits, going.initial)])];
     for (const [path] of edits) if (!going.before.has(path)) going.before.set(path, getAt(going.initial, path));
-    going.keys = keysOf(going.initial, going.frame, going.dependencies);
+    going.keys = keysAt(going.context, going.initial, going.frame, going.dependencies);
     going.next = edits;
     owner.live = new Map(values);
     refresh(owner); drive(owner);
@@ -347,7 +389,7 @@ export function useNodeEdit(edited: EditedNode | null) {
       if (going.revision !== null) {
         going.next = edits.length ? edits : [...going.last].map(([path, whole]) => [path, { whole }] as const);
         going.ending = true;
-        for (const [path, value] of resolve(going.next, going.params, going.frame)) owner.held.set(path, value);
+        for (const [path, value] of resolve(going.next, going.params, going.frame, going.auto)) owner.held.set(path, value);
         refresh(owner); drive(owner); return;
       }
       owner.gesture = null;
@@ -355,7 +397,9 @@ export function useNodeEdit(edited: EditedNode | null) {
     if (!edits.length) { refresh(owner); return; }
     const values = resolve(edits, base, frame);
     if (values.every(([path, value]) => same(getAt(base, path), value))) { refresh(owner); return; }
-    for (const [path, value] of values) owner.held.set(path, value);
+    // Under Auto-Keyframe what is held is what will be sent: the values in the keyframe that the change puts.
+    const auto = autoOf(owner.context, base, frame);
+    for (const [path, value] of auto ? resolve(edits, auto.keyed, frame, auto) : values) owner.held.set(path, value);
     enqueue(edits);
     refresh(owner); drive(owner);
   };
@@ -383,7 +427,7 @@ export function useNodeEdit(edited: EditedNode | null) {
   return {
     enabled: edited?.node.kind === 'corrector', corrector: shown, base, frame,
     interaction: owner.id,
-    controlKey: (paths: readonly string[]) => `${owner.id}:${keysOf(committed, frame, paths)}`,
+    controlKey: (paths: readonly string[]) => `${owner.id}:${keysAt(edited, committed, frame, paths)}`,
     isCurrent: () => current(owner),
     localVersion: () => owner.local,
     touch: () => { if (current(owner)) owner.local += 1; },

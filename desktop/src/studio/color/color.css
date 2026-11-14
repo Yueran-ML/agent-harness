@@ -308,6 +308,12 @@
   fill: #d8c47a;
 }
 
+/* The badge of a node that has keyframes (p. 3386). */
+.color-node-keyed {
+  fill: #ff8a1f;
+  pointer-events: none;
+}
+
 /* --- The thumbnail timeline. */
 .color-thumbs-area {
   grid-area: thumbs;

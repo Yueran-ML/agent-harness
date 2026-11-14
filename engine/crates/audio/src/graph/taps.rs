@@ -228,7 +228,7 @@ impl Graph {
     }
 
     /// The sound at `point` of strip `strip` through the last block: its first
-    /// [`Graph::frames`] samples, of the timeline [`Graph::lead`] samples after the outputs'.
+    /// [`Graph::frames`] samples, of the timeline `Graph::lead` samples after the outputs'.
     ///
     /// # Panics
     ///

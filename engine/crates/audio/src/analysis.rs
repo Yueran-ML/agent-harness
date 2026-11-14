@@ -304,7 +304,7 @@ pub fn run_strip(
 /// Runs `graph` once over `range` of the timeline (samples) and gives `sink` the sound at each
 /// of `points` (a strip and a point of it), with the place of the point among them, block by
 /// block, until `sink` says no more (`false`: the analysis is cancelled); the same range of the
-/// timeline of each, however far ahead of the outputs its strip is ([`Graph::lead`]): the graph
+/// timeline of each, however far ahead of the outputs its strip is (`Graph::lead`): the graph
 /// starts as far before the range as the strip furthest ahead is, and runs on as far after it as
 /// the one least ahead is behind that. Whether it ran to the end.
 ///

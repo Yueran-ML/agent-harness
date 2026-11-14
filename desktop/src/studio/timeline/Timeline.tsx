@@ -24,6 +24,9 @@ import { CoveringMenu } from '../color/CoveringMenu';
 import type { Menu, MenuItem } from '../color/ColorMenu';
 import type { ChannelContext } from '../inspector/ChannelSourceMenu';
 import { AudioPlayhead, type AudioOverlayContext } from './AudioOverlay';
+import { ClipKeyTracks, type ClipKeyTracksContext, type KeyTracksState } from './ClipKeyMarks';
+import { KeyframeTracks } from './KeyframeTracks';
+import { keyTrackHeights, type KeyTrackClipboard } from './keyTrack';
 import './timeline.css';
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
@@ -45,7 +48,7 @@ export interface TimelineViewport { scale: number; left: number; top: number; he
 export type TimelineScrolling = 'fixed' | 'page' | 'none';
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
   cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling, trackMenuItems,
-  headerDetail, renameOnClick = false, lockedHeights, groupResize = false, onMarks, curvesOpen = false, onCurves }: {
+  headerDetail, renameOnClick = false, lockedHeights, groupResize = false, onMarks, curvesOpen = false, onCurves, keyTracks }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -97,6 +100,13 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   onMarks?: (marks: Marks) => void;
   /** The Curve Editor of the page: whether it is open, and what its button in the tool bar does. It must stay the same call. */
   curvesOpen?: boolean; onCurves?: () => void;
+  /**
+   * The keys of clips shown on the timeline (the Edit page): given, a clip of picture whose transform
+   * or crop has keys shows them along its lower edge and has a button that opens its keyframe track
+   * beneath it (Reference Manual 20, pp. 1108–1111); `open` are the clips whose tracks are open, which
+   * the page keeps (`useKeyTracks`). Left out, no clip shows keys and nothing is mounted for them.
+   */
+  keyTracks?: KeyTracksState;
   onTrackSelect?: (track: string) => void;
   /** View-only selection shared with the mixer; it does not change edit destination tracks. */
   selectedTracks?: readonly string[];
@@ -112,6 +122,9 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const root = useRef<HTMLElement>(null);
   const audioClipboard = useRef<AudioClipboard>({ keys: [] });
   useEffect(() => { audioClipboard.current.keys = []; }, [session]);
+  // The keys copied in a keyframe track, for all the tracks open on this timeline; another session begins with none.
+  const keyClipboard = useRef<KeyTrackClipboard>({ settings: [] });
+  useEffect(() => { keyClipboard.current.settings = []; }, [session]);
   const scroll = useRef<HTMLDivElement>(null);
   const draw = useRef<number | null>(null);
   const [localViewport, setLocalViewport] = useState<TimelineViewport>({ scale: 4, left: 0, top: 0, heights: {} });
@@ -155,6 +168,16 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     ...timeline.tracks.filter(track => track.kind === 'audio'),
   ].filter(track => !hiddenTracks?.includes(track.id)) : [], [timeline, hiddenTracks]);
   const tracksNow = useRef(tracks); tracksNow.current = tracks;
+  // What the clips with keys and their keyframe tracks are given stays the same as the playhead moves:
+  // they move it, and ask where it is, through these.
+  const seekNow = useCallback((to: number, scrubbing: boolean) => now.current.onSeek(to, scrubbing), []);
+  const playheadNow = useCallback(() => now.current.frame, []);
+  const openKeyTracks = keyTracks?.open;
+  const toggleKeyTrack = keyTracks?.onToggle;
+  const keyContext = useMemo<ClipKeyTracksContext | null>(() => openKeyTracks && toggleKeyTrack
+    ? { open: new Set(openKeyTracks), onToggle: toggleKeyTrack, onSeek: seekNow } : null, [openKeyTracks, toggleKeyTrack, seekNow]);
+  // The room that a track makes beneath its clips for the keyframe tracks open on it: none, and the same map, where none is open.
+  const keyHeights = useMemo(() => keyTrackHeights(timeline, openKeyTracks), [timeline, openKeyTracks]);
 
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -338,10 +361,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     let rowTop = RULER_HEIGHT;
     return new Map(tracks.map(track => {
       const height = heights[track.id] ?? trackHeight, row = { top: rowTop, height };
-      rowTop += height;
+      rowTop += height + (keyHeights.get(track.id) ?? 0);
       return [track.id, row];
     }));
-  }, [tracks, heights, trackHeight]);
+  }, [tracks, heights, trackHeight, keyHeights]);
   // Decorations are made once per geometry, not per frame: a new element would draw every
   // memoized row again as the playhead moves. What follows the playhead reads AudioPlayhead.
   const decorations = useMemo(() => new Map(tracks.map(track => [track.id, trackDecoration?.(track, {
@@ -418,7 +441,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     {menu && (menu.clipboard ? <CoveringMenu menu={{ ...menu, label: words.label.studio.page.edit }} onClose={closeMenu} /> : <TimelineMenu menu={menu} onClose={closeMenu} />)}
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>
-      <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? trackHeight), 0), '--scale': view.scale } as CSSProperties}>
+      <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? trackHeight) + (keyHeights.get(track.id) ?? 0), 0), '--scale': view.scale } as CSSProperties}>
         <div className="timeline-ruler-row"><Ruler rate={timeline.rate} scale={view.scale} from={from} to={to}
           frame={shown} last={last} onDown={down} onSeek={onSeek} />
           {automationRange&&<span className="automation-active-range" style={{left:HEADER_WIDTH+automationRange.from*view.scale,width:(automationRange.to-automationRange.from)*view.scale}}/>}
@@ -426,16 +449,18 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
           <div className="timeline-ruler-corner">{!overview && <AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} />}</div></div>
-        <AudioPlayhead.Provider value={shown}>{tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
-          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} decoration={decorations.get(track.id)} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
+        <AudioPlayhead.Provider value={shown}><ClipKeyTracks.Provider value={keyContext}>{tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
+          from={from} to={to} height={heights[track.id] ?? trackHeight} keysHeight={keyHeights.get(track.id) ?? 0} waves={waves} decoration={decorations.get(track.id)} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
           audioOverlay={track.kind === 'audio' && !cut && !overview && !gainLineDisabled?.(track.id) ? audioContext : undefined}
           selected={editing.selected} mixerSelected={selectedTracks?.includes(track.id)} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
           shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null}
-          headerDetail={details.get(track.id)} renameOnClick={renameOnClick} heightLocked={lockedHeights?.includes(track.id)} />)}
+          headerDetail={details.get(track.id)} renameOnClick={renameOnClick} heightLocked={lockedHeights?.includes(track.id)} />)}</ClipKeyTracks.Provider>
           {afterRows}</AudioPlayhead.Provider>
         {ghostViews}
+        {openKeyTracks && openKeyTracks.length > 0 && <KeyframeTracks bridge={bridge} session={session} revision={revision} timeline={timeline} media={media}
+          open={openKeyTracks} rows={rows} scale={view.scale} playhead={playheadNow} clipboard={keyClipboard.current} />}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`covered-${item.id}`} className="timeline-covered" data-covered={item.id}

@@ -1,7 +1,9 @@
 import { memo, type ReactNode } from 'react';
 import { useWords } from '../../app/locale';
 import type { Clip, Media, Rate } from '../engine';
+import { hasKeys } from '../inspector/clipKeys';
 import { timecode } from '../timecode';
+import { ClipKeyMarks } from './ClipKeyMarks';
 import { spanStyle } from './geometry';
 import { Waveform } from './Waveform';
 import type { Waveforms } from './waveforms';
@@ -10,6 +12,10 @@ import type { Waveforms } from './waveforms';
  * A clip on its lane, placed by the style sheet from its frames (see `spanStyle`). `scale`, the
  * pixels of a frame, is needed only by the waveform of a clip of sound; a clip of video is not
  * given it, nor drawn again at a zoom.
+ *
+ * A clip of picture whose transform or crop has keys shows them (`ClipKeyMarks`) where the page
+ * shows keys on its timeline. A clip without keys pays ten looks at its own settings for that as
+ * it is drawn, and nothing else: no component, nothing read from the page.
  */
 export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale = 0, from, to, waves, selected = false, children, overlay }: {
   clip: Clip; kind: 'video' | 'audio'; media: Media | undefined; rate: Rate; scale?: number; from: number; to: number; waves: Waveforms;
@@ -30,5 +36,7 @@ export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale 
     {children ?? (kind === 'audio' && media?.facts.audio && clip.source.kind === 'media' && <Waveform cache={waves} media={clip.source.media} clip={clip} rate={rate} scale={scale}
       from={Math.max(from, clip.start)} to={Math.min(to, clip.start + clip.length)} />)}
     {overlay}
+    {/* The keys of its transform and crop: nothing is mounted for a clip that has none. */}
+    {kind === 'video' && hasKeys(clip) && <ClipKeyMarks clip={clip} media={media} rate={rate} />}
   </div>;
 });

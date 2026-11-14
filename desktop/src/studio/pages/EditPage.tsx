@@ -9,6 +9,7 @@ import { MonitorPane } from '../MonitorPane';
 import { BypassButton, useBypassColor } from '../BypassColor';
 import { Timeline, type TimelineHandle } from '../timeline/Timeline';
 import { useAudioScrubbing } from '../timeline/scrub';
+import { useKeyTracks } from '../timeline/useKeyTracks';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { NewTimeline } from './NewTimeline';
@@ -51,6 +52,10 @@ export const TWO_MONITORS_PX = 1280;
  * The Curve Editor opens beneath the timeline, from its button in the tool bar of the timeline or
  * from the Video tab of the inspector, on the one clip of picture that is chosen (Reference Manual
  * 20, pp. 1116–1119; DaVinci Resolve docks it as a panel of its own, p. 1111).
+ *
+ * A clip of picture whose transform or crop has keys shows them on the timeline, and its Keyframe
+ * button opens its keyframe track beneath it (pp. 1108–1111). Which tracks are open is the page's to
+ * keep (`useKeyTracks`), not the project's: several may be, and another timeline begins with none.
  *
  * Quick Export, at the right of the bar beside the inspector, opens the export of the timeline
  * shown, with its In and Out points. Ctrl+M is left unbound: in DaVinci Resolve it adds a marker and
@@ -99,6 +104,7 @@ export function EditPage({
   const toggleCurves = useCallback(() => setCurvesOpen(open => !open), []);
   const openCurves = useCallback(() => setCurvesOpen(true), []);
   const closeCurves = useCallback(() => setCurvesOpen(false), []);
+  const keyTracks = useKeyTracks(selected, session);
   const [stripSelection, setStripSelection] = useState<string[]>([]);
   useEffect(() => setStripSelection([]), [session, selected?.id]);
   const [narrow, setNarrow] = useState(false);
@@ -257,6 +263,7 @@ export function EditPage({
         onSpeed={setSpeedClips}
         curvesOpen={curvesOpen}
         onCurves={toggleCurves}
+        keyTracks={keyTracks}
       />
       {mixerOpen && selected && <EditMixer key={`${session}/${selected.id}`} bridge={bridge} session={session} revision={revision} timeline={selected}
         frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} selected={stripSelection} onSelect={setStripSelection} />}

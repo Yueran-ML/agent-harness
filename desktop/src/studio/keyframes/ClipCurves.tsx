@@ -4,7 +4,7 @@ import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import { keyClockOf } from '../color/keyFrames';
 import { CLIP_KEYED, type Clip, type ClipKeyed, type Media, type Param, type Timeline } from '../engine';
-import { CLIP_BOUNDS, frameOfKey, keyFrameOf, keyOps, mediaOf, paramOf } from '../inspector/clipKeys';
+import { CLIP_BOUNDS, CLIP_SETTINGS, frameOfKey, keyFrameOf, keyOps, mediaOf, paramOf, settingNames } from '../inspector/clipKeys';
 import { refusalOf } from '../inspector/refusal';
 import { useCommit } from '../inspector/useCommit';
 import type { Change } from '../timeline/commands';
@@ -12,11 +12,8 @@ import { clipLocations } from '../timeline/selection';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { CurveEditor, NO_SELECTION, type Curve, type CurveChange, type CurveDisplay, type CurveSelection } from './CurveEditor';
 
-/** The settings of a clip that take keys, in the order of the Video tab of the Inspector. */
-export const CLIP_CURVES: readonly ClipKeyed[] = [
-  'transform.scale', 'transform.x', 'transform.y', 'transform.rotation', 'transform.opacity',
-  'crop.left', 'crop.right', 'crop.top', 'crop.bottom', 'crop.softness',
-];
+/** The settings of a clip that take keys, in the order of the Video tab of the Inspector: the keyframe track of the timeline lists them so too. */
+export const CLIP_CURVES: readonly ClipKeyed[] = CLIP_SETTINGS;
 /** The colour of the curve of each setting, as each track of DaVinci Resolve's Keyframe Editor has one (Reference Manual 20, p. 1113). */
 const COLORS: Record<ClipKeyed, string> = {
   'transform.scale': '#e9b949', 'transform.x': '#e5534b', 'transform.y': '#57ab5a', 'transform.rotation': '#539bf5', 'transform.opacity': '#c9d1d9',
@@ -87,11 +84,7 @@ function Curves({ bridge, session, revision, timeline, media, clip, locked, fram
   /** Whether a drag has begun a gesture that is still to be ended or taken back. */
   const dragging = useRef(false);
 
-  const names: Record<ClipKeyed, string> = {
-    'transform.scale': labels.zoom, 'transform.x': labels.positionX, 'transform.y': labels.positionY, 'transform.rotation': labels.rotation,
-    'transform.opacity': labels.opacity, 'crop.left': labels.cropLeft, 'crop.right': labels.cropRight, 'crop.top': labels.cropTop,
-    'crop.bottom': labels.cropBottom, 'crop.softness': labels.softness,
-  };
+  const names = settingNames(labels);
   // As the Video tab writes them: the place in pixels of the timeline, the turn in degrees, the rest but the zoom in percent.
   const percent: CurveDisplay = { factor: 100, unit: '%', digits: 1 };
   const displays: Record<ClipKeyed, CurveDisplay> = {

@@ -180,6 +180,7 @@ const entries = {
   'Ducker': ['闪避器', 'ダッカー'], 'Dynamics': ['动态', 'ダイナミクス'], 'Pan': ['声像', 'パン'],
   'Show Clip Gain Line': ['显示片段音量线', 'クリップゲインラインを表示'],
   'Keyframe interpolation': ['关键帧插值', 'キーフレーム補間'],
+  'Keyframe Editor': ['关键帧编辑器', 'キーフレームエディター'], 'Keyframes': ['关键帧', 'キーフレーム'],
   'Clip gain': ['片段音量', 'クリップゲイン'], 'Clip fades': ['片段淡变', 'クリップフェード'],
   'Fade In': ['淡入', 'フェードイン'], 'Fade Out': ['淡出', 'フェードアウト'],
   'Linear': ['线性', 'リニア'], 'Ease In': ['缓入', 'イーズイン'], 'Ease Out': ['缓出', 'イーズアウト'],

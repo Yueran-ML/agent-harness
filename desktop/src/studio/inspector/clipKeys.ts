@@ -11,6 +11,7 @@
  */
 import { keyClockOf } from '../color/keyFrames';
 import type { Bounds } from '../color/corrector';
+import type { Messages } from '../../messages/en';
 import { NO_CROP, type Clip, type ClipKeyed, type Keyframe, type Media, type Op, type Param, type Timeline } from '../engine';
 import { spliceOf } from '../keyframes/curveGeometry';
 import { valueAt } from '../keyframes/value';
@@ -35,6 +36,38 @@ export const CLIP_BOUNDS: Record<ClipKeyed, Bounds> = {
   'crop.bottom': b(0, 0, 1),
   'crop.softness': b(0, 0, 1),
 };
+
+/** The settings of a clip that take keys, in the order of the Video tab of the Inspector. */
+export const CLIP_SETTINGS: readonly ClipKeyed[] = [
+  'transform.scale', 'transform.x', 'transform.y', 'transform.rotation', 'transform.opacity',
+  'crop.left', 'crop.right', 'crop.top', 'crop.bottom', 'crop.softness',
+];
+
+/** The name of each setting that takes keys, as the Video tab of the Inspector writes it. */
+export function settingNames(labels: Messages['label']['studio']['inspector']): Record<ClipKeyed, string> {
+  return {
+    'transform.scale': labels.zoom, 'transform.x': labels.positionX, 'transform.y': labels.positionY, 'transform.rotation': labels.rotation,
+    'transform.opacity': labels.opacity, 'crop.left': labels.cropLeft, 'crop.right': labels.cropRight, 'crop.top': labels.cropTop,
+    'crop.bottom': labels.cropBottom, 'crop.softness': labels.softness,
+  };
+}
+
+/**
+ * Whether any setting of a clip's transform or crop has keys. The timeline asks it of every clip
+ * that it draws, so it reads the ten settings where they are and makes nothing.
+ */
+export function hasKeys(clip: Clip): boolean {
+  // A clip that a client built may say nothing of its crop (or, in a test, of its transform): it has no keys there.
+  const transform: Clip['transform'] | undefined = clip.transform;
+  const crop = clip.crop;
+  if (transform && (keyed(transform.x) || keyed(transform.y) || keyed(transform.scale) || keyed(transform.rotation) || keyed(transform.opacity))) return true;
+  return crop ? keyed(crop.left) || keyed(crop.right) || keyed(crop.top) || keyed(crop.bottom) || keyed(crop.softness) : false;
+}
+
+/** Whether a setting is keys: a number is not, nor one that is left out. */
+function keyed(param: Param | undefined): boolean {
+  return typeof param === 'object' && param !== null;
+}
 
 /** What holds the setting of a path, `transform` or `crop`, and its name there. */
 const parts = (path: ClipKeyed) => path.split('.') as ['transform' | 'crop', string];

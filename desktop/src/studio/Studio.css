@@ -958,6 +958,160 @@
   align-self: flex-start;
 }
 
+/* --- The keys of a clip on the timeline: diamonds along its lower edge, and its Keyframe button. */
+.clip-key {
+  position: absolute;
+  /* Over the name of the clip, under the headers of the tracks that the clip scrolls beneath. */
+  z-index: 2;
+  bottom: 3px;
+  /* At its frame of the clip (--at), times the pixels of a frame; one at the first or the last frame is drawn whole. */
+  left: clamp(5px, calc(var(--at) * var(--scale) * 1px), calc(100% - 5px));
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  box-sizing: border-box;
+  transform: rotate(45deg);
+  border: 1px solid var(--ink-0);
+  background: var(--warn);
+  cursor: pointer;
+}
+
+.clip-key:hover {
+  background: var(--moon-0);
+}
+
+.clip-keys-toggle {
+  position: absolute;
+  z-index: 2;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 3px;
+  background: var(--ink-0);
+  color: var(--moon-1);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.timeline-clip:hover .clip-keys-toggle,
+.timeline-clip[aria-selected='true'] .clip-keys-toggle,
+.clip-keys-toggle[aria-pressed='true'],
+.clip-keys-toggle:focus-visible {
+  opacity: 1;
+}
+
+.clip-keys-toggle[aria-pressed='true'] {
+  color: var(--warn);
+}
+
+/* --- The keyframe track of a clip, beneath it: the track makes room (--keys), and its clips stay as high as they were. */
+.timeline-track[data-keys] .timeline-clip {
+  bottom: calc(4px + var(--keys));
+}
+
+.key-track {
+  position: absolute;
+  /* Under the headers of the tracks and the playhead, over the lanes. */
+  z-index: 2;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--ink-2);
+  outline: none;
+  touch-action: none;
+  user-select: none;
+}
+
+.key-track:focus-visible {
+  border-color: var(--focus);
+}
+
+.key-track-row {
+  position: relative;
+  box-sizing: border-box;
+  border-top: 1px solid var(--line);
+}
+
+.key-track-row[data-key-track-row='group'] {
+  border-top: 0;
+  background: var(--ink-3);
+}
+
+.key-track-name {
+  position: absolute;
+  left: 4px;
+  top: 0;
+  font-size: 9px;
+  line-height: 15px;
+  white-space: nowrap;
+  color: var(--moon-2);
+  pointer-events: none;
+}
+
+.key-track-key {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  box-sizing: border-box;
+  transform: rotate(45deg);
+  border: 1px solid var(--warn);
+  background: var(--ink-0);
+  cursor: grab;
+}
+
+/* As DaVinci Resolve shows a key that is chosen: white, with an outline. */
+.key-track-key[data-selected='true'] {
+  border-color: var(--accent);
+  background: var(--moon-0);
+}
+
+.key-track[data-locked] .key-track-key {
+  cursor: default;
+}
+
+.key-track-tip {
+  position: absolute;
+  top: 1px;
+  right: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--ink-0);
+  color: var(--moon-0);
+  font-size: 10px;
+  line-height: 14px;
+  font-family: var(--font-mono, monospace);
+  pointer-events: none;
+}
+
+.key-track-problem {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 0 var(--s1);
+  overflow: hidden;
+  background: var(--ink-2);
+  color: var(--warn);
+  font-size: 11px;
+}
+
+.key-track-problem span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* A studio too narrow for anything beside the monitor stacks the pool above it. */
 @container studio (max-width: 760px) {
   .edit-page {

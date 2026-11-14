@@ -1,4 +1,4 @@
-import { memo, useMemo, type ReactNode } from 'react';
+import { memo, useMemo, type CSSProperties, type ReactNode } from 'react';
 import { useWords } from '../../app/locale';
 import type { Clip, Media, Op, Rate, Track } from '../engine';
 import { ClipView } from './ClipView';
@@ -14,10 +14,17 @@ export interface TrackClipDrawing { clip: Clip; track: Track; media?: Media; rat
  * whole steps as the timeline scrolls (see `scrollWindow`), so a row is drawn again only where the
  * scroll crosses a step, or what it shows changes; not as the playhead moves.
  */
-export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, mixerSelected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay, decoration,
+export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, keysHeight = 0, waves, onEdit, onHeight, selected, mixerSelected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay, decoration,
   headerDetail, renameOnClick, heightLocked }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
-  height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number, scope?: HeightScope) => void;
+  height: number;
+  /**
+   * The room beneath the clips for the keyframe tracks open on this track, in pixels (see
+   * `keyTrackHeights`): the track is that much higher, and its clips stay as high as they were. 0
+   * for a track with none open, which is every track of a timeline that shows no keys.
+   */
+  keysHeight?: number;
+  waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number, scope?: HeightScope) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
   mixerSelected?: boolean;
   /** The transition chosen, where it is on this track. */
@@ -41,7 +48,8 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
     const starts = new Map(track.clips.map(clip => [clip.id, clip.start]));
     return track.transitions.map(transition => ({ transition, ...transitionSpan(transition, starts.get(transition.right)!) }));
   }, [track]);
-  return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-mixer-selected={mixerSelected || undefined} data-enabled={track.enabled} data-locked={track.locked} style={{ height, boxShadow: track.color ? `inset 3px 0 ${track.color}` : undefined }}>
+  return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-mixer-selected={mixerSelected || undefined} data-enabled={track.enabled} data-locked={track.locked} data-keys={keysHeight > 0 || undefined}
+    style={{ height: height + keysHeight, boxShadow: track.color ? `inset 3px 0 ${track.color}` : undefined, ...(keysHeight > 0 ? { '--keys': `${keysHeight}px` } : null) } as CSSProperties}>
     <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget}
       shownSubtitles={shownSubtitles} detail={headerDetail} renameOnClick={renameOnClick} heightLocked={heightLocked} />
     <div className="timeline-lane" role="listbox" aria-label={track.name} title={track.kind === 'subtitle' && !track.locked ? all.hint.studio.inspector.addCue : undefined} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>

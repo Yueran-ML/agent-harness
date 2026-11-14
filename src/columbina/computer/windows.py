@@ -23,10 +23,12 @@ from ctypes import wintypes
 from columbina.computer import png
 from columbina.computer.desktop import Button, DesktopError
 
-__all__ = ["Windows"]
-
-# Nothing below is there on another system, and nothing else loads this module there.
+# Nothing below is there on another system, and nothing else loads this module there. What the
+# module gives is named after this line, so that a checker of types that reads the module as
+# another system would, and so reads nothing below, does not look for it.
 assert sys.platform == "win32"
+
+__all__ = ["Windows"]
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)

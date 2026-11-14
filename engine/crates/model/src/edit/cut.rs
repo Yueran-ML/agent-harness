@@ -473,11 +473,12 @@ pub(super) fn place_copies(
                     continue;
                 }
                 let mut piece = source.clone();
+                let own = work.own_frames(&source);
                 if piece.end() > to {
-                    piece = super::work::halves_of(&piece, to, work.rate()).0;
+                    piece = super::work::halves_of(&piece, to, work.rate(), own).0;
                 }
                 if piece.start < from {
-                    piece = super::work::halves_of(&piece, from, work.rate()).1;
+                    piece = super::work::halves_of(&piece, from, work.rate(), own).1;
                 }
                 made.push((track.clone(), piece.start + delta, track.clone(), piece));
             }

@@ -414,3 +414,166 @@ fn a_crop_and_a_composite_mode_are_set_whole_and_a_crop_is_keyed_and_read_at_the
     );
     assert_eq!(Project::from_value(written).unwrap(), project);
 }
+
+// A clip that counts its own frames, under the edits that move its head.
+
+/// The sample with a colour `k1` on V1 from frame 200 for 50 frames, moved right over its
+/// first 40 frames and graded with nothing.
+fn with_a_colour_that_moves() -> Project {
+    let mut project = Project::sample();
+    let mut colour = Clip::new(
+        "k1",
+        Source::Color {
+            color: Rgba([255, 0, 0, 255]),
+        },
+        200,
+        50,
+    );
+    colour.transform.x = Param::Keys(vec![key(0, 0.0), key(40, 1.0)]);
+    colour.crop.left = Param::Keys(vec![key(10, 0.5), key(20, 0.0)]);
+    project.timelines[0].tracks[0].clips.push(colour);
+    project.next_id = 10;
+    project.validate().unwrap();
+    project
+}
+
+/// How far right what V1 shows at each of `frames` is moved, and how much of its left is cut.
+fn seen_at(project: &Project, frames: &[i64]) -> Vec<(f64, f64)> {
+    frames
+        .iter()
+        .map(|&frame| {
+            let layers = video_at(&project.timelines[0], project, frame);
+            assert_eq!(layers.len(), 1, "{frame}");
+            (layers[0].transform.x, layers[0].crop.left)
+        })
+        .collect()
+}
+
+/// Apply an edit, and check that its inverse takes the project back.
+fn edited(project: &mut Project, edit: Value) {
+    let before = project.clone();
+    let edit: columbina_model::Edit = serde_json::from_value(edit).unwrap();
+    let expansion = columbina_model::expand(project, edit).unwrap();
+    let mut undone = project.clone();
+    for inverse in expansion.inverse.iter().rev() {
+        apply(&mut undone, inverse.clone()).unwrap();
+    }
+    undone.next_id = before.next_id;
+    assert_eq!(undone, before);
+}
+
+fn x_keys(project: &Project, id: &str) -> Vec<(i64, f64)> {
+    let clip = project.timelines[0].tracks[0]
+        .clips
+        .iter()
+        .find(|c| c.id == id)
+        .unwrap();
+    match &clip.transform.x {
+        Param::Keys(keys) => keys.iter().map(|k| (k.frame, k.value)).collect(),
+        Param::Fixed(value) => vec![(i64::MIN, *value)],
+    }
+}
+
+#[test]
+fn a_trim_of_the_head_of_a_colour_leaves_its_keys_at_their_frames_of_the_timeline() {
+    let frames = [210, 215, 220, 230, 245];
+    let mut project = with_a_colour_that_moves();
+    let before = seen_at(&project, &frames);
+    edited(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "in", "delta": 10}),
+    );
+    assert_eq!(x_keys(&project, "k1"), [(-10, 0.0), (30, 1.0)]);
+    assert_eq!(seen_at(&project, &frames), before);
+    // Its head moved out again, by more than it was moved in.
+    edited(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "in", "delta": -30}),
+    );
+    assert_eq!(x_keys(&project, "k1"), [(20, 0.0), (60, 1.0)]);
+    assert_eq!(seen_at(&project, &frames), before);
+    // Its tail leaves its keys alone.
+    edited(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "out", "delta": -5}),
+    );
+    assert_eq!(x_keys(&project, "k1"), [(20, 0.0), (60, 1.0)]);
+}
+
+#[test]
+fn a_ripple_trim_of_the_head_of_a_colour_shows_from_its_start_what_it_showed_later() {
+    let mut project = with_a_colour_that_moves();
+    let before = seen_at(&project, &[210, 220, 240]);
+    edited(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "in", "delta": 10,
+            "ripple": true}),
+    );
+    // It still starts at 200, ten frames shorter, and shows there what it showed at 210.
+    assert_eq!(x_keys(&project, "k1"), [(-10, 0.0), (30, 1.0)]);
+    assert_eq!(seen_at(&project, &[200, 210, 230]), before);
+}
+
+#[test]
+fn the_halves_of_a_colour_cut_by_the_blade_play_as_it_did() {
+    let frames: Vec<i64> = (200..250).step_by(5).collect();
+    let mut project = with_a_colour_that_moves();
+    let before = seen_at(&project, &frames);
+    edited(
+        &mut project,
+        json!({"edit": "blade", "timeline": "t1", "at": 215, "tracks": ["V1"]}),
+    );
+    let clips = &project.timelines[0].tracks[0].clips;
+    assert_eq!(clips.len(), 3);
+    assert_eq!(x_keys(&project, "k1"), [(0, 0.0), (40, 1.0)]);
+    let second = clips.iter().find(|c| c.start == 215).unwrap().id.clone();
+    assert_eq!(x_keys(&project, &second), [(-15, 0.0), (25, 1.0)]);
+    assert_eq!(seen_at(&project, &frames), before);
+}
+
+#[test]
+fn a_roll_leaves_the_keys_of_the_colours_at_both_sides_where_they_were() {
+    let mut project = with_a_colour_that_moves();
+    // A second colour, which meets the first at 250.
+    let mut next = Clip::new(
+        "k2",
+        Source::Color {
+            color: Rgba([0, 0, 255, 255]),
+        },
+        250,
+        50,
+    );
+    next.transform.x = Param::Keys(vec![key(0, -1.0), key(20, 0.0)]);
+    project.timelines[0].tracks[0].clips.push(next);
+    project.validate().unwrap();
+    let frames = [205, 235, 262, 270, 290];
+    let before = seen_at(&project, &frames);
+    edited(
+        &mut project,
+        json!({"edit": "roll", "timeline": "t1", "left": "k1", "right": "k2", "delta": 8}),
+    );
+    assert_eq!(x_keys(&project, "k1"), [(0, 0.0), (40, 1.0)]);
+    assert_eq!(x_keys(&project, "k2"), [(-8, -1.0), (12, 0.0)]);
+    assert_eq!(seen_at(&project, &frames), before);
+}
+
+#[test]
+fn a_still_keeps_its_keys_at_their_frames_of_the_timeline_and_media_on_its_pictures() {
+    // c1 shows m1 from its start. As a still it counts its own frames.
+    let keys = Param::Keys(vec![key(20, 0.0), key(60, 1.0)]);
+    let trim = json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "in", "delta": 10,
+        "linked": false});
+    let mut still = Project::sample();
+    still.media[0].facts.video.as_mut().unwrap().still = true;
+    still.timelines[0].tracks[0].clips[0].transform.x = keys.clone();
+    edited(&mut still, trim.clone());
+    assert_eq!(x_keys(&still, "c1"), [(10, 0.0), (50, 1.0)]);
+    assert_eq!(seen_at(&still, &[40]), [(0.5, 0.0)]);
+    // As moving pictures, the keys are of its pictures, and are not moved: picture 40 is shown
+    // at frame 40 still.
+    let mut moving = Project::sample();
+    moving.timelines[0].tracks[0].clips[0].transform.x = keys;
+    edited(&mut moving, trim);
+    assert_eq!(x_keys(&moving, "c1"), [(20, 0.0), (60, 1.0)]);
+    assert_eq!(seen_at(&moving, &[40]), [(0.5, 0.0)]);
+}

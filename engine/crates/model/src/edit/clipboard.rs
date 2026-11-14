@@ -175,11 +175,15 @@ pub fn copy_clips(
                     continue;
                 }
                 let mut slice = clip.clone();
+                // A title and a colour count their own frames: the keys of a slice of one stay
+                // where they were on the timeline. (A still does too, but is not told from its
+                // media here, where there is no project: its keys go with the head of its slice.)
+                let own = clip.source_in().is_none();
                 if slice.end() > to {
-                    slice = halves_of(&slice, to, timeline.rate).0;
+                    slice = halves_of(&slice, to, timeline.rate, own).0;
                 }
                 if slice.start < from {
-                    slice = halves_of(&slice, from, timeline.rate).1;
+                    slice = halves_of(&slice, from, timeline.rate, own).1;
                 }
                 // Slicing allocates no project clip here; retain the source identity so
                 // transitions can find both captured sides. Paste allocates all fresh ids.

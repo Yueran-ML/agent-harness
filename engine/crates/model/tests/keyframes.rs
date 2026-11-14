@@ -349,7 +349,8 @@ fn a_title_a_colour_and_a_still_count_the_frames_of_the_clip() {
     assert_eq!(clock.at(200), 0);
     assert_eq!(clock.at(210), 10);
     assert_eq!(clock.at(195), -5);
-    // Its keys go with its head.
+    // Its keys count from its head; a trim of its head moves them back by as much, so that
+    // they stay at their frames of the timeline, as the keys of media stay on their pictures.
     edited(
         &mut project,
         Edit::Trim {
@@ -363,6 +364,7 @@ fn a_title_a_colour_and_a_still_count_the_frames_of_the_clip() {
     );
     let clock = KeyClock::of(clip(&project, "c2"), &project, rate);
     assert_eq!(clock.at(205), 0);
+    assert_eq!(keys(&clip(&project, "c2").grade), [(-5, 1.0), (5, 0.0)]);
     // A colour, and a still, as a title.
     let colour = Clip::new(
         "c3",

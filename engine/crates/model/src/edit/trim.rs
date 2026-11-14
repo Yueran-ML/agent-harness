@@ -216,7 +216,8 @@ pub(super) fn trim(
         work.shift(&tracks, place, shift, &skip)?;
     }
     for c in &changed {
-        work.reshape(&edged(&c.clip, edge, delta, ripple, rate))?;
+        let new = work.edged(&c.clip, edge, delta, ripple);
+        work.reshape(&new)?;
     }
     if ripple && shift < 0 {
         work.shift(&tracks, place, shift, &skip)?;
@@ -265,8 +266,8 @@ pub(super) fn roll(
         work.clamp();
     }
     for (l, r) in lefts.iter().zip(&rights) {
-        let l = edged(&l.clip, Edge::Out, delta, false, rate);
-        let r = edged(&r.clip, Edge::In, delta, false, rate);
+        let l = work.edged(&l.clip, Edge::Out, delta, false);
+        let r = work.edged(&r.clip, Edge::In, delta, false);
         // The one that gives frames goes first.
         if delta > 0 {
             work.reshape(&r)?;
@@ -436,12 +437,8 @@ pub(super) fn slide(
         work.clamp();
     }
     for s in slid {
-        let left = s
-            .left
-            .map(|l| edged(&l.clip, Edge::Out, delta, false, rate));
-        let right = s
-            .right
-            .map(|r| edged(&r.clip, Edge::In, delta, false, rate));
+        let left = s.left.map(|l| work.edged(&l.clip, Edge::Out, delta, false));
+        let right = s.right.map(|r| work.edged(&r.clip, Edge::In, delta, false));
         let (first, last) = if delta > 0 {
             (right, left)
         } else {

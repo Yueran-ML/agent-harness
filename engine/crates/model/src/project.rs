@@ -615,6 +615,27 @@ pub struct Clip {
     pub group: Option<Id>,
 }
 
+impl Clip {
+    /// Put every key of its transform, of its crop and of its grade `by` frames later (earlier
+    /// where `by` is below 0): for a clip whose keys count its own frames, as an edit that
+    /// moves its head does, so that each key stays at its frame of the timeline.
+    pub(crate) fn shift_keys(&mut self, by: i64) {
+        if by == 0 {
+            return;
+        }
+        let to = |frame: i64| frame.saturating_add(by);
+        if self.transform.is_animated() {
+            self.transform = self.transform.with_key_frames(&to);
+        }
+        if self.crop.is_animated() {
+            self.crop = self.crop.with_key_frames(&to);
+        }
+        if self.grade.has_keys() {
+            self.grade = self.grade.with_key_frames(to);
+        }
+    }
+}
+
 /// What a clip shows or plays.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

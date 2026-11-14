@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::follow::Follow;
 use super::{Created, EditError, Expansion};
+use crate::grade::Target;
+use crate::keyframes::KeyClock;
 use crate::ops::{apply_done, in_source, Op, OpError, LARGEST};
 use crate::project::{Clip, Cue, Id, Project, Source, Timeline, Track, TrackKind, Transition};
 use crate::span::ticks_of_scaled;
@@ -69,6 +71,24 @@ impl<'a> Work<'a> {
 
     pub fn rate(&self) -> Rate {
         self.timeline().rate
+    }
+
+    /// Whether the keys of a clip count its own frames from its first, and not those of its
+    /// media: a title, a colour, a still ([`KeyClock`]). An edit that moves the head of such a
+    /// clip moves its keys the other way, so that they stay at their frames of the timeline,
+    /// as the keys of a clip of media stay on their pictures.
+    pub fn own_frames(&self, clip: &Clip) -> bool {
+        !KeyClock::of(clip, self.project, self.rate()).counts_source()
+    }
+
+    /// A clip with one edge moved, as [`edged`] moves it, and with its keys where they were on
+    /// the timeline where they count its own frames and its head is the edge that moved.
+    pub fn edged(&self, clip: &Clip, edge: Edge, delta: i64, keep_start: bool) -> Clip {
+        let mut new = edged(clip, edge, delta, keep_start, self.rate());
+        if edge == Edge::In && self.own_frames(clip) {
+            new.shift_keys(-delta);
+        }
+        new
     }
 
     /// Say that the edit went less far than it was asked to.
@@ -463,6 +483,32 @@ impl<'a> Work<'a> {
                 length: new.length,
             })?;
         }
+        // The keys of a clip that counts its own frames, moved as its head was (see `own_frames`).
+        if (&old.transform, &old.crop) != (&new.transform, &new.crop) {
+            let mut op = set_fades(&self.timeline_id(), &new.id, new.fade_in, new.fade_out);
+            if let Op::SetClip {
+                transform,
+                crop,
+                fade_in,
+                fade_out,
+                ..
+            } = &mut op
+            {
+                (*fade_in, *fade_out) = (None, None);
+                *transform = (old.transform != new.transform).then(|| new.transform.clone());
+                *crop = (old.crop != new.crop).then(|| new.crop.clone());
+            }
+            self.op(op)?;
+        }
+        if old.grade != new.grade {
+            self.op(Op::SetGrade {
+                grade: Target::Clip {
+                    timeline: self.timeline_id(),
+                    clip: new.id.clone(),
+                },
+                value: new.grade.clone(),
+            })?;
+        }
         Ok(())
     }
 
@@ -474,7 +520,7 @@ impl<'a> Work<'a> {
         let mut groups: HashMap<Id, Id> = HashMap::new();
         for id in clips {
             let (track, clip) = self.owned(id)?;
-            let (first, mut second) = halves_of(&clip, at, self.rate());
+            let (first, mut second) = halves_of(&clip, at, self.rate(), self.own_frames(&clip));
             second.link = clip
                 .link
                 .as_ref()
@@ -806,8 +852,10 @@ pub(super) fn beyond(track: &Track, clip: &str) -> (i64, i64) {
 /// there, from where the other ends in the media: forward, the second begins where the first
 /// ends; backward, the first begins where the second ends. The first keeps the fade in and the
 /// second the fade out, each as far as it lasts, of the picture and of the sound: no fade is
-/// left at the cut. The second has no id.
-pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate) -> (Clip, Clip) {
+/// left at the cut. The second has no id. Where the keys of the clip count its `own` frames
+/// ([`Work::own_frames`]), those of the second half are moved back by the frames of the first,
+/// so that they stay at their frames of the timeline.
+pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate, own: bool) -> (Clip, Clip) {
     let a = at - clip.start;
     let b = clip.length - a;
     let mut first = Clip {
@@ -838,6 +886,9 @@ pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate) -> (Clip, Clip) {
         } else {
             set_source_in(&mut second, later(a));
         }
+    }
+    if own {
+        second.shift_keys(-a);
     }
     (first, second)
 }

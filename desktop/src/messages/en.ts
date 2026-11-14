@@ -1060,6 +1060,12 @@ export const en = {
         changeSpeed: 'Change clip speed', titleText: 'Title', useLongest: (frames: number) => `Use ${frames} frames`,
         subtitle: 'Subtitle', cueStart: 'Start (frame)', removeCue: 'Delete subtitle',
       },
+      /** The Curve Editor of the Edit page, as DaVinci Resolve names its controls (Reference Manual 20, pp. 1119–1120). */
+      curves: {
+        title: 'Curve Editor', parameters: 'Parameters', graph: 'Curves', interpolation: 'Keyframe interpolation',
+        linear: 'Linear', easeIn: 'Ease In', easeOut: 'Ease Out', easeInOut: 'Ease In and Out', hold: 'Hold',
+        fit: 'Full Extent Zoom', copy: 'Copy Keyframes', paste: 'Paste Keyframes', close: 'Close Curve Editor',
+      },
       /** DaVinci Resolve's Change Clip Speed. */
       speed: { title: 'Change clip speed', percent: 'Speed', reverse: 'Reverse speed', ripple: 'Ripple sequence', duration: 'Duration', apply: 'Change' },
       /** The effects library, as DaVinci Resolve's toolbox. */
@@ -1678,6 +1684,7 @@ export const en = {
       newTimeline: 'The timeline takes the size of the first video in the media pool, and its frame rate unless you choose another. It starts with one video track and one audio track. Once it has content, its frame rate is locked.',
       newTimelineFailed: 'The timeline could not be created.',
       inspectorEmpty: 'Select a clip on the timeline.',
+      curvesEmpty: 'Select one video clip on the timeline to edit its keyframes.',
       inspector: {
         longest: (frames: number) => `The longest that fits is ${frames === 1 ? '1 frame' : `${frames} frames`}.`,
         rate: 'The frame rate is locked because the timeline has content. A new timeline can use another rate.',

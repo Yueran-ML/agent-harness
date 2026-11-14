@@ -45,7 +45,7 @@ export interface TimelineViewport { scale: number; left: number; top: number; he
 export type TimelineScrolling = 'fixed' | 'page' | 'none';
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
   cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling, trackMenuItems,
-  headerDetail, renameOnClick = false, lockedHeights, groupResize = false, onMarks }: {
+  headerDetail, renameOnClick = false, lockedHeights, groupResize = false, onMarks, curvesOpen = false, onCurves }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -95,6 +95,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   groupResize?: boolean;
   /** Told of the In and Out points as they change. */
   onMarks?: (marks: Marks) => void;
+  /** The Curve Editor of the page: whether it is open, and what its button in the tool bar does. It must stay the same call. */
+  curvesOpen?: boolean; onCurves?: () => void;
   onTrackSelect?: (track: string) => void;
   /** View-only selection shared with the mixer; it does not change edit destination tracks. */
   selectedTracks?: readonly string[];
@@ -411,7 +413,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
     {!overview && <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
-      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} onEditMenu={openEditMenu} hideFollow={scrolling !== undefined} />}
+      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} onEditMenu={openEditMenu} hideFollow={scrolling !== undefined} curves={curvesOpen} onCurves={onCurves} />}
     {headerMenu && <CoveringMenu menu={headerMenu} onClose={closeMenu} />}
     {menu && (menu.clipboard ? <CoveringMenu menu={{ ...menu, label: words.label.studio.page.edit }} onClose={closeMenu} /> : <TimelineMenu menu={menu} onClose={closeMenu} />)}
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}

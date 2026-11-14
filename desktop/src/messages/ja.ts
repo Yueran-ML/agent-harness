@@ -962,6 +962,11 @@ export const ja: Messages = {
         changeSpeed: 'クリップ速度変更', titleText: 'タイトル', useLongest: (frames: number) => `${frames} フレームにする`,
         subtitle: '字幕', cueStart: '開始（フレーム）', removeCue: '字幕を削除',
       },
+      curves: {
+        title: 'カーブエディター', parameters: 'パラメーター', graph: 'カーブ', interpolation: 'キーフレーム補間',
+        linear: 'リニア', easeIn: 'イーズイン', easeOut: 'イーズアウト', easeInOut: 'イーズイン＆アウト', hold: 'ホールド',
+        fit: '全体表示ズーム', copy: 'キーフレームをコピー', paste: 'キーフレームをペースト', close: 'カーブエディターを閉じる',
+      },
       speed: { title: 'クリップ速度変更', percent: '速度', reverse: '逆再生', ripple: 'リップルシーケンス', duration: '長さ', apply: '変更' },
       effects: { title: 'エフェクトライブラリ', videoTransitions: 'ビデオトランジション', audioTransitions: 'オーディオトランジション', titles: 'タイトル', generators: 'ジェネレーター', text: 'テキスト' },
       pool: 'メディアプール',
@@ -1541,6 +1546,7 @@ export const ja: Messages = {
       newTimeline: '新しいタイムラインは、メディアプールの最初の動画の解像度を使い、別のものを選ばない限りフレームレートも同じにします。ビデオトラックとオーディオトラックを 1 本ずつ持ち、コンテンツが入るとフレームレートはロックされます。',
       newTimelineFailed: 'タイムラインを作成できませんでした。',
       inspectorEmpty: 'タイムラインでクリップを選択してください。',
+      curvesEmpty: 'キーフレームを編集するには、タイムラインでビデオクリップを 1 つ選択してください。',
       inspector: {
         longest: (frames: number) => `収まる最長は ${frames} フレームです。`,
         rate: 'タイムラインにコンテンツがあるため、フレームレートはロックされています。別のフレームレートは新しいタイムラインで使えます。',

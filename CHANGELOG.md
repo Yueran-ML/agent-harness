@@ -12,9 +12,16 @@ change what was there before.
   given at another frame puts a key there. The keys stay on their pictures where the clip is
   trimmed, slipped or played at another speed, as the keys of its grade do. The agent sets
   them with the operations `set_clip_keys` and `splice_clip_keys` of `video_edit`.
+- The Edit page has a Curve Editor under its timeline (studio, phase 4), opened from the
+  toolbar of the timeline or from the Video tab of the Inspector: the curves of the keyframes
+  of the clip that is chosen, whose keys are dragged in time and in value, added with a
+  double click and deleted, given Linear, Ease In, Ease Out, Ease In and Out or Hold, shaped
+  by their Bezier handles, and copied and pasted. A drag is one step to undo.
 - A clip has a crop, with a softness, and a composite mode (studio, phase 4): the Cropping and
-  the Composite Mode of the Inspector. The sides of the crop and its softness take keyframes
-  too. Projects are of schema 5; one of schema 4 is read with no crop and the normal mode,
+  the Composite Mode of the Inspector, drawn in the viewer and in an export. A mode lays the
+  clip over the tracks below it as the same mode of a Layer Mixer lays one input over
+  another; where nothing is below it, the clip is shown as it is. The sides of the crop and
+  its softness take keyframes too. Projects are of schema 5; one of schema 4 is read with no crop and the normal mode,
   and its file is kept beside it as `project.schema4.json`.
 - A tool `video_grade_keys`, with which the agent puts, removes or clears the keyframes of
   one setting of a node of a grade without sending its other keys.

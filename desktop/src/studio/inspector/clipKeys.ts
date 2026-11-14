@@ -10,8 +10,31 @@
  * operations to send, and none where nothing would change.
  */
 import { keyClockOf } from '../color/keyFrames';
+import type { Bounds } from '../color/corrector';
 import { NO_CROP, type Clip, type ClipKeyed, type Keyframe, type Media, type Op, type Param, type Timeline } from '../engine';
+import { spliceOf } from '../keyframes/curveGeometry';
 import { valueAt } from '../keyframes/value';
+
+const b = (neutral: number, low: number, high: number): Bounds => ({ neutral, low, high });
+
+/**
+ * The bounds of the settings of a clip that take keys, as the engine's catalog has them
+ * (`engine/crates/model/tests/data/catalog.json`, `clip`; the tests hold the two together). Those
+ * of the place and of the turn are what the editors show, 16 pictures either way and ten turns:
+ * the model takes any finite number there.
+ */
+export const CLIP_BOUNDS: Record<ClipKeyed, Bounds> = {
+  'transform.x': b(0, -16, 16),
+  'transform.y': b(0, -16, 16),
+  'transform.scale': b(1, 0.01, 16),
+  'transform.rotation': b(0, -3600, 3600),
+  'transform.opacity': b(1, 0, 1),
+  'crop.left': b(0, 0, 1),
+  'crop.right': b(0, 0, 1),
+  'crop.top': b(0, 0, 1),
+  'crop.bottom': b(0, 0, 1),
+  'crop.softness': b(0, 0, 1),
+};
 
 /** What holds the setting of a path, `transform` or `crop`, and its name there. */
 const parts = (path: ClipKeyed) => path.split('.') as ['transform' | 'crop', string];
@@ -95,6 +118,47 @@ export function removeKey(timeline: string, clip: Clip, path: ClipKeyed, keyFram
   if (!found || typeof param === 'number') return [];
   if (param.keys.length === 1) return [{ op: 'set_clip_keys', timeline, id: clip.id, path, param: found.key.value }];
   return [{ op: 'splice_clip_keys', timeline, id: clip.id, path, at: found.at, remove: 1, keys: [] }];
+}
+
+/**
+ * Make a setting of a clip what it is to be, a number or keys, as a curve editor leaves it: one
+ * `splice_clip_keys` of the keys that differ, between those that the two begin with alike and
+ * those that they end with alike; `set_clip_keys` where it is to be a number, since a setting keeps
+ * one key at least; and nothing where it is that already. A setting that is a number gets its
+ * first keys by a splice at 0, as the engine takes them.
+ */
+export function keyOps(timeline: string, clip: Clip, path: ClipKeyed, after: Param): Op[] {
+  const before = paramOf(clip, path);
+  if (typeof after === 'number') {
+    return before === after ? [] : [{ op: 'set_clip_keys', timeline, id: clip.id, path, param: after }];
+  }
+  // The engine takes no setting of keys without one: its number stays.
+  if (after.keys.length === 0) return [];
+  const splice = spliceOf(typeof before === 'number' ? [] : before.keys, after.keys);
+  return splice ? [{ op: 'splice_clip_keys', timeline, id: clip.id, path, ...splice }] : [];
+}
+
+/**
+ * The frame of the timeline at which a clip shows the picture of a frame of its keys: the first
+ * that has come to it, found as `keyTimes` finds the frames of keys, through speed and direction.
+ * A picture before those that the clip shows is at its first frame (its last, where it plays
+ * backward), and one after them at its last (its first).
+ */
+export function frameOfKey(clip: Clip, timeline: Pick<Timeline, 'rate'>, media: readonly Media[], keyFrame: number): number {
+  if (clip.length <= 0) return clip.start;
+  const clock = keyClockOf(clip, timeline.rate, mediaOf(clip, media));
+  const last = clip.start + clip.length - 1;
+  const rising = clock(last) >= clock(clip.start);
+  // The clock goes one way along the clip: the first frame that has come to the picture.
+  let from = clip.start;
+  let to = last;
+  while (from < to) {
+    const middle = Math.floor((from + to) / 2);
+    const reached = rising ? clock(middle) >= keyFrame : clock(middle) <= keyFrame;
+    if (reached) to = middle;
+    else from = middle + 1;
+  }
+  return from;
 }
 
 /**

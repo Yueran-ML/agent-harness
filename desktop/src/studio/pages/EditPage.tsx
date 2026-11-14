@@ -14,6 +14,7 @@ import type { ViewerNotice } from '../Viewer';
 import { NewTimeline } from './NewTimeline';
 import { useTimelineLoad } from './useTimelineLoad';
 import { Inspector } from '../inspector/Inspector';
+import { ClipCurves } from '../keyframes/ClipCurves';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { useNormalizeAudio } from '../inspector/NormalizeDialog';
 import { useClipAttributes } from '../inspector/ClipAttributes';
@@ -46,6 +47,10 @@ export const TWO_MONITORS_PX = 1280;
  * (F9 to F12 and the others) place what the source monitor has, between its marks, at the playhead
  * of the timeline monitor or at the marks of the timeline. Where the page is narrow, one monitor is
  * shown, and the one it is switched to is the one the keys go to; the other keeps its place.
+ *
+ * The Curve Editor opens beneath the timeline, from its button in the tool bar of the timeline or
+ * from the Video tab of the inspector, on the one clip of picture that is chosen (Reference Manual
+ * 20, pp. 1116–1119; DaVinci Resolve docks it as a panel of its own, p. 1111).
  *
  * Quick Export, at the right of the bar beside the inspector, opens the export of the timeline
  * shown, with its In and Out points. Ctrl+M is left unbound: in DaVinci Resolve it adds a marker and
@@ -89,6 +94,11 @@ export function EditPage({
   const [speedClips, setSpeedClips] = useState<string[] | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [mixerOpen, setMixerOpen] = useState(false);
+  const [curvesOpen, setCurvesOpen] = useState(false);
+  // The tool bar of the timeline is drawn again only when what it is given changes: these stay the same calls.
+  const toggleCurves = useCallback(() => setCurvesOpen(open => !open), []);
+  const openCurves = useCallback(() => setCurvesOpen(true), []);
+  const closeCurves = useCallback(() => setCurvesOpen(false), []);
   const [stripSelection, setStripSelection] = useState<string[]>([]);
   useEffect(() => setStripSelection([]), [session, selected?.id]);
   const [narrow, setNarrow] = useState(false);
@@ -220,7 +230,8 @@ export function EditPage({
     {inspectorOpen && <aside className="edit-inspector" aria-label={labels.editPage.inspector} data-test="inspector-slot">
       <h2 className="overline">{labels.editPage.inspector}</h2>
       <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={chosenClips} transition={chosenTransition}
-        cue={chosenCue} onSpeed={setSpeedClips} frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} onSeek={timelineMonitor.seek} />
+        cue={chosenCue} onSpeed={setSpeedClips} frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} onSeek={timelineMonitor.seek}
+        onCurves={openCurves} />
     </aside>}
     <div className="edit-timeline" onPointerDownCapture={() => onFocus('timeline')} onFocusCapture={() => onFocus('timeline')}>
       <div className="edit-audio-bottom">
@@ -244,10 +255,14 @@ export function EditPage({
         onTransition={setChosenTransition}
         onCue={onCue}
         onSpeed={setSpeedClips}
+        curvesOpen={curvesOpen}
+        onCurves={toggleCurves}
       />
       {mixerOpen && selected && <EditMixer key={`${session}/${selected.id}`} bridge={bridge} session={session} revision={revision} timeline={selected}
         frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} selected={stripSelection} onSelect={setStripSelection} />}
       </div>
+      {curvesOpen && <ClipCurves bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={chosenClips}
+        frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} onSeek={timelineMonitor.seek} onClose={closeCurves} />}
     </div>
     {speedClips !== null && selected !== null && <SpeedDialog clips={speedClips} timeline={selected} bridge={bridge} session={session} revision={revision}
       onClose={() => setSpeedClips(null)} />}

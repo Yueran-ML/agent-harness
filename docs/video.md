@@ -78,7 +78,13 @@ size and frame rate, by default those of the first video in the pool) and opens 
   rotation, opacity and the cropping take keyframes: the diamond beside a field puts a key at
   the playhead or takes away the one there, the arrows go to the key before and after, and a
   setting that has keys takes a new value as a key at the playhead. The keys stay on their
-  pictures when the clip is trimmed, slipped or played at another speed. On an
+  pictures when the clip is trimmed, slipped or played at another speed. The **Curve Editor**
+  (a button of the timeline's toolbar, and one at the top of the Video tab) opens under the
+  timeline with the curves of the chosen clip: drag keys in time and value, double-click a
+  curve to add one, Delete to take the chosen ones away, set them to Linear, Ease In, Ease
+  Out, Ease In and Out or Hold, drag the handles of a Bezier key, copy and paste keys, and
+  zoom with the wheel (Full Extent Zoom fits all). A composite mode lays the clip over the
+  tracks below it; with nothing below, the clip is shown as it is. On an
   audio track: volume, pan and fades; for a title: text, size, colour, position and alignment;
   for a solid colour: its colour. A number is typed, or dragged sideways (with Shift ten times
   as fast), and is sent once when it is let go; Escape takes it back and a double-click on its

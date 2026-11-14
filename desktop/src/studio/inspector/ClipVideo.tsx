@@ -1,5 +1,6 @@
 import { useWords } from '../../app/locale';
 import { useContext } from 'react';
+import { Spline } from 'lucide-react';
 import { COMPOSITES } from '../color/nodeEdits';
 import type { Clip, ClipKeyed, Media, Op, Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
@@ -43,10 +44,14 @@ export function Fades({ clips, timeline, commit, fineModifiers = false }: { clip
  * shows what its setting is at the playhead; the diamond beside it puts a key there, or takes away
  * the one there, and the arrows go to the key before and after. A setting that has keys takes a
  * value typed or dragged as a key at the playhead; one without is one number, as before.
+ *
+ * Where the page has a Curve Editor (`onCurves`), a button at the top opens it on the clip chosen
+ * (the Curve button of a keyframed clip in DaVinci Resolve, p. 1108).
  */
-export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSeek = () => {} }: {
+export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSeek = () => {}, onCurves }: {
   clips: readonly Clip[]; timeline: Timeline; commit: Commit; media?: readonly Media[]; frame?: number;
   onSeek?: (frame: number, scrubbing: boolean) => void;
+  onCurves?: () => void;
 }) {
   const words = useWords().label.studio;
   const labels = words.inspector;
@@ -87,6 +92,9 @@ export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSe
   </>;
   const mode = common(clips, clip => clip.composite ?? 'normal');
   return <div className="inspector-panel" data-panel="video">
+    {onCurves && <button type="button" className="btn btn-quiet inspector-curves" onClick={onCurves} data-test="open-curves">
+      <Spline size={14} aria-hidden="true" />{words.curves.title}
+    </button>}
     <h3 className="inspector-section">{labels.transform}</h3>
     <NumberField name="zoom" label={labels.zoom} value={value('transform.scale', kept => kept)} fallback={1} min={0.01} max={16} digits={3} scrub={0.005}
       slider={{ min: 0.01, max: 4, step: 0.01 }} onCommit={scale => set('transform.scale', scale)} />

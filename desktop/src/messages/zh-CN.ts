@@ -911,6 +911,11 @@ export const zhCN: Messages = {
         changeSpeed: '更改片段速度', titleText: '标题', useLongest: (frames: number) => `改用 ${frames} 帧`,
         subtitle: '字幕', cueStart: '起点（帧）', removeCue: '删除字幕',
       },
+      curves: {
+        title: '曲线编辑器', parameters: '参数', graph: '曲线', interpolation: '关键帧插值',
+        linear: '线性', easeIn: '缓入', easeOut: '缓出', easeInOut: '缓入缓出', hold: '保持',
+        fit: '全览缩放', copy: '复制关键帧', paste: '粘贴关键帧', close: '关闭曲线编辑器',
+      },
       speed: { title: '更改片段速度', percent: '速度', reverse: '倒放', ripple: '波纹序列', duration: '时长', apply: '更改' },
       effects: { title: '特效库', videoTransitions: '视频转场', audioTransitions: '音频转场', titles: '标题', generators: '生成器', text: '文本' },
       pool: '媒体池',
@@ -1462,6 +1467,7 @@ export const zhCN: Messages = {
       newTimeline: '新时间线沿用媒体池中第一个视频的尺寸，帧率也沿用它，除非在这里另选。时间线带一条视频轨和一条音频轨，有内容后帧率即锁定。',
       newTimelineFailed: '时间线没能创建。',
       inspectorEmpty: '在时间线上选择一个片段。',
+      curvesEmpty: '在时间线上选择一个视频片段，即可编辑它的关键帧。',
       inspector: {
         longest: (frames: number) => `最长可用 ${frames} 帧。`,
         rate: '时间线已有内容，帧率已锁定。新建时间线时可以选用其他帧率。',

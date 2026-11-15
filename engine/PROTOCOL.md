@@ -699,7 +699,19 @@ clients; a client must not write `project.json` itself.
   `reverse` is false (`retime_speed`), and speed points of one speed are not kept
   (`retime_constant`): `set_retime` writes them as `speed` and `reverse`. Only a clip of media
   that lasts has them, not a title, a colour or a still (`retime_source`). The picture reads its
-  source along the path. **The sound of a clip with speed points is silent in this version.**
+  source along the path, and so does the sound: each segment that plays sounds as a clip of its
+  speed and direction does (its pitch goes with the speed, or is kept where the clip has
+  `pitch_correction`; a segment that goes backward is read backward), and a freeze is silent.
+  A sample of the timeline is of the segment that it begins in, and what the samples read has
+  no jump at a speed point: the sound is laid on the samples from the frame at which the path
+  is lowest, so that speed points of one speed read the samples that `speed` and `reverse`
+  read. What is of the clip as a whole is not started again at a speed point: its fades rise
+  from its first sample and fall to its last, its `eq` and `effects` run through the whole of
+  it (through the silence of a freeze too), and the keys of `gain_db` and `pan`, which are at
+  times of the source, are read at the time that the path is at, which rises, stands still in
+  a freeze, or falls. There is no fade about a speed point, as there is none at a cut between
+  two clips: where the sound is resampled it is continuous there, and where its pitch is kept
+  or moved (`pitch_correction`, `pitch`) each segment is stretched on its own.
   The edits of the Retime Controls change them (see Edits): `add_speed_point`,
   `set_segment_speed`, `freeze_frame`, `reverse_segment`, `clear_speed_point`, `reset_speed`.
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
@@ -2305,9 +2317,10 @@ has does none: alone in a transaction it is refused as `empty`.
   track is cut at its end where that clip starts, the edit being reported in `clamped`. That
   is what `set_speed` does; the Selection mode of the manual overwrites the next clip
   instead.
-- The sound of a clip with speed points is silent in this version. So a linked clip of sound
-  that takes one of these edits is not heard until it is back at one speed, by `reset_speed`,
-  by `set_retime` with no `retime`, or by an edit that leaves it one speed.
+- The sound of a clip with speed points follows them (see `retime` above). So a linked clip of
+  sound that takes one of these edits sounds along the same path as its picture is shown: it
+  slows and quickens with it, plays backward where a segment does, and is silent through a
+  freeze.
 
 `close_gap` takes `"straddling"`: `"refuse"` (the default, omitted when written) refuses with
 `ripple_blocked` where a clip of another unlocked track covers a frame of the gap, as every

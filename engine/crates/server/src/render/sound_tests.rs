@@ -194,6 +194,60 @@ fn a_range_is_exported_with_its_preroll_as_the_whole_has_it() {
     assert_eq!(&whole[2 * 57_600..], &range[..]);
 }
 
+/// A clip with speed points is heard along them (T10c): what is exported is the graph's bus, to
+/// the bit; the way up is what the clip of one speed plays there, the freeze is silent, and the
+/// way back plays the way up, the last sample first.
+#[test]
+fn a_clip_with_speed_points_is_exported_along_them() {
+    use columbina_model::retime::{Retime, SignedSpeed, SpeedPoint};
+    let Some(plain) = project_of(Sample::LeftRight) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let floats = json!({"video": null, "audio": {"codec": "pcm_f32le"}});
+    export(dir.path(), &plain, "plain.wav", floats.clone());
+    // 20 frames forward, a freeze of 10, and 20 frames back to where the clip began: 38400,
+    // 19200 and 38400 samples of the timeline.
+    let mut project = plain.clone();
+    project.timelines[0].tracks[0].clips[0].set_mapping(Some(Retime {
+        points: [(0, 1), (20, 0), (30, -1)]
+            .into_iter()
+            .map(|(frame, num)| SpeedPoint {
+                frame,
+                speed: SignedSpeed { num, den: 1 },
+            })
+            .collect(),
+    }));
+    export(dir.path(), &project, "points.wav", floats);
+    let got = read_back(&dir.path().join("points.wav"));
+    let want = graph_of(&project, "B1", 0, 96_000);
+    assert_eq!(got.len(), want.len());
+    assert!(got
+        .iter()
+        .zip(&want)
+        .all(|(a, b)| a.to_bits() == b.to_bits()));
+    let plain = read_back(&dir.path().join("plain.wav"));
+    assert_eq!(plain.len(), got.len());
+    // Two channels: sample `n` of the timeline is at `2 * n`.
+    let (up, rest) = got.split_at(2 * 38_400);
+    let (held, back) = rest.split_at(2 * 19_200);
+    assert!(up.iter().any(|sample| sample.abs() > 0.05), "sound");
+    assert!(up
+        .iter()
+        .zip(&plain)
+        .all(|(a, b)| a.to_bits() == b.to_bits()));
+    assert!(!held.iter().any(|sample| sample.abs() > 0.0), "a freeze");
+    // Going back at its own speed, each sample reads a whole sample of the media: sample
+    // `57600 + d` of the timeline the one that sample `38399 - d` read on the way up.
+    assert!(back.iter().any(|sample| sample.abs() > 0.05), "sound");
+    for (d, frame) in back.as_chunks::<2>().0.iter().enumerate() {
+        let was = &plain[2 * (38_399 - d)..2 * (38_400 - d)];
+        for (now, was) in frame.iter().zip(was) {
+            assert!((now - was).abs() < 1e-6, "sample {d} of the way back");
+        }
+    }
+}
+
 #[test]
 fn audio_normalization_brings_the_export_to_its_standard_and_tells_what_it_did() {
     let Some(project) = project_of(Sample::LeftRight) else {

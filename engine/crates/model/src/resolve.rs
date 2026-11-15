@@ -36,11 +36,18 @@
 //! quarter turn at the end (see [`CrossfadeLevel`]). The gain is drawn as straight lines between
 //! points, eight to a crossfade.
 //!
-//! A piece is read at one speed, one way. A clip with speed points ([`crate::retime`]) is not
-//! read so, and is not heard: it gives no piece, rather than one that plays what its frames do
-//! not show.
+//! A piece is read at one speed, one way. A clip with speed points ([`crate::retime`]) sounds
+//! along their path, and gives a piece for each of its segments that plays, at the speed and the
+//! direction of the segment; a freeze gives none, and is silent. The pieces of such a clip
+//! follow one another with no sample between them where its segments do, and what they read has
+//! no jump at a speed point ([`crate::retime::Sounding`]). Its gain is one, over the whole of
+//! the clip, and each of its pieces has it: its fades rise from its first sample and fall to
+//! its last, whatever speed points lie between, and its keyframes are read at the time of its
+//! source, which rises, stands still or falls as its segments go.
 //!
 //! The strips, buses and automation of the timeline are not here: they are the mixer's.
+
+use std::sync::Arc;
 
 use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
 use crate::grade::Composite;
@@ -49,6 +56,7 @@ use crate::project::{
     Clip, Cropped, Cue, Id, Placed, Project, Rgba, Source, Timeline, TitleStyle, Track, TrackKind,
     Transition, TransitionKind,
 };
+use crate::retime::Sounding;
 use crate::span;
 use crate::time::Rate;
 
@@ -268,12 +276,19 @@ fn lies_over(transition: &Transition, cut: i64) -> (i64, i64) {
 /// The gain of a piece of sound over its samples. Points describe its shape for display;
 /// playback evaluates the curves at each sample, independent of the requested block size.
 /// Before the first point the gain is that of the first, and after the last that of the last.
+///
+/// A piece of a clip with speed points has the points that lie on its own samples, and the gain
+/// of the whole of its clip: before the first sample that the clip sounds on the gain is that
+/// of that sample, and after the last that of the last.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Envelope {
     /// Points for drawing the envelope; use [`Self::at`] for sample-accurate gain.
     pub points: Vec<(i64, f32)>,
     loudness: Loudness,
     curves: Vec<GainCurve>,
+    /// The first and the last sample that the gain is worked out at, where they are not those
+    /// of the first point and the last: the samples that a clip with speed points sounds on.
+    whole: Option<(i64, i64)>,
 }
 
 /// The gain of a clip, apart from its fades: one factor, or keyframes of decibels read at the
@@ -285,7 +300,8 @@ enum Loudness {
 }
 
 /// How the time of the source of a clip is found from a sample of its timeline: as
-/// [`span::source_sample`] finds the sample of its media, in seconds.
+/// [`span::source_sample`] finds the sample of its media, in seconds; or, for a clip with speed
+/// points, along their path ([`Sounding::seconds`]).
 #[derive(Clone, Debug, PartialEq)]
 struct SourceClock {
     /// The sample of the timeline that its first frame starts at.
@@ -297,6 +313,9 @@ struct SourceClock {
     begins: f64,
     /// The seconds of its media that a sample of the timeline lasts.
     per_sample: f64,
+    /// How the sound of a clip with speed points is read: the time is found by it, and not by
+    /// the speed. The pieces of the clip share it.
+    along: Option<Arc<Sounding>>,
 }
 
 impl SourceClock {
@@ -311,12 +330,24 @@ impl SourceClock {
             per_sample: f64::from(clip.speed.num)
                 / f64::from(clip.speed.den)
                 / f64::from(sample_rate),
+            along: None,
+        }
+    }
+
+    /// The clock of a clip with speed points, whose sound is read as `sounding` has it.
+    fn along(clip: &Clip, rate: Rate, sample_rate: u32, sounding: &Arc<Sounding>) -> Self {
+        Self {
+            along: Some(Arc::clone(sounding)),
+            ..Self::of(clip, rate, sample_rate)
         }
     }
 
     /// The time of the source, in seconds, that sample `sample` of the timeline is read from.
     #[allow(clippy::cast_precision_loss, reason = "a time to read keys at")]
     fn seconds(&self, sample: i64) -> f64 {
+        if let Some(sounding) = &self.along {
+            return self.begins + sounding.seconds(sample);
+        }
         let mut d = apart(sample, self.first);
         if self.reverse {
             d = apart(self.end, self.first) - 1 - d;
@@ -336,6 +367,16 @@ impl SourceClock {
             self.end.saturating_sub(1).saturating_sub(d)
         } else {
             self.first.saturating_add(d)
+        }
+    }
+
+    /// The samples of the timeline that read time `seconds` of the source, into `into`: one
+    /// for a clip of one speed, and for a clip with speed points one for each segment that
+    /// comes by the time.
+    fn samples(&self, seconds: f64, into: &mut Vec<i64>) {
+        match &self.along {
+            Some(sounding) => into.extend(sounding.samples_reading(seconds - self.begins)),
+            None => into.push(self.sample(seconds)),
         }
     }
 }
@@ -367,6 +408,9 @@ impl Envelope {
     /// The gain at a sample of the timeline.
     #[must_use]
     pub fn at(&self, sample: i64) -> f32 {
+        if let Some((first, last)) = self.whole {
+            return self.value(sample.clamp(first, last));
+        }
         match (self.points.first(), self.points.last()) {
             (Some(&(first, _)), Some(&(last, _))) => self.value(sample.clamp(first, last)),
             _ => self.value(sample),
@@ -409,7 +453,8 @@ impl Envelope {
     }
 }
 
-/// A clip of sound as it is heard between two samples of a timeline.
+/// A clip of sound as it is heard between two samples of a timeline; or, of a clip with speed
+/// points, one of its segments that plays.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioPiece {
     /// The clip.
@@ -422,6 +467,12 @@ pub struct AudioPiece {
     pub from: i64,
     /// The sample of the timeline after the last that it sounds on.
     pub to: i64,
+    /// The samples of the timeline that the whole of its clip sounds on between the two that
+    /// were asked for, from the first to the one after the last: `from` and `to` for a clip of
+    /// one speed. The pieces of a clip with speed points all have those of the clip, its
+    /// freezes and all, and whatever is of the clip as a whole (its equalizer, its effects, its
+    /// gain) goes on over them from piece to piece.
+    pub sounds: (i64, i64),
     /// The sample of the media, at the rate of its sound, that sample `from` is read from. The
     /// samples after it are read forward, or backward if `reverse`, at `speed`.
     pub source_start: i64,
@@ -505,7 +556,8 @@ pub fn heard(t: &Timeline, track: &Track) -> bool {
 /// What is heard from sample `from` of a timeline of `project` to the sample before `to`, at its
 /// rate of sound: a piece of each clip that sounds then, of the tracks that are [`heard`], track
 /// by track in their order and on a track in the order of their start. On a track the pieces
-/// follow one another, and overlap only at a crossfade.
+/// follow one another, and overlap only at a crossfade. A clip with speed points gives a piece
+/// for each of its segments that plays then, in their order.
 #[must_use]
 pub fn audio_between(t: &Timeline, project: &Project, from: i64, to: i64) -> Vec<AudioPiece> {
     pieces_between(t, project, from, to, |track| heard(t, track))
@@ -535,12 +587,7 @@ fn pieces_between(
         if !taken(track) {
             continue;
         }
-        // A clip with speed points is silent: a piece plays at one speed, which it has not.
-        for clip in track
-            .clips
-            .iter()
-            .filter(|c| c.enabled && c.retime.is_none())
-        {
+        for clip in track.clips.iter().filter(|c| c.enabled) {
             let Some(media) = clip.media() else {
                 continue;
             };
@@ -557,6 +604,12 @@ fn pieces_between(
             let start = samples(clip.start.saturating_sub(before)).max(from);
             let end = samples(clip.end().saturating_add(after)).min(to);
             if start >= end {
+                continue;
+            }
+            if clip.retime.is_some() {
+                // A piece plays at one speed: a clip with speed points gives one for each of
+                // its segments.
+                pieces_along(t, track, clip, sound.rate, (start, end), &mut pieces);
                 continue;
             }
             let pans = match &clip.pan {
@@ -576,6 +629,7 @@ fn pieces_between(
                 media: media.clone(),
                 from: start,
                 to: end,
+                sounds: (start, end),
                 source_start: span::source_sample(clip, t.rate, start, t.sample_rate, sound.rate),
                 speed: (clip.speed.num, clip.speed.den),
                 reverse: clip.reverse,
@@ -586,6 +640,64 @@ fn pieces_between(
         }
     }
     pieces
+}
+
+/// The pieces of a clip with speed points, which sounds from sample `start` of its timeline to
+/// `end` (its crossfades and what was asked for taken in), into `pieces`: one for each of its
+/// segments that plays, on the samples that are of the segment ([`Sounding::parts`]), read
+/// along the path of the clip at the speed and the direction of the segment. A freeze gives
+/// none. Each has the gain and the pan of the whole clip. Speed points that are not those of
+/// the clip, which no operation leaves so, give nothing: the clip is not heard.
+fn pieces_along(
+    t: &Timeline,
+    track: &Track,
+    clip: &Clip,
+    media_rate: u32,
+    (start, end): (i64, i64),
+    pieces: &mut Vec<AudioPiece>,
+) {
+    let (Some(media), Some(begins)) = (clip.media(), clip.source_in()) else {
+        return;
+    };
+    let Some(course) = clip
+        .retime
+        .as_ref()
+        .and_then(|retime| retime.course(clip.length).ok())
+    else {
+        return;
+    };
+    let sounding = Arc::new(course.sounding(clip.start, t.rate, t.sample_rate));
+    let clock = SourceClock::along(clip, t.rate, t.sample_rate, &sounding);
+    let gain = gain_of(t, track, clip, || clock.clone());
+    let pans = match &clip.pan {
+        AudioParam::Fixed(_) => None,
+        keys @ AudioParam::Keys(_) => Some((clock, keys.clone())),
+    };
+    for part in sounding.parts() {
+        let (from, to) = (part.from.max(start), part.to.min(end));
+        let Some(speed) = part.speed.magnitude().filter(|_| from < to) else {
+            continue;
+        };
+        let pan = match (&clip.pan, &pans) {
+            (AudioParam::Fixed(pan), _) => single(*pan),
+            (_, Some((clock, keys))) => single(keys.value_at(clock.seconds(from))),
+            (_, None) => 0.0,
+        };
+        pieces.push(AudioPiece {
+            clip: clip.id.clone(),
+            track: track.id.clone(),
+            media: media.clone(),
+            from,
+            to,
+            sounds: (start, end),
+            source_start: sounding.source_sample(begins, from, media_rate),
+            speed: (speed.num, speed.den),
+            reverse: part.speed.is_backward(),
+            pan,
+            gain: gain.drawn(from, to, Some((start, end))),
+            pans: pans.clone(),
+        });
+    }
 }
 
 /// The frames that the crossfades at a clip show of it before its start and after its end.
@@ -615,12 +727,50 @@ pub fn samples_at(frame: i64, rate: Rate, sample_rate: u32) -> i64 {
 
 /// The gain of a clip from sample `from` of its timeline to `to`.
 fn envelope(t: &Timeline, track: &Track, clip: &Clip, from: i64, to: i64) -> Envelope {
+    let clock = || SourceClock::of(clip, t.rate, t.sample_rate);
+    gain_of(t, track, clip, clock).drawn(from, to, None)
+}
+
+/// The gain of a clip over the whole of it, before it is drawn over some of its samples: its
+/// loudness, its fades and the crossfades at its ends, and the samples of the timeline that it
+/// turns at, where points are drawn.
+struct Gain {
+    loudness: Loudness,
+    curves: Vec<GainCurve>,
+    knots: Vec<i64>,
+}
+
+impl Gain {
+    /// The gain from sample `from` of the timeline to `to`, with the points that lie there;
+    /// worked out from the first to the last of the samples `whole`, where they are given, and
+    /// else from the first point to the last.
+    fn drawn(&self, from: i64, to: i64, whole: Option<(i64, i64)>) -> Envelope {
+        let mut at = vec![from, to];
+        at.extend(&self.knots);
+        at.retain(|sample| (from..=to).contains(sample));
+        at.sort_unstable();
+        at.dedup();
+        let mut envelope = Envelope {
+            points: Vec::new(),
+            loudness: self.loudness.clone(),
+            curves: self.curves.clone(),
+            whole,
+        };
+        envelope.points = at
+            .into_iter()
+            .map(|sample| (sample, envelope.value(sample)))
+            .collect();
+        envelope
+    }
+}
+
+/// The gain of a clip over the whole of it; `clock` gives how the time of its source is found,
+/// if its loudness has keyframes.
+fn gain_of(t: &Timeline, track: &Track, clip: &Clip, clock: impl FnOnce() -> SourceClock) -> Gain {
     let samples = |frame: i64| samples_at(frame, t.rate, t.sample_rate);
     let loudness = match &clip.gain_db {
         AudioParam::Fixed(gain_db) => Loudness::Fixed(10f64.powf(gain_db / 20.0)),
-        keys @ AudioParam::Keys(_) => {
-            Loudness::Keys(SourceClock::of(clip, t.rate, t.sample_rate), keys.clone())
-        }
+        keys @ AudioParam::Keys(_) => Loudness::Keys(clock(), keys.clone()),
     };
     let (first, end) = (samples(clip.start), samples(clip.end()));
     // The samples of the timeline that a fade of sound lasts.
@@ -690,33 +840,24 @@ fn envelope(t: &Timeline, track: &Track, clip: &Clip, from: i64, to: i64) -> Env
             shape: shape_of(&clip.audio_fade_out, true),
         });
     }
-    let mut at = vec![from, to, first, risen, falling, end];
+    let mut knots = vec![first, risen, falling, end];
     if let Loudness::Keys(clock, AudioParam::Keys(keys)) = &loudness {
-        at.extend(
-            keys.iter()
-                .map(|key| clock.sample(crate::audio::param::seconds(key.at))),
-        );
+        for key in keys {
+            clock.samples(crate::audio::param::seconds(key.at), &mut knots);
+        }
     }
     for &(start, end, _, _) in &crossfades {
-        at.extend((0..=8).map(|eighth| {
+        knots.extend((0..=8).map(|eighth| {
             let along = i128::from(start) + apart(end, start) * eighth / 8;
             // Between start and end, so an i64 holds it.
             i64::try_from(along).unwrap_or(end)
         }));
     }
-    at.retain(|sample| (from..=to).contains(sample));
-    at.sort_unstable();
-    at.dedup();
-    let mut envelope = Envelope {
-        points: Vec::new(),
+    Gain {
         loudness,
         curves,
-    };
-    envelope.points = at
-        .into_iter()
-        .map(|sample| (sample, envelope.value(sample)))
-        .collect();
-    envelope
+        knots,
+    }
 }
 
 /// The subtitles shown at frame `frame` of a timeline: those of its tracks of subtitles that are
@@ -1256,22 +1397,172 @@ mod tests {
     }
 
     #[test]
-    fn a_clip_of_sound_with_speed_points_is_not_heard() {
+    fn a_clip_of_sound_with_speed_points_gives_a_piece_of_each_segment_that_plays() {
         let mut project = project();
-        // c7, on A1 from frame 50, slows to half its speed halfway through.
-        let slowing = speed_points(&[(0, 1, 1), (25, 1, 2)]);
-        project.timelines[0].tracks[2].clips[1].set_mapping(Some(slowing));
+        // c7, on A1 on frames [50, 100) from 2 seconds into m1, plays 20 frames, holds for 10,
+        // and goes back for 20 at half the speed: 1920 samples to a frame, from sample 96000.
+        let points = speed_points(&[(0, 1, 1), (20, 0, 1), (30, -1, 2)]);
+        project.timelines[0].tracks[2].clips[1].set_mapping(Some(points));
         project.validate().unwrap();
-        let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
-        let heard: Vec<&str> = pieces.iter().map(|p| &*p.clip).collect();
-        assert_eq!(heard, ["c6"]);
-        let pieces = sources_between(&project.timelines[0], &project, 0, 192_000);
-        let driving: Vec<&str> = pieces.iter().map(|p| &*p.clip).collect();
-        assert_eq!(driving, ["c6"]);
-        // Back at one speed it is heard as it was.
+        let timeline = &project.timelines[0];
+        let pieces = audio_between(timeline, &project, 0, 192_000);
+        let spans = |pieces: &[AudioPiece]| -> Vec<(String, i64, i64, i64)> {
+            pieces
+                .iter()
+                .map(|p| (p.clip.clone(), p.from, p.to, p.source_start))
+                .collect()
+        };
+        let span = |clip: &str, from, to, source| (clip.to_owned(), from, to, source);
+        // The first piece begins before the clip, where the crossfade does, and reads on as
+        // the first segment goes; the freeze gives none; the last begins half a sample below
+        // the 20 frames that the first went up, where its first sample ends.
+        assert_eq!(
+            spans(&pieces),
+            [
+                span("c6", 0, 105_600, 0),
+                span("c7", 86_400, 134_400, 86_400),
+                span("c7", 153_600, 192_000, 134_399)
+            ]
+        );
+        let ways: Vec<((u32, u32), bool)> = pieces.iter().map(|p| (p.speed, p.reverse)).collect();
+        assert_eq!(ways, [((1, 1), false), ((1, 1), false), ((1, 2), true)]);
+        let whole: Vec<(i64, i64)> = pieces.iter().map(|p| p.sounds).collect();
+        assert_eq!(whole, [(0, 105_600), (86_400, 192_000), (86_400, 192_000)]);
+        // The gain is that of the whole clip in each of its pieces: it rises through the
+        // crossfade once, and not again after a speed point.
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        for piece in &pieces[1..] {
+            assert!(near(piece.gain.at(86_400), 0.0));
+            assert!(near(piece.gain.at(96_000), std::f32::consts::FRAC_1_SQRT_2));
+            assert!(near(piece.gain.at(105_600), 1.0));
+            assert!(near(piece.gain.at(140_000), 1.0));
+            assert!(near(piece.gain.at(153_600), 1.0));
+            assert!(near(piece.gain.at(191_999), 1.0));
+        }
+        // Each is drawn on its own samples.
+        let ends = |piece: &AudioPiece| {
+            let points = &piece.gain.points;
+            (points[0].0, points[points.len() - 1].0)
+        };
+        assert_eq!(ends(&pieces[1]), (86_400, 134_400));
+        assert_eq!(ends(&pieces[2]), (153_600, 192_000));
+        // What drives a sidechain is the same.
+        assert_eq!(sources_between(timeline, &project, 0, 192_000), pieces);
+        // A window of the timeline gives the pieces within it: none in the freeze, and the
+        // last piece from where the window begins, 100 samples and so 50 of the media on.
+        let window = audio_between(timeline, &project, 140_000, 160_000);
+        assert_eq!(spans(&window), [span("c7", 153_600, 160_000, 134_399)]);
+        let window = audio_between(timeline, &project, 153_700, 153_800);
+        assert_eq!(spans(&window), [span("c7", 153_700, 153_800, 134_349)]);
+        assert_eq!(window[0].sounds, (153_700, 153_800));
+        assert_eq!(audio_between(timeline, &project, 135_000, 150_000), []);
+        // Back at one speed it is one piece, as it was.
+        let mut project = project.clone();
         project.timelines[0].tracks[2].clips[1].set_mapping(None);
         let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
-        let heard: Vec<&str> = pieces.iter().map(|p| &*p.clip).collect();
-        assert_eq!(heard, ["c6", "c7"]);
+        assert_eq!(
+            spans(&pieces),
+            [
+                span("c6", 0, 105_600, 0),
+                span("c7", 86_400, 192_000, 86_400)
+            ]
+        );
+    }
+
+    #[test]
+    fn speed_points_of_one_speed_give_the_piece_that_a_clip_of_that_speed_gives() {
+        use crate::time::Speed;
+        for ((num, den), reverse) in [
+            ((1, 1), false),
+            ((2, 1), false),
+            ((1, 2), true),
+            ((137, 250), true),
+        ] {
+            let speed = Speed { num, den };
+            let mut plain = project();
+            let c7 = &mut plain.timelines[0].tracks[2].clips[1];
+            (c7.speed, c7.reverse) = (speed, reverse);
+            c7.gain_db = (-3.0).into();
+            c7.fade_out = 10;
+            // A clip keeps one speed as its speed: here it is given as a speed point, which
+            // the operations never leave, to be read the other way.
+            let mut pointed = plain.clone();
+            let c7 = &mut pointed.timelines[0].tracks[2].clips[1];
+            (c7.speed, c7.reverse) = (Speed::ONE, false);
+            c7.retime = Some(crate::retime::Retime::constant(speed, reverse));
+            for (from, to) in [(0, 192_000), (100_000, 150_000)] {
+                let was = audio_between(&plain.timelines[0], &plain, from, to);
+                let now = audio_between(&pointed.timelines[0], &pointed, from, to);
+                assert_eq!(now.len(), was.len());
+                for (now, was) in now.iter().zip(&was) {
+                    let what = format!("{} at {speed:?}, backward {reverse}", was.clip);
+                    assert_eq!(
+                        (&now.clip, &now.track, &now.media),
+                        (&was.clip, &was.track, &was.media)
+                    );
+                    assert_eq!(
+                        (now.from, now.to, now.sounds, now.source_start),
+                        (was.from, was.to, was.sounds, was.source_start),
+                        "{what}"
+                    );
+                    assert_eq!((now.speed, now.reverse), (was.speed, was.reverse));
+                    assert_eq!(now.pan.to_bits(), was.pan.to_bits());
+                    assert_eq!(now.gain.points, was.gain.points, "{what}");
+                    for sample in (from - 500..to + 500).step_by(977) {
+                        assert_eq!(
+                            now.gain.at(sample).to_bits(),
+                            was.gain.at(sample).to_bits(),
+                            "{what}, sample {sample}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_keys_of_a_clip_with_speed_points_are_read_at_the_time_of_its_source() {
+        use crate::audio::{AudioKey, KeyInterp};
+        let mut project = project();
+        project.timelines[0].tracks[2].transitions.clear();
+        // c7 plays from 2 seconds into m1 to 2.8, holds there, and goes back to 2.4 at half
+        // the speed; its gain falls from 0 dB at 2 seconds of m1 to -20 dB at 2.8.
+        let c7 = &mut project.timelines[0].tracks[2].clips[1];
+        c7.set_mapping(Some(speed_points(&[(0, 1, 1), (20, 0, 1), (30, -1, 2)])));
+        let key = |ticks, value| AudioKey {
+            at: Time { ticks, scale: 10 },
+            value,
+            interp: KeyInterp::Linear,
+        };
+        c7.gain_db = AudioParam::Keys(vec![key(20, 0.0), key(28, -20.0)]);
+        c7.pan = AudioParam::Keys(vec![key(20, -1.0), key(28, 1.0)]);
+        project.validate().unwrap();
+        let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
+        let [_, up, down] = pieces.as_slice() else {
+            panic!("{pieces:?}")
+        };
+        let near = |gain: f32, db: f64| (f64::from(gain) - gain_of_db(db)).abs() < 1e-4;
+        for piece in [up, down] {
+            // Up through 0.4 seconds of the source in 0.4 of the timeline.
+            assert!(near(piece.gain.at(96_000), 0.0));
+            assert!(near(piece.gain.at(115_200), -10.0));
+            // The time of the source stands still all through the freeze.
+            assert!(near(piece.gain.at(134_400), -20.0));
+            assert!(near(piece.gain.at(150_000), -20.0));
+            // Down through 0.2 seconds of the source in 0.4 of the timeline, and through 0.4
+            // by the end of the clip.
+            assert!(near(piece.gain.at(172_800), -15.0));
+            assert!(near(piece.gain.at(191_999), -10.0));
+            // Its pan goes with it: from the left to the right, and half the way back.
+            assert!((piece.pan_at(96_000) + 1.0).abs() < 1e-4);
+            assert!(piece.pan_at(115_200).abs() < 1e-4);
+            assert!((piece.pan_at(150_000) - 1.0).abs() < 1e-4);
+            assert!(piece.pan_at(191_999).abs() < 1e-4);
+        }
+        // Each piece is put where it begins, and the key at 2 seconds is drawn where the way
+        // up reads it.
+        assert!((up.pan + 1.0).abs() < 1e-4);
+        assert!((down.pan - 1.0).abs() < 1e-4);
+        assert_eq!(up.gain.points[0], (96_000, 1.0));
     }
 }

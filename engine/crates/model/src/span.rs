@@ -23,8 +23,8 @@
 //! counted from its course here, so that whoever asks of a clip is answered for either kind.
 //! Its speed is 1/1 and it does not play backward, as far as those fields say: what is counted
 //! from a speed alone ([`ticks_of_scaled`], [`frames_for_span`]) is not of such a clip, and
-//! [`frames_for`] is asked of the clip instead. Its sound is not read through its speed points
-//! yet: [`source_sample`] reads a clip of one speed.
+//! [`frames_for`] is asked of the clip instead. Its sound is read along the path too, segment by
+//! segment ([`crate::retime::Sounding`]): [`source_sample`] reads a clip of one speed.
 
 use crate::ops::LARGEST;
 use crate::project::Clip;
@@ -258,7 +258,8 @@ pub fn frames_for(clip: &Clip, span: i64, rate: Rate, scale: u32) -> i64 {
 /// sound, rounded down.
 ///
 /// It reads the clip at its speed, forward or backward: the speed points of a clip
-/// ([`Clip::retime`]) are not read here, and the sound of a clip that has them is not played.
+/// ([`Clip::retime`]) are not read here. The sound of a clip that has them is read along their
+/// path ([`crate::retime::Sounding::source_sample`]), which gives these samples for one speed.
 ///
 /// The clip lies on the samples from the one that its first frame starts at to the one that the
 /// frame after its last starts at, each rounded down. Forward, the sample of the timeline that

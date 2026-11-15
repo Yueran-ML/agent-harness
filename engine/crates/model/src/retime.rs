@@ -2,7 +2,7 @@
 //! that changes its speed on the way reads its source. A clip that does so holds its mapping
 //! ([`crate::project::Clip::retime`]) and reads its picture through it ([`crate::span`]); a clip
 //! of one speed holds none, and its speed and its direction instead. The sound of a clip that
-//! holds one is not stretched by it yet: it is not heard.
+//! holds one goes along the same path ([`Sounding`]).
 //!
 //! # One mapping
 //!
@@ -79,13 +79,31 @@
 //! An edit of the timeline that moves the head of a clip, or cuts it in two, takes the mapping
 //! from a frame on ([`Retime::from_frame`]), and one that moves its tail takes it to a length
 //! ([`Retime::with_length`]): each says how much later the clip then begins in its media.
+//!
+//! # The sound
+//!
+//! The sound of a clip goes along its path too ([`Course::sounding`]): each segment that plays
+//! sounds as a clip of its speed and its direction does, and a freeze is silent. A sample of
+//! the timeline is of the segment that it begins in; the first segment goes on before the clip
+//! and the last one after it, as they do for the frames of a transition. A sample of a segment
+//! that goes forward reads the place of the path where the sample begins, and one of a segment
+//! that goes backward the place where it ends, as the frames do.
+//!
+//! A frame of a timeline need not begin on a whole sample. The sound is laid on the samples
+//! from one frame, that at which the path is lowest (the first, where there are several): the
+//! sample that this frame starts at, rounded down, is where the frame begins, and every other
+//! sample is so many samples of the timeline from there, exactly. So what the samples read has
+//! no jump at a speed point, a speed point that is added where the speed does not change moves
+//! no sample, and a mapping of one speed reads the samples that [`crate::span::source_sample`]
+//! reads, to the sample: counted from where the clip begins where it plays forward, and from
+//! where it ends where it plays backward.
 
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
 use crate::ops::{OpError, LARGEST};
-use crate::time::{Rate, Speed};
+use crate::time::{Rate, Speed, Time};
 
 /// The most speed points that a clip may have. Ours: the manual gives no limit.
 pub const MOST_POINTS: usize = 1024;
@@ -1220,6 +1238,272 @@ impl Course {
             curve.push(point(last.to, last.place(i128::from(last.to))));
         }
         curve
+    }
+
+    /// How the sound of the clip is read along the path (see the module), where the clip begins
+    /// at frame `start` of a timeline of `rate` frames and `sample_rate` samples a second.
+    #[must_use]
+    pub fn sounding(&self, start: i64, rate: Rate, sample_rate: u32) -> Sounding {
+        // The path is lowest where a segment begins, or else where the clip ends.
+        let frame = self
+            .segments
+            .iter()
+            .find(|segment| segment.at == 0)
+            .map_or(self.length, |segment| segment.from);
+        let per = i128::from(rate.num.max(1));
+        // `per` times the samples that so many frames last: below 2^127 for the frames of a
+        // clip, and the most or the least that there is for a frame too far to count.
+        let spread = |frames: i128| {
+            frames
+                .saturating_mul(i128::from(sample_rate))
+                .saturating_mul(i128::from(rate.den))
+        };
+        let sample = spread(i128::from(start) + i128::from(frame)).div_euclid(per);
+        let starts = self
+            .segments
+            .iter()
+            .skip(1)
+            .map(|segment| {
+                // The first sample that begins at the speed point or after it: the samples from
+                // the frame of the lowest place to it, rounded up.
+                let whole = spread(i128::from(segment.from) - i128::from(frame));
+                let after = whole.saturating_neg().div_euclid(per).saturating_neg();
+                within(sample.saturating_add(after))
+            })
+            .collect();
+        Sounding {
+            segments: self.segments.clone(),
+            unit: self.unit,
+            rate,
+            sample_rate,
+            frame,
+            sample: within(sample),
+            starts,
+        }
+    }
+}
+
+/// A count as an `i64`: one too large is `i64::MAX`, and one too far below nought `i64::MIN`.
+fn within(count: i128) -> i64 {
+    i64::try_from(count).unwrap_or(if count < 0 { i64::MIN } else { i64::MAX })
+}
+
+/// A part of the sound of a clip with speed points: the samples of the timeline that are of one
+/// of its segments, which sounds on them at one speed, one way, or is silent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundPart {
+    /// The first sample of the timeline that is of the segment: `i64::MIN` for the first
+    /// segment, which goes on before the clip.
+    pub from: i64,
+    /// The sample after the last that is of the segment: `i64::MAX` for the last segment,
+    /// which goes on after the clip.
+    pub to: i64,
+    /// How fast the segment plays, and which way. A freeze has no sound.
+    pub speed: SignedSpeed,
+}
+
+/// The places of a source that the samples of a timeline read at one speed, one way, as a
+/// line: sample `n` of the timeline reads the place `(at + n * step) / per` of the source, in
+/// samples at the rate of the timeline from the start of the media. `per` is above 0, and
+/// `step` is below 0 where the source is read backward. The three have no divisor in common.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundLine {
+    /// The place that sample 0 of the timeline reads, times `per`.
+    pub at: i128,
+    /// How far a sample of the timeline moves the place on, times `per`.
+    pub step: i128,
+    /// What `at` and `step` are counted in: so many make a sample of the source.
+    pub per: i128,
+}
+
+/// How the sound of a clip with speed points is read ([`Course::sounding`], see the module):
+/// which segment each sample of the timeline is of, and the place of the path that it reads. It
+/// is a copy, so that a reader may keep it without the clip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sounding {
+    /// The segments of the clip, in the order of their frames: at least one.
+    segments: Vec<Segment>,
+    /// How many units of a place make a frame.
+    unit: u32,
+    /// The rate of the timeline.
+    rate: Rate,
+    /// The samples a second of the timeline.
+    sample_rate: u32,
+    /// The frame of the clip at which its path is lowest, counted from its first: the first of
+    /// them, where there are several.
+    frame: i64,
+    /// The sample of the timeline that that frame starts at, rounded down.
+    sample: i64,
+    /// The first sample of each segment but the first.
+    starts: Vec<i64>,
+}
+
+impl Sounding {
+    /// The parts of the sound, one for each segment of the clip, in their order: those of the
+    /// freezes too, and those that no sample is of, where a segment lasts less than a sample.
+    pub fn parts(&self) -> impl Iterator<Item = SoundPart> + '_ {
+        self.segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| SoundPart {
+                from: index
+                    .checked_sub(1)
+                    .and_then(|before| self.starts.get(before))
+                    .copied()
+                    .unwrap_or(i64::MIN),
+                to: self.starts.get(index).copied().unwrap_or(i64::MAX),
+                speed: segment.speed,
+            })
+    }
+
+    /// Which part sample `sample` of the timeline is of, by its place among
+    /// [`Sounding::parts`]: a sample before the clip is of the first, and one after it of the
+    /// last.
+    #[must_use]
+    pub fn part_of(&self, sample: i64) -> usize {
+        self.starts.partition_point(|start| *start <= sample)
+    }
+
+    /// The place of the path that `sample` reads as `segment` goes, above the lowest place of
+    /// the path, as a count of which `sample_rate * rate.den` make a unit of a frame. None
+    /// where it is too far to count.
+    fn reads(&self, segment: &Segment, sample: i64) -> Option<i128> {
+        // The place of the line of the segment at the frame that the samples are counted from.
+        let level = segment
+            .step
+            .checked_mul(i128::from(self.frame) - i128::from(segment.from))?
+            .checked_add(segment.at)?;
+        // A sample of a segment that goes backward reads the place where the sample ends.
+        let ends = i128::from(segment.step < 0);
+        let along = i128::from(sample) + ends - i128::from(self.sample);
+        level
+            .checked_mul(i128::from(self.sample_rate))?
+            .checked_mul(i128::from(self.rate.den))?
+            .checked_add(
+                segment
+                    .step
+                    .checked_mul(along)?
+                    .checked_mul(i128::from(self.rate.num))?,
+            )
+    }
+
+    /// How many of what [`Sounding::reads`] counts make a second of the source: below 2^96.
+    fn per_second(&self) -> i128 {
+        i128::from(self.sample_rate) * i128::from(self.unit) * i128::from(self.rate.num.max(1))
+    }
+
+    /// The sample of the media of a clip that begins in it at `begins`, at `media_rate` samples
+    /// a second, that sample `sample` of the timeline is read from, rounded down: what
+    /// [`crate::span::source_sample`] gives for a clip of one speed, along the path. All
+    /// through a freeze it is one sample, which is not played. One too far to count is the
+    /// most or the least that there is.
+    #[must_use]
+    pub fn source_sample(&self, begins: Time, sample: i64, media_rate: u32) -> i64 {
+        let segment = &self.segments[self.part_of(sample).min(self.segments.len() - 1)];
+        let Some(along) = self
+            .reads(segment, sample)
+            .and_then(|place| place.checked_mul(i128::from(media_rate)))
+        else {
+            // Too far up the line of the segment, or too far down it.
+            let after = sample >= self.sample;
+            return if (segment.step < 0) == after {
+                i64::MIN
+            } else {
+                i64::MAX
+            };
+        };
+        // begins * media_rate / scale + along / per, each part divided on its own, and their
+        // remainders added: they make one sample more where they come to a whole one.
+        let (scale, per) = (i128::from(begins.scale.max(1)), self.per_second());
+        let into = i128::from(begins.ticks) * i128::from(media_rate);
+        let (q_in, r_in) = (into.div_euclid(scale), into.rem_euclid(scale));
+        let (q_along, r_along) = (along.div_euclid(per), along.rem_euclid(per));
+        // Each product is below 2^128, which is more than an i128 holds: they are counted
+        // without a sign, and a sum too large for that is a whole sample and more.
+        let rest = (r_in.unsigned_abs() * per.unsigned_abs())
+            .checked_add(r_along.unsigned_abs() * scale.unsigned_abs());
+        let carry = rest.is_none_or(|rest| rest >= scale.unsigned_abs() * per.unsigned_abs());
+        match q_in
+            .checked_add(q_along)
+            .and_then(|sum| sum.checked_add(i128::from(carry)))
+        {
+            Some(count) => within(count),
+            None if q_along < 0 => i64::MIN,
+            None => i64::MAX,
+        }
+    }
+
+    /// The line that the samples of part `part` (its place among [`Sounding::parts`]) read the
+    /// media of a clip along, where the clip begins in its media at `begins`: for a clip of one
+    /// speed, that of the clip. None where there is no such part, or the line is too far from
+    /// the start of the media to count.
+    #[must_use]
+    pub fn line(&self, part: usize, begins: Time) -> Option<SoundLine> {
+        let segment = self.segments.get(part)?;
+        let scale = i128::from(begins.scale.max(1));
+        let frames = i128::from(self.rate.num.max(1));
+        // begins * sample_rate / scale + reads / (unit * rate.num), over one divisor.
+        let per = scale * i128::from(self.unit) * frames;
+        let step = segment.step.checked_mul(frames)?.checked_mul(scale)?;
+        let at = i128::from(begins.ticks)
+            .checked_mul(i128::from(self.sample_rate))?
+            .checked_mul(i128::from(self.unit))?
+            .checked_mul(frames)?
+            .checked_add(self.reads(segment, 0)?.checked_mul(scale)?)?;
+        let shared = gcd_wide(
+            gcd_wide(at.unsigned_abs(), step.unsigned_abs()),
+            per.unsigned_abs(),
+        );
+        let shared = i128::try_from(shared).unwrap_or(1).max(1);
+        Some(SoundLine {
+            at: at / shared,
+            step: step / shared,
+            per: per / shared,
+        })
+    }
+
+    /// The time of the source that sample `sample` of the timeline reads, in seconds after
+    /// where the clip begins in its media: it rises through a segment that goes forward, stands
+    /// still through a freeze, and falls through one that goes backward. The keys of the gain
+    /// and of the pan of a clip are read there.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss, reason = "a time to read keys at")]
+    pub fn seconds(&self, sample: i64) -> f64 {
+        let segment = &self.segments[self.part_of(sample).min(self.segments.len() - 1)];
+        self.reads(segment, sample)
+            .map_or(0.0, |place| place as f64 / self.per_second() as f64)
+    }
+
+    /// The samples of the timeline that read the time `seconds` of the source, counted after
+    /// where the clip begins in its media: one for each segment that comes by it, in their
+    /// order, and none of a freeze. A key at that time is drawn there.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "a place to draw a key at"
+    )]
+    pub fn samples_reading(&self, seconds: f64) -> Vec<i64> {
+        let wanted = seconds * self.per_second() as f64;
+        let mut samples = Vec::new();
+        for (part, segment) in self.parts().zip(&self.segments) {
+            let (Some(first), false) = (self.reads(segment, 0), segment.step == 0) else {
+                continue;
+            };
+            let step = segment.step as f64 * f64::from(self.rate.num.max(1));
+            let at = (wanted - first as f64) / step;
+            // The last sample that reads the time or what is before it: forward, rounded down.
+            let at = if segment.step < 0 {
+                at.ceil()
+            } else {
+                at.floor()
+            };
+            let sample = at as i64;
+            if (part.from..part.to).contains(&sample) {
+                samples.push(sample);
+            }
+        }
+        samples
     }
 }
 
@@ -2370,5 +2654,183 @@ mod tests {
         let one = retime(&[(0, 65537, 65537)]).course(10).unwrap();
         let other = retime(&[(0, 65539, 65539)]).course(10).unwrap();
         assert_eq!(one.later_as(0, &other, PAL, 25), Err(range("retime_unit")));
+    }
+
+    #[test]
+    fn the_sound_of_a_mapping_of_one_speed_is_read_as_that_of_a_clip_of_that_speed() {
+        let speeds = [
+            Speed::ONE,
+            Speed { num: 2, den: 1 },
+            Speed { num: 1, den: 2 },
+            Speed { num: 137, den: 250 },
+            Speed {
+                num: 24000,
+                den: 1001,
+            },
+        ];
+        let length = 40;
+        for speed in speeds {
+            for reverse in [false, true] {
+                // At 29.97 frames a second no frame begins on a whole sample but every 1001st.
+                for (rate, scale, start) in [(NTSC, 1000, 0), (NTSC, SCALE, 7), (PAL, SCALE, 1001)]
+                {
+                    let source_in = Time { ticks: 1234, scale };
+                    let mut clip = Clip::of_media("c1", "m1", source_in, start, length);
+                    clip.speed = speed;
+                    clip.reverse = reverse;
+                    let course = Retime::constant(speed, reverse).course(length).unwrap();
+                    for (sample_rate, media_rate) in [
+                        (48000, 48000),
+                        (48000, 44100),
+                        (44100, 48000),
+                        (44100, 44100),
+                    ] {
+                        let sounding = course.sounding(start, rate, sample_rate);
+                        let first = crate::resolve::samples_at(start, rate, sample_rate);
+                        let end = crate::resolve::samples_at(start + length, rate, sample_rate);
+                        // Samples all through the clip, its first and its last, and those
+                        // before it and after it that a crossfade plays.
+                        let samples =
+                            (first - 5..end + 5)
+                                .step_by(97)
+                                .chain([first, end - 1, end, end + 4]);
+                        for sample in samples {
+                            assert_eq!(
+                                sounding.source_sample(source_in, sample, media_rate),
+                                span::source_sample(&clip, rate, sample, sample_rate, media_rate),
+                                "sample {sample} at {speed:?}, backward {reverse}, {rate:?}, \
+                                 {sample_rate} to {media_rate}"
+                            );
+                        }
+                        let parts: Vec<SoundPart> = sounding.parts().collect();
+                        let whole = SoundPart {
+                            from: i64::MIN,
+                            to: i64::MAX,
+                            speed: SignedSpeed::of(speed, reverse),
+                        };
+                        assert_eq!(parts, [whole]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_sound_goes_along_the_path_and_stands_still_in_a_freeze() {
+        // 4 frames forward, a picture held for 3, and 3 frames back at half the speed, at 25
+        // frames a second and 48000 samples: 1920 samples to a frame. The clip begins 4 seconds
+        // into its media, sample 192000 of it.
+        let mapping = retime(&[(0, 1, 1), (4, 0, 1), (7, -1, 2)]);
+        let sounding = mapping.course(10).unwrap().sounding(0, PAL, 48000);
+        let begins = Time {
+            ticks: 100,
+            scale: 25,
+        };
+        let part = |from, to, num, den| SoundPart {
+            from,
+            to,
+            speed: SignedSpeed { num, den },
+        };
+        let parts: Vec<SoundPart> = sounding.parts().collect();
+        assert_eq!(
+            parts,
+            [
+                part(i64::MIN, 7680, 1, 1),
+                part(7680, 13440, 0, 1),
+                part(13440, i64::MAX, -1, 2)
+            ]
+        );
+        assert_eq!(
+            [-1, 0, 7679, 7680, 13439, 13440, 19199, 19200].map(|sample| sounding.part_of(sample)),
+            [0, 0, 0, 1, 1, 2, 2, 2]
+        );
+        let read = |sample| sounding.source_sample(begins, sample, 48000);
+        // Forward, a sample of the media to each of the timeline, and before the clip too.
+        assert_eq!([read(-3), read(0), read(7679)], [191_997, 192_000, 199_679]);
+        // The freeze stands 4 frames into what the clip shows.
+        assert_eq!([read(7680), read(13439)], [199_680, 199_680]);
+        // Backward at half the speed a sample reads where it ends, half a sample below the
+        // one before it: the first reads 7679 and a half above where the clip begins.
+        assert_eq!(
+            [read(13440), read(13441), read(13442)],
+            [199_679, 199_679, 199_678]
+        );
+        // The last sample of the clip ends two frames and a half above where it begins, and
+        // the last segment goes on after it.
+        assert_eq!([read(19199), read(19200)], [196_800, 196_799]);
+        // At another rate of the media the places are the same.
+        let slower = |sample| sounding.source_sample(begins, sample, 44100);
+        assert_eq!([slower(0), slower(7680)], [176_400, 183_456]);
+        // The time of the source rises, stands still and falls.
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(near(sounding.seconds(0), 0.0));
+        assert!(near(sounding.seconds(3840), 0.08));
+        assert!(near(sounding.seconds(7680), 0.16));
+        assert!(near(sounding.seconds(13000), 0.16));
+        assert!(near(sounding.seconds(13440), 0.16 - 0.5 / 48000.0));
+        assert!(near(sounding.seconds(19199), 0.1));
+        // A time of the source is read once on the way up and once on the way down, by the
+        // last segment after the clip too, and at no sample of the freeze.
+        assert_eq!(sounding.samples_reading(0.08), [3840, 21119]);
+        assert_eq!(sounding.samples_reading(0.12), [5760, 17279]);
+        // The lines of the three parts: a sample to a sample from sample 192000, one sample
+        // held, and half a sample back to each.
+        let line = |part| sounding.line(part, begins);
+        let along = |at, step, per| Some(SoundLine { at, step, per });
+        assert_eq!(line(0), along(192_000, 1, 1));
+        assert_eq!(line(1), along(199_680, 0, 1));
+        assert_eq!(line(2), along(412_799, -1, 2));
+        assert_eq!(line(3), None);
+    }
+
+    #[test]
+    fn the_sound_has_no_jump_at_a_speed_point_and_none_where_the_speed_does_not_change() {
+        // At 29.97 frames a second, from frame 1001 of the timeline, no speed point is on a
+        // whole sample.
+        let mapping = retime(&[(0, 1, 1), (7, 1, 3), (20, 0, 1), (26, 5, 2)]);
+        let length = 40;
+        let begins = Time {
+            ticks: 1234,
+            scale: 1000,
+        };
+        let sounding = mapping.course(length).unwrap().sounding(1001, NTSC, 48000);
+        let parts: Vec<SoundPart> = sounding.parts().collect();
+        #[allow(clippy::cast_precision_loss, reason = "places of a test")]
+        let place = |part: usize, sample: i64| {
+            let line = sounding.line(part, begins).unwrap();
+            (line.at + i128::from(sample) * line.step) as f64 / line.per as f64
+        };
+        for (index, pair) in parts.windows(2).enumerate() {
+            // The parts follow one another with no sample between them, nor one in both.
+            assert_eq!(pair[0].to, pair[1].from);
+            let speed = |part: &SoundPart| part.speed.percent() / 100.0;
+            let (slow, fast) = (
+                speed(&pair[0]).min(speed(&pair[1])),
+                speed(&pair[0]).max(speed(&pair[1])),
+            );
+            // From the last sample of one to the first of the next the place moves on by no
+            // less than the slower of the two moves in a sample, and by no more than the
+            // faster.
+            let step = place(index + 1, pair[1].from) - place(index, pair[1].from - 1);
+            assert!(
+                step > slow - 1e-6 && step < fast + 1e-6,
+                "{step} from part {index}, between {slow} and {fast}"
+            );
+        }
+        // A speed point added where the speed does not change moves no sample.
+        let first = crate::resolve::samples_at(1001, NTSC, 48000);
+        let end = crate::resolve::samples_at(1001 + length, NTSC, 48000);
+        let read = |sounding: &Sounding| -> Vec<i64> {
+            (first - 5..end + 5)
+                .step_by(31)
+                .map(|sample| sounding.source_sample(begins, sample, 44100))
+                .collect()
+        };
+        let before = read(&sounding);
+        for at in [1, 6, 7, 13, 22, 39] {
+            let pointed = mapping.with_point(at, length).unwrap();
+            let after = pointed.course(length).unwrap().sounding(1001, NTSC, 48000);
+            assert_eq!(read(&after), before, "a speed point at {at}");
+        }
     }
 }

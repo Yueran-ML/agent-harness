@@ -6,6 +6,7 @@ use crate::db_to_gain;
 use crate::feed::{ClipFeed, FeedError};
 use crate::node::Node;
 
+use super::clip::{ClipChain, Part};
 use super::route::balance;
 use super::{ClipParam, Graph, StripParam, Target};
 
@@ -37,17 +38,33 @@ impl Graph {
         }
         for at in 0..self.order.len() {
             let strip = self.order[at];
-            for clip in self.clips_of[strip].clone() {
-                let mixed = self.clips[clip].mix(
-                    clip,
-                    feed,
-                    (timeline, frames, rate),
-                    &mut self.scratch,
-                    &mut self.inputs[strip],
-                );
+            let clips = self.clips_of[strip].clone();
+            let mut clip = clips.start;
+            while clip < clips.end {
+                // A clip with speed points is several chains, mixed as one clip (T10c).
+                let pieces = self.clips[clip].pieces().min(clips.end - clip);
+                let mixed = if matches!(self.clips[clip].part, Part::First(_)) {
+                    ClipChain::mix_joined(
+                        &mut self.clips[clip..clip + pieces],
+                        clip,
+                        feed,
+                        (timeline, frames, rate),
+                        &mut self.scratch,
+                        &mut self.inputs[strip],
+                    )
+                } else {
+                    self.clips[clip].mix(
+                        clip,
+                        feed,
+                        (timeline, frames, rate),
+                        &mut self.scratch,
+                        &mut self.inputs[strip],
+                    )
+                };
                 if let (Err(error), Ok(())) = (mixed, &result) {
                     result = Err(error);
                 }
+                clip += pieces;
             }
             let this = &mut self.strips[strip];
             this.load(&self.inputs[strip], (start, self.warp), rate, frames);

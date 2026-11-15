@@ -6,7 +6,9 @@
 //!
 //! 1. The chain of each clip: its sound read through a [`crate::feed::ClipFeed`], at its speed
 //!    and direction, in the channels of its track, through its equalizer, by its gain
-//!    (keyframes, fades, crossfades) and pan (`clip.rs`).
+//!    (keyframes, fades, crossfades) and pan (`clip.rs`). A clip with speed points is read
+//!    segment by segment, each at its speed and direction, and is one clip from its equalizer
+//!    on (T10c).
 //! 2. The strip of each track: the sum of its clips → Trim and polarity → its Ducker (T11), keyed
 //!    by the sum of its sources before their faders → the inserts, Dynamics and equalizer in their
 //!    Order → the point before the fader → mute and solo → the fader with its VCAs → the point
@@ -483,10 +485,12 @@ impl Graph {
             }
             let full = clip.settle.saturating_add(path);
             let full_i = i64::try_from(full).unwrap_or(i64::MAX);
-            if clip.to <= at.saturating_sub(full_i) {
+            // Its equalizer and effects run over the whole of a clip with speed points (T10c).
+            let (from, to) = clip.lasts();
+            if to <= at.saturating_sub(full_i) {
                 continue;
             }
-            let back = at.saturating_add(clip.ahead()).saturating_sub(clip.from);
+            let back = at.saturating_add(clip.ahead()).saturating_sub(from);
             let wanted = full.min(u64::try_from(back).unwrap_or(0));
             need = need.max(wanted);
         }

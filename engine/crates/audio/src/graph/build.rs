@@ -8,6 +8,7 @@ use columbina_model::audio::fx::{
     Ducker as DuckerModel, Dynamics as DynamicsModel, EqKind, EqRange, GateMode,
 };
 use columbina_model::audio::{BusFormat, ChannelOrder, Pan as PanModel, TrackFormat};
+use columbina_model::retime::Sounding;
 use columbina_model::{
     resolve, AudioParam, AutomationArm, Effect, Equalizer, Id, Lane, Lanes, Project, SourceRef,
     Stage as Order, Strip as StripModel, Timeline, TrackKind,
@@ -28,8 +29,8 @@ use crate::rt::{Domain, SeqReader, Smoothed};
 
 use super::automation::Held;
 use super::clip::{
-    cutoff, radius, ClipChain, ClipEffects, ClipLevel, ClipPan, ClipScratch, ClipStage, Mapping,
-    Pool, Reach, StretchMode, Stretched, Warped, Window,
+    cutoff, radius, ClipChain, ClipEffects, ClipLevel, ClipPan, ClipScratch, ClipStage, Joined,
+    Mapping, Part, Pool, Reach, StretchMode, Stretched, Warped, Window,
 };
 use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
@@ -1386,13 +1387,16 @@ impl Graph {
         let mut unplayable: Vec<Id> = Vec::new();
         let mut window = 0usize;
         let mut stretching = Stretching::default();
+        // The clip with speed points whose pieces are being made into chains (T10c).
+        let mut along: Option<Along> = None;
         for piece in resolve::sources_between(t, project, i64::MIN, i64::MAX) {
             let Some(&strip) = track_at.get(piece.track.as_str()) else {
                 continue;
             };
-            // Only what is heard over the range of a graph that has one (T4c's review).
+            // Only what is heard over the range of a graph that has one (T4c's review): a clip
+            // with speed points whole, since its equalizer and effects run through its pieces.
             if let Some((low, high)) = options.within {
-                if piece.to <= low || piece.from >= high || !needed[strip] {
+                if piece.sounds.1 <= low || piece.sounds.0 >= high || !needed[strip] {
                     continue;
                 }
             }
@@ -1409,11 +1413,28 @@ impl Graph {
                     at.checked_sub(reach).is_some() && at.checked_add(reach + 1).is_some()
                 })
             };
+            // A piece of a clip with speed points reads its media along its segment; the first
+            // piece of a clip that comes by brings what all of them are read by.
+            let pointed = clip.retime.is_some();
+            if pointed && !along.as_ref().is_some_and(|along| along.is_of(&piece)) {
+                along = Along::of(clip, t, &piece);
+            }
+            let of = along.as_ref().filter(|_| pointed);
+            let lead = of.and_then(|along| along.lead);
+            let mapping = match of {
+                Some(along) => along
+                    .mapping(clip, &piece)
+                    .filter(|mapping| mapping.holds(piece.from) && mapping.holds(piece.to - 1)),
+                None if pointed => None,
+                None => Mapping::new(clip, t),
+            };
             // A clip that reads beyond what a count of samples holds is silent, and told of.
-            let Some(mapping) = Mapping::new(clip, t)
-                .filter(|mapping| fits(mapping, piece.from) && fits(mapping, piece.to - 1))
+            let Some(mapping) =
+                mapping.filter(|mapping| fits(mapping, piece.from) && fits(mapping, piece.to - 1))
             else {
-                unplayable.push(clip.id.clone());
+                if !unplayable.contains(&clip.id) {
+                    unplayable.push(clip.id.clone());
+                }
                 continue;
             };
             let layout = sources[strip].layout;
@@ -1429,8 +1450,10 @@ impl Graph {
                 (AudioParam::Keys(_), Layout::Stereo) => ClipPan::Keyed,
                 _ => ClipPan::None,
             };
+            // The equalizer and the effects of a clip with speed points are those of its first
+            // piece, which runs the sound of all its pieces through them.
             let mut settling = 0u64;
-            let eq = if clip.eq.on {
+            let eq = if clip.eq.on && lead.is_none() {
                 let settings = eq_settings(&clip.eq, Variant::Clip);
                 let mut node = Eq::new(&settings);
                 node.prepare(&Spec::new(rate, max_block, layout))
@@ -1443,15 +1466,45 @@ impl Graph {
                 None
             };
             // Its effects after its equalizer (T4c): the path of its track starts with both.
-            let (effects, through) = match clip_effects(clip, &options, rate, layout, &mut fx_taps)
-            {
+            let made = if lead.is_none() {
+                clip_effects(clip, &options, rate, layout, &mut fx_taps)
+            } else {
+                None
+            };
+            let (effects, through) = match made {
                 Some((effects, settle)) => (Some(effects), settle),
                 None => (None, 0),
             };
             let settling = settling.saturating_add(through);
             settle_in[strip] = settle_in[strip].max(settling);
-            let ahead = effects.as_ref().map_or(0, |effects| effects.latency);
+            let ahead = match lead {
+                Some(lead) => chains[lead].ahead(),
+                None => effects.as_ref().map_or(0, |effects| effects.latency),
+            };
             let stretch = stretching.of(clip, &piece, &mapping, (rate, channels), (reach, ahead));
+            // What the chain is of its clip: the first piece of a clip with speed points
+            // counts those that follow it.
+            let part = match (pointed, lead) {
+                (false, _) => Part::Whole,
+                (true, Some(lead)) => {
+                    if let Part::First(joined) = &mut chains[lead].part {
+                        joined.count += 1;
+                    }
+                    Part::Later { ahead }
+                }
+                (true, None) => {
+                    if let Some(along) = &mut along {
+                        along.lead = Some(chains.len());
+                    }
+                    let (from, to) = piece.sounds;
+                    Part::First(Joined {
+                        count: 1,
+                        from,
+                        to,
+                        built: piece.sounds,
+                    })
+                }
+            };
             if let Some(stretch) = &stretch {
                 if stretch.mode == StretchMode::Source {
                     window = window.max(stretching.seek_length());
@@ -1495,6 +1548,7 @@ impl Graph {
                 effects,
                 settle: settling,
                 warped: Warped::default(),
+                part,
             });
         }
         let mut clips_of = vec![0..0; count];
@@ -1925,6 +1979,51 @@ impl Graph {
                 main: out.main,
             })
             .collect()
+    }
+}
+
+/// The clip with speed points whose pieces are being made into chains (T10c): how its sound is
+/// read along its path, and the place among the chains of its first piece, once that is made.
+struct Along {
+    track: Id,
+    clip: Id,
+    sounding: Sounding,
+    lead: Option<usize>,
+}
+
+impl Along {
+    /// That of `clip` of timeline `t`, which `piece` is a piece of; none where its speed points
+    /// are not those of the clip, which the model gives no piece of.
+    fn of(
+        clip: &columbina_model::Clip,
+        t: &Timeline,
+        piece: &resolve::AudioPiece,
+    ) -> Option<Along> {
+        let course = clip.retime.as_ref()?.course(clip.length).ok()?;
+        Some(Along {
+            track: piece.track.clone(),
+            clip: piece.clip.clone(),
+            sounding: course.sounding(clip.start, t.rate, t.sample_rate),
+            lead: None,
+        })
+    }
+
+    /// Whether `piece` is a piece of the clip.
+    fn is_of(&self, piece: &resolve::AudioPiece) -> bool {
+        self.track == piece.track && self.clip == piece.clip
+    }
+
+    /// How `piece` of `clip` reads its media: along the line of the segment that its samples
+    /// are of. None where the line is too far from the start of the media to count.
+    fn mapping(
+        &self,
+        clip: &columbina_model::Clip,
+        piece: &resolve::AudioPiece,
+    ) -> Option<Mapping> {
+        let part = self.sounding.part_of(piece.from);
+        self.sounding
+            .line(part, clip.source_in()?)
+            .map(Mapping::along)
     }
 }
 

@@ -4515,6 +4515,8 @@ describe('the engine of the studio', () => {
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
       'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics', 'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
       'view.sample', 'view.pointer', 'window.bind', 'window.input', 'window.unbind',
+      // The motion path that the Edit page draws in the timeline viewer (phase 4, T6).
+      'view.overlay',
       // The Gallery and the comparisons of the viewer (T26, T27).
       'viewer.wipe', 'viewer.split', 'still.grab', 'still.get', 'still.apply', 'still.label', 'still.delete', 'still.move',
       'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',

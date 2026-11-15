@@ -1152,6 +1152,7 @@ export interface PageMethods {
   'scopes.unsubscribe': Record<string, never>;
   'view.sample': ViewSample;
   'view.pointer': { monitor: Monitor; on: boolean; cursor: PointerCursor | null };
+  'view.overlay': { monitor: 'timeline'; lines: number; dots: number };
   'window.bind': { binding: number; sequence: number };
   'window.input': WindowState;
   'window.unbind': { binding: number; phase: 'ended' };
@@ -1530,6 +1531,21 @@ export interface ViewPointer {
   shift: boolean;
   ctrl: boolean;
   alt: boolean;
+}
+
+/** What a dot of an overlay marks, which says how the view draws it: a place at one frame, a key, the key being dragged, the place at the playhead. */
+export type OverlayDot = 'tick' | 'key' | 'active' | 'current';
+/** A place on the picture of the timeline monitor, in its pixels from its top left corner, a pixel's centre at `.5`, as `view.pointer` tells the pointer. */
+export type OverlayPoint = [x: number, y: number];
+/**
+ * What `view.overlay` has the view of the timeline monitor draw over its picture: lines, each through
+ * its points in order, and dots of a kind, the last on top. The page says what is where and the engine
+ * how it looks. It is drawn over a picture of `canvas` pixels and over no other.
+ */
+export interface ViewOverlay {
+  canvas: [width: number, height: number];
+  lines: OverlayPoint[][];
+  dots: { kind: OverlayDot; at: OverlayPoint[] }[];
 }
 
 /** The pointer on a view, where an event of the engine tells it. */

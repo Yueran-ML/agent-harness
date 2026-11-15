@@ -233,6 +233,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
 | `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
+| `view.overlay` | `{"monitor": "timeline", "overlay": {"canvas": [w, h], "lines"?: [[[x, y], ...], ...], "dots"?: [{"kind": "tick" \| "key" \| "active" \| "current", "at": [[x, y], ...]}, ...]} \| null}` to draw or to clear; `{"monitor": "timeline"}` to ask | `{"monitor": "timeline", "lines": n, "dots": m}`: how many lines and dots the view draws over its picture from now on (see Marks over the picture) |
 | `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Window controls of every shape (see Circular and Gradient Window controls, Linear and Polygon Window controls, Curve Window controls) |
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete"\|"clear_points"\|"delete_points",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}`; `clear_points` and `delete_points` (Esc and Backspace on a Curve's point selection) answer `{binding,phase:"cleared",cleared}` and `{binding,phase:"deleted",selected,points,revision}` (see Curve Window controls) |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
@@ -949,7 +950,8 @@ picture.
   process** sends them: it owns the window and its handle. The page (the renderer) never gets
   the handle and never calls the engine for the view: it tells the main process where the
   viewer is (over IPC), and the main process sends `view.place`. A `--headless` engine draws in
-  no window: every `view.*` is answered `-32601`. `view.sample`, `view.pointer`, `view.display`, and `view.viewport` are the
+  no window: every `view.*` is answered `-32601`. `view.sample`, `view.pointer`, `view.overlay`,
+  `view.display`, and `view.viewport` are the
   exceptions: they touch no window of the desktop's, so the page calls them (through the main
   process, which lets them by), and any client may call `view.sample` (below, Samples and the
   pointer).
@@ -1262,6 +1264,87 @@ and `inside` is false until a frame is successfully presented at the new size. A
 surface/device also has no pointer map until presentation resumes. `inside` requires both the
 picture bounds and the visible native surface bounds; captured drags outside a zoomed viewer
 remain outside even if their extrapolated picture coordinates are within the picture.
+
+### Marks over the picture
+
+The page can draw nothing over the viewer, which is the engine's own window. So what a page
+shows on the picture and works out itself, it has the view draw: the **motion path** of a clip
+in the timeline viewer of the Edit page (DaVinci Resolve Reference Manual 20, pp. 1106–1108), the
+line through the places of the clip's anchor over its frames, a dot at each, and a larger point at
+each key of its position.
+
+**`view.overlay`** `{"monitor": "timeline", "overlay": {...}}` has the view of the timeline
+monitor draw lines and dots over its picture from now on, in place of those that it drew before;
+`"overlay": null` has it draw none; and with no `overlay` at all it changes nothing and says what
+is drawn. Each answers `{"monitor": "timeline", "lines": n, "dots": m}`, the lines and the dots
+that are drawn after it (0 and 0 for none).
+
+```json
+{"monitor": "timeline", "overlay": {
+  "canvas": [1920, 1080],
+  "lines": [[[960, 810], [1200, 810], [1440, 810]]],
+  "dots": [
+    {"kind": "tick", "at": [[960, 810], [1200, 810], [1440, 810]]},
+    {"kind": "key", "at": [[960, 810], [1440, 810]]},
+    {"kind": "current", "at": [[1200, 810]]}
+  ]}}
+```
+
+- **Coordinates** are pixels of the picture from its top left corner, a pixel's centre at `.5`:
+  those of the timeline, as `view.pointer` tells `x` and `y` and `view.sample` takes them. A
+  point may lie beyond the picture (a clip moved out of it); what lies on the black about the
+  picture is not drawn. `canvas` is the width and the height of the picture that the marks were
+  made for, each from 1 to 16384: they are drawn over a composed picture of exactly that size,
+  and over no other (a timeline of another size, the black of a monitor with nothing loaded),
+  where they would lie elsewhere than the page meant.
+- **`lines`** are drawn each through its points in order, with straight strokes; `dots` in the
+  order given, over the lines, the last on top. Either may be left out, for none. The page says
+  what is where, and the engine how it looks: a `tick` is a small dot (a place at one frame), a
+  `key` a larger one, `active` the key that is being dragged and `current` the place at the
+  playhead, each of these two in a colour of its own. Every mark is drawn light over a dark one a
+  little larger, to be seen on any picture. They are drawn in the view alone, after the picture
+  is mapped to the display and under the Window controls: a sample of the picture
+  (`view.sample`), the scopes, a still and an export never hold them.
+- **Limits.** The lines and the dots have at most 32768 points together, each within 10 000 000
+  pixels of the corner of the picture. More, a `canvas` that is no size of a picture, and
+  anything that is not as written above are refused with `-32602`, with `data: {"reason":
+  "overlay"}` where the numbers are at fault; the source monitor, which shows media, with
+  `{"reason": "monitor"}`. What is refused changes nothing of what is drawn.
+- **Whose it is.** Only the desktop may call it (`-32600` from another client; `-32601` in a
+  headless engine), and the page does, through the main process. The marks are the view's and
+  the connection's that asked last: they are drawn over each picture that the view shows until
+  a connection sends others or clears them, or the connection that sent them closes. They are
+  kept where no view is attached yet, and given to a view that is attached in place of the one
+  that drew them.
+- **What it is not.** The marks are no part of the project and of no frame: they change no
+  revision and no history, the engine reads nothing from them, and it does not check them
+  against the project. The page that sent them keeps them right: it sends them again when the
+  project changes what they show, and clears them when it shows them no longer. They are drawn
+  again at once as they change, over the picture that the view has, without a new frame; so for
+  the moment between a change of the project and the page's next overlay the picture and the
+  marks may be a revision apart.
+- **The pointer.** Nothing hits a mark in the engine. The page takes the pointer on the view
+  (`view.pointer`), is told where each press and move is on the picture, in the same pixels, and
+  finds the point that was pressed among those that it sent; `presentation.map` of the
+  notification says how many pixels of the screen a pixel of the picture is, for how near a press
+  must be, and `snapshot.timeline` which timeline the picture is of. What a drag changes it sends
+  as an ordinary transaction (a gesture of `set_clip_keys`), which is checked against the
+  revision as every transaction is.
+
+How the desktop uses it (`desktop/src/studio/motionPath`): with the on-screen Transform controls
+of the Edit page's timeline viewer on, the one clip of picture that is chosen, where
+`transform.x` or `transform.y` has keys, is drawn its path: the anchor
+(`width/2 + x·width`, `height/2 + y·height`, which the zoom and the turn of the clip do not
+move) at each frame of the timeline that the clip covers, at the frame that its keys count there
+(see Frames of keys; a clip with speed points that shows a picture twice is at one place twice).
+A place held over several frames is one dot, and a clip of more than 4096 frames has a dot every
+few frames. While the timeline plays the path stays and the `current` dot is left out, since the
+page hears of a frame after the view shows it. A point dragged sets `transform.x` and
+`transform.y` whole at each move, from the clip as it was at the press, as one gesture; a point
+made Smooth has both settings eased in and out at that key (`{"bezier": ...}` with the two
+handles at the key flat a third of the way to the keys beside it), and Linear lays them on the
+lines again. The engine eases each setting in time and has no Bezier in the plane, so the line
+between two points bends only where the two settings go differently.
 
 ### Circular and Gradient Window controls
 

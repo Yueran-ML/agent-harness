@@ -927,6 +927,7 @@ export const zhCN: Messages = {
         linear: '线性', easeIn: '缓入', easeOut: '缓出', easeInOut: '缓入缓出', hold: '保持',
         fit: '全览缩放', copy: '复制关键帧', paste: '粘贴关键帧', close: '关闭曲线编辑器',
       },
+      motionPath: { controls: '变换控制', point: '运动路径上的点', smooth: '平滑' },
       speed: { title: '更改片段速度', percent: '速度', reverse: '倒放', ripple: '波纹序列', duration: '时长', apply: '更改' },
       effects: { title: '特效库', videoTransitions: '视频转场', audioTransitions: '音频转场', titles: '标题', generators: '生成器', text: '文本' },
       pool: '媒体池',

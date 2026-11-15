@@ -6,6 +6,18 @@ change what was there before.
 
 ## Unreleased
 
+- The timeline viewer of the Edit page shows the motion path of a clip (studio, phase 4).
+  With Transform controls on, in the title bar of the viewer, the chosen clip whose position
+  has keys is drawn its path on the picture: a line through where its middle is at each
+  frame, a small dot at each frame, whose spacing shows the speed, a larger point at each
+  key, and the place at the playhead while the timeline is not playing. A point is dragged
+  on the picture to move its key (Shift keeps it level or upright; one step to undo; Escape
+  takes it back), and its right-click menu makes it Linear or Smooth, which eases the key
+  in and out on both axes. Each axis is eased in time by itself, so the path between two
+  points bends only where the two go differently, and there are no curve handles on the
+  picture yet. The controls are off at first, and the app remembers them. For it the page
+  has the engine draw lines and dots over the picture of the timeline monitor (`view.overlay`
+  of `engine/PROTOCOL.md`), which no sample, scope, still or export ever holds.
 - The size and the position of a title take keyframes (studio, phase 4), as the transform
   and the cropping of a clip do: each is a number or keys, with the diamond and the arrows
   beside its field in the Inspector, the diamonds and the keyframe track on the clip, and

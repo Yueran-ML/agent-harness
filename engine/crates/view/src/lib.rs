@@ -96,6 +96,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 pub mod display;
+pub mod marks;
 pub mod pointer;
 mod render;
 mod screen;
@@ -381,6 +382,8 @@ pub(crate) struct State {
     presentation: Option<Presentation>,
     /// Whether it takes the pointer, and the cursor that it shows then.
     pointer: Option<Cursor>,
+    /// What a page has the view draw over its picture, captured by the drawer with each job.
+    marks: Option<Arc<marks::Marks>>,
 }
 
 impl State {
@@ -441,6 +444,7 @@ impl Shared {
                 viewport: Viewport::Fit,
                 presentation: None,
                 pointer: None,
+                marks: None,
             }),
             wake: Condvar::new(),
             watch: Condvar::new(),
@@ -851,6 +855,30 @@ impl View {
     #[must_use]
     pub fn pointer(&self) -> Option<Cursor> {
         self.shared.lock().pointer
+    }
+
+    /// Draw `marks` over the composed picture that the view shows, where it is of their size,
+    /// from now on, in place of those given before; or none. It returns at once; the picture
+    /// that the view shows is drawn again with them, and no new picture is needed.
+    ///
+    /// # Errors
+    /// The window was destroyed with its parent.
+    pub fn set_marks(&self, marks: Option<Arc<marks::Marks>>) -> Result<(), ViewError> {
+        let mut state = self.shared.lock();
+        if state.gone {
+            return Err(ViewError::Gone);
+        }
+        state.marks = marks;
+        state.dirty = true;
+        drop(state);
+        self.shared.wake.notify_all();
+        Ok(())
+    }
+
+    /// The marks that the view draws over its picture, the last given.
+    #[must_use]
+    pub fn marks(&self) -> Option<Arc<marks::Marks>> {
+        self.shared.lock().marks.clone()
     }
 
     /// Allow the view to show HDR where Windows has HDR on for the monitor that its window is on,

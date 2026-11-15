@@ -1,5 +1,6 @@
-use super::{sample_scale, WindowOverlay};
+use super::{sample_scale, Primitive, WindowOverlay};
 use crate::display::{mapping, Content};
+use crate::marks::{Marks, HALO, LINE_WIDTH};
 use crate::{Output, ViewportMap};
 use columbina_compose::wipe::{Style, Wipe, COVERAGE_WGSL};
 use wgpu::util::DeviceExt;
@@ -8,6 +9,15 @@ use wgpu::util::DeviceExt;
 const GLOBALS: u64 = 48 + 96;
 /// Bytes of one primitive in the storage buffer: five `vec4<f32>`.
 const PRIMITIVE: u64 = 80;
+
+/// The comparison of a frame that is all current picture: nothing of a reference to keep clear.
+fn all_current() -> Wipe {
+    Wipe {
+        style: Style::Mix,
+        position: 0.0,
+        ..Wipe::default()
+    }
+}
 
 pub(crate) struct OverlayPainter {
     layout: wgpu::BindGroupLayout,
@@ -89,21 +99,70 @@ impl OverlayPainter {
         map: ViewportMap,
         output: Output,
     ) {
-        let wipe = overlay.coverage.unwrap_or(Wipe {
-            style: Style::Mix,
-            position: 0.0,
-            ..Wipe::default()
-        });
+        let wipe = overlay.coverage.unwrap_or_else(all_current);
+        // Selected is last, so the same shape wins drawing and pointer-down overlaps.
+        let primitives = overlay
+            .ordered()
+            .flat_map(|shape| overlay.primitives(shape, map));
+        self.paint(
+            device,
+            encoder,
+            target,
+            primitives,
+            overlay.style.width,
+            wipe,
+            map,
+            output,
+        );
+    }
+
+    /// Draw the marks of a page over the whole picture: the dark ones first, with wider lines,
+    /// and the light ones over them.
+    pub fn encode_marks(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        marks: &Marks,
+        map: ViewportMap,
+        output: Output,
+    ) {
+        for (under, width) in [(true, LINE_WIDTH + 2.0 * HALO), (false, LINE_WIDTH)] {
+            self.paint(
+                device,
+                encoder,
+                target,
+                marks.primitives(map, under).into_iter(),
+                width,
+                all_current(),
+                map,
+                output,
+            );
+        }
+    }
+
+    /// One pass over the display surface: one instance per primitive, each rasterizing only
+    /// its own device quad, in list order, with strokes `width` device pixels wide, where
+    /// `wipe` shows the current picture.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the surface, what is drawn on it and how, each from another hand"
+    )]
+    fn paint(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        primitives: impl Iterator<Item = Primitive>,
+        width: f32,
+        wipe: Wipe,
+        map: ViewportMap,
+        output: Output,
+    ) {
         let coverage = wipe.coverage_params(map.picture);
-        // Selected is last, so the same shape wins drawing and pointer-down overlaps. One
-        // instance per primitive, each rasterizing only its own device quad, in list order.
-        let width = overlay.style.width;
         let sdr = mapping(Content::Sdr, output);
         let mut instances: Vec<u8> = vec![];
-        for primitive in overlay
-            .ordered()
-            .flat_map(|shape| overlay.primitives(shape, map))
-        {
+        for primitive in primitives {
             let Some(quad) = primitive.quad(map, width) else {
                 continue;
             };

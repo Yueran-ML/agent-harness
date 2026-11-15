@@ -22,6 +22,11 @@
 //! A view takes the pointer while a connection of the desktop asks it to (`view.pointer`), for a
 //! tool of the page that is used on the picture; what the pointer does there is told to that
 //! connection alone, as `view.pointer` notifications ([`pointer`](mod@pointer)).
+//!
+//! A page of the desktop may have the view of the timeline monitor draw lines and dots over its
+//! picture (`view.overlay`): the motion path of a clip on the Edit page. They are that
+//! connection's, drawn until it says otherwise or closes, and given to a view made in place of
+//! the one that drew them.
 
 mod pointer;
 
@@ -29,10 +34,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use columbina_compose::ShaderCompiler;
+use columbina_view::marks::{DotKind, Dots, Marks};
 use columbina_view::{
     Cursor, Event, Gpu, Navigation, Output, RawParent, Rect, View, ViewError, Viewport,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
@@ -96,7 +102,13 @@ pub struct Viewer {
     next_instance: AtomicU64,
     /// Viewer-only geometry, retained when a native window is replaced or detached.
     viewports: std::sync::Mutex<[Viewport; 2]>,
+    /// What a page has the view of each monitor draw over its picture, and the connection
+    /// that asked: retained when a native window is replaced, until that connection closes.
+    overlays: std::sync::Mutex<[Option<Asked>; 2]>,
 }
+
+/// The marks that a page has a view draw over its picture, with the connection that asked.
+type Asked = (u64, Arc<Marks>);
 
 /// One pointer ownership change in the existing view-operation order. Native preparation
 /// happens without State; the caller publishes the sink while committing its State change.
@@ -330,6 +342,120 @@ const SHOW: &str = r#"{"monitor":"source"|"timeline", "shown": true | false}"#;
 const DISPLAY: &str = r#"{"hdr"?: true | false}"#;
 const VIEWPORT: &str = "query {monitor}; absolute {monitor,mode:fit|scale,...}; navigation {monitor,operation:prepare|zoom|pan|scale|fit,instance,...}; see PROTOCOL.md";
 const POINTER: &str = r#"{"monitor":"source"|"timeline", "on": true | false, "cursor"?: "arrow" | "crosshair" | "move" | "resize_ew" | "resize_ns"}"#;
+const OVERLAY: &str = r#"{"monitor":"timeline", "overlay"?: {"canvas": [1920, 1080], "lines"?: [[[x, y], ...], ...], "dots"?: [{"kind": "tick" | "key" | "active" | "current", "at": [[x, y], ...]}, ...]} | null}"#;
+
+/// The most points that the lines and the dots of an overlay have together.
+pub const OVERLAY_POINTS: usize = 32_768;
+/// How far from the corner of the picture a point of an overlay may lie, in its pixels: far
+/// beyond any picture, and well within what the card counts exactly.
+const OVERLAY_REACH: f64 = 1e7;
+
+/// The params of `view.overlay`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::option_option,
+    reason = "an overlay left out, null and given are told apart"
+)]
+struct OverlayParams {
+    monitor: Monitor,
+    /// Left out, the overlay that is drawn is asked for; null, nothing is to be drawn.
+    #[serde(default, deserialize_with = "written")]
+    overlay: Option<Option<Drawn>>,
+}
+
+/// An overlay that is written, even as `null`, as some: so that one to be cleared is told from
+/// a question.
+#[allow(
+    clippy::option_option,
+    reason = "an overlay left out and null are told apart"
+)]
+fn written<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<Drawn>>, D::Error> {
+    Option::<Drawn>::deserialize(deserializer).map(Some)
+}
+
+/// What a page has a view draw, as it is written: lines and dots in pixels of a picture of
+/// `canvas` pixels.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Drawn {
+    canvas: (u32, u32),
+    #[serde(default)]
+    lines: Vec<Vec<[f64; 2]>>,
+    #[serde(default)]
+    dots: Vec<DrawnDots>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DrawnDots {
+    kind: DotName,
+    at: Vec<[f64; 2]>,
+}
+
+/// What a dot marks, as it is written.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DotName {
+    Tick,
+    Key,
+    Active,
+    Current,
+}
+
+impl From<DotName> for DotKind {
+    fn from(name: DotName) -> DotKind {
+        match name {
+            DotName::Tick => DotKind::Tick,
+            DotName::Key => DotKind::Key,
+            DotName::Active => DotKind::Active,
+            DotName::Current => DotKind::Current,
+        }
+    }
+}
+
+impl Drawn {
+    /// The marks that the view draws, once they are checked: a picture that a view may show,
+    /// no more points than [`OVERLAY_POINTS`], and each within reach of the picture.
+    fn marks(self) -> Result<Marks, Fault> {
+        let refused =
+            |message: String| Fault::params(message).with_data(json!({"reason":"overlay"}));
+        let (width, height) = self.canvas;
+        if width == 0 || height == 0 || width > Rect::MOST || height > Rect::MOST {
+            return Err(refused(format!(
+                "the canvas of view.overlay is the size of a picture, from 1 to {} on a side, and {width}×{height} is not one",
+                Rect::MOST
+            )));
+        }
+        let points = self.lines.iter().map(Vec::len).sum::<usize>()
+            + self.dots.iter().map(|dots| dots.at.len()).sum::<usize>();
+        if points > OVERLAY_POINTS {
+            return Err(refused(format!(
+                "an overlay has at most {OVERLAY_POINTS} points in its lines and dots, and this one has {points}"
+            )));
+        }
+        let near = |point: &[f64; 2]| point.iter().all(|v| v.abs() <= OVERLAY_REACH);
+        if !self.lines.iter().flatten().all(near)
+            || !self.dots.iter().flat_map(|dots| &dots.at).all(near)
+        {
+            return Err(refused(format!(
+                "a point of an overlay lies within {OVERLAY_REACH} pixels of the corner of its picture"
+            )));
+        }
+        Ok(Marks {
+            picture: self.canvas,
+            lines: self.lines,
+            dots: self
+                .dots
+                .into_iter()
+                .map(|dots| Dots {
+                    kind: dots.kind.into(),
+                    at: dots.at,
+                })
+                .collect(),
+        })
+    }
+}
 
 impl Viewer {
     #[cfg(test)]
@@ -364,7 +490,50 @@ impl Viewer {
             frames,
             next_instance: AtomicU64::new(0),
             viewports: std::sync::Mutex::new([Viewport::Fit; 2]),
+            overlays: std::sync::Mutex::new([None, None]),
         }
+    }
+
+    /// `view.overlay`, of the connection `connection` of the desktop: have the view of the
+    /// timeline monitor draw lines and dots over its picture, in place of those drawn before
+    /// (whoever asked for them), or none; or, with no `overlay`, say what it draws. What is
+    /// to be drawn is kept where no view is attached yet, and given to the next.
+    pub async fn overlay(
+        &self,
+        kind: Kind,
+        connection: u64,
+        params: Option<&RawValue>,
+    ) -> Result<serde_json::Value, Fault> {
+        let method = "view.overlay";
+        self.check(kind, method)?;
+        let asked: OverlayParams = rpc::params(method, OVERLAY, params)?;
+        let monitor = asked.monitor;
+        if monitor != Monitor::Timeline {
+            // The picture of the source monitor is media, turned as it says: the page has
+            // nothing to draw over it, and no pixels of a canvas to draw it in.
+            return Err(
+                Fault::params("view.overlay draws over the timeline monitor alone")
+                    .with_data(json!({"reason":"monitor"})),
+            );
+        }
+        let _busy = self.busy.lock().await;
+        let mut overlays = self.overlays.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(drawn) = asked.overlay else {
+            let kept = overlays[monitor.index()].as_ref();
+            return Ok(overlay_written(monitor, kept.map(|(_, marks)| &**marks)));
+        };
+        let marks = drawn.map(Drawn::marks).transpose()?.map(Arc::new);
+        if let Some(view) = self.slots[monitor.index()]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            // A view whose window is gone is let go by the next method that places it.
+            let _ = view.set_marks(marks.clone());
+        }
+        let answer = overlay_written(monitor, marks.as_deref());
+        overlays[monitor.index()] = marks.map(|marks| (connection, marks));
+        Ok(answer)
     }
 
     /// `view.pointer`, of the connection `connection` of the desktop: have the view of a monitor
@@ -398,7 +567,8 @@ impl Viewer {
         })
     }
 
-    /// Forget a connection that has ended: the views that took the pointer for it let it go.
+    /// Forget a connection that has ended: the views that took the pointer for it let it go,
+    /// and those that drew an overlay for it draw it no more.
     pub async fn forget(&self, connection: u64) {
         let _busy = self.busy.lock().await;
         for monitor in self.pointers.forget(connection) {
@@ -408,6 +578,15 @@ impl Viewer {
                 .as_ref()
             {
                 let _ = view.take_pointer(None);
+            }
+        }
+        let mut overlays = self.overlays.lock().unwrap_or_else(PoisonError::into_inner);
+        for (kept, slot) in overlays.iter_mut().zip(&self.slots) {
+            if kept.as_ref().is_some_and(|(owner, _)| *owner == connection) {
+                *kept = None;
+                if let Some(view) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                    let _ = view.set_marks(None);
+                }
             }
         }
     }
@@ -696,6 +875,12 @@ impl Viewer {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)[attach.monitor.index()];
         view.set_viewport(viewport).map_err(|error| fault(&error))?;
+        // A view made in place of one that drew an overlay draws it too.
+        let marks = self.overlays.lock().unwrap_or_else(PoisonError::into_inner)
+            [attach.monitor.index()]
+        .as_ref()
+        .map(|(_, marks)| Arc::clone(marks));
+        let _ = view.set_marks(marks);
         // A view made in place of one that took the pointer takes it too.
         if let Some(cursor) = self.pointers.cursor(attach.monitor) {
             let _ = view.take_pointer(Some(cursor));
@@ -774,6 +959,16 @@ fn viewport_written(monitor: Monitor, setting: Viewport) -> serde_json::Value {
             json!({"monitor":monitor,"mode":"scale","scale":scale,"center":{"x":center[0],"y":center[1]}})
         }
     }
+}
+
+/// What a view draws over its picture for a page, as `view.overlay` says it: how many lines
+/// and how many dots, none of either where it draws nothing.
+fn overlay_written(monitor: Monitor, marks: Option<&Marks>) -> serde_json::Value {
+    let lines = marks.map_or(0, |marks| marks.lines.len());
+    let dots = marks.map_or(0, |marks| {
+        marks.dots.iter().map(|dots| dots.at.len()).sum::<usize>()
+    });
+    json!({"monitor":monitor,"lines":lines,"dots":dots})
 }
 
 /// What a view shows, as `view.display` says it: null before its first frame.

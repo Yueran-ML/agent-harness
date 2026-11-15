@@ -1550,6 +1550,13 @@ async fn dispatch(
         "view.sample" => view_sample(engine, connection, id, params).await,
         "timeline.thumbnail" => timeline_thumbnail(engine, connection, id, params).await,
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
+        "view.overlay" => {
+            let result = engine.viewer.overlay(kind, connection.id, params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
         }

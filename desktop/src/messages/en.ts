@@ -1078,6 +1078,11 @@ export const en = {
         linear: 'Linear', easeIn: 'Ease In', easeOut: 'Ease Out', easeInOut: 'Ease In and Out', hold: 'Hold',
         fit: 'Full Extent Zoom', copy: 'Copy Keyframes', paste: 'Paste Keyframes', close: 'Close Curve Editor',
       },
+      /**
+       * The on-screen Transform controls of the Edit page's timeline viewer and the motion path that they show, as DaVinci Resolve
+       * names them (Reference Manual 20, pp. 1106–1108). Linear, in the menu of a point, is the Curve Editor's.
+       */
+      motionPath: { controls: 'Transform controls', point: 'Motion path point', smooth: 'Smooth' },
       /** DaVinci Resolve's Change Clip Speed. */
       speed: { title: 'Change clip speed', percent: 'Speed', reverse: 'Reverse speed', ripple: 'Ripple sequence', duration: 'Duration', apply: 'Change' },
       /** The effects library, as DaVinci Resolve's toolbox. */

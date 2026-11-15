@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use columbina_compose::Gpu;
 
 use crate::display::{self, choose_surface, Content, Display, Monitor, Output};
+use crate::marks::Marks;
 use crate::native::{self, Syncer};
 use crate::render::Painter;
 use crate::window_overlay::render::OverlayPainter;
@@ -199,7 +200,7 @@ pub(crate) fn run(
             // As a card that hangs: for the tests of the watchdog.
             std::thread::sleep(hang);
         }
-        let outcome = screen.frame(&mut shown, job.size, job.wish);
+        let outcome = screen.frame(&mut shown, job.size, job.wish, job.marks.as_deref());
         frame_ended(shared, syncer);
         if screen.is_lost() {
             // Lost in the frame: drawn again once the view is given another card.
@@ -248,6 +249,8 @@ struct Job {
     gpu: Arc<Gpu>,
     /// How the pictures are to be shown.
     wish: Wish,
+    /// What a page has the view draw over its picture.
+    marks: Option<Arc<Marks>>,
     /// Only to read the monitor again (at `check_at`), and draw nothing.
     check: bool,
 }
@@ -277,6 +280,7 @@ fn next(shared: &Shared, again_at: &mut Option<Instant>, check_at: Option<Instan
                 stall: state.stall.take(),
                 gpu: Arc::clone(&state.gpu),
                 wish,
+                marks: state.marks.clone(),
                 check: false,
             });
         }
@@ -289,6 +293,7 @@ fn next(shared: &Shared, again_at: &mut Option<Instant>, check_at: Option<Instan
                 stall: None,
                 gpu: Arc::clone(&state.gpu),
                 wish,
+                marks: None,
                 check: true,
             });
         }
@@ -509,9 +514,16 @@ impl Screen {
         Ok(())
     }
 
-    /// Draw `shown` into a window of `size`, and present it. A picture that cannot be uploaded
-    /// is let go, and black is drawn.
-    fn frame(&mut self, shown: &mut Option<(Frame, u64)>, size: (u32, u32), wish: Wish) -> Outcome {
+    /// Draw `shown` into a window of `size`, and present it, with `marks` over it where it is a
+    /// composed picture of their size. A picture that cannot be uploaded is let go, and black
+    /// is drawn.
+    fn frame(
+        &mut self,
+        shown: &mut Option<(Frame, u64)>,
+        size: (u32, u32),
+        wish: Wish,
+        marks: Option<&Marks>,
+    ) -> Outcome {
         if let Err(message) = self.apply(wish) {
             self.shared.report(Event::Error { message });
             return Outcome::Failed;
@@ -600,7 +612,10 @@ impl Screen {
                 Frame::Texture { overlay, .. } => overlay.as_deref(),
                 Frame::Picture(..) => None,
             });
-            let commands = self.draw(&view, size, rotation, map, overlay);
+            // The marks are in pixels of a composed picture: a picture of media is not one.
+            let marks =
+                marks.filter(|_| matches!(shown.as_ref(), Some((Frame::Texture { .. }, _))));
+            let commands = self.draw(&view, size, rotation, map, overlay, marks);
             self.painter.queue().submit([commands]);
             self.painter.queue().present(texture);
             let tag = shown.as_ref().and_then(|(frame, _)| match frame {
@@ -619,23 +634,41 @@ impl Screen {
         rotation: i16,
         map: Option<crate::ViewportMap>,
         overlay: Option<&crate::window_overlay::WindowOverlay>,
+        marks: Option<&Marks>,
     ) -> wgpu::CommandBuffer {
-        let (Some(overlay), Some(map)) = (overlay, map) else {
+        let Some(map) = map else {
             return self.painter.draw_mapped(target, size, rotation, map);
         };
+        let marks = marks.filter(|marks| marks.fits(map));
+        if overlay.is_none() && marks.is_none() {
+            return self.painter.draw_mapped(target, size, rotation, Some(map));
+        }
         let painter = self
             .overlay
             .get_or_insert_with(|| OverlayPainter::new(self.gpu.device(), self.config.format));
         self.painter
             .draw_mapped_with(target, size, rotation, Some(map), |encoder| {
-                painter.encode(
-                    self.gpu.device(),
-                    encoder,
-                    target,
-                    overlay,
-                    map,
-                    self.output,
-                );
+                // The marks of the page lie under the Window controls, which take the pointer.
+                if let Some(marks) = marks {
+                    painter.encode_marks(
+                        self.gpu.device(),
+                        encoder,
+                        target,
+                        marks,
+                        map,
+                        self.output,
+                    );
+                }
+                if let Some(overlay) = overlay {
+                    painter.encode(
+                        self.gpu.device(),
+                        encoder,
+                        target,
+                        overlay,
+                        map,
+                        self.output,
+                    );
+                }
             })
     }
 

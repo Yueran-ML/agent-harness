@@ -978,6 +978,7 @@ export const ja: Messages = {
         linear: 'リニア', easeIn: 'イーズイン', easeOut: 'イーズアウト', easeInOut: 'イーズイン＆アウト', hold: 'ホールド',
         fit: '全体表示ズーム', copy: 'キーフレームをコピー', paste: 'キーフレームをペースト', close: 'カーブエディターを閉じる',
       },
+      motionPath: { controls: 'トランスフォームコントロール', point: 'モーションパスのポイント', smooth: 'スムーズ' },
       speed: { title: 'クリップ速度変更', percent: '速度', reverse: '逆再生', ripple: 'リップルシーケンス', duration: '長さ', apply: '変更' },
       effects: { title: 'エフェクトライブラリ', videoTransitions: 'ビデオトランジション', audioTransitions: 'オーディオトランジション', titles: 'タイトル', generators: 'ジェネレーター', text: 'テキスト' },
       pool: 'メディアプール',

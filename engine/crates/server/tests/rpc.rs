@@ -69,6 +69,9 @@ mod lut_preview;
 #[path = "rpc/viewport.rs"]
 mod viewport;
 
+#[path = "rpc/overlay.rs"]
+mod overlay;
+
 #[cfg(windows)]
 #[path = "rpc/presentation.rs"]
 mod presentation;

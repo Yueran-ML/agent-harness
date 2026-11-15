@@ -96,6 +96,17 @@ size and frame rate, by default those of the first video in the pool) and opens 
   row for all its keys and a row for each setting that has keys. A click chooses a key (Ctrl
   and Shift choose more), a drag moves the chosen keys in time as one step to undo, Delete
   takes them away, and Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste them at the playhead.
+  **Transform controls**, in the title bar of the timeline viewer, turns the on-screen
+  controls of that viewer on. The chosen clip, where its position has keys, then shows its
+  **motion path** on the picture: a line through where its middle is at each frame, with a
+  small dot at each frame (close together where it moves slowly) and a larger point at each
+  key of its position, and the place at the playhead marked while the timeline is not
+  playing. Drag a point to move that key, with Shift to keep it level or upright; a drag is
+  one step to undo, and Escape takes it back. Right-click a point for Linear or Smooth: a
+  Smooth point is come to and left slowly, on both axes. Each axis is eased in time by
+  itself, so the path between two points bends only where the two go differently; there are
+  no curve handles on the picture yet. A clip on a locked track shows its path and cannot be
+  dragged. The controls are off until they are turned on, and the app remembers them.
   A composite mode lays the clip over the
   tracks below it; with nothing below, the clip is shown as it is. Under Retime and Scaling,
   the **Retime Process** of a clip of media says what a frame shows that falls between two

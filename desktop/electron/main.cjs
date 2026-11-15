@@ -164,6 +164,9 @@ const PAGE_METHODS = new Set([
   // The colour of a point of the picture, and the pointer on a view, for the pickers of the Color
   // page, the line of a wipe and the windows.
   'view.sample', 'view.pointer', 'window.bind', 'window.input', 'window.unbind',
+  // The lines and dots that a page has the view of the timeline monitor draw over its picture: the
+  // motion path of a clip on the Edit page. They name places of the picture, and no file.
+  'view.overlay',
   // The Gallery of the Color page and the comparisons of its viewer, which name stills and albums
   // by their ids only: a wipe names no file (see `comparisonOfThePage`), and stills are imported
   // from files chosen in the dialog and exported where Save As says (`engine-still-import`, `-export`).

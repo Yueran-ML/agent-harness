@@ -17,6 +17,8 @@ import { NewTimeline } from './NewTimeline';
 import { useTimelineLoad } from './useTimelineLoad';
 import { Inspector } from '../inspector/Inspector';
 import { ClipCurves } from '../keyframes/ClipCurves';
+import { TransformControlsButton, useTransformControls } from '../motionPath/TransformControls';
+import { useMotionPath } from '../motionPath/useMotionPath';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { useNormalizeAudio } from '../inspector/NormalizeDialog';
 import { useClipAttributes } from '../inspector/ClipAttributes';
@@ -62,6 +64,11 @@ export const TWO_MONITORS_PX = 1280;
  * chosen: the speed of each segment, its pop-up menu, and the handles of the speed points
  * (pp. 1070–1077). Which clips show them is the page's to keep too (`useRetimeControls`).
  *
+ * Transform controls, in the title bar of the timeline viewer, turns the on-screen Transform controls
+ * of that viewer on and off (pp. 1106–1108): with them on, the one clip of picture that is chosen
+ * shows its motion path on the picture where its position has keys, and the points of its keys are
+ * dragged there (`useMotionPath`). Off at first, and the page's to remember, not the project's.
+ *
  * Quick Export, at the right of the bar beside the inspector, opens the export of the timeline
  * shown, with its In and Out points. Ctrl+M is left unbound: in DaVinci Resolve it adds a marker and
  * opens its dialog (Reference Manual 20, p. 869), which the studio has not yet.
@@ -97,6 +104,7 @@ export function EditPage({
   const audioText = useFairlightText();
   const labels = words.label.studio;
   const page = useRef<HTMLDivElement>(null);
+  const monitors = useRef<HTMLDivElement>(null);
   const timeline = useRef<TimelineHandle>(null);
   const [poolOpen, setPoolOpen] = useState(true);
   const [effectsOpen, setEffectsOpen] = useState(false);
@@ -178,6 +186,13 @@ export function EditPage({
   useAudioScrubbing({ bridge, session, loaded: bypassLoaded, state: timelineState?.monitor === 'timeline' ? timelineState : null,
     onFailure: failure => now.current.onProblem(now.current.words.hint.studio.failed, failure) });
 
+  // The motion path of the clip chosen, on the picture of the timeline viewer while it is shown (pp. 1106–1108).
+  const transformControls = useTransformControls();
+  const motionPath = useMotionPath({
+    bridge, session, revision, native, loaded: bypassLoaded && !(narrow && focus !== 'timeline'), on: transformControls.on, timeline: selected, media,
+    clips: chosenClips, frame: timelineState === null ? 0 : timelineMonitor.frame ?? 0, playing: timelineState?.playing ?? false, onFocus, viewer: monitors,
+  });
+
   const create = useCallback(async (made: TimelineModel): Promise<string | null> => {
     try {
       const applied = await callEngine(bridge, 'transaction.apply', { ops: [{ op: 'add_timeline', timeline: made }] });
@@ -199,8 +214,14 @@ export function EditPage({
   const pane = (controls: MonitorControls, name: string | undefined, hint: string) => <MonitorPane controls={controls} bridge={bridge} native={native}
     active notice={noticeOf(controls.monitor)} onRetry={onRetry} hidden={narrow && focus !== controls.monitor} focused={focus === controls.monitor}
     onFocus={onFocus} name={name} hint={hint} switcher={switcher}
-    tools={controls.monitor === 'timeline' ? <BypassButton className="monitor-bypass" bypass={bypassColor.bypass} disabled={!bypassLoaded}
-      label={labels.colorPage.bypass} onToggle={bypassColor.toggleBypass} /> : undefined} />;
+    tools={controls.monitor === 'timeline' ? <>
+      <TransformControlsButton className="monitor-osc" on={transformControls.on} disabled={!bypassLoaded} label={labels.motionPath.controls}
+        onToggle={transformControls.toggle} />
+      <BypassButton className="monitor-bypass" bypass={bypassColor.bypass} disabled={!bypassLoaded}
+        label={labels.colorPage.bypass} onToggle={bypassColor.toggleBypass} />
+    </> : undefined}
+    footer={controls.monitor === 'timeline' && motionPath.notice
+      ? <p className="caption monitor-colour" role="alert" data-test="motion-path-notice">{motionPath.notice}</p> : undefined} />;
 
   return <div ref={page} className="studio-body edit-page" data-narrow={narrow || undefined} data-pool={poolOpen || undefined} data-inspector={inspectorOpen || undefined}
     data-test="edit-page">
@@ -235,7 +256,7 @@ export function EditPage({
       {poolOpen && pool}
       {effectsOpen && <Library session={session} />}
     </div>}
-    <div className="edit-monitors">
+    <div ref={monitors} className="edit-monitors" data-motion-path={motionPath.shown || undefined}>
       {pane(source, sourceMedia?.name, words.hint.studio.loadSource)}
       {pane(timelineMonitor, selected?.name, words.hint.studio.timeline.empty)}
     </div>
@@ -285,6 +306,7 @@ export function EditPage({
       ...channelSources.items(audioContext),
     ] }} onClose={() => setAudioContext(null)} />}
     {channelSources.problem && <div role="alert">{channelSources.problem}<button type="button" onClick={channelSources.clear}>{audioText('Close')}</button></div>}
+    {motionPath.menu}
     {normalize.dialog}
     {attributes.dialog}
     {creating && <NewTimeline media={media} names={timelines.map(each => each.name)} onCreate={create} onClose={() => setCreating(false)} />}

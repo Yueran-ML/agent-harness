@@ -1,6 +1,7 @@
 use super::tests::{draw_using, gpu, halves_using, near_mapped};
 use super::Painter;
 use crate::display::{mapping, Content, HdrTransfer, Output};
+use crate::marks::{DotKind, Dots, Marks};
 use crate::window_overlay::render::OverlayPainter;
 use crate::window_overlay::{Affine, Bezier, Shape, ShapeKind, Style, WindowOverlay};
 use crate::Viewport;
@@ -1010,4 +1011,59 @@ fn window_overlay_128_point_selected_curve_timing() {
             total - encode
         );
     }
+}
+
+#[test]
+fn the_marks_of_a_page_are_drawn_light_over_dark_on_the_picture_and_not_on_its_bars() {
+    let Some(gpu) = gpu() else { return };
+    let frame = source(&gpu);
+    let size = (120, 120);
+    // The picture of 120 by 80 lies 20 pixels down, between two black bars.
+    let map = Viewport::Fit.map(size, (120, 80), 0).unwrap();
+    let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+    painter.use_texture(&frame).unwrap();
+    let before = draw_using(&gpu, size, |v| painter.draw_mapped(v, size, 0, Some(map)));
+    let marks = Marks {
+        picture: (120, 80),
+        lines: vec![vec![[20.0, 40.5], [100.0, 40.5]]],
+        dots: vec![
+            Dots {
+                kind: DotKind::Key,
+                at: vec![[60.5, 20.5]],
+            },
+            Dots {
+                kind: DotKind::Current,
+                at: vec![[60.5, -9.5]],
+            },
+        ],
+    };
+    assert!(marks.fits(map));
+    let overlay_painter = OverlayPainter::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+    let drawn = draw_using(&gpu, size, |target| {
+        painter.draw_mapped_with(target, size, 0, Some(map), |encoder| {
+            overlay_painter.encode_marks(&gpu.device, encoder, target, &marks, map, Output::Sdr);
+        })
+    });
+    let at = |x: usize, y: usize| y * 120 + x;
+    // The key: a white disk of 4.5 pixels about the centre of the pixel (60, 40), a black ring
+    // one pixel wide about it, and the picture beyond.
+    assert_eq!(drawn[at(60, 40)], [255; 3], "the disk of a key is white");
+    assert_eq!(drawn[at(65, 40)], [0; 3], "the ring under it is black");
+    assert_eq!(drawn[at(67, 40)], before[at(67, 40)], "beyond is the image");
+    // The line: white along the row of pixels that it runs through, darkened beside it, and
+    // the picture three pixels away.
+    assert_eq!(drawn[at(60, 60)], [255; 3], "the line is white");
+    assert!(
+        drawn[at(60, 62)][0] < before[at(60, 62)][0],
+        "the picture is darkened beside the line"
+    );
+    assert_eq!(drawn[at(60, 63)], before[at(60, 63)], "beyond is the image");
+    assert_eq!(drawn[at(10, 60)], before[at(10, 60)], "the line ends");
+    // A dot that lies on a black bar is not drawn there.
+    assert_eq!(drawn[at(60, 10)], [0; 3], "black bars stay black");
+    assert_eq!(
+        before,
+        draw_using(&gpu, size, |v| painter.draw_mapped(v, size, 0, Some(map))),
+        "sampling the composed texture again contains no marks"
+    );
 }

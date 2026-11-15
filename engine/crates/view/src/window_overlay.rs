@@ -395,6 +395,47 @@ impl Primitive {
         }
     }
 
+    /// A filled disk of `radius` device pixels about a device point, which nothing hits: a dot
+    /// of the marks that the page draws ([`crate::marks::Marks`]).
+    pub(crate) fn dot(centre: [f32; 2], radius: f32, colour: [f32; 3]) -> Self {
+        Self {
+            geometry: DeviceCircle {
+                inverse: [0.0; 4],
+                centre,
+                scale: radius,
+            },
+            kind: 2.0,
+            colour,
+            control: None,
+            anchor: centre,
+            edge: false,
+            guide: true,
+        }
+    }
+
+    /// A stroke from one device point to another, which nothing hits: a piece of a line of the
+    /// marks that the page draws. None for one too short to have a direction, or with an end
+    /// that is no number, which the shader could not draw.
+    pub(crate) fn stroke(from: [f32; 2], to: [f32; 2], colour: [f32; 3]) -> Option<Self> {
+        let vector = [to[0] - from[0], to[1] - from[1]];
+        let length = vector[0].hypot(vector[1]);
+        (length.is_finite() && length >= 1e-3 && from.iter().all(|v| v.is_finite())).then_some(
+            Self {
+                geometry: DeviceCircle {
+                    inverse: [vector[0], vector[1], 0.0, 0.0],
+                    centre: from,
+                    scale: 1.0,
+                },
+                kind: 3.0,
+                colour,
+                control: None,
+                anchor: from,
+                edge: false,
+                guide: true,
+            },
+        )
+    }
+
     /// The device quad `[origin, first axis, second axis]` the GPU rasterizes for this
     /// primitive. It holds every pixel centre where `alpha` is positive, with a pixel to
     /// spare, so fragment work follows the covered pixels; none when nothing can be covered.

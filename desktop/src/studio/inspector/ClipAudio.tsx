@@ -1,4 +1,5 @@
 import { useContext, useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import type { AudioParam, Clip, KeyInterp, Media, Timeline } from '../engine';
@@ -10,7 +11,7 @@ import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { Fades } from './ClipVideo';
 import { common, setClips } from './common';
-import { FieldsLocked, NumberField, type NumberFieldProps } from './fields';
+import { FieldsLocked, KeyDiamond, NumberField, type NumberFieldProps } from './fields';
 import type { Build, Commit } from './useCommit';
 import { ClipEq } from './ClipEq';
 
@@ -107,14 +108,15 @@ export function ClipAudio({ clips, timeline, commit, bridge, session, revision, 
       if (event.nativeEvent.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key === '[' || event.key === ']') { event.preventDefault(); navigate(param, event.key === '[' ? -1 : 1); }
     }}>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Previous keyframe')} disabled={!frames(param).length} onClick={() => navigate(param, -1)}>‹</button>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t(all ? 'Remove keyframe' : 'Add keyframe')} aria-pressed={all} data-hit={hits.some(Boolean) || undefined}
+      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Previous keyframe')} title={t('Previous keyframe')} disabled={!frames(param).length} onClick={() => navigate(param, -1)}><ChevronLeft size={14} aria-hidden="true" /></button>
+      <button type="button" className="icon-btn" aria-label={label + ': ' + t(all ? 'Remove keyframe' : 'Add keyframe')} title={t(all ? 'Remove keyframe' : 'Add keyframe')} aria-pressed={all}
+        data-keyed={frames(param).length > 0 || undefined} data-hit={hits.some(Boolean) || undefined}
         disabled={locked || active} onClick={() => commitKeys(now => available(now).map(clip => {
           const found = hit(clip, param, now);
           return { edit: 'clip_gain_keys', timeline: now.id, clip: clip.id, param, action: all && found ? 'remove' : 'add',
             at: found?.at ?? at(clip, frame, now), ...(!all ? { value: audioValue(clip[param], seconds(at(clip, frame, now))) } : {}) };
-        }))}>◆</button>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Next keyframe')} disabled={!frames(param).length} onClick={() => navigate(param, 1)}>›</button>
+        }))}><KeyDiamond /></button>
+      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Next keyframe')} title={t('Next keyframe')} disabled={!frames(param).length} onClick={() => navigate(param, 1)}><ChevronRight size={14} aria-hidden="true" /></button>
       <select className="field" aria-label={label + ': ' + t('Keyframe interpolation')} disabled={locked || active || !hits.some(Boolean)}
         value={common(hits, key => key?.interp ?? null) ?? ''} onChange={event => {
           const interp = event.target.value as KeyInterp;
@@ -123,7 +125,7 @@ export function ClipAudio({ clips, timeline, commit, bridge, session, revision, 
         }}>
         <option value="">—</option>{(['linear', 'ease_in', 'ease_out'] as const).map(interp => <option key={interp} value={interp}>{t(interp === 'linear' ? 'Linear' : interp === 'ease_in' ? 'Ease In' : 'Ease Out')}</option>)}
       </select>
-      <button type="button" className="icon-btn" disabled={locked || active} aria-label={label + ': ' + t('Reset')} onClick={() => reset(param)}>↺</button>
+      <button type="button" className="icon-btn" disabled={locked || active} aria-label={label + ': ' + t('Reset')} title={t('Reset')} onClick={() => reset(param)}><RotateCcw size={12} aria-hidden="true" /></button>
     </div>;
   };
   return <div className="inspector-panel" data-panel="audio">

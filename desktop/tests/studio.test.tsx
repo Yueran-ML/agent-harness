@@ -9,12 +9,13 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import { Words } from '../src/app/locale';
-import { useOverlay } from '../src/app/overlay';
+import { OVERLAY_MARGIN_PX, overlayOpen, useOverlay } from '../src/app/overlay';
 import { EffortPicker } from '../src/app/EffortPicker';
 import { Sheet } from '../src/app/Sheet';
 import { ja } from '../src/messages/ja';
 import { zhCN } from '../src/messages/zh-CN';
 import { createMockEngine } from '../src/mock';
+import { CoveringMenu } from '../src/studio/color/CoveringMenu';
 import {
   ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type Project, type ProxyEvent, type SourceTransportState as TransportState,
 } from '../src/studio/engine';
@@ -751,6 +752,69 @@ describe('where the viewer lies', () => {
     fireEvent.click(one('effort-button'));
     expect(marked('effort-panel')).toEqual([]);
     expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
+  });
+
+  it('stays shown under a menu that lies elsewhere on the page, and is hidden where the menu or a submenu of it reaches it', async () => {
+    const bridge = shell();
+    // The menus lie where the test says, by their names; one of which it says nothing lies nowhere, as all do in the DOM of the tests.
+    let where: Record<string, DOMRect> = {};
+    const asTheTestsHaveIt = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
+      return where[this.getAttribute('aria-label') ?? ''] ?? at(0, 0, 0, 0);
+    };
+    try {
+      // The timeline viewer of the Edit page, and the menu of a clip's retime bar on the timeline beneath it.
+      render(<Viewer bridge={bridge} active box={() => at(785, 90, 1178, 372)} />);
+      drawFrame();
+      expect(bridge.viewShow.mock.calls).toEqual([[false, 'source'], [true, 'source']]);
+      const items = [{ id: 'speed', label: 'Change Speed', items: [{ id: 'half', label: '50%' }] }, { id: 'reset', label: 'Reset Clip' }];
+      const Menu = ({ label }: { label: string }) => <CoveringMenu menu={{ x: 353, y: 490, label, items }} onClose={() => {}} />;
+      where = { Retime: at(353, 490, 461, 590), 'Change Speed': at(461, 300, 800, 420) };
+      const menu = render(<Menu label="Retime" />);
+      await settle();
+      // The menu is open, and holds back the keys of the page; the picture stays, for the menu is 118 pixels under it.
+      expect(overlayOpen()).toBe(true);
+      expect(document.body.dataset.overlay).toBe('1');
+      expect(bridge.viewShow).toHaveBeenCalledTimes(2);
+      // Its submenu opens over the viewer's corner: the view is hidden.
+      fireEvent.click(one('menu-speed'));
+      await settle();
+      expect(one('menu-half')).toBeDefined();
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
+      // The submenu goes: the picture comes back while the menu is still open.
+      fireEvent.keyDown(one('menu-half'), { key: 'ArrowLeft' });
+      await settle();
+      expect(marked('menu-half')).toEqual([]);
+      expect(overlayOpen()).toBe(true);
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
+      expect(bridge.viewShow).toHaveBeenCalledTimes(4);
+      menu.unmount();
+      expect(overlayOpen()).toBe(false);
+      expect(bridge.viewShow).toHaveBeenCalledTimes(4);
+      // A menu whose shadow would reach the viewer (within OVERLAY_MARGIN_PX of it) hides the view, and one that just clears it does not.
+      where = { Near: at(900, 372 + OVERLAY_MARGIN_PX - 1, 1000, 500), Clear: at(900, 372 + OVERLAY_MARGIN_PX, 1000, 500) };
+      const clear = render(<Menu label="Clear" />);
+      expect(bridge.viewShow).toHaveBeenCalledTimes(4);
+      clear.unmount();
+      const near = render(<Menu label="Near" />);
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
+      near.unmount();
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
+      // A menu of which it cannot be told where it lies is taken to lie over the viewer, as every menu was.
+      const nowhere = render(<Menu label="Nowhere" />);
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
+      // A sheet over the whole page hides the view wherever a menu lies.
+      nowhere.unmount();
+      const elsewhere = render(<Menu label="Clear" />);
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
+      const sheet = render(<Sheet title="A question" onClose={() => {}}><p>Words</p></Sheet>);
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
+      sheet.unmount();
+      expect(bridge.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
+      elsewhere.unmount();
+    } finally {
+      Element.prototype.getBoundingClientRect = asTheTestsHaveIt;
+    }
   });
 });
 

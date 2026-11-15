@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AudioAttributes } from '../src/studio/media/AudioAttributes';
@@ -7,6 +8,7 @@ import { mapLayout, sourceLayout, standardLayout } from '../src/studio/media/aud
 import { applyOp, type Media, type Op } from '../src/studio/engine';
 import { media } from './timeline-fixture';
 import { likeABrowser } from './mounted';
+import { blockOf } from './stylesheet';
 
 beforeEach(() => { likeABrowser(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -201,4 +203,29 @@ it('retains automatic outputs across attribute edits and clears conversion when 
     { source: null, remix: { channels: 6, channel: 4 }, level_db: -3, mute: true },
     { source: { stream: 7, channel: 0 } },
   ]);
+});
+
+it('keeps the list of the pool in a row of its own, over one pane that tells of the chosen medium and scrolls by itself', () => {
+  const call = vi.fn().mockResolvedValue({ ok: true, result: {} });
+  render(<MediaPool media={[source()]} bins={[]} timelines={[]} proxies={{}} loaded={null} bridge={{ call, onEvent: () => () => {} }} session={1}
+    onImport={vi.fn()} onLoad={vi.fn()} onMakeAgain={vi.fn()} />);
+  const body = document.querySelector('.pool-body')!;
+  expect(body.querySelector('[data-test="pool-pane"]')).toBeNull();
+  fireEvent.click(document.querySelector('[data-media="m1"]')!);
+  const pane = body.querySelector<HTMLElement>('[data-test="pool-pane"]')!;
+  // The list and the pane are two rows of the one body, so that the pane's height is never taken from the list's least.
+  expect(pane.parentElement).toBe(body);
+  expect(document.querySelector('.pool-browser')!.parentElement).toBe(body);
+  expect(pane.contains(document.querySelector('[data-test="pool-list"]'))).toBe(false);
+  // The facts of the medium and its audio are both in the pane, in the fields that the Inspector has.
+  expect(pane.querySelector('.pool-details')).not.toBeNull();
+  const audio = within(pane).getByRole('region', { name: 'Audio Configuration' });
+  expect(within(audio).getByRole('combobox', { name: 'Format' }).className).toContain('field');
+  expect(within(audio).getByRole('button', { name: 'Clip Attributes' }).className).toContain('btn');
+  expect(within(audio).getByRole('checkbox', { name: 'Channel 1 Active' }).closest('label')!.className).toBe('check');
+  expect(within(audio).getByRole('slider', { name: 'Channel Level' }).className).toBe('inspector-slider');
+  // The stylesheet gives the list at least 120px and the pane at most half, with a scroll of its own.
+  const css = readFileSync('src/studio/Studio.css', 'utf8');
+  expect(blockOf(css, '.pool-body')).toContain('grid-template-rows: minmax(120px, 1fr) auto fit-content(50%);');
+  expect(css).toMatch(/\.pool-pane \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
 });

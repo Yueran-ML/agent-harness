@@ -1525,6 +1525,7 @@ export const zhCN: Messages = {
         transition: '在离播放头最近的剪辑点加上这个转场。',
         emptyBin: '这个素材箱里没有素材可以组成源磁带。',
         noTimeline: '先在剪辑页新建一条时间线。',
+        noSource: '检视器里还没有源：在媒体池里双击一个片段把它载入，或者切到源磁带。',
       },
       colorPage: {
         noClip: '播放头处没有片段。',

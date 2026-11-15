@@ -12,8 +12,8 @@ import type { EngineBridge } from '../src/bridge';
 import { emptyGrade, type Clip, type Interp, type Keyframe, type Param, type Timeline as TimelineModel } from '../src/studio/engine';
 import { Inspector } from '../src/studio/inspector/Inspector';
 import { ClipCurves } from '../src/studio/keyframes/ClipCurves';
-import { CurveEditor, GRAPH_SIZE, plotRect, type Curve, type CurveChange, type CurveClipboard } from '../src/studio/keyframes/CurveEditor';
-import { copyKeys, curvePath, fitView, insertKey, moveKeys, pasteKeys, setInterp, dragHandle } from '../src/studio/keyframes/curveGeometry';
+import { CurveEditor, GRAPH_SIZE, OWN_VALUE_GAP_PX, plotRect, type Curve, type CurveChange, type CurveClipboard } from '../src/studio/keyframes/CurveEditor';
+import { copyKeys, curvePath, fitView, insertKey, moveKeys, pasteKeys, setInterp, dragHandle, xOf, yOf } from '../src/studio/keyframes/curveGeometry';
 import { Timeline } from '../src/studio/timeline/Timeline';
 import { clip, media } from './timeline-fixture';
 import { likeABrowser } from './mounted';
@@ -77,6 +77,67 @@ describe('the curve editor', () => {
     expect(lineOf(Y)!.getAttribute('data-active')).toBe('false');
     fireEvent.click(boxes[0]);
     expect(lineOf(X)).toBeNull();
+  });
+
+  it('draws each curve at a scale of its own, and writes the values of a line that is not the one edited at its points', () => {
+    // A Retime Frame curve from 0 to 60 and a Retime Speed curve of 48% and then of -54%, over the 100 frames of a clip.
+    const own = { id: 'clip', playhead: 0, range: [0, 100] as const, onSeek: vi.fn() };
+    const line = { shown: true, drag: () => null };
+    const unbounded = { low: -Infinity, high: Infinity };
+    const frame: Param = { keys: [key(0, 0), key(100, 60)] };
+    const speed: Param = { keys: [key(0, 48, 'hold'), key(50, -54, 'hold')] };
+    const FRAME = 'retime.frame';
+    const SPEED = 'retime.speed';
+    mount([
+      { id: FRAME, label: 'Retime Frame', color: '#dcbdfb', param: frame, bounds: unbounded, display: { factor: 1, unit: '', digits: 1 }, clock: own, line },
+      { id: SPEED, label: 'Retime Speed', color: '#96d0ff', param: speed, bounds: unbounded, display: { factor: 1, unit: '%', digits: 0 }, clock: own, line },
+    ]);
+    const span = fitView([frame, speed], [0, 100]);
+    const viewOf = (param: Param) => ({ from: span.from, to: span.to, low: fitView([param]).low, high: fitView([param]).high });
+    const placed = (element: Element) => { const [, x, y] = /translate\(([-\d.e]+) ([-\d.e]+)\)/.exec(element.getAttribute('transform')!)!; return [Number(x), Number(y)]; };
+    const valuesAtLeft = () => [...document.querySelectorAll('.curve-editor-value')].map(each => each.textContent);
+    const written = () => [...document.querySelectorAll('.curve-editor-own-value')].map(each => [
+      each.parentElement!.getAttribute('data-curve'), each.textContent, Number(each.getAttribute('x')), Number(each.getAttribute('y'))]);
+    // The frame curve is the one edited: the values at the left are its own, in frames, and none of them is a speed.
+    expect(lineOf(FRAME)!.getAttribute('data-active')).toBe('true');
+    expect(valuesAtLeft()).toEqual(expect.arrayContaining(['0.0', '60.0']));
+    expect(valuesAtLeft().some(value => value!.endsWith('%'))).toBe(false);
+    // The speed is at its own scale, from -64.2% to 58.2% over the 190 pixels of the graph: 48% is drawn 10.2% under
+    // its upper edge and -54% as far over its lower edge, each where its own value is.
+    const scale = viewOf(speed);
+    expect([scale.low, scale.high].map(value => Number(value.toFixed(1)))).toEqual([-64.2, 58.2]);
+    const [high, low] = [yOf(scale, rect, 48), yOf(scale, rect, -54)];
+    expect([high, low].map(y => Number(y.toFixed(2)))).toEqual([35.83, 194.17]);
+    expect(placed(keyOf(SPEED, 0))).toEqual([xOf(scale, rect, 0), high]);
+    expect(placed(keyOf(SPEED, 1))).toEqual([xOf(scale, rect, 50), low]);
+    expect(lineOf(SPEED)!.getAttribute('d')).toBe(curvePath(speed, scale, rect));
+    // The frame curve is at its own, where 0 and 60 are as far from the edges: so the two cannot be read by one row of values,
+    // and the speed says its own at each step, in its colour: under the step at the upper edge, over the one at the lower.
+    expect(placed(keyOf(FRAME, 1))[1]).toBe(yOf(viewOf(frame), rect, 60));
+    expect(placed(keyOf(FRAME, 1))[1]).toBeCloseTo(high, 6);
+    expect(written()).toEqual([
+      [SPEED, '48%', xOf(scale, rect, 0) + 7, high + 13],
+      [SPEED, '-54%', xOf(scale, rect, 50) + 7, low - 6],
+    ]);
+    expect(document.querySelector('.curve-editor-own-value')!.getAttribute('style')).toMatch(/fill:\s*(#96d0ff|rgb\(150, 208, 255\))/);
+    // With the speed the one edited, the values at the left are speeds, and the frame curve says its frames at its points.
+    fireEvent.click(screen.getByRole('button', { name: 'Retime Speed' }));
+    expect(lineOf(SPEED)!.getAttribute('data-active')).toBe('true');
+    expect(valuesAtLeft().every(value => value!.endsWith('%'))).toBe(true);
+    expect(written().map(([curve, said]) => [curve, said])).toEqual([[FRAME, '0.0'], [FRAME, '60.0']]);
+    // A point nearer than a value is wide to the one written before it is not written over it.
+    cleanup();
+    const near = xOf(scale, rect, 0) + OWN_VALUE_GAP_PX - 1;
+    const steps: Param = { keys: [key(0, 48, 'hold'), key(Math.floor(span.from + ((near - rect.left) / rect.width) * (span.to - span.from)), 20, 'hold'), key(50, -54, 'hold')] };
+    mount([
+      { id: FRAME, label: 'Retime Frame', color: '#dcbdfb', param: frame, bounds: unbounded, clock: own, line },
+      { id: SPEED, label: 'Retime Speed', color: '#96d0ff', param: steps, bounds: unbounded, display: { factor: 1, unit: '%', digits: 0 }, clock: own, line },
+    ]);
+    expect(written().map(([, said]) => said)).toEqual(['48%', '-54%']);
+    // The settings with keys, which are no lines, are drawn as they were: each at its own scale, with nothing written at their keys.
+    cleanup();
+    mount([curveOf(X, 'Position X', { keys: three }), curveOf(Y, 'Position Y', { keys: [key(0, 300), key(80, 900)] })]);
+    expect(document.querySelector('.curve-editor-own-value')).toBeNull();
   });
 
   it('chooses a key with a click, more with Ctrl and Shift, and those in a box', () => {

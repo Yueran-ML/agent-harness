@@ -6,6 +6,20 @@ change what was there before.
 
 ## Unreleased
 
+- What a first pass by hand found in the studio of the desktop app is put right. The Color
+  page is laid out in its two bands again (the gallery, the viewer and the node editor above
+  the palettes): its grid had been lost to a rule of the studio's stylesheet, which is loaded
+  after it, so the page was one row of narrow columns at every width. In the media pool the
+  list keeps its height when a medium with sound is chosen: its details and its audio are one
+  pane beneath the list that scrolls by itself, in the fields of the Inspector. The viewers
+  keep their picture while a menu is open elsewhere on the page, and are hidden only where
+  the menu or a submenu of it reaches them. On a clip with its Retime Controls open, the
+  handle at the end of the clip no longer lies on the clip's Keyframe button, the speeds and
+  the lower handles stand above the key diamonds, and the clip does not repeat the range of
+  its speeds. In the Curve Editor a Retime curve that is drawn beside the one edited says its
+  values at its points, since each curve has a scale of its own. The keyframe buttons of the
+  Inspector are drawn as buttons, with a diamond that tells a setting with keys from one with
+  a key at the playhead. The edit buttons of the Cut page say why they cannot be pressed.
 - A clip has a Retime Process (studio, phase 4), chosen in the Inspector's Video tab under
   Retime and Scaling: Nearest, as before, or Frame Blend, which shows a frame that falls
   between two pictures of the source as the two mixed by how far between them it falls, so

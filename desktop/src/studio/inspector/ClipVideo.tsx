@@ -1,13 +1,13 @@
 import { useWords } from '../../app/locale';
 import { useContext } from 'react';
-import { Spline } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Spline } from 'lucide-react';
 import { COMPOSITES } from '../color/nodeEdits';
 import { RETIME_PROCESSES, type Clip, type ClipKeyed, type Media, type Op, type Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { clipLocations } from '../timeline/selection';
 import { addKey, keyAt, keyFrameOf, keyTimes, paramOf, putValue, removeKey, settingAt } from './clipKeys';
 import { common, setClips, transitionEdges } from './common';
-import { ChoiceField, FieldsLocked, NumberField } from './fields';
+import { ChoiceField, FieldsLocked, KeyDiamond, NumberField } from './fields';
 import type { Build, Commit } from './useCommit';
 
 /**
@@ -82,11 +82,13 @@ export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSe
       const target = direction < 0 ? times.filter(time => time < frame).at(-1) : times.find(time => time > frame);
       if (target !== undefined) onSeek(target, false);
     };
+    // The diamond says three things apart: the setting has no keys, it has keys (`data-keyed`), a key is at the playhead (`data-hit`, and pressed where every clip has one).
     return <div className="audio-param-keys" role="group" aria-label={label} data-keys={path}>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Previous keyframe')} disabled={!times.some(time => time < frame)} onClick={() => go(-1)}>‹</button>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t(all ? 'Remove keyframe' : 'Add keyframe')} aria-pressed={all} data-hit={hits.some(Boolean) || undefined}
-        disabled={locked} onClick={() => void commit(each((clip, now) => all ? removeKey(now.id, clip, path, at(clip, now)) : addKey(now.id, clip, path, at(clip, now))))}>◆</button>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Next keyframe')} disabled={!times.some(time => time > frame)} onClick={() => go(1)}>›</button>
+      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Previous keyframe')} title={t('Previous keyframe')} disabled={!times.some(time => time < frame)} onClick={() => go(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
+      <button type="button" className="icon-btn" aria-label={label + ': ' + t(all ? 'Remove keyframe' : 'Add keyframe')} title={t(all ? 'Remove keyframe' : 'Add keyframe')} aria-pressed={all}
+        data-keyed={times.length > 0 || undefined} data-hit={hits.some(Boolean) || undefined}
+        disabled={locked} onClick={() => void commit(each((clip, now) => all ? removeKey(now.id, clip, path, at(clip, now)) : addKey(now.id, clip, path, at(clip, now))))}><KeyDiamond /></button>
+      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Next keyframe')} title={t('Next keyframe')} disabled={!times.some(time => time > frame)} onClick={() => go(1)}><ChevronRight size={14} aria-hidden="true" /></button>
     </div>;
   };
   /** A side of the crop or its softness, shown in percent of the picture. */

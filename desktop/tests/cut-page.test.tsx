@@ -11,6 +11,7 @@ import { Words } from '../src/app/locale';
 import { zhCN } from '../src/messages/zh-CN';
 import { Studio } from '../src/studio/Studio';
 import { CUT_NARROW_PX } from '../src/studio/pages/CutPage';
+import { EditButtons } from '../src/studio/cut/EditButtons';
 import { nearestCut, nearestEditPoint } from '../src/studio/timeline/editKeys';
 import { fitZoom, HEADER_WIDTH } from '../src/studio/timeline/geometry';
 import { placeOnTape, tapeIndexAt, tapeMedia, tapeOf, tapeStep } from '../src/studio/cut/SourceTape';
@@ -698,5 +699,32 @@ describe('the Cut page', () => {
     expect((screen.getByRole('button', { name: 'Smart insert' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Dissolve' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Create a timeline on the Edit page to begin.')).toBeDefined();
+    // Each says why it cannot be pressed, on itself and on what holds it, which is what a pointer over a disabled button is over.
+    expect(screen.getByRole('button', { name: 'Smart insert' }).title).toMatch(/^Create a timeline on the Edit page to begin\. Inserts the source/);
+    expect(document.querySelector<HTMLElement>('[data-test="cut-dissolve-why"]')!.title).toMatch(/^Create a timeline on the Edit page to begin\. Adds the transition/);
+  });
+
+  it('says of an edit of the source that the viewer has none, which a medium chosen in the pool does not give it', () => {
+    const action = vi.fn();
+    const view = render(<EditButtons onAction={action} timeline source={false} />);
+    const why = /^The viewer has no source yet: double-click a clip in the media pool to load it, or show the source tape\. /;
+    for (const [name, id] of [['Smart insert', 'smartInsert'], ['Append', 'append'], ['Ripple overwrite', 'rippleOverwrite'], ['Place on top', 'placeOnTop']]) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toMatch(why);
+      expect(document.querySelector<HTMLElement>(`[data-test="cut-${id}-why"]`)!.title).toBe(button.title);
+    }
+    // The transitions ask for no source, and Source Overwrite is never pressed here: its hint is why.
+    expect((screen.getByRole('button', { name: 'Dissolve' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Source overwrite' }).title).toMatch(/^Puts the source on the track above/);
+    // With a source the same buttons, not made anew, can be pressed and say only what they do.
+    const smart = screen.getByRole('button', { name: 'Smart insert' }) as HTMLButtonElement;
+    view.rerender(<EditButtons onAction={action} timeline source />);
+    expect(screen.getByRole('button', { name: 'Smart insert' })).toBe(smart);
+    expect(smart.disabled).toBe(false);
+    expect(smart.title).toBe('Inserts the source at the edit point nearest the playhead, which the timeline marks. (F9)');
+    expect(document.querySelector('[data-test="cut-smartInsert-why"]')).toBeNull();
+    fireEvent.click(smart);
+    expect(action).toHaveBeenCalledWith({ kind: 'place', edit: 'smart_insert' });
   });
 });

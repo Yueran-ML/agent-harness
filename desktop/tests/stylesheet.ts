@@ -2,7 +2,9 @@
 import { readFileSync } from 'node:fs';
 import { themes } from '../src/themes';
 
-export const tokens = readFileSync(new URL('../src/ui/tokens.css', import.meta.url), 'utf8');
+// By its path from the folder that the tests run in, which a test of a page can read too: there
+// the address of a module is not that of a file.
+export const tokens = readFileSync('src/ui/tokens.css', 'utf8');
 
 /** The rules of one block of a stylesheet, by the selector that opens it. */
 export function blockOf(stylesheet: string, selector: string): string {

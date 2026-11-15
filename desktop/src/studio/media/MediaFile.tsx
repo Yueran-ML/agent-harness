@@ -117,13 +117,13 @@ export function MediaFile({ media, bridge, session, onApply }: {
             <AuditionCursor position={audition.position} start={0} end={duration} />
           </button>
           <fieldset disabled={disabled} className="media-file-controls">
-            <label><input type="checkbox" aria-label={`${label} ${t('Active')}`} checked={channel.enabled !== false}
+            <label className="check"><input type="checkbox" aria-label={`${label} ${t('Active')}`} checked={channel.enabled !== false}
               ref={node => { if (node) node.indeterminate = common(all, row => row?.enabled !== false) === null; }}
               onChange={event => changeFlag(index, 'enabled', event.target.checked, event.nativeEvent instanceof MouseEvent && event.nativeEvent.altKey)} />{t('Active')}</label>
-            <label><input type="checkbox" aria-label={`${label} ${t('Mute')}`} checked={channel.mute === true}
+            <label className="check"><input type="checkbox" aria-label={`${label} ${t('Mute')}`} checked={channel.mute === true}
               ref={node => { if (node) node.indeterminate = common(all, row => row?.mute === true) === null; }}
               onChange={event => changeFlag(index, 'mute', event.target.checked, event.nativeEvent instanceof MouseEvent && event.nativeEvent.altKey)} />{t('Mute')}</label>
-            {mono && <label>{t('Source')}<select aria-label={`${label} ${t('Source')}`} value={selectedSource}
+            {mono && <label>{t('Source')}<select className="field" aria-label={`${label} ${t('Source')}`} value={selectedSource}
               onChange={event => {
                 const value = event.target.value;
                 void save((row, at, item) => at !== index ? row : { ...row, remix: undefined, source: value === 'none' ? null : audioSources(item)[Number(value)] });

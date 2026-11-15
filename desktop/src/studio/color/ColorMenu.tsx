@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight } from 'lucide-react';
 
@@ -88,19 +88,24 @@ function List({ items, label, onClose, onBack, style, anchor, id }: {
  * focus while it is open and gives it back, put away, to what had it before (the panel it was
  * asked in), so that the keys go on to that panel: Ctrl+Z in the Gallery after Delete Selected.
  */
-export function ColorMenu({ menu, onClose }: { menu: Menu; onClose: () => void }) {
-  const root = useRef<HTMLDivElement>(null);
+export function ColorMenu({ menu, onClose, layer }: {
+  menu: Menu; onClose: () => void;
+  /** Given the layer that holds the menu and its submenus, by what wants to know where they lie. */
+  layer?: RefObject<HTMLDivElement | null>;
+}) {
+  const own = useRef<HTMLDivElement>(null);
+  const root = layer ?? own;
   // What had the focus before the menu took it, read before its first item is focused.
   const [opener] = useState(() => (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null));
   useLayoutEffect(() => {
-    const layer = root.current;
+    const held = root.current;
     return () => {
       // Where the focus went elsewhere (a press away from the menu), it stays there.
       const at = document.activeElement;
-      const lost = at === null || at === document.body || (layer?.contains(at) ?? false);
+      const lost = at === null || at === document.body || (held?.contains(at) ?? false);
       if (lost && opener?.isConnected) opener.focus({ preventScroll: true });
     };
-  }, [opener]);
+  }, [opener, root]);
   const [place, setPlace] = useState({ left: menu.x, top: menu.y });
   useLayoutEffect(() => {
     const box = root.current?.firstElementChild?.getBoundingClientRect();

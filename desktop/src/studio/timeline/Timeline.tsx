@@ -28,7 +28,7 @@ import { ClipKeyTracks, type ClipKeyTracksContext, type KeyTracksState } from '.
 import { KeyframeTracks } from './KeyframeTracks';
 import { keyTrackHeights, type KeyTrackClipboard } from './keyTrack';
 import { RetimeBars } from './RetimeBars';
-import type { RetimeControlsState } from './useRetimeControls';
+import { OpenRetimeControls, type RetimeControlsState } from './useRetimeControls';
 import { clipLocations } from './selection';
 import { useFairlightText } from '../fairlight/words';
 import './timeline.css';
@@ -283,6 +283,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   useEffect(() => { onView?.(view); }, [view, onView]);
   const openRetime = retimeControls?.open;
   const toggleRetime = retimeControls?.onToggle;
+  // What the clips with speed points read: the same until controls are opened or closed, and null while none are open.
+  const retimeOpen = useMemo(() => (openRetime && openRetime.length > 0 ? new Set(openRetime) : null), [openRetime]);
   const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onRetime: toggleRetime, onSelection, onTransition, onCue, onCopyClips, cut, audioOnlyDrop });
   // The commands of a clip's right-click menu: those of the clipboard and, on a page that has them, the Retime Controls of a clip of media.
   const clipItems = (clip?: string): TrackMenu['items'] => {
@@ -470,14 +472,14 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
           <div className="timeline-ruler-corner">{!overview && <AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} />}</div></div>
-        <AudioPlayhead.Provider value={shown}><ClipKeyTracks.Provider value={keyContext}>{tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
+        <AudioPlayhead.Provider value={shown}><ClipKeyTracks.Provider value={keyContext}><OpenRetimeControls.Provider value={retimeOpen}>{tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
           from={from} to={to} height={heights[track.id] ?? trackHeight} keysHeight={keyHeights.get(track.id) ?? 0} waves={waves} decoration={decorations.get(track.id)} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
           audioOverlay={track.kind === 'audio' && !cut && !overview && !gainLineDisabled?.(track.id) ? audioContext : undefined}
           selected={editing.selected} mixerSelected={selectedTracks?.includes(track.id)} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
           shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null}
-          headerDetail={details.get(track.id)} renameOnClick={renameOnClick} heightLocked={lockedHeights?.includes(track.id)} />)}</ClipKeyTracks.Provider>
+          headerDetail={details.get(track.id)} renameOnClick={renameOnClick} heightLocked={lockedHeights?.includes(track.id)} />)}</OpenRetimeControls.Provider></ClipKeyTracks.Provider>
           {afterRows}</AudioPlayhead.Provider>
         {ghostViews}
         {openKeyTracks && openKeyTracks.length > 0 && <KeyframeTracks bridge={bridge} session={session} revision={revision} timeline={timeline} media={media}

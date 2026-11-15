@@ -1748,6 +1748,8 @@ export const en = {
         transition: 'Adds the transition at the edit point nearest the playhead.',
         emptyBin: 'This bin has no media for the source tape.',
         noTimeline: 'Create a timeline on the Edit page to begin.',
+        /** Why an edit of the source cannot be pressed: the viewer has no source, which choosing a medium in the pool does not give it. */
+        noSource: 'The viewer has no source yet: double-click a clip in the media pool to load it, or show the source tape.',
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

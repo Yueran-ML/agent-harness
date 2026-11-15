@@ -5,6 +5,7 @@
  * Resolve's Color page; which clip is current, the keys of the page, the grade of the current
  * clip as the node editor draws it, and the LUTs that the engine could not read.
  */
+import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Words } from '../src/app/locale';
@@ -20,6 +21,7 @@ import { currentClip, numberedClips, shownClips, sourceFrameAt, stepClip } from 
 import { isComplete, layoutGrade, linkName, shownLabel } from '../src/studio/color/graph';
 import { clip, media } from './timeline-fixture';
 import { likeABrowser } from './mounted';
+import { blockOf } from './stylesheet';
 
 let width: number;
 const settle = () => act(async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); });
@@ -241,6 +243,39 @@ describe('the Color page', () => {
     fireEvent.keyDown(qualifier, { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: 'Window' }).getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Window' }));
+  });
+
+  it('is a grid of two bands whichever stylesheet is loaded last, with a viewer of 360px and Keyframes of 320px at the least', () => {
+    // The DOM of the tests lays nothing out: the rules that lay the page out are read.
+    const css = readFileSync('src/studio/color/color.css', 'utf8');
+    const studio = readFileSync('src/studio/Studio.css', 'utf8');
+    const base = readFileSync('src/ui/base.css', 'utf8');
+    // The page is the body of the studio too, which Studio.css makes a row of panes, and Studio.css is loaded after the
+    // stylesheet of the page: the rule that makes the page a grid names both classes, and so wins whichever is loaded last.
+    expect(blockOf(studio, '.studio-body')).toContain('display: flex;');
+    expect(blockOf(css, '.studio-body.color-page')).toContain('display: grid;');
+    expect(css).not.toMatch(/^\.color-page \{[^}]*display:/m);
+    // So do its fields, which the window makes as wide as what holds them.
+    expect(blockOf(base, '.field')).toContain('width: 100%;');
+    expect(blockOf(css, '.field.color-filter, .field.color-level, .field.color-head-kind')).toContain('width: auto;');
+    // The upper band is the gallery, the viewer and the node editor; the lower one the palettes.
+    const page = blockOf(css, '.color-page').replace(/\s+/g, ' ');
+    expect(page).toContain('grid-template-columns: auto minmax(0, 1fr) auto;');
+    expect(page).toContain('"bar bar bar" "side viewer nodes" "thumbs thumbs thumbs" "mini mini mini" "palettes palettes palettes"');
+    // What the gallery and the node editor take of a studio of a width leaves the viewer 360px or more, at the widths
+    // of the pass by hand and down to where the viewer goes above the two.
+    const widthOf = (selector: string) => {
+      const [, low, share, high] = /width: clamp\((\d+)px, (\d+)cqi, (\d+)px\);/.exec(blockOf(css, selector))!.map(Number);
+      return (studio: number) => Math.min(high, Math.max(low, (studio * share) / 100));
+    };
+    const [side, nodes] = [widthOf('.color-side'), widthOf('.color-nodes')];
+    expect([side(1000), nodes(1000)]).toEqual([220, 340]);
+    const stacked = Number(/@container studio \(max-width: (\d+)px\)/.exec(css)![1]);
+    expect(stacked).toBe(879);
+    for (const studio of [stacked + 1, 1000, 1032, 1180, 1456]) expect(studio - side(studio) - nodes(studio), String(studio)).toBeGreaterThanOrEqual(360);
+    // The Keyframes or the scopes keep 320px beside the merged palettes; narrower than the three side by side, the groups are one under another.
+    expect(blockOf(css, '.color-palettes[data-merged]')).toContain('grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);');
+    expect(css.slice(css.indexOf('@container studio'))).toMatch(/\.color-palettes, \.color-palettes\[data-merged\] \{\s+grid-template-columns: minmax\(0, 1fr\);/);
   });
 
   it('numbers the clips of the video tracks by where they begin, whatever their track, and hides those of a disabled track', async () => {

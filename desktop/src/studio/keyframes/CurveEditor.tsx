@@ -78,6 +78,8 @@ export function plotRect(size: { width: number; height: number }): Rect {
 
 /** How far a pointer goes before a press is a drag. */
 const SLOP_PX = 3;
+/** The room, in pixels along the graph, that a value written at a point of a line takes: a point nearer the one written before it is not written. */
+export const OWN_VALUE_GAP_PX = 44;
 const DIAMOND = 'M0,-5 L5,0 L0,5 L-5,0 Z';
 /** The faces of the buttons of interpolation: the way a curve leaves a key at the lower left and comes to one at the upper right. */
 const GLYPHS: Record<KeyEase, string> = {
@@ -145,6 +147,14 @@ const clockOf = (curve: Curve | null | undefined) => curve?.clock?.id ?? '';
  * A curve may also be a line with rules of its own (`CurveLine`): its points are drawn and chosen
  * as keys are, one of them is dragged at a time, and the tool bar's buttons of interpolation, of
  * copying and of pasting are off for it, since its stretches are straight or level by what it is.
+ *
+ * Every curve has a scale of its own (`valuesOf`): a zoom about 1 and a place in pixels, or the
+ * frames of a clip's media and its speed in percent, have no range in common, and one range for
+ * both would press the smaller flat. The values written at the left of the graph are those of
+ * the curve that is edited, so where another curve is drawn says nothing of its values by them.
+ * A line that is drawn beside the one edited therefore says its own: the value of each of its
+ * points is written at the point, in its colour (the Retime Speed curve says `48%` at its step
+ * while the Retime Frame curve is edited, and the other way round).
  *
  * Left for the Spline Editor of the Fusion page, which is to be this component with more around
  * it: B-spline and loops (`Curve` would say how a setting goes on outside its keys), the Hand and
@@ -604,6 +614,23 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
               const point = keyPoint(key, shown, rect);
               return <path key={index} className="curve-key" d={DIAMOND} transform={`translate(${point.x} ${point.y})`} data-curve={curve.id} data-key={index}
                 data-frame={key.frame} data-selected={on && selected.includes(index)} />;
+            })}
+          </g>;
+        })}
+        {/* The values of a line that is not the one edited, at its points: the values at the left are not its own. */}
+        {drawn.filter(curve => curve.line && curve.id !== active?.id).map((curve) => {
+          const shown = viewOf(curve);
+          // The place of the value written last: one that would lie on it is left out.
+          let last = -Infinity;
+          return <g key={curve.id} className="curve-own-values" data-curve={curve.id}>
+            {keysOf(curve).flatMap((key, index) => {
+              const point = keyPoint(key, shown, rect);
+              if (point.x < rect.left || point.x > right || point.x - last < OWN_VALUE_GAP_PX) return [];
+              last = point.x;
+              // Beside the point and above it; under it at the upper edge of the graph, and at its left at the right edge.
+              const atEnd = point.x > right - OWN_VALUE_GAP_PX;
+              return [<text key={index} className="curve-editor-own-value" data-key={index} style={{ fill: curve.color }} textAnchor={atEnd ? 'end' : 'start'}
+                x={point.x + (atEnd ? -7 : 7)} y={point.y + (point.y < rect.top + 16 ? 13 : -6)}>{said(curve, key.value)}</text>];
             })}
           </g>;
         })}

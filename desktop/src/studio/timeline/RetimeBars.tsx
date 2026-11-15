@@ -104,6 +104,14 @@ export const RetimeBars = memo(function RetimeBars({ open, rows, ...shared }: Sh
  * percent, a button that opens its pop-up menu; and at each speed point, and at the end of the
  * clip, a handle.
  *
+ * The bar lies over the clip, whose own controls stay under the pointer: its Keyframe button at the
+ * upper right corner and its key diamonds along its lower edge. The style sheet keeps the
+ * controls of the bar off them and off each other (see `.retime-bar`, which also says where a
+ * clip is too small for that): the last segment says that
+ * it is the last (`data-last`), so that its speed leaves room for the handle at the end of the
+ * clip. While the bar is open the clip does not say the range of its speeds (`ClipView`), which
+ * the bar says segment by segment.
+ *
  * The pop-up menu of a segment (p. 1076):
  * - Change Speed ▸ gives the segment one of the speeds of the list (`set_segment_speed`): it shows
  *   what it showed, so it and the clip last longer or shorter;
@@ -283,7 +291,7 @@ function RetimeBar({ bridge, session, revision, timeline, clip, locked, top, hei
     {segments.map((segment, index) => {
       const percent = percentOf(segment.speed);
       const said = percentText(percent);
-      return <div key={index} className="retime-segment" data-retime-segment={index} data-percent={percent}
+      return <div key={index} className="retime-segment" data-retime-segment={index} data-percent={percent} data-last={index === segments.length - 1 || undefined}
         data-way={percent === 0 ? 'freeze' : percent < 0 ? 'backward' : 'forward'} data-changed={Math.abs(percent) !== 100 || undefined}
         style={{ '--from': segment.from, '--frames': segment.to - segment.from, '--gap': arrowGap(percent) } as CSSProperties}>
         <span className="retime-arrows" aria-hidden="true" />

@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from 'react';
+import { memo, useContext, type ReactNode } from 'react';
 import { useWords } from '../../app/locale';
 import type { Clip, Media, Rate, Retime } from '../engine';
 import { hasKeys } from '../inspector/clipKeys';
@@ -6,6 +6,7 @@ import { percentOf } from '../retime';
 import { timecode } from '../timecode';
 import { ClipKeyMarks } from './ClipKeyMarks';
 import { spanStyle } from './geometry';
+import { OpenRetimeControls } from './useRetimeControls';
 import { Waveform } from './Waveform';
 import type { Waveforms } from './waveforms';
 
@@ -21,6 +22,16 @@ function speedRange(retime: Retime): string {
 }
 
 /**
+ * The speeds of a clip with speed points, said at its lower right while its Retime Controls are
+ * shut. Open, the bar says the speed of every segment, and the badge would lie on the speed of
+ * the last one: it is not shown then.
+ */
+function RetimedSpeeds({ clip, retime }: { clip: string; retime: Retime }) {
+  const open = useContext(OpenRetimeControls);
+  return open?.has(clip) ? null : <span className="timeline-clip-speed" data-retimed="">{speedRange(retime)}</span>;
+}
+
+/**
  * A clip on its lane, placed by the style sheet from its frames (see `spanStyle`). `scale`, the
  * pixels of a frame, is needed only by the waveform of a clip of sound; a clip of video is not
  * given it, nor drawn again at a zoom.
@@ -30,8 +41,10 @@ function speedRange(retime: Retime): string {
  * it is drawn, and nothing else: no component, nothing read from the page.
  *
  * A clip with speed points says so where a clip of another speed says its speed: the slowest and
- * the fastest of its segments. Its Retime Controls are not here: the timeline lays them over the
- * clips that they are open on (`RetimeBars`), so a clip without them has no part of them.
+ * the fastest of its segments (`RetimedSpeeds`, which only such a clip mounts, and which says
+ * nothing while the Retime Controls of the clip are open). The controls are not here: the timeline
+ * lays them over the clips that they are open on (`RetimeBars`), so a clip without speed points
+ * has no part of them, and mounts nothing for them.
  */
 export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale = 0, from, to, waves, selected = false, children, overlay }: {
   clip: Clip; kind: 'video' | 'audio'; media: Media | undefined; rate: Rate; scale?: number; from: number; to: number; waves: Waveforms;
@@ -48,7 +61,7 @@ export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale 
     style={spanStyle(clip.start, clip.length)}
     title={`${name} · ${timecode(clip.start, rate)} – ${timecode(clip.start + clip.length, rate)}`}>
     <span className="timeline-clip-name">{name}</span>
-    {clip.retime ? <span className="timeline-clip-speed" data-retimed="">{speedRange(clip.retime)}</span>
+    {clip.retime ? <RetimedSpeeds clip={clip.id} retime={clip.retime} />
       : changedSpeed && <span className="timeline-clip-speed">{clip.reverse ? '−' : ''}{Number((clip.speed.num / clip.speed.den).toFixed(3))}×</span>}
     {children ?? (kind === 'audio' && media?.facts.audio && clip.source.kind === 'media' && <Waveform cache={waves} media={clip.source.media} clip={clip} rate={rate} scale={scale}
       from={Math.max(from, clip.start)} to={Math.min(to, clip.start + clip.length)} />)}

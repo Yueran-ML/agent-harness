@@ -1,5 +1,5 @@
 import { useFairlightText } from './fairlight/words';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Grid2X2, Import, List, RotateCw, Trash2, X } from 'lucide-react';
 import { useWords } from '../app/locale';
 import { studioSupported } from '../app/system';
@@ -39,6 +39,7 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const words = useWords();
   const t = useFairlightText();
   const labels = words.label.studio.media;
+  const formatId = useId();
   const [bin, setBin] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [grid, setGrid] = useState(initialGrid);
@@ -127,34 +128,42 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
     </select>}
     {problem && <div className="pool-problem" role="alert"><p>{problem.said}<span className="caption">{problem.detail}</span></p>
       <button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => setProblem(null)}><X size={14} /></button></div>}
-    <div className="pool-browser">
-      <Bins bins={bins} selected={selectedBin} onSelect={selectBin} onEdit={edit} onMove={move} session={session} />
-      <div className="pool-clips" onContextMenu={colorMenu}>
-        {media !== null && visible.length === 0 && <p className="caption pool-none" data-test="pool-none">{media.length === 0 ? words.hint.studio.noMedia : words.hint.studio.emptyBin}</p>}
-        <Clips media={visible} timelines={timelines} proxies={proxies} loaded={loaded} selection={selection} onSelect={setSelection}
-          onLoad={onLoad} onMakeAgain={onMakeAgain} onEdit={edit} session={session} thumbnails={grid ? thumbnails : null} />
+    {/* The list keeps a height of its own: what is told of the chosen medium is one pane beneath it that scrolls by itself. */}
+    <div className="pool-body">
+      <div className="pool-browser">
+        <Bins bins={bins} selected={selectedBin} onSelect={selectBin} onEdit={edit} onMove={move} session={session} />
+        <div className="pool-clips" onContextMenu={colorMenu}>
+          {media !== null && visible.length === 0 && <p className="caption pool-none" data-test="pool-none">{media.length === 0 ? words.hint.studio.noMedia : words.hint.studio.emptyBin}</p>}
+          <Clips media={visible} timelines={timelines} proxies={proxies} loaded={loaded} selection={selection} onSelect={setSelection}
+            onLoad={onLoad} onMakeAgain={onMakeAgain} onEdit={edit} session={session} thumbnails={grid ? thumbnails : null} />
+        </div>
       </div>
+      {chosen.length > 0 && <footer className="pool-foot">
+        <span className="caption">{labels.selected(chosen.length)}</span>
+        <button type="button" className="icon-btn" aria-label={labels.remove} title={labels.remove}
+          onClick={() => void edit(chosen.map(each => ({ op: 'remove_media', id: each.id })))}><Trash2 size={14} /></button>
+        {failed && <button type="button" className="btn btn-quiet" onClick={() => onMakeAgain(failed.id)} data-test="make-proxy-again"><RotateCw size={14} aria-hidden="true" />{words.label.studio.makeProxyAgain}</button>}
+      </footer>}
+      {details && <div className="pool-pane" data-test="pool-pane">
+        <Details media={details} told={proxies[details.id]} timelines={timelines} onMakeAgain={() => onMakeAgain(details.id)} />
+        {details.facts.audio && <section className="audio-config pool-audio" aria-label={t('Audio Configuration')}>
+          <div className="inspector-row">
+            <label htmlFor={formatId} className="inspector-label">{t('Format')}</label>
+            <select id={formatId} className="field inspector-select" aria-label={t('Format')} value={fileFormat} onChange={event => {
+              if (event.target.value === 'custom') openAudio(chosen);
+              else if (selectedAudio.every(item => audioSources(item).length > 0)) void edit(selectedAudio.map(item => ({
+                op: 'set_media_audio', id: item.id,
+                config: standardLayout(item, event.target.value as TrackFormat),
+              })));
+            }}><AudioFormats disabled={!selectedAudio.every(item => audioSources(item).length > 0)} /><option value="custom">{t('Custom mapping')}</option></select>
+          </div>
+          {!selectedAudio.every(item => audioSources(item).length > 0) && <p role="status">{t('Audio stream information is unavailable.')}</p>}
+          <button type="button" className="btn" onClick={() => openAudio(chosen)}>{t('Clip Attributes')}</button>
+          <MediaFile key={JSON.stringify([session, selectedAudio.map(item => item.id)])} media={selectedAudio}
+            bridge={bridge} session={session} onApply={edit} />
+        </section>}
+      </div>}
     </div>
-    {chosen.length > 0 && <footer className="pool-foot">
-      <span className="caption">{labels.selected(chosen.length)}</span>
-      <button type="button" className="icon-btn" aria-label={labels.remove} title={labels.remove}
-        onClick={() => void edit(chosen.map(each => ({ op: 'remove_media', id: each.id })))}><Trash2 size={14} /></button>
-      {failed && <button type="button" className="btn btn-quiet" onClick={() => onMakeAgain(failed.id)} data-test="make-proxy-again"><RotateCw size={14} aria-hidden="true" />{words.label.studio.makeProxyAgain}</button>}
-    </footer>}
-    {details && <Details media={details} told={proxies[details.id]} timelines={timelines} onMakeAgain={() => onMakeAgain(details.id)} />}
-    {details?.facts.audio && <section className="audio-config" aria-label={t('Audio Configuration')}>
-      <label>{t('Format')}<select aria-label={t('Format')} value={fileFormat} onChange={event => {
-        if (event.target.value === 'custom') openAudio(chosen);
-        else if (selectedAudio.every(item => audioSources(item).length > 0)) void edit(selectedAudio.map(item => ({
-          op: 'set_media_audio', id: item.id,
-          config: standardLayout(item, event.target.value as TrackFormat),
-        })));
-      }}><AudioFormats disabled={!selectedAudio.every(item => audioSources(item).length > 0)} /><option value="custom">{t('Custom mapping')}</option></select></label>
-      {!selectedAudio.every(item => audioSources(item).length > 0) && <p role="status">{t('Audio stream information is unavailable.')}</p>}
-      <button type="button" onClick={() => openAudio(chosen)}>{t('Clip Attributes')}</button>
-      <MediaFile key={JSON.stringify([session, selectedAudio.map(item => item.id)])} media={selectedAudio}
-        bridge={bridge} session={session} onApply={edit} />
-    </section>}
     {audioOpened && audioOpened.session === session && openedMedia.length > 0 && openedMedia.length === audioOpened.ids.length &&
       <AudioAttributes media={openedMedia} onApply={edit} onClose={() => setAudioOpened(null)} />}
     {menu && <CoveringMenu menu={menu} onClose={closeMenu} />}

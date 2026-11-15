@@ -1,8 +1,8 @@
 import {
-  useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject, type SyntheticEvent,
+  useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject, type SyntheticEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { useOverlay } from '../../app/overlay';
+import { overlayMoved, useOverlay } from '../../app/overlay';
 import '../fairlight/routing.css';
 
 /** Where a menu opens: under an element (a button), or at a point of the window (a right-click). */
@@ -21,6 +21,9 @@ const lost = (focus: Element | null, popup: HTMLElement) =>
  * resized, and within the window. It takes the focus to its first item; the arrows, Home and End
  * go along it, Enter and Space choose (with their modifiers), and Escape or a press elsewhere
  * puts it away, giving the focus back to where it was.
+ *
+ * It says where it lies, so that the engine's view is hidden only where the menu reaches the
+ * viewer; the keys of the page are held back while it is open wherever it lies.
  */
 export function PortalMenu({ anchor, label, onClose, children, className = 'route-menu' }: {
   anchor: MenuAnchor; label: string; onClose: () => void; children: ReactNode; className?: string;
@@ -33,7 +36,10 @@ export function PortalMenu({ anchor, label, onClose, children, className = 'rout
     const focus = document.activeElement;
     return focus instanceof HTMLElement && focus !== document.body ? focus : null;
   });
-  useOverlay(true);
+  const boxes = useCallback(() => (menu.current ? [menu.current.getBoundingClientRect()] : []), []);
+  useOverlay(true, boxes);
+  // It is drawn first in the corner of the window and then put by its anchor: where it lies is looked at again.
+  useLayoutEffect(() => { overlayMoved(); }, [position]);
   useLayoutEffect(() => {
     const popup = menu.current;
     if (!popup) return;

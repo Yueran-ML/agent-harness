@@ -284,7 +284,19 @@
 
 .pool-toolbar, .pool-bin-tools { display: flex; align-items: center; gap: 2px; }
 .pool-toolbar .icon-btn[aria-pressed='true'] { color: var(--accent); background: var(--accent-soft); }
-.pool-browser { display: flex; flex: 1; min-height: 0; }
+/* The list and what is told of the chosen medium share what the pool has under its head. The list is never
+   under 120px, however much the pane beneath has to tell; the pane has at most half, and scrolls by itself. */
+.pool-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(120px, 1fr) auto fit-content(50%);
+}
+.pool-body > * { min-width: 0; }
+.pool-browser { grid-row: 1; display: flex; min-height: 0; }
+.pool-body > .pool-foot { grid-row: 2; }
+.pool-pane { grid-row: 3; min-height: 0; overflow-y: auto; overflow-x: hidden; border-top: 1px solid var(--line); font-size: var(--text-caption); }
 .pool-clips { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .pool-bins { width: 120px; flex: none; overflow: auto; border-right: 1px solid var(--line); padding: var(--s1); }
 .pool-bin-tools { margin-bottom: var(--s2); }
@@ -304,7 +316,7 @@
 .pool-list[data-layout='grid'] .pool-words { width: 100%; }
 .pool-thumbnail { display: flex; width: 100%; aspect-ratio: 16 / 9; align-items: center; justify-content: center; background: var(--ink-0); }
 .pool-thumbnail img { width: 100%; height: 100%; object-fit: contain; }
-.pool-details { flex: 0 1 auto; max-height: 35%; overflow: auto; border-top: 1px solid var(--line); padding: var(--s2) var(--s3); }
+.pool-details { padding: var(--s2) var(--s3); }
 .pool-details h3 { margin: 0 0 var(--s2); font-size: 12px; overflow-wrap: anywhere; }
 .pool-details dl { margin: 0; font-size: 11px; }
 .pool-details dl > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: var(--s2); margin: 4px 0; }
@@ -889,10 +901,19 @@
 
 .curve-editor-frame,
 .curve-editor-value,
+.curve-editor-own-value,
 .curve-editor-tip {
   fill: var(--moon-2);
   font-size: 10px;
   pointer-events: none;
+}
+
+/* The value of a point of a line that is not the one edited, in the colour of the line: outlined, so that it reads over the grid and the curves. */
+.curve-editor-own-value {
+  paint-order: stroke;
+  stroke: var(--ink-0);
+  stroke-width: 3px;
+  font-variant-numeric: tabular-nums;
 }
 
 .curve-editor-tip {
@@ -1112,7 +1133,16 @@
   white-space: nowrap;
 }
 
-/* --- The Retime Controls of a clip, laid over it: the speed of each segment, arrows that go its way, and a handle at each speed point. */
+/* --- The Retime Controls of a clip, laid over it: the speed of each segment, arrows that go its way, and a handle at each speed point.
+   The controls of the bar keep off those of the clip beneath, and off each other:
+   - the corner at the upper right is the clip's Keyframe button's (16px, 3px in), with the bar's close button at its left;
+   - the lowest 13px are the strip of the clip's key diamonds;
+   - the upper handles of the speed points are at the upper edge, their lower handles and the speeds stand on the strip of
+     the diamonds, and the handle at the end of the clip is under the Keyframe button;
+   - a speed is as wide as its segment less the halves of the handles at its ends, and less the whole handle at the end of the clip.
+   Two places are too small for that. On a track at its least height (a clip 32px high) the corner and the strip leave no
+   room between them, and the handle at the end of the clip reaches 10px into the strip, over a diamond at the last frames
+   of the clip. And the upper handle of a speed point less than 38px before the end of the clip lies in the corner. */
 .retime-bar {
   position: absolute;
   /* Over the lanes, under the headers of the tracks and the playhead, as a keyframe track is. */
@@ -1155,7 +1185,8 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: 19px;
+  /* In the row of the speeds where the clip is high enough for it, and never over the name of the clip. */
+  top: max(19px, calc(100% - 25px));
   height: 9px;
   background: currentColor;
   /* One arrow every --gap pixels: nearer each other the faster the segment plays. */
@@ -1177,8 +1208,11 @@
 .retime-speed {
   position: absolute;
   left: 50%;
-  bottom: 2px;
-  max-width: 100%;
+  /* On the strip of the key diamonds of the clip, not in it. */
+  bottom: 13px;
+  /* Clear of the half of a handle at each end of its segment. */
+  max-width: calc(100% - 10px);
+  overflow: hidden;
   transform: translateX(-50%);
   padding: 0 4px;
   border: 0;
@@ -1191,6 +1225,12 @@
   white-space: nowrap;
   pointer-events: auto;
   cursor: pointer;
+}
+
+/* The last segment ends at the handle of the end of the clip, which is whole within it. */
+.retime-segment[data-last] .retime-speed {
+  left: calc(50% - 2.5px);
+  max-width: calc(100% - 15px);
 }
 
 .retime-speed:focus-visible,
@@ -1212,7 +1252,7 @@
   position: absolute;
   left: -5px;
   width: 9px;
-  height: 12px;
+  height: 10px;
   padding: 0;
   box-sizing: border-box;
   border: 1px solid var(--ink-0);
@@ -1227,17 +1267,19 @@
 }
 
 .retime-handle[data-retime-handle='lower'] {
-  bottom: 0;
+  /* On the strip of the key diamonds of the clip, in the row of the speeds: a key at the frame of a speed point keeps its diamond. */
+  bottom: 13px;
   background: var(--warn);
 }
 
-/* The handle at the end of the clip is whole within it. */
+/* The handle at the end of the clip is whole within it, under the Keyframe button of the clip, which keeps its corner. */
 .retime-point[data-end] {
   border-left: 0;
 }
 
 .retime-point[data-end] .retime-handle {
   left: -9px;
+  top: 20px;
 }
 
 .retime-handle:disabled {
@@ -1325,9 +1367,18 @@
   grid-template-areas: "bar bar bar" "pool viewer inspector" "timelines timelines inspector";
 }
 .cut-inspector { grid-area: inspector; width: auto; min-height: 0; max-height: none; overflow: auto; }
+/* The buttons of the keys of a setting, under its field: to the key before, a key at the playhead, to the key after.
+   Each is 22px to press and is drawn as a button at rest. The diamond is hollow in the colour of the page where the
+   setting has no keys, hollow in the colour of keys (that of the diamonds on the timeline) where it has, and filled
+   and lit where a key is at the playhead. */
 .audio-param-keys { display: flex; align-items: center; gap: 4px; padding: 0 0 8px; }
 .audio-param-keys select { min-width: 0; flex: 1; }
-.audio-param-keys [data-hit] { color: #f49a38; }
+.audio-param-keys .icon-btn { flex: none; padding: 0; width: 22px; height: 22px; border: 1px solid var(--line-strong); color: var(--moon-1); }
+.audio-param-keys .icon-btn:disabled { border-color: var(--line); color: var(--moon-3); }
+.audio-param-keys .key-diamond { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+.audio-param-keys .icon-btn[data-keyed]:not(:disabled) { color: var(--warn); }
+.audio-param-keys .icon-btn[data-hit], .audio-param-keys .icon-btn[aria-pressed='true'] { border-color: var(--warn); background: var(--warn-wash); color: var(--warn); }
+.audio-param-keys [data-hit] .key-diamond, .audio-param-keys [aria-pressed='true'] .key-diamond { fill: currentColor; }
 .clip-eq .processor-panel { min-width: 0; padding: 4px 0; }
 .clip-eq .eq-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .clip-eq .processor-toolbar { flex-wrap: wrap; }
@@ -1338,6 +1389,14 @@
 .audio-config > button { margin: 4px 4px 4px 0; }
 .file-waveforms { display: grid; gap: 4px; min-width: 0; }
 .media-file { min-width: 0; }
+/* The audio of the chosen medium, in the pane of the pool: set in from its edges as the facts above it are, in the fields of the Inspector. */
+.pool-audio { padding: var(--s2) var(--s3); border-top: 1px solid var(--line); }
+.pool-audio p { margin: 4px 0; }
+.pool-audio .media-file h3 { margin: var(--s2) 0; font-size: 12px; overflow-wrap: anywhere; }
+.pool-audio .inspector-label { margin: 0; }
+.pool-audio .btn { min-height: 26px; padding: 0 var(--s2); font-size: var(--text-caption); }
+.media-file-controls .check { flex: none; gap: 4px; }
+.file-audition .btn { min-height: 26px; padding: 0 var(--s2); font-size: var(--text-caption); }
 .media-file-controls { display: flex; flex-wrap: wrap; gap: 6px; border: 0; padding: 4px 0; margin: 0; min-width: 0; }
 .media-file-controls label { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .media-file-controls select { min-width: 0; max-width: 100%; }
@@ -1415,8 +1474,8 @@
   font-size: var(--text-caption);
 }
 
-/* A button that cannot be pressed here, held so that its hint still shows on hover. */
-.cut-button-off {
+/* What holds each button: one that cannot be pressed is not hovered, and its hint, which says why, shows on what holds it. */
+.cut-button-hold {
   display: inline-flex;
 }
 

@@ -4,6 +4,7 @@
  * setting at the playhead with and without keys, where the keys are on the timeline, and the Video
  * tab that shows a keyed setting as it is at the playhead, with the three buttons beside it.
  */
+import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
@@ -142,6 +143,13 @@ describe('the Video tab of a clip whose transform has keys', () => {
     const between = mount(keyed([key(0, 0), key(40, 0.25)]), 30);
     const [before, diamond, after] = buttons('transform.x');
     expect(diamond.getAttribute('aria-pressed')).toBe('false');
+    // Each is a button with a face that is drawn, not a letter of the font: two arrows and the diamond of a key.
+    expect([before, diamond, after].map(each => [each.className, each.querySelector('svg') !== null, each.textContent])).toEqual([
+      ['icon-btn', true, ''], ['icon-btn', true, ''], ['icon-btn', true, '']]);
+    expect(diamond.querySelector('svg.key-diamond')).not.toBeNull();
+    expect([before.title, diamond.title, after.title]).toEqual(['Previous keyframe', 'Add keyframe', 'Next keyframe']);
+    // The diamond of a setting that has keys says so, though none is at the playhead.
+    expect([diamond.hasAttribute('data-keyed'), diamond.hasAttribute('data-hit')]).toEqual([true, false]);
     fireEvent.click(diamond); await settle();
     expect(applied(between.call)).toEqual([{ revision: 17, ops: [splice(1, 0, [key(20, 0.125)])] }]);
     fireEvent.click(before); fireEvent.click(after);
@@ -149,6 +157,7 @@ describe('the Video tab of a clip whose transform has keys', () => {
     // A setting with no keys has nowhere to go; its diamond puts its first key.
     const [none, first] = buttons('transform.rotation');
     expect(none.disabled).toBe(true);
+    expect([first.hasAttribute('data-keyed'), first.hasAttribute('data-hit'), first.getAttribute('aria-pressed')]).toEqual([false, false, 'false']);
     fireEvent.click(first); await settle();
     expect(applied(between.call)[1]).toEqual({ revision: 17, ops: [{ op: 'splice_clip_keys', timeline: 't1', id: 'c1', path: 'transform.rotation', at: 0, remove: 0, keys: [key(20, 0)] }] });
     cleanup();
@@ -156,7 +165,15 @@ describe('the Video tab of a clip whose transform has keys', () => {
     const on = mount(keyed([key(0, 0), key(40, 0.25)]), 50);
     const [, lit, next] = buttons('transform.x');
     expect(lit.getAttribute('aria-pressed')).toBe('true');
+    expect([lit.hasAttribute('data-keyed'), lit.hasAttribute('data-hit'), lit.title]).toEqual([true, true, 'Remove keyframe']);
     expect(next.disabled).toBe(true);
+    // The style sheet draws the three apart: 22px to press and a border at rest, the colour of keys where the setting has keys,
+    // and the diamond filled and lit where a key is at the playhead.
+    const css = readFileSync('src/studio/Studio.css', 'utf8');
+    expect(css).toMatch(/\.audio-param-keys \.icon-btn \{[^}]*width: 22px; height: 22px; border: 1px solid var\(--line-strong\); color: var\(--moon-1\);/);
+    expect(css).toMatch(/\.audio-param-keys \.key-diamond \{ fill: none; stroke: currentColor;/);
+    expect(css).toMatch(/\.audio-param-keys \.icon-btn\[data-keyed\]:not\(:disabled\) \{ color: var\(--warn\); \}/);
+    expect(css).toMatch(/\.audio-param-keys \[data-hit\] \.key-diamond, \.audio-param-keys \[aria-pressed='true'\] \.key-diamond \{ fill: currentColor; \}/);
     fireEvent.click(lit); await settle();
     expect(applied(on.call)).toEqual([{ revision: 17, ops: [splice(1, 1, [])] }]);
   });

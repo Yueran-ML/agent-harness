@@ -7,12 +7,13 @@
  * resized, the page is zoomed (its `devicePixelRatio` changes, and the shell says `measure`).
  * It is told at most once a frame, and only when it changed (or when the shell asked).
  *
- * The view is shown once the viewer has been told, and hidden while anything lies over the page
- * (see `useOverlay`), while the page is hidden, and when the viewer is no longer shown.
+ * The view is shown once the viewer has been told, and hidden while anything lies over the viewer
+ * (see `useOverlay`: a sheet or a dialog lies over all of the page, a menu only where it says it
+ * is), while the page is hidden, and when the viewer is no longer shown.
  */
 import { useEffect, type RefObject } from 'react';
 import type { EngineBridge } from '../bridge';
-import { overlayOpen, subscribeOverlay } from '../app/overlay';
+import { overlayCovers, subscribeOverlay } from '../app/overlay';
 import { deviceRect, type Monitor, type ViewRect } from './engine';
 
 /** What of the engine the viewer needs. */
@@ -49,7 +50,8 @@ export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: Vie
     let shown: boolean | null = null;
 
     const showAsItIs = () => {
-      const show = measured && !overlayOpen() && document.visibilityState !== 'hidden';
+      // Where the viewer lies is read now, not as it was last told: a menu is asked where it lies now too.
+      const show = measured && document.visibilityState !== 'hidden' && !overlayCovers(element.getBoundingClientRect());
       if (show === shown) return;
       shown = show;
       quietly(() => bridge.viewShow(show, monitor));
@@ -66,10 +68,9 @@ export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: Vie
       if (!asked && told !== null && same(told, rect)) return;
       told = rect;
       quietly(() => bridge.viewRect(rect, monitor));
-      if (!measured) {
-        measured = true;
-        showAsItIs();
-      }
+      // A viewer that moved may have come under a menu that is open, or out from under it.
+      measured = true;
+      showAsItIs();
     };
     /** Measure at the next frame, once however often it is asked for before. */
     const schedule = (tell = false) => {

@@ -8,6 +8,7 @@
  *
  * The page is a timeline with what the Edit page gives it: the Retime Controls that are open.
  */
+import { readFileSync } from 'node:fs';
 import { memo, type FunctionComponent } from 'react';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +22,7 @@ import { useRetimeControls } from '../src/studio/timeline/useRetimeControls';
 import { clip, media } from './timeline-fixture';
 import { bigTimeline, readyBridge } from './timeline-perf-fixture';
 import { likeABrowser } from './mounted';
+import { blockOf } from './stylesheet';
 
 const drawn = vi.hoisted(() => ({ bars: 0 }));
 /** A component of a module, drawn as it is (a memo component stays one) and counted each time it is drawn. */
@@ -146,6 +148,32 @@ describe('the Retime Controls of a clip', () => {
       ['upper', 20, false], ['lower', 20, false], ['upper', 30, true], ['lower', 30, false], ['upper', 60, false],
     ]);
     expect(handles().map(each => each.parentElement!.style.getPropertyValue('--at'))).toEqual(['20', '20', '30', '30', '60']);
+  });
+
+  it('keep off the controls of the clip beneath, and the clip does not say the range of its speeds while they are open', () => {
+    wire(timelineOf([pointed(), clip('c2', 100, 50, { retime: retime([0, 2, 1], [20, 1, 1]) })]));
+    const badge = (id: string) => clipOf(id).querySelector('.timeline-clip-speed')?.textContent ?? null;
+    expect([badge('c1'), badge('c2')]).toEqual(['−50–100%', '100–200%']);
+    const bar = open();
+    // The bar says the speed of each segment; the badge of the clip, which would lie on the last of them, is gone, and that of the other clip stays.
+    expect([badge('c1'), badge('c2')]).toEqual([null, '100–200%']);
+    // Only the last segment says that it is: its speed leaves room for the handle at the end of the clip.
+    expect(segments().map(each => each.hasAttribute('data-last'))).toEqual([false, false, true]);
+    fireEvent.click(bar.querySelector('[data-test="retime-close"]')!);
+    expect(badge('c1')).toBe('−50–100%');
+    // Where each control lies is the style sheet's, which the DOM of the tests does not lay out: the rules are read.
+    const css = readFileSync('src/studio/Studio.css', 'utf8');
+    // The Keyframe button of the clip keeps its corner (2px in, 16px), the close button is at its left, and the handle at the end of the clip is under it.
+    expect(blockOf(css, '.clip-keys-toggle')).toMatch(/top: 2px;\s+right: 2px;\s+width: 16px;\s+height: 16px;/);
+    expect(blockOf(css, '.retime-close')).toMatch(/top: 2px;[^}]*right: 20px;/);
+    expect(blockOf(css, '.retime-point[data-end] .retime-handle')).toMatch(/left: -9px;\s+top: 20px;/);
+    // The key diamonds have the lowest strip of the clip (7px, 3px up); the speeds and the lower handles stand on it, and the upper handles are at the upper edge.
+    expect(blockOf(css, '.clip-key')).toMatch(/bottom: 3px;[^}]*height: 7px;/);
+    expect(blockOf(css, '.retime-speed')).toMatch(/bottom: 13px;[^}]*max-width: calc\(100% - 10px\);/);
+    expect(blockOf(css, ".retime-handle[data-retime-handle='lower']")).toContain('bottom: 13px;');
+    expect(blockOf(css, ".retime-handle[data-retime-handle='upper']")).toContain('top: 0;');
+    expect(blockOf(css, '.retime-handle')).toMatch(/width: 9px;\s+height: 10px;/);
+    expect(blockOf(css, '.retime-segment[data-last] .retime-speed')).toMatch(/left: calc\(50% - 2\.5px\);\s+max-width: calc\(100% - 15px\);/);
   });
 
   it('follow the clip as the project changes, and close where the clip is gone', () => {

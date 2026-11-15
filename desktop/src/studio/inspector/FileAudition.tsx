@@ -165,8 +165,8 @@ export function FileTransport({ audition, disabled = false }: { audition: FileAu
   const t = useFairlightText();
   return <div className="file-audition">
     <div role="group" aria-label={t('Source audition')}>
-      <button type="button" data-audition-control="play" disabled={disabled || audition.playing} onClick={audition.play}>{t('Play source')}</button>
-      <button type="button" data-audition-control="stop" disabled={disabled} onClick={audition.stop}>{t('Stop source')}</button>
+      <button type="button" className="btn" data-audition-control="play" disabled={disabled || audition.playing} onClick={audition.play}>{t('Play source')}</button>
+      <button type="button" className="btn" data-audition-control="stop" disabled={disabled} onClick={audition.stop}>{t('Stop source')}</button>
       <output aria-label={t('Source position')}>{audition.position.toFixed(2)} s</output>
     </div>
     <p className="caption">{t('Audition uses source channels and channel levels only.')}</p>

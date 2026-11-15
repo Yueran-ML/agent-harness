@@ -10,6 +10,15 @@ import { createContext, useContext, useEffect, useId, useRef, useState, type Key
  * other callers keep the original commit-on-release behavior.
  */
 
+/**
+ * The face of the button that puts a key at the playhead, or takes away the one there: a diamond,
+ * as a key is drawn on the timeline. The style sheet draws it hollow, and filled where a key is
+ * at the playhead (`.audio-param-keys`).
+ */
+export function KeyDiamond() {
+  return <svg className="key-diamond" width="11" height="11" viewBox="0 0 10 10" aria-hidden="true"><path d="M5,0.8 L9.2,5 L5,9.2 L0.8,5 Z" /></svg>;
+}
+
 /** Whether the fields are off: the clips they set are on locked tracks, which cannot be changed (Reference Manual 20, p. 762). */
 export const FieldsLocked = createContext(false);
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Timeline } from '../engine';
 import { clipLocations } from './selection';
 
@@ -18,6 +18,13 @@ export interface RetimeControlsState {
    */
   onToggle: (clips: readonly string[]) => void;
 }
+
+/**
+ * The clips whose Retime Controls are open on the timeline that draws a clip; null where none are,
+ * and on a timeline that has none. Only a clip that has speed points reads it (the badge of its
+ * speeds, in `ClipView`), so that a clip without them is drawn again for nothing here.
+ */
+export const OpenRetimeControls = createContext<ReadonlySet<string> | null>(null);
 
 /** Whether a clip may show Retime Controls: it is there, and is cut from media. (A still has no speed either; the engine says so where an edit is asked of it.) */
 const retimable = (timeline: Timeline, id: string): boolean => clipLocations(timeline).get(id)?.clip.source.kind === 'media';

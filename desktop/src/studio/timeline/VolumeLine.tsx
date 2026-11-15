@@ -37,7 +37,10 @@ export function VolumeLine({ clip, timeline, rate, scale, height, sampleRate, sn
   useEffect(() => { if (navigation.current && frame !== navigation.current.displayed) navigation.current = null; }, [frame]);
   useEffect(() => { navigation.current = null; }, [clip, timeline, session]);
   const [menu, setMenu] = useState<{ x: number; y: number; at: number } | null>(null);
-  useOverlay(menu !== null);
+  // The menu of a key says where it lies: the engine's view is hidden only where it reaches the viewer.
+  const popup = useRef<HTMLDivElement>(null);
+  const popupBoxes = useCallback(() => [...(popup.current?.querySelectorAll('[role="menu"]') ?? [])].map(each => each.getBoundingClientRect()), []);
+  useOverlay(menu !== null, popupBoxes);
   const closeMenu = useCallback(() => { setMenu(null); group.current?.focus(); }, []);
   const [tip, setTip] = useState<{ value: number; delta: number } | null>(null);
   useEffect(() => () => gesture.cancel(), []);
@@ -216,7 +219,7 @@ export function VolumeLine({ clip, timeline, rate, scale, height, sampleRate, sn
       onContextMenu={event => { event.preventDefault(); event.stopPropagation(); navigation.current = null; if (!selected.includes(keyId(key))) setSelected([keyId(key)]); setMenu({ x: event.clientX, y: event.clientY, at: keyId(key) }); }} />
     </g>; })}
     {tip && active && <text className="audio-gain-tip" x={left + 8} y={11 * 100 / height} style={{ fontSize: 10 * 100 / height }}>{tip.value.toFixed(1)} dB ({tip.delta >= 0 ? '+' : ''}{tip.delta.toFixed(1)} dB)</text>}
-    {menu && createPortal(<div className="audio-key-popup" onKeyDown={event => event.stopPropagation()}><TimelineMenu label={t('Keyframe interpolation')} onClose={closeMenu} menu={{
+    {menu && createPortal(<div ref={popup} className="audio-key-popup" onKeyDown={event => event.stopPropagation()}><TimelineMenu label={t('Keyframe interpolation')} onClose={closeMenu} menu={{
       x: Math.min(menu.x, Math.max(0, window.innerWidth - 190)), y: Math.min(menu.y, Math.max(0, window.innerHeight - 120)),
       items: (['linear', 'ease_in', 'ease_out'] as const).map(interp => ({ id: interp, disabled: locked,
         label: t(interp === 'linear' ? 'Linear' : interp === 'ease_in' ? 'Ease In' : 'Ease Out'),

@@ -56,7 +56,7 @@ the model does, reads while a tool runs, waits with you for a yes and waves when
 A click on it brings the window back. Three pets come with the application, the settings show
 and choose one, and a pet of your own is a folder put in the folder that they open. What the
 task is doing is written to a file by the plugin `columbina.pets`, which a pet program of your
-own can read too. See [Pets](../docs/pets.md).
+own can read too.
 
 Files go with a message through the paperclip at the foot of the field, or when they are
 dropped on it: ten at most, of up to 25 MB each. Each is shown with its name and size, and
@@ -157,8 +157,7 @@ after DaVinci Resolve, with a Media, a Cut and an Edit page, and its project,
 own laid over the page; the page sends its edits to the engine, and never a path to write: an
 export asks for its file in the save dialog of the system, through the shell. When the studio
 opens a folder, the shell runs `columbina video migrate` in the background, and the page tells
-what came of it. [Editing video](../docs/video.md) says what the pages do, with the keys of the
-studio. On macOS and Linux the entry is greyed out and says that the studio comes to macOS
+what came of it. On macOS and Linux the entry is greyed out and says that the studio comes to macOS
 later; the shell starts no engine there.
 
 ## The service of the model, and its key

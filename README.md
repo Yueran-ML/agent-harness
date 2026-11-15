@@ -232,7 +232,7 @@ columbina login github
   editor such as Zed.
 - **Video.** With `COLUMBINA_VIDEO=1` the agent cuts a film by what is said in it, adds
   subtitles from the speech, grades it on the nodes of the Color page, matches its shots and
-  exports it, on the same timeline as the editing studio below. See [Editing video](docs/video.md).
+  exports it, on the same timeline as the editing studio below.
 
 ### The editing studio
 
@@ -243,7 +243,6 @@ Resolve's keys and mouse gestures. It plays timelines in real time on the graphi
 exports H.264, HEVC or ProRes with SRT subtitles beside the film. The agent edits and grades the
 same timeline with its video tools, and the person and the agent undo each other's steps in one
 history. Films that the agent cut before are made timelines when the studio opens.
-[Editing video](docs/video.md) says how to use it, with its keys.
 
 The Fairlight page works on the same audio tracks as Edit. Clip volume and pan have keyframes;
 fade handles, crossfades, channel mapping and Normalize Audio Levels share the same controls
@@ -323,14 +322,8 @@ Each assistant may ask a model of its own, and think as hard as you choose for i
 
 ## Documentation
 
-- [The engineering report](docs/report.md) tells how Columbina is put together, which choices
-  shaped it, how it is tested and how well it works ([in Chinese](docs/report.zh-CN.md)).
 - [The tables of the benchmark](docs/bench/README.md) give its results with two models of
   DeepSeek, part by part, and what they cost.
-- [Pets](docs/pets.md) says how to make a pet for the desktop application, and how a program of
-  your own can follow what the task is doing.
-- [Editing video](docs/video.md) says how the editing studio and the agent cut and grade a
-  film, and there is a Chinese and a Japanese one beside it.
 
 ## License
 

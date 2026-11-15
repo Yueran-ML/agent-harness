@@ -6,7 +6,7 @@
 // Usage: node scripts/draw-pets.mjs [folder]   (public/pets of the desktop folder by default)
 //
 // The sheet is laid out as the pets of Codex are: cells of 192 by 208 pixels, eight to a row, a row
-// for each of nine ways of being. See docs/pets.md in the repository for the format.
+// for each of nine ways of being.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

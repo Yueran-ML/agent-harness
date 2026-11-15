@@ -1,7 +1,7 @@
 """What a task is doing, written down for a desktop pet.
 
 This module is a plugin. Loading it with a file in its config has the
-conversations of the program told in that file, as docs/pets.md describes it:
+conversations of the program told in that file:
 a pet of the desktop application reads it, and so can any program of somebody
 else. Without a file it does nothing.
 

@@ -6,8 +6,8 @@ build-backend = "hatchling.build"
 name = "columbina"
 version = "0.2.0"
 description = "A plugin-based agent harness for Python."
-# The description on PyPI: its links lead to the repository, and it has none of the pictures.
-readme = "docs/pypi.md"
+# The description on PyPI is the README of the repository.
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -44,7 +44,6 @@ Homepage = "https://github.com/Yueran-ML/agent-harness"
 Documentation = "https://github.com/Yueran-ML/agent-harness#readme"
 Repository = "https://github.com/Yueran-ML/agent-harness"
 Issues = "https://github.com/Yueran-ML/agent-harness/issues"
-Changelog = "https://github.com/Yueran-ML/agent-harness/blob/main/CHANGELOG.md"
 
 # The SDK of the Model Context Protocol brings some thirty packages with it. Whoever uses
 # no MCP server does not need them: `pip install columbina[mcp]` installs them.
@@ -157,7 +156,7 @@ branch = true
 source_pkgs = ["columbina", "bench"]
 # A few lines each, run by a test in a process of its own; and what speaks to the desktop of
 # a machine for the tool `computer`, which no machine that runs the tests has: those three are
-# tried by hand on a real desktop, see docs/computer.md.
+# tried by hand on a real desktop.
 omit = [
   "*/columbina/__main__.py",
   "*/bench/__main__.py",

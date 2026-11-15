@@ -22,9 +22,6 @@ ROOT = Path(__file__).parent.parent
 READMES = ("README.md", "README.zh-CN.md", "README.ja.md")
 DOCUMENTS = (
     *READMES,
-    "docs/report.md",
-    "docs/report.zh-CN.md",
-    "docs/bench/README.md",
     "desktop/README.md",
 )
 # The English README, and a translation that is held to it.

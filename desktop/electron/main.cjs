@@ -512,7 +512,7 @@ async function startServiceIn(where, words) {
   log.on('error', () => {});
   const child = spawn(config.executable, args, {
     // The service writes what its task does to the file that the pet reads, as the plugin
-    // columbina.pets does where it is named. See docs/pets.md.
+    // columbina.pets does where it is named.
     // Its agent reaches the studio's project through the same engine as the window.
     cwd, env: { ...config.env, COLUMBINA_PET_STATE: petStateFile(), ...engineOfTheService() }, windowsHide: true,
     detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],

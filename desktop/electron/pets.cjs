@@ -1,4 +1,4 @@
-// The pets of the application: packages of a pet, as docs/pets.md in the repository describes them,
+// The pets of the application: packages of a pet,
 // and the file in which the service process says what its task is doing.
 //
 // A package is a folder with `pet.json` and a sheet of frames. The sheet is laid out as the pets of

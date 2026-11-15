@@ -13,7 +13,7 @@ rights to these images, video, character designs, or any music.
 | `columbina-intro.mp4` | User-supplied Jimeng AI opening video, dated 2026-10-09. Original source only; kept outside the repository and never copied into the application. |
 | `columbina-intro-extended.mp4` | Derived from that opening video. Final three seconds slowed to half speed, original audio removed. `AIGC`, `UserComment` and `LvMetaInfo` provenance tags are preserved and checked by the conversion script. |
 | `moonlit-columbina.png` | User-supplied AI fan illustration of Columbina, used as the opening poster. |
-| `columbina-icon.png`, `electron/icon.ico`, `electron/icon.icns` | AI-generated silver dove, created using OpenAI's image generation tool. Prompt and conversion details are recorded in `electron/icon-design.md`. |
+| `columbina-icon.png`, `electron/icon.ico`, `electron/icon.icns` | AI-generated silver dove, created using OpenAI's image generation tool. |
 
 The three runtime visual files, `columbina-intro-extended.mp4`, `moonlit-columbina.png`
 and `columbina-icon.png`, are kept in `desktop/assets/` since 2026-10-15, so that every

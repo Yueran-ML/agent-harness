@@ -16,6 +16,10 @@ change what was there before.
   the clip keeps its length, as one step to undo. A clip with speed points says the slowest
   and the fastest of its speeds, its waveform, its volume line and the keyframes of its
   picture follow the speed points, and Change Clip Speed gives such a clip one speed again.
+  The agent changes the speed points with the edits `add_speed_point`, `set_segment_speed`,
+  `freeze_frame`, `reverse_segment`, `clear_speed_point` and `reset_speed` of `video_edit`, or
+  sets them whole with the operation `set_retime`; `video_info` lists them, and the story of a
+  track, the ducking of music and the keyframes of a clip's picture follow them.
 - The Color page has its Keyframe Editor (studio, phase 4), at the right of the palettes: a
   track for each node of the grade under a master track, with dynamic keyframes (diamonds,
   Ctrl+[) and static ones (circles, Ctrl+]), put on every node in the All mode or on the

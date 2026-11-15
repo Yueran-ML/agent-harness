@@ -14,7 +14,10 @@ from columbina.video.edits import (
     Key,
     Keys,
     Rate,
+    Retime,
+    SignedSpeed,
     Speed,
+    SpeedPoint,
     Time,
     TitleStyle,
     Transform,
@@ -258,6 +261,10 @@ def test_values_that_the_engine_could_not_read_are_refused_before_they_are_sent(
         lambda: Speed(num=0, den=1),
         lambda: Rate(num=25, den=0),
         lambda: TitleStyle(size=0),
+        lambda: SignedSpeed(num=-1, den=0),
+        lambda: SpeedPoint(frame=-1),
+        lambda: Retime(points=[]),
+        lambda: Retime(points=[SpeedPoint(frame=frame) for frame in range(1025)]),
     ):
         with pytest.raises(ValidationError):
             wrong()
@@ -517,3 +524,108 @@ def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> N
         "composite": "screen",
     }
     assert edits.set_clip_keys("t1", "c2", "crop.softness", 0.25)["path"] == "crop.softness"
+
+
+def test_the_edits_of_speed_points_are_written_with_the_frame_of_the_clip() -> None:
+    assert edits.add_speed_point("t1", "c2", 12) == {
+        "edit": "add_speed_point", "timeline": "t1", "clip": "c2", "at": 12, "linked": True,
+    }  # fmt: skip
+    assert edits.set_segment_speed("t1", "c2", 12, Speed.of(Fraction(1, 2)), ripple=True) == {
+        "edit": "set_segment_speed", "timeline": "t1", "clip": "c2", "at": 12,
+        "speed": {"num": 1, "den": 2}, "ripple": True, "linked": True,
+    }  # fmt: skip
+    assert edits.freeze_frame("t1", "c2", 12, 25, linked=False) == {
+        "edit": "freeze_frame", "timeline": "t1", "clip": "c2", "at": 12, "hold": 25,
+        "ripple": False, "linked": False,
+    }  # fmt: skip
+    assert edits.reverse_segment("t1", "c2", 0) == {
+        "edit": "reverse_segment", "timeline": "t1", "clip": "c2", "at": 0, "linked": True,
+    }  # fmt: skip
+    assert edits.clear_speed_point("t1", "c2", 30, linked=False) == {
+        "edit": "clear_speed_point", "timeline": "t1", "clip": "c2", "at": 30, "linked": False,
+    }  # fmt: skip
+    assert edits.reset_speed("t1", "c2", ripple=True) == {
+        "edit": "reset_speed", "timeline": "t1", "clip": "c2", "ripple": True, "linked": True,
+    }  # fmt: skip
+
+
+def test_the_speed_points_of_a_clip_are_set_whole_or_taken_away() -> None:
+    points = Retime(
+        points=[
+            SpeedPoint(frame=0),
+            SpeedPoint(frame=4, speed=SignedSpeed(num=0, den=1)),
+            SpeedPoint(frame=7, speed=SignedSpeed.of(Fraction(-1, 2))),
+        ]
+    )
+
+    assert edits.set_retime("t1", "c2", points, length=10) == {
+        "op": "set_retime",
+        "timeline": "t1",
+        "id": "c2",
+        "retime": {
+            "points": [
+                {"frame": 0, "speed": {"num": 1, "den": 1}},
+                {"frame": 4, "speed": {"num": 0, "den": 1}},
+                {"frame": 7, "speed": {"num": -1, "den": 2}},
+            ]
+        },
+        "length": 10,
+    }
+    # The speed of the source, forward, is written as null, and the length is left out.
+    assert edits.set_retime("t1", "c2", None) == {
+        "op": "set_retime", "timeline": "t1", "id": "c2", "retime": None,
+    }  # fmt: skip
+    assert SignedSpeed.of(0) == SignedSpeed(num=0, den=1)
+    assert SignedSpeed.of(Fraction(6, -4)) == SignedSpeed(num=-3, den=2)
+
+
+async def test_the_edits_of_speed_points_change_the_speed_points_of_a_clip(tmp_path: Path) -> None:
+    def clip(fake: fake_engine.Fake) -> Any:
+        return fake.project["timelines"][0]["tracks"][0]["clips"][0]
+
+    def points(fake: fake_engine.Fake) -> list[tuple[int, int, int]]:
+        written = clip(fake)["retime"]["points"]
+        return [(one["frame"], one["speed"]["num"], one["speed"]["den"]) for one in written]
+
+    async with served(tmp_path / "film") as fake:
+        async with await Engine.attach(tmp_path / "film", program=fake_engine.__file__) as one:
+            await one.apply(
+                [edits.add_timeline("Cut", Rate(num=25, den=1), tracks=[edits.track("video")])]
+            )
+            await one.apply([edits.insert("t1", of_media("m1", start=FROM, length=10), 0)])
+            id = clip(fake)["id"]
+
+            # The numbers of the tests of retime.rs: a frame held for 3 frames more,
+            # a_freeze_holds_a_picture_and_the_clip_plays_on_from_it.
+            applied = await one.apply([edits.freeze_frame("t1", id, 4, 3)])
+            assert [done["op"] for done in applied.done] == ["set_retime"]
+            assert points(fake) == [(0, 1, 1), (4, 0, 1), (7, 1, 1)]
+            assert clip(fake)["length"] == 13
+            # The last segment turned round, and then played twice as fast over what it showed.
+            await one.apply([edits.reverse_segment("t1", id, 9)])
+            assert points(fake) == [(0, 1, 1), (4, 0, 1), (7, -1, 1)]
+            await one.apply([edits.set_segment_speed("t1", id, 9, Speed.of(2))])
+            assert points(fake) == [(0, 1, 1), (4, 0, 1), (7, -2, 1)]
+            assert clip(fake)["length"] == 10
+            # A speed point where one is changes nothing, and one elsewhere splits its segment.
+            again, split = edits.add_speed_point("t1", id, 4), edits.add_speed_point("t1", id, 2)
+            await one.apply([again, split])
+            assert points(fake) == [(0, 1, 1), (2, 1, 1), (4, 0, 1), (7, -2, 1)]
+            # Cleared, the freeze is shared out over the segment before it:
+            # a_speed_point_that_is_cleared_leaves_a_straight_line_between_its_neighbours.
+            await one.apply([edits.clear_speed_point("t1", id, 5)])
+            assert points(fake) == [(0, 1, 1), (2, 2, 5), (7, -2, 1)]
+            # At its own speed it shows once the 6 frames that its path went through.
+            await one.apply([edits.reset_speed("t1", id)])
+            assert "retime" not in clip(fake)
+            assert clip(fake)["length"] == 6
+            # The operation sets them whole.
+            turned = SpeedPoint(frame=3, speed=SignedSpeed.of(-1))
+            whole = Retime(points=[SpeedPoint(frame=0), turned])
+            await one.apply([edits.set_retime("t1", id, whole)])
+            assert points(fake) == [(0, 1, 1), (3, -1, 1)]
+
+        assert [one["edit"] for one in fake.edits[1:]] == [
+            "freeze_frame", "reverse_segment", "set_segment_speed", "add_speed_point",
+            "add_speed_point", "clear_speed_point", "reset_speed",
+        ]  # fmt: skip

@@ -296,7 +296,10 @@ Rec.709、Rec.2020、P3 等显示空间配各种 gamma，Rec.2100 HLG 和 ST2084
 `move`、`insert_move`（洗牌插入）、`trim`（修剪）、`roll`（滚动）、`slip`（滑移）、`slide`（滑动）、`set_speed`（变速）、
 `add_transition`、`set_transition`、`remove_transition`、`add_track`、`remove_track`、`add_cue`、`set_cue`、`remove_cue` 和 `cues_from`。
 同一批里可以混用协议的基本操作，例如 `add_timeline`、`add_bin`、`set_clip`（变换、裁切、合成模式、增益、声像、淡入淡出）、`set_clip_keys` 和 `splice_clip_keys`（变换或裁切里某一个参数的关键帧）、`set_track`、
-`set_media` 和 `set_timeline`。轨道锁定、链接和素材余量由引擎判断。时间线位置按整数帧计，源素材位置按 ticks 和 scale 计。
+`set_media` 和 `set_timeline`。片段的速度可以在中途变化，对应达芬奇的变速控制（Retime Controls）：`add_speed_point`（添加速度点）、
+`set_segment_speed`（改变一段的速度）、`freeze_frame`（冻结帧）、`reverse_segment`（倒放一段）、`clear_speed_point`（清除速度点）和
+`reset_speed`（重置为 100%）按片段内的帧号（从片段第一帧起算）修改速度点，基本操作 `set_retime` 一次写入全部速度点。
+片段的声音跟随速度点，冻结帧期间静音；带速度点的片段会拒绝 `set_speed`，先用 `reset_speed` 重置。轨道锁定、链接和素材余量由引擎判断。时间线位置按整数帧计，源素材位置按 ticks 和 scale 计。
 字段省略表示使用其默认规则，显式 `null` 表示清空该字段或关闭相应目标轨道。各命令的字段见工具说明。
 带 `to_track` 的 `move` 会让链接的片段在各自同类的轨道上移动同样的轨数（Linked Move Across Tracks）；
 带 `straddling="stay"` 的 `close_gap` 让其他轨道上跨在空隙里的片段留在原处，与快编页合上第一条视频轨的空隙相同。

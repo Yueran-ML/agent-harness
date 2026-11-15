@@ -958,3 +958,76 @@ async def test_an_operation_of_sound_is_given_the_timeline_of_the_tool(
     result(await desk.call("video_edit", edits=[set_lane]))
     (track,) = fake.project["timelines"][0]["tracks"]
     assert track["lanes"] == {"fader_db": lane}
+
+
+async def test_the_edits_of_speed_points_are_sent_and_told_and_what_is_wrong_is_refused(
+    studio: tuple[Desk, Fake],
+) -> None:
+    from support.studio import clip_of, timeline_of, track_of
+
+    desk, fake = studio
+    # c1: 10 frames of m1 from tick 100 of 25 a second, on a timeline of 25 frames a second.
+    picture = track_of("V1", [clip_of("c1", 0, 10, ticks=100, scale=25)], kind="video")
+    fake.project.update(next_id=20, timelines=[timeline_of(picture)])
+
+    # The tool fills the timeline of each edit, and of the operation.
+    batch = [
+        edits.freeze_frame("t1", "c1", 6, 3),
+        {"edit": "reverse_segment", "clip": "c1", "at": 12},
+        {"edit": "set_segment_speed", "clip": "c1", "at": 12, "speed": {"num": 2, "den": 1}},
+    ]
+    told = result(await desk.call("video_edit", edits=batch))
+    assert [one["op"] for one in told["done"]] == ["set_retime"] * 3
+    assert fake.edits[-1]["timeline"] == "t1"
+    assert len(fake.steps) == 1
+
+    # video_info shows the speed points beside the speed, and where the path is highest.
+    (clip,) = result(await desk.call("video_info"))["timelines"][0]["tracks"][0]["clips"]
+    # Frame 6 held for 3 frames more; then the 4 frames after it play backward, and twice
+    # as fast in 2 frames.
+    assert clip["length"] == 11
+    assert clip["speed"] == {"num": 1, "den": 1}
+    assert clip["retime"] == {
+        "points": [
+            {"frame": 0, "speed": {"num": 1, "den": 1}},
+            {"frame": 6, "speed": {"num": 0, "den": 1}},
+            {"frame": 9, "speed": {"num": -2, "den": 1}},
+        ]
+    }
+    # 6 frames up, held, and 4 frames back down: the highest place is 6 frames in.
+    assert clip["source_out"] == {"ticks": 106, "scale": 25}
+
+    slow, fast = {"num": 1, "den": 2}, {"num": 3, "den": 1}
+    whole = {"points": [{"frame": 0, "speed": slow}, {"frame": 5, "speed": fast}]}
+    result(await desk.call("video_edit", edits=[{"op": "set_retime", "id": "c1", "retime": whole}]))
+    assert fake.project["timelines"][0]["tracks"][0]["clips"][0]["retime"] == whole
+    assert fake.transactions[-1][0]["timeline"] == "t1"
+
+    # What is wrong is refused by the engine, as any other edit is, and nothing is changed.
+    before = fake.project["timelines"][0]["tracks"][0]["clips"][0].copy()
+    for wrong, code in [
+        ({"edit": "freeze_frame", "clip": "c1", "at": 11, "hold": 3}, "VIDEO_OUT_OF_RANGE"),
+        ({"edit": "freeze_frame", "clip": "c1", "at": 4, "hold": 0}, "VIDEO_OUT_OF_RANGE"),
+        ({"edit": "clear_speed_point", "clip": "c1", "at": 2}, "VIDEO_OUT_OF_RANGE"),
+        ({"edit": "add_speed_point", "clip": "c9", "at": 2}, "VIDEO_MISSING"),
+        ({"edit": "hold_frame", "clip": "c1", "at": 2}, "VIDEO_UNKNOWN_EDIT"),
+    ]:
+        failed = await desk.call("video_edit", edits=[wrong])
+        assert failed.error is not None, wrong
+        assert failed.error.code == code, wrong
+    assert fake.project["timelines"][0]["tracks"][0]["clips"][0] == before
+    assert len(fake.steps) == 2
+
+
+def test_the_tool_tells_what_the_edits_of_speed_points_do() -> None:
+    tools = columbina.video.tools_of(Videos(Config(), None))
+    (tool,) = [one for one in tools if one.name == "video_edit"]
+    told = tool.schema.description
+    for name in (
+        "add_speed_point", "set_segment_speed", "freeze_frame", "reverse_segment",
+        "clear_speed_point", "reset_speed", "set_retime",
+    ):  # fmt: skip
+        assert name in told
+    assert "at is a frame of the clip" in told
+    assert "silent in a freeze" in told
+    assert "set_speed is refused (retimed) on such a clip until reset_speed" in told

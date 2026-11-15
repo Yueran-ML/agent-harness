@@ -13,9 +13,13 @@ operations only, as the engine answers it, but they are made up simply. An edit 
 source on a timeline becomes one ``insert_clip`` and nothing moves; ``lift`` and
 ``ripple_delete`` take their clips away; ``ripple_delete_range`` cuts the frames out of every
 track that is not locked, as the engine does for clips that play forward; ``add_track`` and
-``remove_track`` do what they say; any other edit is answered with a ``set_timeline`` that changes
-nothing. An edit that names a locked track, or a clip on one, is refused with ``locked``. A
-render writes a few bytes where it is told to, and tells its progress to every connection.
+``remove_track`` do what they say; an edit of the Retime Controls (``add_speed_point``,
+``set_segment_speed``, ``freeze_frame``, ``reverse_segment``, ``clear_speed_point``,
+``reset_speed``) becomes one ``set_retime`` of the clip that it names, its speed points counted
+as the engine counts them, and nothing else moves; any other edit is answered with a
+``set_timeline`` that changes nothing. An edit that names a locked track, or a clip on one, is
+refused with ``locked``. A render writes a few bytes where it is told to, and tells its progress
+to every connection.
 
 Grades (schema 3) are kept as simply: the operations of grades and groups do what they say, an
 edit that adds a corrector becomes one ``add_node`` linked as the engine links it (beside a node,
@@ -58,6 +62,7 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, cast
 
@@ -160,29 +165,43 @@ _PLACING = {
     "place_on_top",
     "append",
 }
-_EDITS = _PLACING | {
-    "lift",
-    "ripple_delete",
-    "ripple_delete_range",
-    "close_gap",
-    "blade",
-    "move",
-    "insert_move",
-    "trim",
-    "roll",
-    "slip",
-    "slide",
-    "add_transition",
-    "set_transition",
-    "remove_transition",
-    "set_speed",
-    "add_cue",
-    "set_cue",
-    "remove_cue",
-    "cues_from",
-    "add_track",
-    "remove_track",
+_RETIMING = {
+    "add_speed_point",
+    "set_segment_speed",
+    "freeze_frame",
+    "reverse_segment",
+    "clear_speed_point",
+    "reset_speed",
 }
+"""The edits of the Retime Controls, which change the speed points of a clip."""
+
+_EDITS = (
+    _PLACING
+    | _RETIMING
+    | {
+        "lift",
+        "ripple_delete",
+        "ripple_delete_range",
+        "close_gap",
+        "blade",
+        "move",
+        "insert_move",
+        "trim",
+        "roll",
+        "slip",
+        "slide",
+        "add_transition",
+        "set_transition",
+        "remove_transition",
+        "set_speed",
+        "add_cue",
+        "set_cue",
+        "remove_cue",
+        "cues_from",
+        "add_track",
+        "remove_track",
+    }
+)
 
 
 class Fake:
@@ -768,6 +787,8 @@ class Fake:
         on = timeline["id"]
         if name in _PLACING:
             return [self._placed(timeline, edit, index)]
+        if name in _RETIMING:
+            return [self._retimed(timeline, edit, index)]
         if name in ("lift", "ripple_delete"):
             return [{"op": "remove_clip", "timeline": on, "id": one} for one in edit["clips"]]
         if name == "ripple_delete_range":
@@ -833,6 +854,93 @@ class Fake:
             given = {key: value for key, value in source.items() if key != "length"}
         clip = _clip(given, int(at), length)
         return {"op": "insert_clip", "timeline": timeline["id"], "track": track["id"], "clip": clip}
+
+    def _retimed(
+        self, timeline: dict[str, Any], edit: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        """The ``set_retime`` that an edit of the Retime Controls becomes, for its clip alone.
+
+        The speed points are counted as ``retime.rs`` of the engine counts them. Of its checks
+        only those that this count needs are copied: the clip has the frame, a freeze holds one
+        frame at least, a speed is above 0, and the first segment has no speed point to clear.
+        Not copied: the other checks (the range and the unit of the speeds, the kind of the
+        source, what the media has, an overlap), the move of ``source.in`` to the lowest place
+        of the path, the ripple, the linked clips, the transitions, a speed kept as it is
+        given, and one speed written as the speed of the clip; an edit that changes nothing is
+        answered with its operation all the same.
+        """
+        clip = self._found_clip(timeline["id"], edit["clip"], index)
+        name = edit["edit"]
+        length = int(clip["length"])
+        retime: Any = clip.get("retime")
+        written: list[Any] = retime["points"] if retime else []
+        points: list[tuple[int, Fraction]] = []
+        for one in written:
+            # A speed that is left out is that of the source, as the engine reads it.
+            given = one.get("speed") or {"num": 1, "den": 1}
+            points.append((int(one["frame"]), Fraction(given["num"], given["den"])))
+        if not points:
+            whole = Fraction(clip["speed"]["num"], clip["speed"]["den"])
+            points = [(0, -whole if clip["reverse"] else whole)]
+        on: dict[str, Any] = {"op": "set_retime", "timeline": timeline["id"], "id": clip["id"]}
+        if name == "reset_speed":
+            # As many frames as show once, at the speed of the source, what the path went by.
+            place = low = high = Fraction(0)
+            for number, (frame, speed) in enumerate(points):
+                ends = points[number + 1][0] if number + 1 < len(points) else length
+                place += speed * (ends - frame)
+                low, high = min(low, place), max(high, place)
+            return {**on, "retime": None, "length": max(1, int((high - low) // 1))}
+        at = int(edit["at"])
+        if not 0 <= at < length:
+            raise self._refused(index, "out_of_range", f"the clip has no frame {at}", what="frame")
+        number = max(number for number, (frame, _) in enumerate(points) if frame <= at)
+        first, speed = points[number]
+        ends = points[number + 1][0] if number + 1 < len(points) else length
+        head, tail = points[:number], points[number + 1 :]
+        if name == "add_speed_point":
+            here = [(first, speed)] if first == at else [(first, speed), (at, speed)]
+            points = [*head, *here, *tail]
+        elif name == "reverse_segment":
+            points = [*head, (first, -speed), *tail]
+        elif name == "set_segment_speed":
+            new = Fraction(edit["speed"]["num"], edit["speed"]["den"])
+            if new <= 0:
+                raise self._refused(index, "out_of_range", "no speed of a segment", what="speed")
+            # It shows what it showed, rounded down, in one frame at least; a freeze keeps its
+            # frames, and plays forward over them.
+            frames = ends - first
+            lasts = max(1, int(frames * abs(speed) // new)) if speed else frames
+            later = [(frame + lasts - frames, one) for frame, one in tail]
+            points = [*head, (first, -new if speed < 0 else new), *later]
+            length += lasts - frames
+        elif name == "freeze_frame":
+            hold = int(edit["hold"])
+            if hold < 1:
+                raise self._refused(index, "out_of_range", "a freeze holds a frame", what="hold")
+            # A frame of a segment that goes backward shows where it ends: it is held from
+            # the frame after.
+            begins = at + 1 if speed < 0 else at
+            length += hold
+            later = [(frame + hold, one) for frame, one in tail]
+            held: list[tuple[int, Fraction]] = [(first, speed)] if first < begins else []
+            held.append((begins, Fraction(0)))
+            if begins + hold < length and (not later or later[0][0] != begins + hold):
+                held.append((begins + hold, speed))
+            points = [*head, *held, *later]
+        else:
+            if number == 0:
+                message = "the first segment has no speed point to clear"
+                raise self._refused(index, "out_of_range", message, what="speed_point")
+            # One speed, in a straight line through what the two segments went by.
+            before, slower = points[number - 1]
+            rise = slower * (first - before) + speed * (ends - first)
+            points = [*points[: number - 1], (before, rise / (ends - before)), *tail]
+        told = [
+            {"frame": frame, "speed": {"num": one.numerator, "den": one.denominator}}
+            for frame, one in points
+        ]
+        return {**on, "retime": {"points": told}, "length": length}
 
     def _cut_out(
         self, timeline: dict[str, Any], start: int, end: int, tracks: object

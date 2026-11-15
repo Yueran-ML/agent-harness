@@ -114,6 +114,39 @@ def test_a_key_is_shown_at_the_first_frame_of_the_timeline_that_is_at_its_frame(
     assert clock_of(empty).shown(0) is None
 
 
+def test_the_keys_of_a_clip_with_speed_points_are_at_the_pictures_that_its_course_shows() -> None:
+    # The clip and the numbers of the engine's test of this name (keyframes.rs): c1 on frames
+    # [0, 100) of a timeline of 25 a second, from 2 seconds into m1, frame 50 of its 25 a
+    # second: 40 frames forward, a picture held for 20, and 40 frames back at half the speed.
+    one = case("media at the timeline's rate")
+    one["clip"].update(start=0, length=100)
+    one["clip"]["source"]["in"]["ticks"] = 2 * 15360
+    points = [(0, 1, 1), (40, 0, 1), (60, -1, 2)]
+    one["clip"]["retime"] = {
+        "points": [{"frame": at, "speed": {"num": num, "den": den}} for at, num, den in points]
+    }
+    clock = clock_of(one)
+
+    assert clock.counts == "the clip's media"
+    # On the way up, a picture a frame; the frame before the clip goes on before it.
+    assert (clock.at(0), clock.at(39), clock.at(-1)) == (50, 89, 49)
+    # The freeze holds picture 90, with one setting on all its frames.
+    assert {clock.at(frame) for frame in range(40, 60)} == {90}
+    # On the way back each picture is shown twice, the last first.
+    assert [clock.at(60 + back) for back in range(40)] == [
+        50 + (79 - back) // 2 for back in range(40)
+    ]
+    # A key is shown at the first frame that is at it: on the way up, though the way back
+    # comes by the picture again; the held picture at the first frame of the freeze.
+    first: dict[int, int] = {}
+    for frame in range(100):
+        first.setdefault(clock.at(frame), frame)
+    for key in range(47, 94):
+        assert clock.shown(key) == first.get(key), key
+    assert (clock.shown(50), clock.shown(70), clock.shown(89), clock.shown(90)) == (0, 20, 39, 40)
+    assert (clock.shown(49), clock.shown(91)) == (None, None)
+
+
 def test_the_settings_and_their_bounds_are_those_of_the_engines_catalog() -> None:
     catalog = json.loads((ENGINE_DATA / "catalog.json").read_text(encoding="utf-8"))["clip"]
     assert [one["path"] for one in catalog] == list(clip_keys.SETTINGS)

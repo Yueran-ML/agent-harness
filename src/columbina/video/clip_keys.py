@@ -31,6 +31,7 @@ from columbina.video.grading import (
     key_op,
     timeline_of,
 )
+from columbina.video.retime import Course
 from columbina.video.span import media_frame, placed, ticks_of_scaled
 
 __all__ = ["SETTINGS", "KeyClock", "KeysError", "keys", "setting_of"]
@@ -93,13 +94,17 @@ def _items(values: object) -> list[Any]:
 
 @dataclass(frozen=True)
 class _Picture:
-    """How a clip reads the picture of its media."""
+    """How a clip reads the picture of its media.
+
+    ``course`` is that of a clip with speed points, which it is read by, and not by its speed.
+    """
 
     begins: int
     speed: Speed
     reverse: bool
     rate: Rate
     duration: Time
+    course: Course | None = None
 
 
 @dataclass(frozen=True)
@@ -107,8 +112,8 @@ class KeyClock:
     """How the frame of the keys of a clip is found from a frame of its timeline.
 
     A clip of media with a picture that is not a still counts the frames of its media, the
-    number of the picture that it shows, through its speed and its direction; any other counts
-    its own frames from its first, 0.
+    number of the picture that it shows, through its speed and its direction, or along its
+    speed points; any other counts its own frames from its first, 0.
 
     Attributes:
         start: The first frame of the clip on its timeline.
@@ -142,6 +147,7 @@ class KeyClock:
                 reverse=read.reverse,
                 rate=Rate.model_validate(video["rate"]),
                 duration=Time.model_validate(_object(media)["facts"]["duration"]),
+                course=read.course,
             )
         return cls(int(clip["start"]), int(clip["length"]), rate, picture)
 
@@ -162,8 +168,13 @@ class KeyClock:
         picture = self.picture
         if picture is None:
             return k
-        shown = self.length - 1 - k if picture.reverse else k
         scale = picture.duration.scale
+        if picture.course is not None:
+            # Along its speed points: one picture through a freeze, and earlier ones frame by
+            # frame where a segment plays backward.
+            tick = picture.course.tick(picture.begins, k, self.timeline, scale)
+            return media_frame(tick, picture.rate, picture.duration)
+        shown = self.length - 1 - k if picture.reverse else k
         tick = picture.begins + ticks_of_scaled(shown, picture.speed, self.timeline, scale)
         return media_frame(tick, picture.rate, picture.duration)
 
@@ -176,7 +187,20 @@ class KeyClock:
         first, after = self.start, self.start + self.length
         if after <= first:
             return None
-        # The frames of keys only rise along the clip, or only fall where it plays backward.
+        course = None if self.picture is None else self.picture.course
+        if course is None:
+            return self._shown_in(first, after, key)
+        # A clip with speed points may rise in one segment and fall in the next: the segments
+        # are asked in their order, and the first that is at the key has the first frame.
+        for segment in course.segments:
+            found = self._shown_in(first + segment.start, first + segment.end, key)
+            if found is not None:
+                return found
+        return None
+
+    def _shown_in(self, first: int, after: int, key: int) -> int | None:
+        """:meth:`shown` among the frames from ``first`` to before ``after``, which go one way."""
+        # The frames of keys only rise along them, or only fall where they play backward.
         rising = self.at(after - 1) >= self.at(first)
         low, high = first, after
         while low < high:

@@ -11,7 +11,7 @@ from columbina.video.duck_keys import UnsupportedCurveError, gain_keys
 from columbina.video.editing import _timeline  # pyright: ignore[reportPrivateUsage]
 from columbina.video.edits import Rate
 from columbina.video.engine import Engine, EngineError
-from columbina.video.span import frames_showing, placed
+from columbina.video.span import placed, runs_showing
 from columbina.video.transcript import PAUSE_LEAST_US, Transcript
 
 
@@ -36,7 +36,11 @@ def merged(ranges: Sequence[tuple[int, int]], gap: int = 0) -> list[tuple[int, i
 def speech(
     track: dict[str, Any], rate: Rate, transcripts: dict[str, Transcript]
 ) -> tuple[float, list[tuple[int, int]]]:
-    """Reuse Studio's source mapping, including trimmed, sped-up and reversed clips."""
+    """Reuse Studio's source mapping, including trimmed, sped-up and reversed clips.
+
+    A clip with speed points says a word each time that its path comes by it, and nothing
+    through a freeze.
+    """
     spoken: list[tuple[int, int]] = []
     coverage: list[tuple[int, int]] = []
     count = 0
@@ -53,10 +57,10 @@ def speech(
         for word in transcript.words:
             if not any(character.isalnum() for character in word.text):
                 continue
-            first, end = frames_showing(clip, word.start_us, word.end_us, rate)
-            if first < end:
+            runs = runs_showing(clip, word.start_us, word.end_us, rate, heard=True)
+            if runs:
                 count += 1
-                spoken.append((clip.start + first, clip.start + end))
+            spoken.extend((clip.start + first, clip.start + end) for first, end in runs)
     duration = sum(end - start for start, end in merged(coverage))
     # Short pauses within a phrase belong to one speaking interval, as in text editing.
     gap = math.floor(PAUSE_LEAST_US * rate.num / (1_000_000 * rate.den))

@@ -2,12 +2,12 @@
 
 **Edits** are what an editor does to a timeline, named as DaVinci Resolve names them: insert,
 overwrite, replace, place on top, append, ripple delete, blade, the four trims, transitions,
-speed and subtitles. The engine works an edit out into operations at the moment it is applied,
-by its own rules: which tracks a ripple moves, what is locked, how far a trim may go. None of
-those rules is worked out here; ``engine/crates/model/src/edit`` of the repository has them, and
-``engine/PROTOCOL.md`` says them. A function here only writes the object of JSON that
-``transaction.apply`` takes for one edit, ``{"edit": "ripple_delete", ...}``, so that what is
-sent has the form that the engine reads.
+speed, speed points and subtitles. The engine works an edit out into operations at the moment it
+is applied, by its own rules: which tracks a ripple moves, what is locked, how far a trim may
+go. None of those rules is worked out here; ``engine/crates/model/src/edit`` of the repository
+has them, and ``engine/PROTOCOL.md`` says them. A function here only writes the object of JSON
+that ``transaction.apply`` takes for one edit, ``{"edit": "ripple_delete", ...}``, so that what
+is sent has the form that the engine reads.
 
 **Operations** are the changes that the history of the project is made of; most are written by
 the engine as it works edits out, and a client writes few of them itself: a timeline or a bin
@@ -49,8 +49,11 @@ __all__ = [
     "LaneThen",
     "MediaSource",
     "Rate",
+    "Retime",
+    "SignedSpeed",
     "Source",
     "Speed",
+    "SpeedPoint",
     "TitleSource",
     "TitleStyle",
     "TrackKind",
@@ -60,6 +63,7 @@ __all__ = [
     "add_bus",
     "add_cue",
     "add_insert",
+    "add_speed_point",
     "add_timeline",
     "add_track",
     "add_track_group",
@@ -68,12 +72,14 @@ __all__ = [
     "append",
     "blade",
     "clear_lanes",
+    "clear_speed_point",
     "clip_gain_keys",
     "clip_gain_range",
     "close_gap",
     "copy_effects",
     "cues_from",
     "fade_to_playhead",
+    "freeze_frame",
     "insert",
     "insert_move",
     "lane_draw",
@@ -101,6 +107,8 @@ __all__ = [
     "remove_transition",
     "remove_vca",
     "replace",
+    "reset_speed",
+    "reverse_segment",
     "ripple_delete",
     "ripple_delete_range",
     "ripple_overwrite",
@@ -113,6 +121,8 @@ __all__ = [
     "set_insert",
     "set_lane",
     "set_media",
+    "set_retime",
+    "set_segment_speed",
     "set_speed",
     "set_timeline",
     "set_timeline_audio",
@@ -220,6 +230,53 @@ class Speed(Data):
         """The speed of a fraction, as ``Fraction(1, 2)`` for half the speed."""
         speed = Fraction(speed)
         return cls(num=speed.numerator, den=speed.denominator)
+
+
+class SignedSpeed(Data):
+    """How fast a segment of a clip with speed points plays its source, and which way.
+
+    ``num / den`` times as fast as it was recorded: above 0 forward, below 0 backward, and
+    ``0/1`` not at all, which is a freeze. The engine takes a speed that plays from 1/100 to 100
+    either way.
+
+    Attributes:
+        num: The numerator, which has the sign.
+        den: The denominator.
+    """
+
+    num: int
+    den: int = Field(gt=0)
+
+    @classmethod
+    def of(cls, speed: Fraction | int) -> "SignedSpeed":
+        """The speed of a fraction, as ``Fraction(-1, 2)`` for half the speed, backward."""
+        speed = Fraction(speed)
+        return cls(num=speed.numerator, den=speed.denominator)
+
+
+class SpeedPoint(Data):
+    """A speed point of a clip: where a segment of it begins, and how fast the segment plays.
+
+    Attributes:
+        frame: The frame of the clip that the segment begins at, counted from the first frame
+            of the clip, 0.
+        speed: How fast the segment plays, to the next speed point or to the end of the clip.
+    """
+
+    frame: int = Field(ge=0)
+    speed: SignedSpeed = SignedSpeed(num=1, den=1)
+
+
+class Retime(Data):
+    """The speed points of a clip whose speed changes on the way (Retime Controls).
+
+    They are in the order of their frames, the first at frame 0, each at a later frame than the
+    one before it and before the end of the clip, 1024 at the most; the engine refuses any
+    others. The segments are one path through the source: each goes on from where the one
+    before it stopped.
+    """
+
+    points: list[SpeedPoint] = Field(min_length=1, max_length=1024)
 
 
 class TitleStyle(Data):
@@ -741,7 +798,9 @@ def set_speed(
     """A clip plays the same stretch of its source at another speed.
 
     So it lasts more or fewer frames; with ``ripple`` what follows moves with its end.
-    ``reverse`` is left as it is where it is ``None``.
+    ``reverse`` is left as it is where it is ``None``. A clip with speed points is refused
+    (``out_of_range``, ``retimed``): :func:`reset_speed` takes them away first, and
+    :func:`set_segment_speed` sets the speed of one segment.
     """
     written: dict[str, Any] = {
         "edit": "set_speed",
@@ -753,6 +812,135 @@ def set_speed(
         written["reverse"] = reverse
     written.update(ripple=ripple, linked=linked)
     return written
+
+
+# Speed points: the edits of the Retime Controls
+#
+# ``at`` is a frame of the clip that is named, counted from its first, from 0 to its length less
+# one (``out_of_range``, ``frame``). With ``linked``, the clips linked to it take the change at
+# the same frame of the timeline. A title, a colour and a still are refused (``out_of_range``,
+# ``retime_source``). The sound of a clip follows its speed points, and is silent in a freeze.
+
+
+def add_speed_point(timeline: str, clip: str, at: int, *, linked: bool = True) -> dict[str, Any]:
+    """Add Speed Point: a speed point at frame ``at`` of a clip.
+
+    The segment that the frame is in becomes two of its speed, and no picture moves. A clip of
+    one speed has speed points from then on. Where a speed point is at the frame already,
+    nothing is done, and the edit alone in a transaction is refused as ``empty``.
+    """
+    return {
+        "edit": "add_speed_point",
+        "timeline": timeline,
+        "clip": clip,
+        "at": at,
+        "linked": linked,
+    }
+
+
+def set_segment_speed(
+    timeline: str,
+    clip: str,
+    at: int,
+    speed: Speed,
+    *,
+    ripple: bool = False,
+    linked: bool = True,
+) -> dict[str, Any]:
+    """Change Speed of one segment: the one that frame ``at`` of a clip is in plays at ``speed``.
+
+    It plays the way that it went and shows what it showed, so it and the clip last more frames
+    or fewer; with ``ripple`` what follows moves with the end of the clip. ``speed`` has no
+    sign: :func:`reverse_segment` turns a segment round. A freeze that is given a speed plays
+    forward over the frames that it had. A speed that is not from 1/100 to 100 is refused
+    (``out_of_range``, ``speed``).
+    """
+    return {
+        "edit": "set_segment_speed",
+        "timeline": timeline,
+        "clip": clip,
+        "at": at,
+        "speed": _json(speed),
+        "ripple": ripple,
+        "linked": linked,
+    }
+
+
+def freeze_frame(
+    timeline: str,
+    clip: str,
+    at: int,
+    hold: int,
+    *,
+    ripple: bool = False,
+    linked: bool = True,
+) -> dict[str, Any]:
+    """Freeze Frame: the picture of frame ``at`` of a clip is held for ``hold`` frames more.
+
+    The freeze lies between two speed points, and the clip lasts ``hold`` frames more and shows
+    all that it showed; with ``ripple`` what follows moves with its end. Its sound is silent
+    through the freeze. A ``hold`` of less than one frame is refused (``out_of_range``,
+    ``hold``).
+    """
+    return {
+        "edit": "freeze_frame",
+        "timeline": timeline,
+        "clip": clip,
+        "at": at,
+        "hold": hold,
+        "ripple": ripple,
+        "linked": linked,
+    }
+
+
+def reverse_segment(timeline: str, clip: str, at: int, *, linked: bool = True) -> dict[str, Any]:
+    """Reverse Segment: the segment that frame ``at`` of a clip is in plays the other way.
+
+    It keeps its speed, and the clip its length. The first segment shows what it showed, the
+    last first; any other goes back from where the one before it stopped, and is refused with
+    ``out_of_source`` where the media has nothing there. A freeze stays as it is.
+    """
+    return {
+        "edit": "reverse_segment",
+        "timeline": timeline,
+        "clip": clip,
+        "at": at,
+        "linked": linked,
+    }
+
+
+def clear_speed_point(timeline: str, clip: str, at: int, *, linked: bool = True) -> dict[str, Any]:
+    """Clear Speed Point: the speed point at the left of the segment that frame ``at`` is in.
+
+    That segment and the one before it become one of one speed, which goes in a straight line
+    through what the two showed; the clip keeps its length. The first segment has no speed
+    point to clear (``out_of_range``, ``speed_point``), and a speed that plays and is not from
+    1/100 to 100 is refused (``speed``, or ``retime_unit``).
+    """
+    return {
+        "edit": "clear_speed_point",
+        "timeline": timeline,
+        "clip": clip,
+        "at": at,
+        "linked": linked,
+    }
+
+
+def reset_speed(
+    timeline: str, clip: str, *, ripple: bool = False, linked: bool = True
+) -> dict[str, Any]:
+    """Reset to 100%: a clip plays at the speed of its source, forward, with no speed points.
+
+    It lasts as many frames as show once what it showed; with ``ripple`` what follows moves
+    with its end. :func:`set_speed` takes the clip again after it.
+    """
+    return {
+        "edit": "reset_speed",
+        "timeline": timeline,
+        "clip": clip,
+        "ripple": ripple,
+        "linked": linked,
+    }
 
 
 # Subtitles and tracks
@@ -1048,6 +1236,32 @@ def splice_clip_keys(
         "remove": remove,
         "keys": [_json(key) for key in keys],
     }
+
+
+def set_retime(
+    timeline: str, id: str, retime: Retime | None, *, length: int | None = None
+) -> dict[str, Any]:
+    """The speed points of a clip, whole; ``None`` for the speed of its source, forward.
+
+    ``length`` is the new length of the clip in frames, for a change that makes it longer or
+    shorter; where it is ``None`` the clip keeps its length. Where the clip begins on its
+    timeline and in its media stays, and nothing is moved out of its way: the edits of the
+    Retime Controls (:func:`set_segment_speed` and the others) see to those. Speed points of
+    one speed are kept as the speed of the clip. Refused for a title, a colour or a still
+    (``out_of_range``, ``retime_source``), for speed points that are not those of a clip of
+    that length (``retime``, ``speed``, ``retime_unit``), where the clip would show what is not
+    in its media (``out_of_source``), and where it would cover another clip of its track
+    (``overlap``).
+    """
+    written: dict[str, Any] = {
+        "op": "set_retime",
+        "timeline": timeline,
+        "id": id,
+        "retime": None if retime is None else _json(retime),
+    }
+    if length is not None:
+        written["length"] = length
+    return written
 
 
 def add_bin(name: str, *, id: str = "", parent: str | None = None) -> dict[str, Any]:

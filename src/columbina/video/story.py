@@ -24,7 +24,9 @@ named, in the order in which they are heard, a sentence a line:
   A trimmed word with only a head or tail remaining stays visible. A sentence cut between
   words becomes two lines, one of each clip. Keep the time marker: it distinguishes repeated
   sentences. Lines within the same second use milliseconds. A clip that plays backward says
-  its last sentence first.
+  its last sentence first. A clip with speed points (``retime``) is told along them: a word is
+  on the frames that first show it, with those of a freeze that holds it, and where the clip
+  turns and plays a word a second time, that time is neither told nor cut.
 - A word that is taken away or struck through with ``~~`` is cut, and so is every word of a line
   that is taken away; words and lines can be neither added, changed nor moved. A word without
   letters or digits, as ``—``, ``♪`` or ``...``, goes with the nearest word of its line that has
@@ -423,10 +425,15 @@ def _near(transcript: Transcript, reach: _Reach, begins: Fraction, ends: Fractio
 
 
 def _continuous(left: Placed, right: Placed, rate: Rate) -> bool:
-    """Whether the next clip continues the same source at the same speed and direction."""
+    """Whether the next clip continues the same source at the same speed and direction.
+
+    A clip with speed points continues none and is continued by none: it is a run of its own.
+    """
     earlier, later = (right, left) if left.reverse else (left, right)
     return (
         left.end == right.start
+        and left.course is None
+        and right.course is None
         and left.media == right.media
         and left.speed == right.speed
         and left.reverse == right.reverse
@@ -520,6 +527,11 @@ def telling(
             silent.append((clip.id, clip.media))
             continue
         of_clip = _sentences(transcript, clip, said[clip.id])
+        if clip.course is not None:
+            # A clip with speed points says its sentences in the order in which its path
+            # comes by them: by the first frame that shows a word of each.
+            parts.extend(sorted(of_clip, key=lambda part: part.first))
+            continue
         # A clip that plays backward says its last sentence first.
         parts.extend(reversed(of_clip) if clip.reverse else of_clip)
     return Telling(

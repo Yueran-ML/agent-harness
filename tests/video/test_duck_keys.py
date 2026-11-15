@@ -160,3 +160,56 @@ def test_endpoint_unused_ease_flag_cannot_bend_new_extension() -> None:
     assert evaluate(changed, Fraction(19925, 10000)) == pytest.approx(-8)
     assert evaluate(changed, Fraction(5)) == -2
     assert evaluate(changed, Fraction(13, 2)) == evaluate(raw["gain_db"], Fraction(13, 2))
+
+
+def pointed(*points: tuple[int, int, int]) -> dict[str, Any]:
+    """The clip, with speed points: each a frame and the ``num`` and ``den`` of its speed."""
+    raw = clip()
+    raw["retime"] = {
+        "points": [{"frame": at, "speed": {"num": num, "den": den}} for at, num, den in points]
+    }
+    return raw
+
+
+def test_a_clip_whose_speed_points_go_one_way_takes_a_key_on_each_side_of_them() -> None:
+    # 100 frames at the speed of the source and 100 twice as fast: 4 s of the timeline are
+    # 4 s of the source, and the 4 s after them are 8 s. Speech from 3 s to 3.8 s: the
+    # recovery, to 4.4 s, goes through the speed point at 4 s, sample 192000.
+    raw = pointed((0, 1, 1), (100, 2, 1))
+    before = copy.deepcopy(raw)
+    rate = {"num": 25, "den": 1}
+
+    changed = gain_keys(raw, [(75, 95)], rate, 48000, 12)
+
+    assert changed is not None
+    assert raw == before
+    assert source_at(raw, Fraction(192000), rate, 48000) == 4
+    assert source_at(raw, Fraction(240000), rate, 48000) == 6
+    times = {at_time(key["at"]) for key in changed["keys"]}
+    assert {Fraction(191999, 48000), Fraction(4), Fraction(48, 10)} <= times
+    # Every 1 ms of the timeline, with the exact 15 ms and 600 ms boundaries.
+    for millisecond in range(1000, 7000):
+        t = Fraction(millisecond, 1000)
+        offset = 0.0
+        if Fraction(2985, 1000) < t < 3:
+            offset = -12 * float((t - Fraction(2985, 1000)) / Fraction(15, 1000))
+        elif 3 <= t <= Fraction(38, 10):
+            offset = -12.0
+        elif Fraction(38, 10) < t < Fraction(44, 10):
+            offset = -12 * float((Fraction(44, 10) - t) / Fraction(6, 10))
+        source = source_at(raw, t * 48000, rate, 48000)
+        assert evaluate(changed, source) == pytest.approx(offset, abs=1e-10)
+
+
+def test_speed_points_that_hold_a_frame_or_turn_back_refuse_keys_where_speech_is() -> None:
+    rate = {"num": 25, "den": 1}
+    for raw in (
+        pointed((0, 1, 1), (100, 0, 1), (150, 1, 1)),
+        pointed((0, 1, 1), (100, -1, 1)),
+    ):
+        before = copy.deepcopy(raw)
+        with pytest.raises(UnsupportedCurveError, match="speed points"):
+            gain_keys(raw, [(50, 100)], rate, 48000, 12)
+        assert raw == before
+        # Where no speech is over the clip, nothing is asked of it.
+        assert gain_keys(raw, [(300, 320)], rate, 48000, 12) is None

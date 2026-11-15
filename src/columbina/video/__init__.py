@@ -1089,8 +1089,9 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             _Info,
             (
                 "List media, bins and timelines, with tracks, clips, source in/out, "
-                "placement, duration, speed and transitions; graded clips and timelines with "
-                "their grades in short, and the groups of grades. Omit timeline to list all. "
+                "placement, duration, speed, speed points (retime) and transitions; graded "
+                "clips and timelines with their grades in short, and the groups of grades. "
+                "Omit timeline to list all. "
                 "scope=audio lists static mixer settings and this client's latest completed "
                 "analysis per timeline, with snapshot revision and stale status. It does not "
                 "measure audio or monitor jobs started by other clients."
@@ -1199,7 +1200,8 @@ not DaVinci Close Up, which reframes a shot). blade splits at a frame; move does
 insert_move shuffles clips and ripples; trim changes one edge; roll moves the cut between two
 clips; slip changes source in/out at fixed position/length; slide moves a clip while trimming
 its neighbors. add_transition/set_transition/remove_transition manage dissolve, dip_black,
-dip_white and audio crossfade; set_speed retimes. add_track/remove_track and
+dip_white and audio crossfade; set_speed retimes a whole clip, the speed-point edits a part
+of one. add_track/remove_track and
 add_cue/set_cue/remove_cue/cues_from manage tracks/subtitles. Basic add_timeline/add_bin and
 set_timeline/set_track/set_clip/set_media edit settings. set_clip includes transform, gain_db,
 pan and fade_in/out, crop {left,right,top,bottom,softness} (shares 0-1) and composite (a
@@ -1231,6 +1233,19 @@ roll: left,right,delta,linked?; slip/slide: clip,delta,linked?;
 add_transition: left,right,length,kind?,align:"start"|"center"|"end";
 set_transition: id,kind?,length?,align?; remove_transition: id;
 set_speed: clip,speed:{num:2,den:1},reverse?,ripple?,linked?;
+Speed points (Retime Controls) change a clip's speed on the way. at is a frame of the clip
+counted from its first (0 to length-1); a speed is {num,den}. add_speed_point: clip,at,linked?
+(the segment there becomes two, no picture moves); set_segment_speed: clip,at,speed,ripple?,
+linked? (the segment at plays at speed, unsigned, 1/100 to 100, keeping its direction and what
+it shows, so the clip gets longer or shorter); freeze_frame: clip,at,hold,ripple?,linked? (that
+picture is held hold frames more, the clip lasts hold more); reverse_segment: clip,at,linked?
+(that segment plays the other way, same length); clear_speed_point: clip,at,linked? (clears the
+point at the left of at's segment; it and the one before become one speed, same length);
+reset_speed: clip,ripple?,linked? (100% forward, no speed points). video_info then lists the
+clip's retime:{points:[{frame,speed}]} (num<0 backward, 0/1 a freeze; speed is 1/1) and its
+source in/out are the lowest and highest place shown. Its sound follows the speed points and
+is silent in a freeze. set_speed is refused (retimed) on such a clip until reset_speed. Basic
+{op:"set_retime",id,retime:{points:[...]}|null,length?} sets all its speed points at once.
 add_track: kind:"video"|"audio"|"subtitle",index?,name?,language?; remove_track: track.
 A timeline shows one subtitle track at a time (enabled): add_track makes a subtitle track hidden
 while another is shown. To show another, hide the shown one first in the same batch:

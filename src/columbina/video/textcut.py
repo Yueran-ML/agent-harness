@@ -8,7 +8,8 @@ them and stays in step. The edits of one story are one transaction, and one step
 
 **Where a cut falls.** The words of a clip are where its media has them, and a range is turned
 into the frames of the clip that show that stretch of its media, at the speed of the clip and in
-its direction, as the engine counts them (:mod:`columbina.video.span`). A run of words that are
+its direction, or along its speed points the first time that they come by it, as the engine
+counts them (:mod:`columbina.video.span`). A run of words that are
 struck out is cut from the end of the word before it, and :data:`LEAD_US` of the silence after
 that word, to the start of the word after it, less as much: a little of the silence is left on
 either side. Where the words follow each other more closely, the cut keeps the words that are

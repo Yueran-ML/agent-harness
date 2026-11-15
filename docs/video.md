@@ -437,7 +437,12 @@ shot), `blade`, `move`, `insert_move`, `trim`, `roll`, `slip`, `slide`, `set_spe
 protocol, such as `add_timeline`, `add_bin`, `set_clip` (transform, crop, composite mode, gain,
 pan, fades), `set_clip_keys` and `splice_clip_keys` (the keyframes of one setting of a clip's
 transform or crop),
-`set_track`, `set_media` and `set_timeline`. The engine decides track locks, links and available
+`set_track`, `set_media` and `set_timeline`. The speed of a clip may change on the way, as with
+Resolve's Retime Controls: `add_speed_point`, `set_segment_speed`, `freeze_frame`,
+`reverse_segment`, `clear_speed_point` and `reset_speed` change the speed points of a clip at a
+frame counted from its first, and the basic operation `set_retime` sets them all at once. The
+sound of the clip follows its speed points and is silent through a freeze, and `set_speed` is
+refused for such a clip until `reset_speed`. The engine decides track locks, links and available
 handles. Timeline positions are integer frames; source times use ticks and their scale. `null`
 means an explicitly cleared field or disabled destination, while an omitted field keeps its
 documented default. The tool's description lists the fields of each command. `move` with

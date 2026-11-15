@@ -5,6 +5,9 @@ from fractions import Fraction
 from itertools import pairwise
 from typing import Any, cast
 
+from columbina.video.edits import Rate
+from columbina.video.retime import course_of
+
 
 class UnsupportedCurveError(ValueError):
     """The model cannot represent this sum without changing its existing curve."""
@@ -30,7 +33,16 @@ def sample_at(frame: int, rate: dict[str, int], sample_rate: int) -> int:
 def source_at(
     clip: dict[str, Any], sample: Fraction, rate: dict[str, int], sample_rate: int
 ) -> Fraction:
-    """graph/clip.rs Mapping::new, including the last *audio sample* on reverse."""
+    """graph/clip.rs Mapping::new, including the last *audio sample* on reverse.
+
+    A clip with speed points is read along them, where the engine reads the keys of its gain
+    (``Sounding::seconds`` of ``retime.rs``): the time rises through a segment that goes
+    forward, stands still through a freeze, and falls through one that goes backward.
+    """
+    course = course_of(clip)
+    if course is not None:
+        along = course.seconds_at(sample, clip["start"], Rate.model_validate(rate), sample_rate)
+        return at_time(clip["source"]["in"]) + along
     speed = clip.get("speed") or {"num": 1, "den": 1}
     first = sample_at(clip["start"], rate, sample_rate)
     last = sample_at(clip["start"] + clip["length"], rate, sample_rate) - 1
@@ -83,7 +95,13 @@ def gain_keys(
     sample_rate: int,
     amount: float,
 ) -> dict[str, Any] | None:
-    """Add the envelope without erasing keys; unsupported affected easing is refused."""
+    """Add the envelope without erasing keys; unsupported affected easing is refused.
+
+    The keys of a clip are at times of its source. A clip with speed points whose segments all
+    play one way takes a key on each side of every speed point, where the line from the
+    timeline to the source bends; one that holds a frame or turns back reads one time of its
+    source at several times of the timeline, which no key can tell apart, and is refused.
+    """
     if clip.get("source", {}).get("kind") != "media" or not clip.get("enabled", True):
         return None
     first = Fraction(sample_at(clip["start"], rate, sample_rate))
@@ -91,9 +109,21 @@ def gain_keys(
     if last < first:
         return None
     shape = envelope(intervals, rate, sample_rate, amount)
-    visible = sorted({first, last, *(at for at, _ in shape if first <= at <= last)})
+    course = course_of(clip)
+    bends: set[Fraction] = set()
+    if course is not None:
+        starts = course.sound_starts(clip["start"], Rate.model_validate(rate), sample_rate)
+        bends = {Fraction(at) for start in starts for at in (start - 1, start)}
+    visible = sorted(
+        {first, last, *(at for at in bends | {at for at, _ in shape} if first <= at <= last)}
+    )
     if not any(value_at(shape, at, 0.0) < 0 for at in visible):
         return None
+    if course is not None and not course.one_way:
+        raise UnsupportedCurveError(
+            f"Clip {clip['id']} has speed points that hold a frame or turn back, so Volume "
+            "keys at times of its source cannot follow the timeline; use mode='ducker'."
+        )
     mapped = [
         (source_at(clip, at, rate, sample_rate), value_at(shape, at, 0.0))
         for at in visible

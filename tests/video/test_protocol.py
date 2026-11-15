@@ -161,6 +161,38 @@ def test_the_timeline_of_every_operation_that_names_one_is_filled_or_left_to_an_
     assert timelines - filled == LEFT_TO_EDITS
 
 
+def test_the_edits_of_speed_points_are_of_the_protocol_and_known_to_the_fake_engine() -> None:
+    retiming = fake_engine._RETIMING  # pyright: ignore[reportPrivateUsage]
+    assert retiming == {
+        "add_speed_point", "set_segment_speed", "freeze_frame", "reverse_segment",
+        "clear_speed_point", "reset_speed",
+    }  # fmt: skip
+    assert retiming <= set(EDITS)
+    assert retiming <= fake_engine._EDITS  # pyright: ignore[reportPrivateUsage]
+    assert "set_retime" in OPERATIONS
+    assert "set_retime" in editing._TIMELINE_OPERATIONS  # pyright: ignore[reportPrivateUsage]
+    assert retiming | {"set_retime"} <= set(edits.__all__)
+    # Every field that a builder writes is one that the row of its edit names.
+    half = edits.Speed(num=1, den=2)
+    points = edits.Retime(points=[edits.SpeedPoint(frame=0)])
+    written = [
+        edits.add_speed_point("t1", "c1", 1),
+        edits.set_segment_speed("t1", "c1", 1, half, ripple=True),
+        edits.freeze_frame("t1", "c1", 1, 2, ripple=True),
+        edits.reverse_segment("t1", "c1", 1),
+        edits.clear_speed_point("t1", "c1", 1),
+        edits.reset_speed("t1", "c1", ripple=True),
+        edits.set_retime("t1", "c1", points, length=5),
+    ]
+    wrong: list[str] = []
+    for one in written:
+        name = one.get("edit") or one["op"]
+        row = (EDITS if "edit" in one else OPERATIONS)[name]
+        taken = _fields_of(row) | {"edit", "op", "timeline"}
+        wrong += [f"{name}: {key}" for key in one if key not in taken]
+    assert wrong == []
+
+
 def _fields_of(row: str) -> set[str]:
     """The fields that a row of a table names: `` `index?` ``, `` `action: add|remove` ``."""
     return {re.split(r"[?: ]", quote, maxsplit=1)[0] for quote in re.findall(r"`([^`]+)`", row)}

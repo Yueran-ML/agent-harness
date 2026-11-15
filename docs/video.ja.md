@@ -361,7 +361,12 @@ Rec.709 で書き出します。
 `insert_move`（シャッフル挿入）、`trim`（トリム）、`roll`（ロール）、`slip`（スリップ）、`slide`（スライド）、`set_speed`（速度変更）、
 `add_transition`、`set_transition`、`remove_transition`、`add_track`、`remove_track`、`add_cue`、`set_cue`、`remove_cue`、`cues_from` があります。
 同じバッチにプロトコルの基本操作、たとえば `add_timeline`、`add_bin`、`set_clip`（変形、クロップ、コンポジットモード、ゲイン、パン、フェード）、`set_clip_keys` と `splice_clip_keys`（変形またはクロップの設定ひとつのキーフレーム）、`set_track`、
-`set_media`、`set_timeline` を混ぜられます。ロック、リンク、素材の余裕はエンジンが判断します。
+`set_media`、`set_timeline` を混ぜられます。クリップの速度は途中で変えられます（DaVinci Resolve のリタイムコントロール）。
+`add_speed_point`（速度ポイントを追加）、`set_segment_speed`（区間の速度を変更）、`freeze_frame`（フリーズフレーム）、
+`reverse_segment`（区間を逆再生）、`clear_speed_point`（速度ポイントを消去）、`reset_speed`（100% にリセット）は、
+クリップの先頭から数えたフレームで速度ポイントを変更し、基本操作 `set_retime` はすべての速度ポイントを一度に設定します。
+クリップの音は速度ポイントに従い、フリーズの間は無音です。速度ポイントのあるクリップは `set_speed` を拒否するので、先に `reset_speed` でリセットします。
+ロック、リンク、素材の余裕はエンジンが判断します。
 タイムラインの位置は整数フレーム、素材内の位置は ticks と scale です。省略したフィールドは既定の規則に従い、
 明示的な `null` は値の消去または配置先の無効化を意味します。各コマンドのフィールドはツールの説明にあります。
 `to_track` を付けた `move` は、リンクされたクリップもそれぞれ同じ種類のトラックで同じ数だけ移します（Linked Move Across Tracks）。

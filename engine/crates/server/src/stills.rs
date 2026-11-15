@@ -684,21 +684,16 @@ fn describe(
         let keyed = json!(grade);
         frozen["clip"] = freeze(&keyed, at);
         keyframes["clip"] = if level == Level::Clip {
-            let ends = [clock.at(clip.start), clock.at(clip.end().saturating_sub(1))];
+            // The first frame of its media that the clip shows and the last, which a clip with
+            // speed points may show anywhere between its ends; none for a clip whose keys count
+            // its own frames.
+            let shown = clock.shown();
             key_info(
                 &keyed,
-                if clock.counts_source() {
-                    "source"
-                } else {
-                    "clip"
-                },
+                if shown.is_some() { "source" } else { "clip" },
                 clock.rate(),
-                if clock.counts_source() {
-                    ends[0].min(ends[1])
-                } else {
-                    0
-                },
-                clock.counts_source().then(|| ends[0].max(ends[1])),
+                shown.map_or(0, |(first, _)| first),
+                shown.map(|(_, last)| last),
             )
         } else {
             key_info(&keyed, "group", clock.rate(), 0, None)

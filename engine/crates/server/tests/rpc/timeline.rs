@@ -212,6 +212,101 @@ async fn timeline_cuts_dissolve_and_reverse_speed_show_the_expected_frames() {
     }
 }
 
+/// A clip given speed points by the edits of the Retime Controls: 12 frames forward, a picture
+/// held for 6, and 4 frames backward at twice the speed. The timeline monitor shows at each of
+/// its frames the picture of the media that the course of the clip gives, counted here by the
+/// model from the clip as the engine keeps it, and written out beside it.
+#[tokio::test]
+async fn a_clip_with_speed_points_shows_the_pictures_of_its_path_frame_by_frame() {
+    let Some(gpu) = columbina_compose::gpu_for_tests() else {
+        return;
+    };
+    let dir = project_dir();
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "null", "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let got = project(&mut client).await;
+    let media: columbina_model::Media =
+        serde_json::from_value(got["project"]["media"][0].clone()).unwrap();
+    let duration = media.facts.duration;
+    let scale = i64::from(duration.scale);
+    // From picture 10 of the media, 20 frames: a frame of the timeline is a frame of the media.
+    let mut retimed = clip("$retimed", "m1", 0, 20);
+    retimed["source"]["in"] = json!({"ticks":10*scale/25,"scale":scale});
+    let names = add_timeline(&mut client, vec![retimed], vec![]).await;
+    let (timeline, id) = (names["$timeline"].clone(), names["$retimed"].clone());
+    // Frame 12 held for 6 frames more; the 8 frames after the freeze at twice the speed, which
+    // are then 4; and those 4 turned backward, from where the freeze stopped.
+    client
+        .apply(json!([
+            {"edit":"freeze_frame","timeline":timeline,"clip":id,"at":12,"hold":6},
+            {"edit":"set_segment_speed","timeline":timeline,"clip":id,"at":20,
+                "speed":{"num":2,"den":1}},
+            {"edit":"reverse_segment","timeline":timeline,"clip":id,"at":18},
+        ]))
+        .await;
+    let got = project(&mut client).await;
+    let made = got["project"]["timelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["id"] == timeline)
+        .unwrap()["tracks"][0]["clips"][0]
+        .clone();
+    assert_eq!(
+        made["retime"],
+        json!({"points":[
+            {"frame":0,"speed":{"num":1,"den":1}},
+            {"frame":12,"speed":{"num":0,"den":1}},
+            {"frame":18,"speed":{"num":-2,"den":1}},
+        ]}),
+        "{made}"
+    );
+    let made: columbina_model::Clip = serde_json::from_value(made).unwrap();
+    assert_eq!(made.length, 22);
+    // The picture of the media at each frame, as the model reads the clip along its course.
+    let video = media.facts.video.as_ref().unwrap();
+    let rate = columbina_model::Rate { num: 25, den: 1 };
+    let pictures: Vec<i64> = (0..made.length)
+        .map(|k| {
+            let tick = columbina_model::span::source_tick(&made, k, rate, duration.scale);
+            columbina_model::span::media_frame(tick, video.rate, duration)
+        })
+        .collect();
+    let path: Vec<i64> = (10..22).chain([22; 6]).chain([20, 18, 16, 14]).collect();
+    assert_eq!(pictures, path);
+    load(&mut client, &names).await;
+    let mut decoder =
+        VideoDecoder::open(std::path::Path::new(&media.path), Hardware::Auto).unwrap();
+    let mut compose = Compositor::new(Arc::clone(&gpu));
+    let target = Target::preview(&gpu, 64, 36).unwrap();
+    // From the last frame, so that the first seek is to another frame than the one shown, and
+    // then every frame in its order: forward, through the freeze, and backward.
+    for frame in std::iter::once(21).chain(0..22) {
+        let picture = pictures[usize::try_from(frame).unwrap()];
+        let scene = Scene {
+            width: 64,
+            height: 36,
+            layers: vec![decoded_layer(&mut decoder, picture, 1.0)],
+            ..Scene::default()
+        };
+        compose.render(&scene, &target).unwrap();
+        let expected = format!("{:x}", Sha256::digest(target.read_rgba().unwrap()));
+        let drawn = sought(&mut client, frame).await;
+        assert_eq!(drawn["frame"], frame);
+        assert_eq!(
+            drawn["hash"], expected,
+            "frame {frame} shows picture {picture}: {drawn}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn timeline_plays_three_seconds_without_late_reads_and_switches_monitors() {
     if columbina_compose::gpu_for_tests().is_none() {

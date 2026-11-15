@@ -306,6 +306,19 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
         },
         index: None,
     };
+    // Speed points of c2, the sound on A1: 40 frames forward, a picture held for 20, and 60
+    // frames backward at half the speed.
+    let held = || {
+        written_op(serde_json::json!({
+            "op": "set_retime", "timeline": "t1", "id": "c2",
+            "retime": { "points": [
+                { "frame": 0, "speed": { "num": 1, "den": 1 } },
+                { "frame": 40, "speed": { "num": 0, "den": 1 } },
+                { "frame": 60, "speed": { "num": -1, "den": 2 } },
+            ] },
+            "length": 120,
+        }))
+    };
     let mut all = vec![
         (
             "add_media",
@@ -754,6 +767,26 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 length: Some(30),
                 text: Some("你好！".into()),
             },
+        ),
+        (
+            "set_retime of speed points, with the length that the clip then has",
+            vec![],
+            held(),
+        ),
+        (
+            "set_retime of one speed, backward, kept as the speed of the clip",
+            vec![],
+            written_op(serde_json::json!({
+                "op": "set_retime", "timeline": "t1", "id": "c2",
+                "retime": { "points": [{ "frame": 0, "speed": { "num": -2, "den": 1 } }] },
+            })),
+        ),
+        (
+            "set_retime of none, back to the speed of the source",
+            vec![held()],
+            written_op(serde_json::json!({
+                "op": "set_retime", "timeline": "t1", "id": "c2", "retime": null,
+            })),
         ),
     ];
     all.extend(grade_examples());
@@ -1686,6 +1719,7 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "splice_keys",
         "set_clip_keys",
         "splice_clip_keys",
+        "set_retime",
         "set_grade",
         "add_group",
         "remove_group",

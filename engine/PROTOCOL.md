@@ -700,6 +700,8 @@ clients; a client must not write `project.json` itself.
   (`retime_constant`): `set_retime` writes them as `speed` and `reverse`. Only a clip of media
   that lasts has them, not a title, a colour or a still (`retime_source`). The picture reads its
   source along the path. **The sound of a clip with speed points is silent in this version.**
+  The edits of the Retime Controls change them (see Edits): `add_speed_point`,
+  `set_segment_speed`, `freeze_frame`, `reverse_segment`, `clear_speed_point`, `reset_speed`.
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
   `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
   Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; `x`/`y`
@@ -1629,7 +1631,10 @@ homography.
   shows (`reason: "frame"`).
 - `direction`: `forward` (Ctrl+T), `reverse` (Alt+T), `forward_and_back`, `one_forward`
   (Alt+→), `one_reverse` (Alt+←) (pp. 3231, 3236), on the timeline: a clip played backward is
-  tracked backward in its source. A track ends at the first or last frame the clip shows.
+  tracked backward in its source. A clip with speed points is tracked the way that the segment
+  goes in which the picture of `frame` is first shown; a freeze goes as the next segment that
+  plays, or, where none does, as the last before it. A track ends at the first or last frame
+  the clip shows, which a clip with speed points may show anywhere between its ends.
 - `tracker`: `cloud` (the default) or `point`; the point tracker needs at least one crosshair
   (`reason: "no_points"`). `components` are the boxes (p. 3235), default Pan, Tilt, Zoom and
   Rotate on and Perspective 3D off; a track writes all eight curves, those off at no motion.
@@ -2222,6 +2227,12 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `remove_transition` | `id` | Remove the transition. |
 | `set_transition` | `id`, `kind?`, `length?`, `align?`, `fade_in_level_db?`, `fade_out_level_db?` | Change given transition settings; the levels of a crossfade as the operation sets them. |
 | `set_speed` | `clip`, `speed`, `reverse?`, `ripple?`, `linked?` | Preserve source span; optional ripple uses the linked group's change in maximum end, including J/L cuts. |
+| `add_speed_point` | `clip`, `at`, `linked?` | Add Speed Point of the Retime Controls: a speed point at frame `at` of the clip. The segment there becomes two of its speed, and no picture moves; no operation is done where a speed point is there already (see below). |
+| `set_segment_speed` | `clip`, `at`, `speed`, `ripple?`, `linked?` | Change Speed of one segment: the segment that frame `at` is in plays at `speed` (`{num, den}`, from 1/100 to 100, taken as it is given) the way that it went and shows what it showed, so it and the clip last more frames or fewer (rounded down, one at least). `ripple` as for `set_speed`, false by default (see below). |
+| `freeze_frame` | `clip`, `at`, `hold`, `ripple?`, `linked?` | Freeze Frame of the Retime Controls: the picture of frame `at` is held for `hold` frames more (one at least), between two speed points, and the clip lasts `hold` frames more and shows all that it showed. `ripple` as for `set_speed`, false by default (see below). |
+| `reverse_segment` | `clip`, `at`, `linked?` | Reverse Segment: the segment that frame `at` is in plays the other way at its speed; the clip keeps its length (see below). |
+| `clear_speed_point` | `clip`, `at`, `linked?` | Clear Speed Point: the speed point at the left of the segment that frame `at` is in is cleared, and that segment and the one before it become one of one speed; the clip keeps its length (see below). |
+| `reset_speed` | `clip`, `ripple?`, `linked?` | Reset to 100%: the clip plays at the speed of its source, forward, with no speed points, and lasts as many frames as show once what it showed. `ripple` as for `set_speed`, false by default (see below). |
 | `add_cue` | `track`, `start`, `length`, `text` | Add one subtitle. |
 | `set_cue` | `id`, `start?`, `length?`, `text?` | Change given subtitle settings. |
 | `remove_cue` | `id` | Remove one subtitle. |
@@ -2237,10 +2248,66 @@ closed range are trimmed or removed, and later subtitles follow the picture. A r
 moves later content later (an insertion, a ripple overwrite with a longer source, a ripple trim
 or a change of speed that lengthens) splits a subtitle across its point into two cues with the
 same text, with the new frames between them; the first keeps the id. Locked subtitle tracks
-remain unchanged. A ripple trim or `set_speed` ripple of a split edit (J/L cut) is refused as
+remain unchanged. A ripple trim, a `set_speed` ripple or a ripple of an edit of the Retime
+Controls of a split edit (J/L cut) is refused as
 `ripple_blocked` when a clip starts between the end of one of the group's clips and the end of
 the whole group on that clip's track: it would stay while what follows moves, parting the
 picture of the next group from its sound.
+
+The edits of the Retime Controls (DaVinci Resolve Reference Manual 20, pp. 1070–1082) change
+the speed points of a clip (`retime`, see the project): `add_speed_point`,
+`set_segment_speed`, `freeze_frame`, `reverse_segment`, `clear_speed_point` and `reset_speed`.
+A clip of one speed takes them too: its one segment is the whole clip, and it has `retime`
+from then on, unless the edit leaves it one speed, which is written as `speed` and `reverse`.
+`at` is a frame of the clip that is named, counted from its first, from 0 to `length - 1`
+(`out_of_range`, `frame`). With `linked`, the clips linked to it take the change at the same
+frame of the timeline, each on its own speed points and counted from its own start, so
+picture and sound that lie together stay as long as each other; a linked clip that the frame
+is not in (a split edit) is left as it is, though a ripple still counts its end as one of
+the group's. A title, a colour and a still are refused (`out_of_range`, `retime_source`).
+Each edit is worked out into `set_retime`, into `trim_clip` where the lowest place of the
+path, and so `source.in`, is then another, and into the operations of a ripple; the
+transitions at the clip are kept where they still fit, shortened and reported in `clamped`
+where they do not. An edit that changes nothing (a speed point put where one is, a clip at its
+own speed reset, a freeze reversed) does no operation, as `set_speed` to the speed that a clip
+has does none: alone in a transaction it is refused as `empty`.
+
+- The frames of the clip before the segment that is changed show the pictures that they
+  showed, to the tick, or the tick before it where the lowest place of the path moves by no
+  whole number of ticks. `reverse_segment` of the first segment shows what that segment
+  showed, the last first, as `set_speed` with `reverse` does for a clip of one speed, and what
+  follows goes on from where it then stops. Any other segment that is turned backward goes
+  back from where the one before it stopped, so the clip may come to show media from before
+  the place where it began, and is refused with `out_of_source` where its media has none. A
+  freeze that is reversed stays as it is. `reset_speed` keeps `source.in`, and shows from
+  there, forward and once, what the clip showed from the lowest place of its path to the
+  highest.
+- `set_segment_speed` keeps the direction of the segment: `speed` has no sign, and a segment
+  is turned round by `reverse_segment`. A freeze that is given a speed plays forward over the
+  frames that it had. A `speed` that is not from 1/100 to 100 is refused (`out_of_range`,
+  `speed`), and so is a `hold` of less than one frame (`hold`).
+- `clear_speed_point` clears the speed point at the left of the segment, as the Clear Speed
+  Point of the pop-up menu of that segment does (p. 1076). The manual does not say at what
+  speed the two segments then play. Here they become one segment of one speed, in a straight
+  line from the place where the first began to the place where the second stopped, as the
+  Retime Frame curve goes where one of its control points, which are the speed points
+  (p. 1078), is deleted (p. 1081): the clip keeps its length, and what is before the two
+  segments and after them shows what it showed. The speed is counted exactly, and is no round
+  number as a rule; as far up as down is a freeze. The first segment has no speed point to
+  clear, its own being at frame 0 (`out_of_range`, `speed_point`), and a speed that plays
+  and is not from 1/100 to 100 either way is refused (`speed`; `retime_unit` where it is no
+  fraction of 32 bits).
+- `set_segment_speed`, `freeze_frame` and `reset_speed` make the clip longer or shorter. With
+  `ripple` (the Trim mode of the manual, p. 1075), what follows moves by the change of the
+  latest end of the linked clips, as for `set_speed`, and is refused as it is
+  (`ripple_blocked`). Without it (the Selection mode), nothing else moves: a clip that gets
+  shorter leaves the frames after it empty, and one that would cover the next clip of its
+  track is cut at its end where that clip starts, the edit being reported in `clamped`. That
+  is what `set_speed` does; the Selection mode of the manual overwrites the next clip
+  instead.
+- The sound of a clip with speed points is silent in this version. So a linked clip of sound
+  that takes one of these edits is not heard until it is back at one speed, by `reset_speed`,
+  by `set_retime` with no `retime`, or by an edit that leaves it one speed.
 
 `close_gap` takes `"straddling"`: `"refuse"` (the default, omitted when written) refuses with
 `ripple_blocked` where a clip of another unlocked track covers a frame of the gap, as every
@@ -2340,7 +2407,8 @@ operations of the same transaction, one for each lane that changed, after those 
   it. A ripple `trim` of a clip's start ripples the lanes of its track from the start: the
   points over the frames trimmed away are taken away and what the clip still plays keeps its
   automation (lengthened, the frames put in go straight across as in an insert).
-- `trim` without a ripple, `roll`, `slip`, `blade`, `set_speed`, `replace` and the transitions
+- `trim` without a ripple, `roll`, `slip`, `blade`, `set_speed`, the edits of the Retime
+  Controls, `replace` and the transitions
   change no lane over the clip: what a trim shortens is not taken away (it is there again if the
   clip is lengthened), and what it lengthens over holds the values that were there; a change of
   speed does not stretch the lanes. A ripple trim that shortens takes away the points of the
@@ -3867,7 +3935,7 @@ reads).
 | `level` | which grade of its clip `grades.clip` is: `clip`, or its group's `pre_clip` or `post_clip` (the Node Editor's mode when it was grabbed, p. 3306) |
 | `grades` | `{"clip": grade \| null, "timeline": grade \| null}`: the grade of its clip at `level` (null where it is of no clip) and the timeline's (null where the timeline's has no node: "if one is applied", p. 3286), with their keys |
 | `frozen` | the same grades without keys: each keyed setting at the value of its key at the frame grabbed or the nearest before it (the first, before them all), "whatever parameter values are contained by the next keyframe to the left of the position of the playhead" (p. 3393: halfway between keys of 50 and 0, 50) |
-| `keyframes` | of each grade, `null` or `{"counts", "rate", "start", "last", "frames", "from_start"}`: what frames its keys count (`source`: of the clip's media, at the media's rate; `clip`: of a title, colour or still clip from its first; `group`: of whatever clip a group's grade is on; `timeline`), from what `start` (the frame of the source at the clip's in point, or 0) to what `last` (of `source` only), the frames of its keys, and the same counted from `start`: the keys "reference the source timecode, or start frame of the original clips" (p. 3393) |
+| `keyframes` | of each grade, `null` or `{"counts", "rate", "start", "last", "frames", "from_start"}`: what frames its keys count (`source`: of the clip's media, at the media's rate; `clip`: of a title, colour or still clip from its first; `group`: of whatever clip a group's grade is on; `timeline`), from what `start` (the frame of the source at the clip's in point, or 0) to what `last` (of `source` only; of a clip with speed points, the first frame of its media that it shows and the last, wherever in the clip), the frames of its keys, and the same counted from `start`: the keys "reference the source timecode, or start frame of the original clips" (p. 3393) |
 | `source` | where it came from (Still Properties, p. 3258): `project` (`""`, kept for later), `timeline` `{"id", "name", "rate"}`, `frame` and `record_timecode` (`HH:MM:SS:FF`, not drop frame, of a whole number of frames a second, the rate rounded up), `clip` (the clip as the project had it, its grade left out), `media` (as the project had it, or null), `group`, `track`, `shot`, `source_frame` (the frame its keys count there) and `source_timecode` (of `source_frame` at the media's rate, from the start of the media, which has no timecode of its own; null of a clip of no media); null of an imported picture |
 | `color` | the project's `color` when it was grabbed |
 | `imported` | of an imported still, the path it was taken from |
@@ -4619,7 +4687,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
 | `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
-| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `retime`, `retime_unit`, `retime_constant`, `retime_speed` and `retime_source` (speed points that a clip cannot have), `retimed` (what is done to a clip of one speed only, asked of a clip with speed points), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
+| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `retime`, `retime_unit`, `retime_constant`, `retime_speed` and `retime_source` (speed points that a clip cannot have), `frame`, `hold` and `speed_point` (an edit of the Retime Controls at a frame that the clip has not, a freeze of less than a frame, and the speed point of the first segment, which is not one to clear), `retimed` (what is done to a clip of one speed only, asked of a clip with speed points), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | `remove_clip`, `move_clip` or `trim_clip` of a clip that has a transition (remove it first), a `set_clip` that its transition cannot follow, or a `shift_clips` that moves just one end of a transition |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |

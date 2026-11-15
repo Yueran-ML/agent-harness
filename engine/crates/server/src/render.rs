@@ -1422,6 +1422,75 @@ mod tests {
         }
     }
 
+    /// A clip with speed points is exported along them: each frame of the export shows the
+    /// picture of the media that the course of the clip gives there, forward, held through a
+    /// freeze, and backward, as the timeline monitor shows it.
+    #[test]
+    fn an_export_shows_the_pictures_along_the_speed_points_of_a_clip() {
+        use columbina_model::keyframes::KeyClock;
+        use columbina_model::retime::{Retime, SignedSpeed, SpeedPoint};
+        use columbina_model::{span, Clip, Time};
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let Some(made) = test_media::media(Sample::Fhd) else {
+            return;
+        };
+        let facts = columbina_media::probe(&made.path).unwrap();
+        let (width, height) = (1920, 1080);
+        let mut project = Project::sample();
+        project.media[0].path = made.path.to_string_lossy().into_owned();
+        project.media[0].facts = facts.clone();
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (width, height);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        // The numbered media: 8 frames forward, a picture held for 6, and 10 frames backward
+        // at twice the speed, which end 12 pictures below where the clip started. The clip
+        // begins in its media at the lowest of them, picture 10, so its first frame shows
+        // picture 22, the freeze picture 30, and its last frame picture 10.
+        let rate = facts.video.as_ref().unwrap().rate;
+        let from = Time {
+            ticks: rate.ticks_of(10, facts.duration.scale),
+            scale: facts.duration.scale,
+        };
+        let mut clip = Clip::of_media("c1", "m1", from, 0, 24);
+        clip.set_mapping(Some(Retime {
+            points: [(0, 1), (8, 0), (14, -2)]
+                .into_iter()
+                .map(|(frame, num)| SpeedPoint {
+                    frame,
+                    speed: SignedSpeed { num, den: 1 },
+                })
+                .collect(),
+        }));
+        timeline.tracks[0].clips = vec![clip.clone()];
+        let path: Vec<i64> = (22..30)
+            .chain([30; 6])
+            .chain((0..10).map(|k| 28 - 2 * k))
+            .collect();
+        let rate_of_timeline = project.timelines[0].rate;
+        let clock = KeyClock::of(&clip, &project, rate_of_timeline);
+        let frames = exported(&project, 24, width, height);
+        let at = |rgba: &[u8], x: u32, y: u32| rgba.as_chunks::<4>().0[(y * width + x) as usize];
+        for ((frame, rgba), wanted) in (0..).zip(&frames).zip(&path) {
+            // The number of the picture shown, from its three blocks, as luma 16 + 14·d.
+            let number = (0..3_u32).rev().fold(0, |number, block| {
+                let [r, ..] = at(rgba, 64 * block + 32, 32);
+                #[allow(clippy::cast_possible_truncation)]
+                let digit = (f64::from(r) * 219.0 / 255.0 / 14.0).round() as i64;
+                number * 16 + digit
+            });
+            // As the model reads the clip, and as it is written out above.
+            let tick = span::source_tick(&clip, frame, rate_of_timeline, facts.duration.scale);
+            assert_eq!(span::media_frame(tick, rate, facts.duration), number);
+            assert_eq!(clock.at(frame), number, "frame {frame}");
+            assert_eq!(number, *wanted, "frame {frame}");
+        }
+        assert_eq!(frames.len(), path.len());
+    }
+
     fn no_hardware(
         path: &Path,
         video: VideoSettings,

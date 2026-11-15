@@ -67,9 +67,14 @@
 //! Each gives a new mapping, and the length of the clip where it changes: a speed point is
 //! added ([`Retime::with_point`]); a segment is given a speed, and keeps its frames
 //! ([`Retime::with_speed`]) or what it shows ([`Retime::with_speed_rippled`]); a frame is frozen
-//! ([`Retime::with_freeze`]); a segment is turned round ([`Retime::with_segment_reversed`]); and
-//! the clip is put back to its own speed ([`Retime::reset`]). Whether the clips after it make
-//! room for a clip that grows, or are covered by it, is for the timeline to say (p. 1075).
+//! ([`Retime::with_freeze`]); a segment is turned round ([`Retime::with_segment_reversed`]); a
+//! speed point is cleared ([`Retime::without_point`]); and the clip is put back to its own speed
+//! ([`Retime::reset`]). Whether the clips after it make room for a clip that grows, or are
+//! covered by it, is for the timeline to say (p. 1075).
+//!
+//! A change may leave the lowest place of the path another: [`Course::later_as`] says how much
+//! later the clip then begins in its media, so that the path stays where it was in the media at
+//! a frame that the change leaves.
 //!
 //! An edit of the timeline that moves the head of a clip, or cuts it in two, takes the mapping
 //! from a frame on ([`Retime::from_frame`]), and one that moves its tail takes it to a length
@@ -264,6 +269,14 @@ pub struct Trimmed {
 
 /// The greatest number that divides both.
 fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// The greatest number that divides both, of numbers that may be more than a `u64` holds.
+fn gcd_wide(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -628,6 +641,50 @@ impl Retime {
         Ok(Retime { points })
     }
 
+    /// The mapping without the speed point that begins the segment that frame `at` of a clip of
+    /// `length` frames is in (Clear Speed Point, p. 1076, which clears the speed point at the
+    /// left of a segment). The segment and the one before it become one, which goes at one
+    /// speed, in a straight line, from the place where the one before it began to the place
+    /// where the segment stopped: as the Retime Frame curve goes where one of its control
+    /// points, which are the speed points (p. 1078), is taken away (p. 1081). The clip lasts as
+    /// long as it did, and the path is where it was before the two segments and after them.
+    ///
+    /// The one speed is counted exactly: the places that the two segments went through, over
+    /// the frames that they lasted. Two that went as far up as down become a freeze.
+    ///
+    /// # Errors
+    /// The mapping is not one of the clip, as [`Retime::check`] says; the clip has no frame `at`
+    /// ([`OpError::OutOfRange`] of `frame`); the frame is in the first segment, whose speed
+    /// point is at frame 0 and is not one to clear (of `speed_point`); or the one speed is not
+    /// one that a segment may have: it plays, and not from 1/100 to 100 either way (of
+    /// `speed`), or it is no fraction whose `den` a `u32` holds (of `retime_unit`).
+    pub fn without_point(&self, at: i64, length: i64) -> Result<Retime, OpError> {
+        let index = self.segment_index(at, length)?;
+        if index == 0 {
+            return Err(out("speed_point"));
+        }
+        let course = self.course(length)?;
+        let (before, cleared) = (&course.segments[index - 1], &course.segments[index]);
+        // How far the two go together, in units of a frame, and the units of the frames that
+        // they last: below 2^124 and 2^85, and the second is above 0.
+        let rise = cleared.place(i128::from(cleared.to)) - before.at;
+        let over = i128::from(cleared.to - before.from) * i128::from(course.unit);
+        let shared = i128::try_from(gcd_wide(rise.unsigned_abs(), over.unsigned_abs()))
+            .unwrap_or(1)
+            .max(1);
+        let speed = SignedSpeed {
+            num: i64::try_from(rise / shared).map_err(|_| out("speed"))?,
+            den: u32::try_from(over / shared).map_err(|_| out("retime_unit"))?,
+        };
+        speed.check()?;
+        let mut points = self.points.clone();
+        points[index - 1].speed = speed;
+        points.remove(index);
+        let retime = Retime { points };
+        retime.check(length)?;
+        Ok(retime)
+    }
+
     /// The mapping of a clip put back to the speed of its source (Reset to 100%, p. 1074), with
     /// the frames that a clip of `length` frames then lasts, to show at that speed, forward and
     /// once, what it showed of its source from the lowest place to the highest: rounded down,
@@ -829,6 +886,19 @@ fn scaled(place: i128, times: u64, per: u64) -> Option<i128> {
         .checked_add(i128::try_from(part).ok()?)
 }
 
+/// A place, counted in `unit`s of a frame, in ticks of `scale`, rounded down, on a timeline of
+/// `rate`. One too large for an `i64` is `i64::MAX`, and one too far below nought `i64::MIN`.
+fn ticks_of(place: i128, unit: u32, rate: Rate, scale: u32) -> i64 {
+    // Each is below 2^64, as the product of two numbers below 2^32.
+    let times = u64::from(rate.den) * u64::from(scale);
+    let per = u64::from(unit) * u64::from(rate.num);
+    match scaled(place, times, per) {
+        Some(ticks) => i64::try_from(ticks).unwrap_or(if ticks < 0 { i64::MIN } else { i64::MAX }),
+        None if place < 0 => i64::MIN,
+        None => i64::MAX,
+    }
+}
+
 /// The first of the frames from `from` to the one before `to` that `holds` for, where it holds
 /// for every frame after one that it holds for; `to` if it holds for none of them.
 fn first(from: i64, to: i64, holds: impl Fn(i64) -> bool) -> i64 {
@@ -915,16 +985,7 @@ impl Course {
 
     /// A place of the path in ticks of `scale`, rounded down, on a timeline of `rate`.
     fn ticks(&self, place: i128, rate: Rate, scale: u32) -> i64 {
-        // Each is below 2^64, as the product of two numbers below 2^32.
-        let times = u64::from(rate.den) * u64::from(scale);
-        let per = u64::from(self.unit) * u64::from(rate.num);
-        match scaled(place, times, per) {
-            Some(ticks) => {
-                i64::try_from(ticks).unwrap_or(if ticks < 0 { i64::MIN } else { i64::MAX })
-            }
-            None if place < 0 => i64::MIN,
-            None => i64::MAX,
-        }
+        ticks_of(place, self.unit, rate, scale)
     }
 
     /// The tick that frame `k` shows, counted as `segment` goes.
@@ -1030,6 +1091,42 @@ impl Course {
         let here = self.segment_of(from).place(i128::from(from));
         let there = onward.segments[0].at.saturating_mul(times);
         self.ticks(here.saturating_sub(there), rate, scale)
+    }
+
+    /// How many ticks of `scale` later a clip begins in its media, on a timeline of `rate`,
+    /// where it is made to play as `after` does, and the path of `after` begins at the place
+    /// where frame `from` of this course begins: frame 0 for a change that leaves the place
+    /// where the path begins, and the length of the clip for the place where it stops. It is
+    /// how far the lowest place of the path of `after` then lies above the lowest of this one,
+    /// rounded down once, and it is below 0 where the clip begins earlier. So a frame whose
+    /// place on the path the change leaves shows the tick that it showed, or the one before it
+    /// where the lowest place moved by no whole number of ticks (see the module).
+    ///
+    /// The two courses need not be of one mapping, nor of one length: the places of each are
+    /// counted in the least unit that the speeds of both are whole numbers of.
+    ///
+    /// # Errors
+    /// [`OpError::OutOfRange`] of `retime_unit` where the speeds of the two have no unit in
+    /// common that a `u32` holds.
+    pub fn later_as(
+        &self,
+        from: i64,
+        after: &Course,
+        rate: Rate,
+        scale: u32,
+    ) -> Result<i64, OpError> {
+        let (here, there) = (u64::from(self.unit), u64::from(after.unit));
+        let shared = gcd(here, there).max(1);
+        // Below 2^64, since each unit is below 2^32.
+        let unit = u32::try_from(here / shared * there).map_err(|_| out("retime_unit"))?;
+        let was = self
+            .segment_of(from)
+            .place(i128::from(from))
+            .saturating_mul(i128::from(there / shared));
+        let now = after.segments[0]
+            .at
+            .saturating_mul(i128::from(here / shared));
+        Ok(ticks_of(was.saturating_sub(now), unit, rate, scale))
     }
 
     /// The first frame of `segment` in which the place `tick` is on show: the frame that shows
@@ -2163,5 +2260,115 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_speed_point_that_is_cleared_leaves_a_straight_line_between_its_neighbours() {
+        // 4 frames of the source in 4 frames, 8 in the next 4, and 2 in the last 4.
+        let mapping = retime(&[(0, 1, 1), (4, 2, 1), (8, 1, 2)]);
+        assert_eq!(
+            shows(&mapping, 12),
+            [0, 1, 2, 3, 4, 6, 8, 10, 12, 12, 13, 13]
+        );
+        // Without the speed point at frame 4, the first 8 frames go through 12 frames of the
+        // source at one speed, and the last 4 are as they were.
+        let cleared = mapping.without_point(5, 12).unwrap();
+        assert_eq!(cleared, retime(&[(0, 3, 2), (8, 1, 2)]));
+        assert_eq!(
+            shows(&cleared, 12),
+            [0, 1, 3, 4, 6, 7, 9, 10, 12, 12, 13, 13]
+        );
+        // Without the one at frame 8, the last 8 frames go through 10, and the first 4 are as
+        // they were: the path stops where it stopped.
+        let cleared = mapping.without_point(8, 12).unwrap();
+        assert_eq!(cleared, retime(&[(0, 1, 1), (4, 5, 4)]));
+        assert_eq!(shows(&cleared, 12), [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12]);
+        assert_eq!(
+            cleared.course(12).unwrap().span(PAL, 25),
+            mapping.course(12).unwrap().span(PAL, 25)
+        );
+        // A freeze that is cleared is shared out over the segment before it.
+        let frozen = retime(&[(0, 1, 1), (4, 0, 1), (8, 1, 1)]);
+        let cleared = frozen.without_point(4, 12).unwrap();
+        assert_eq!(cleared, retime(&[(0, 1, 2), (8, 1, 1)]));
+        assert_eq!(shows(&cleared, 12), [0, 0, 1, 1, 2, 2, 3, 3, 4, 5, 6, 7]);
+        // As far up as down is a freeze, and further down than up goes backward.
+        let turned = retime(&[(0, 1, 1), (5, -1, 1)]);
+        assert_eq!(turned.without_point(7, 10).unwrap(), Retime::still());
+        let dipping = retime(&[(0, 1, 1), (5, -1, 1), (15, 1, 1)]);
+        assert_eq!(
+            dipping.without_point(15, 20).unwrap(),
+            retime(&[(0, 1, 1), (5, -1, 3)])
+        );
+        // The speed point at frame 0 is not one to clear, and the clip has the frame.
+        assert_eq!(
+            mapping.without_point(3, 12).unwrap_err(),
+            range("speed_point")
+        );
+        assert_eq!(mapping.without_point(12, 12).unwrap_err(), range("frame"));
+        assert_eq!(mapping.without_point(-1, 12).unwrap_err(), range("frame"));
+        // 100 frames up and 99 down are one frame in 199: slower than a segment plays.
+        let slow = retime(&[(0, 1, 1), (100, -1, 1)]);
+        assert_eq!(slow.without_point(100, 199).unwrap_err(), range("speed"));
+    }
+
+    #[test]
+    fn a_clip_made_to_play_another_way_begins_where_its_path_keeps_its_place() {
+        // 10 frames up and 20 down: the path begins 10 frames above its lowest place.
+        let turning = retime(&[(0, 1, 1), (10, -1, 1)]).course(30).unwrap();
+        let forward = Retime::default().course(30).unwrap();
+        // Forward all the way from the place where it began, the clip begins 10 frames later
+        // in its media; and the other way round, 10 frames earlier.
+        assert_eq!(turning.later_as(0, &forward, PAL, 25), Ok(10));
+        assert_eq!(forward.later_as(0, &turning, PAL, 25), Ok(-10));
+        // From where it turned, 20 frames above its lowest place, and from where it stopped,
+        // which is its lowest.
+        assert_eq!(turning.later_as(10, &forward, PAL, 25), Ok(20));
+        assert_eq!(turning.later_as(30, &forward, PAL, 25), Ok(0));
+        // The places of each are counted in a unit of both: halves of a frame, and thirds.
+        let halves = retime(&[(0, 1, 2), (10, -1, 2)]).course(30).unwrap();
+        let thirds = retime(&[(0, 1, 3)]).course(30).unwrap();
+        assert_eq!(halves.later_as(0, &thirds, PAL, 25), Ok(5));
+        assert_eq!(halves.later_as(10, &thirds, PAL, 25), Ok(10));
+        assert_eq!(thirds.later_as(30, &halves, PAL, 25), Ok(5));
+        // A segment given another speed: the frames before it, and those before the clip,
+        // show what they showed, to the tick where a unit of a frame is a whole number of
+        // ticks, and else that tick or the one before it.
+        let mapping = retime(&[(0, 1, 1), (10, -1, 1), (25, 2, 1), (40, 1, 2)]);
+        let course = mapping.course(50).unwrap();
+        for (at, num, den) in [
+            (12, -3, 1),
+            (12, -1, 4),
+            (30, 1, 3),
+            (45, 5, 7),
+            (45, -1, 1),
+        ] {
+            let changed = mapping
+                .with_speed_rippled(at, SignedSpeed { num, den }, 50)
+                .unwrap();
+            let after = changed.retime.course(changed.length).unwrap();
+            let first = course.segment_of(at).from;
+            // 84 ticks to a frame are a whole number to a half, a third, a quarter and a
+            // seventh of one.
+            for (rate, scale, whole) in [(PAL, 2100, true), (NTSC, 1000, false)] {
+                let later = course.later_as(0, &after, rate, scale).unwrap();
+                for k in -2..first {
+                    let was = course.tick(1000, k, rate, scale);
+                    let is = after.tick(1000 + later, k, rate, scale);
+                    if whole {
+                        assert_eq!(is, was, "frame {k}, {num}/{den} at {at}");
+                    } else {
+                        assert!(
+                            is == was || is == was - 1,
+                            "frame {k}, {num}/{den} at {at}: {is}, and {was} before"
+                        );
+                    }
+                }
+            }
+        }
+        // Speeds with no unit in common that 32 bits hold.
+        let one = retime(&[(0, 65537, 65537)]).course(10).unwrap();
+        let other = retime(&[(0, 65539, 65539)]).course(10).unwrap();
+        assert_eq!(one.later_as(0, &other, PAL, 25), Err(range("retime_unit")));
     }
 }

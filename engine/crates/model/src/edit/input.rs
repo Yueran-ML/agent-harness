@@ -3,6 +3,10 @@
 use super::{CueItem, Edit, Material};
 use crate::ops::{within, OpError};
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "an arm for the edits of each shape, each a line or two"
+)]
 pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
     match edit {
         Edit::Insert { source, at, .. }
@@ -15,8 +19,17 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
             material(source)
         }
         Edit::Append { source, .. } => material(source),
-        Edit::CloseGap { at, .. } | Edit::Blade { at, .. } | Edit::InsertMove { at, .. } => {
-            within("at", i128::from(*at))
+        Edit::CloseGap { at, .. }
+        | Edit::Blade { at, .. }
+        | Edit::InsertMove { at, .. }
+        | Edit::AddSpeedPoint { at, .. }
+        | Edit::SetSegmentSpeed { at, .. }
+        | Edit::ReverseSegment { at, .. }
+        | Edit::ClearSpeedPoint { at, .. }
+        | Edit::FadeToPlayhead { at, .. } => within("at", i128::from(*at)),
+        Edit::FreezeFrame { at, hold, .. } => {
+            within("at", i128::from(*at))?;
+            within("hold", i128::from(*hold))
         }
         Edit::RippleDeleteRange { from, to, .. } => {
             within("from", i128::from(*from))?;
@@ -38,7 +51,6 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
             optional("length", *length)
         }
         Edit::CuesFrom { items, .. } => cues(items),
-        Edit::FadeToPlayhead { at, .. } => within("at", i128::from(*at)),
         Edit::PlaceCopies { copies, .. } => {
             for copy in copies {
                 within("start", i128::from(copy.start))?;
@@ -81,6 +93,7 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::RippleDelete { .. }
         | Edit::RemoveTransition { .. }
         | Edit::SetSpeed { .. }
+        | Edit::ResetSpeed { .. }
         | Edit::RemoveCue { .. }
         | Edit::AddTrack { .. }
         | Edit::RemoveTrack { .. }

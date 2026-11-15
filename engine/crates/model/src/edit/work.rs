@@ -457,6 +457,22 @@ impl<'a> Work<'a> {
     /// play as `new` does too, where an edit of its head or its tail left it other speed
     /// points, or one speed.
     pub fn reshape(&mut self, new: &Clip) -> Result<(), EditError> {
+        self.reshape_as(new, false)
+    }
+
+    /// Make a clip as `new` is, as [`Work::reshape`] does, and play as `new` does whether or
+    /// not it had speed points: for an edit of how a clip plays, which may give speed points
+    /// to a clip of one speed, leave a clip with one speed that had them, or with another one
+    /// speed than it had.
+    pub fn replay(&mut self, new: &Clip) -> Result<(), EditError> {
+        self.reshape_as(new, true)
+    }
+
+    /// Make a clip as `new` is ([`Work::reshape`]). With `played`, it is made to play as `new`
+    /// does where it plays otherwise in any way ([`Work::replay`]); without, only where it has
+    /// speed points, as an edit of its head or its tail leaves the speed of a clip of one
+    /// speed as it is.
+    fn reshape_as(&mut self, new: &Clip, played: bool) -> Result<(), EditError> {
         let (_, old) = self.owned(&new.id)?;
         self.detach(&new.id)?;
         let sound =
@@ -477,7 +493,12 @@ impl<'a> Work<'a> {
             }
             self.op(op)?;
         }
-        if old.retime.is_some() && old.retime != new.retime {
+        let retimed = if played {
+            old.mapping() != new.mapping()
+        } else {
+            old.retime.is_some() && old.retime != new.retime
+        };
+        if retimed {
             self.reshape_retimed(&old, new)?;
         } else if (old.start, old.length, old.source_in())
             != (new.start, new.length, new.source_in())
@@ -519,16 +540,32 @@ impl<'a> Work<'a> {
         Ok(())
     }
 
-    /// Make a clip with speed points play as `new` does, start where it does, last as long and
-    /// begin where it does in its media: its speed points and its length are set together
+    /// Make a clip play as `new` does, start where it does, last as long and begin where it
+    /// does in its media: its speed points and its length are set together
     /// ([`Op::SetRetime`]), and where it starts and begins apart from them ([`Op::TrimClip`]),
     /// in the order that keeps what it shows between the two within what it showed before or
-    /// shows after. A clip that gets no longer is given its new speed points first, which show
-    /// no more than the old ones did from where it began; one that gets longer is moved first,
-    /// and shows there what it showed.
+    /// shows after, in its media and on its track.
+    ///
+    /// A clip that starts elsewhere was trimmed at its head: one that gets no longer is given
+    /// its new speed points first, which show no more than the old ones did from where it
+    /// began, and one that gets longer is moved first, and shows there what it showed. A clip
+    /// that starts where it did is moved first where it begins earlier in its media, since
+    /// what it shows then ends earlier too, and no earlier than it will; where it begins
+    /// later, it is given its new speed points first, which end no later from where it began
+    /// than from where it will begin. A clip trimmed at its tail, or at its head in a ripple,
+    /// begins earlier where it gets longer and later where it gets shorter, so it is taken
+    /// the same way as one that starts elsewhere; an edit of the speed points themselves
+    /// ([`Work::replay`]) may make a clip longer that begins later, and has made the room on
+    /// its track before.
     fn reshape_retimed(&mut self, old: &Clip, new: &Clip) -> Result<(), EditError> {
         let moved = (old.start, old.source_in()) != (new.start, new.source_in());
-        let grows = new.length > old.length;
+        let ahead = if old.start == new.start {
+            old.source_in()
+                .zip(new.source_in())
+                .is_some_and(|(was, now)| now.ticks < was.ticks)
+        } else {
+            new.length > old.length
+        };
         let timeline = self.timeline_id();
         let place = |length: i64| Op::TrimClip {
             timeline: timeline.clone(),
@@ -537,7 +574,7 @@ impl<'a> Work<'a> {
             start: new.start,
             length,
         };
-        if grows && moved {
+        if ahead && moved {
             self.op(place(old.length))?;
         }
         self.op(Op::SetRetime {
@@ -546,7 +583,7 @@ impl<'a> Work<'a> {
             retime: Some(new.mapping()),
             length: (new.length != old.length).then_some(new.length),
         })?;
-        if !grows && moved {
+        if !ahead && moved {
             self.op(place(new.length))?;
         }
         Ok(())
@@ -955,7 +992,7 @@ pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate, own: bool) -> (Clip, C
 /// Give a clip the speed points of `trimmed`, kept as one speed where they are of one, and have
 /// it begin as much later in its media as they say than `begins`, where it began with the ones
 /// that they were made of.
-fn retime_as(clip: &mut Clip, trimmed: Trimmed, begins: Time) {
+pub(super) fn retime_as(clip: &mut Clip, trimmed: Trimmed, begins: Time) {
     clip.set_mapping(Some(trimmed.retime));
     set_source_in(
         clip,

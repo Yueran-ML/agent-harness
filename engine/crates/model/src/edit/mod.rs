@@ -46,7 +46,22 @@
 //! What sets one speed is refused for a clip that has speed points, and for the clips linked
 //! to it, with `out_of_range` (`retimed`): `set_speed`, the volume of `paste_attributes` where
 //! it has keyframes, and a paste into a timeline of another rate. The operation `set_retime`
-//! with no `retime` puts the clip back to one speed first.
+//! with no `retime` puts the clip back to one speed first, and so does the edit `reset_speed`.
+//!
+//! The speed points themselves are changed by the edits of the Retime Controls (Reference
+//! Manual 20, pp. 1070–1082), which a clip of one speed takes too: [`Edit::AddSpeedPoint`],
+//! [`Edit::SetSegmentSpeed`], [`Edit::FreezeFrame`], [`Edit::ReverseSegment`],
+//! [`Edit::ClearSpeedPoint`] and [`Edit::ResetSpeed`]. Each is made at a frame of the clip that
+//! it names, counted from its first, and the clips linked to it take it at the same frame of
+//! the timeline, each counted from its own start; a linked clip that the frame is not in is
+//! left as it is. A title, a colour and a still are refused with `out_of_range`
+//! (`retime_source`). The frames of the clip before the segment that is changed show the
+//! pictures that they showed: where the lowest place of the path is then another, the clip
+//! begins that much later in its media, or earlier. Those that make the clip longer or shorter
+//! take `ripple` as `set_speed` does: with it, what follows moves with the end of the linked
+//! clips together; without, a clip that would cover the next one on its track is cut at its
+//! end where that one starts, and the edit says that it was clamped. The sound of a clip with
+//! speed points is not heard yet.
 //!
 //! # As far as it goes
 //!
@@ -63,6 +78,7 @@ mod grade;
 mod input;
 mod misc;
 mod place;
+mod retiming;
 mod source_tracks;
 mod trim;
 mod work;
@@ -84,6 +100,7 @@ pub use automation::{
 pub use clipboard::{copy_clips, ClipClipboard, CopiedClip, CopiedTransition};
 pub use follow::Piece as ClipLane;
 pub use grade::Given;
+use retiming::Retiming;
 use work::Work;
 
 /// The most nodes that Copy Grade keeps of the grades it is put in place of: "0–10" (Reference
@@ -545,6 +562,122 @@ pub enum Edit {
         #[serde(default)]
         ripple: bool,
         /// Whether the clips linked to it change speed too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Put a speed point at a frame of a clip (Add Speed Point of the Retime Controls,
+    /// Reference Manual 20, p. 1076): the segment that the frame is in becomes two of its
+    /// speed, and the clip shows what it showed. A clip of one speed has speed points from
+    /// then on. Where a speed point is at the frame already, nothing is done.
+    AddSpeedPoint {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The frame of the clip, counted from its first, that the speed point is put at.
+        at: i64,
+        /// Whether the clips linked to it get one at the same frame of the timeline.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Play the segment of a clip that a frame is in at another speed, the way that it went,
+    /// showing what it showed (Change Speed of the Retime Controls, pp. 1074 and 1076): so the
+    /// segment lasts more frames or fewer, rounded down but one at least, the speed points
+    /// after it come later or sooner, and so does the end of the clip. A freeze that is given
+    /// a speed plays forward over the frames that it had. The whole of a clip of one speed is
+    /// its one segment. With `ripple`, what is after the clip moves with its end; without,
+    /// a clip that would cover the next one is cut at its end, and the edit is clamped.
+    SetSegmentSpeed {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// A frame of the segment, counted from the first frame of the clip.
+        at: i64,
+        /// The speed, from 1/100 to 100: it is taken as it is given, and not brought to a
+        /// round number.
+        speed: Speed,
+        /// Whether what follows moves with the end of the clip.
+        #[serde(default)]
+        ripple: bool,
+        /// Whether the clips linked to it change speed at the same frame of the timeline.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Hold the picture of a frame of a clip for `hold` frames more (Freeze Frame of the
+    /// Retime Controls, pp. 1075–1076): two speed points, one where the freeze begins and one
+    /// where the clip plays on at the speed that it had. The clip lasts `hold` frames more, and
+    /// shows all that it showed. With `ripple`, what is after the clip moves with its end;
+    /// without, a clip that would cover the next one is cut at its end, and the edit is
+    /// clamped.
+    FreezeFrame {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The frame of the clip, counted from its first, whose picture is held.
+        at: i64,
+        /// How many frames more the picture is held: one at least.
+        hold: i64,
+        /// Whether what follows moves with the end of the clip.
+        #[serde(default)]
+        ripple: bool,
+        /// Whether the clips linked to it are held at the same frame of the timeline.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Play the segment of a clip that a frame is in the other way, at its speed (Reverse
+    /// Segment of the Retime Controls, pp. 1074 and 1076). The path of the clip has no jump: the
+    /// first segment shows what it showed, the last first, and so does the whole of a clip of
+    /// one speed; any other segment goes back from where the one before it stopped; and what
+    /// follows goes on from where the segment then stops. The clip lasts as long as it did. A
+    /// freeze stays as it is. Where the clip would then show what its media has not, the edit
+    /// is refused with `out_of_source`.
+    ReverseSegment {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// A frame of the segment, counted from the first frame of the clip.
+        at: i64,
+        /// Whether the clips linked to it are turned at the same frame of the timeline.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Clear the speed point that begins the segment of a clip that a frame is in (Clear Speed
+    /// Point of the Retime Controls, p. 1076, which clears the speed point at the left of a
+    /// segment). The segment and the one before it become one, which goes at one speed from
+    /// where the one before it began to where the segment stopped, as the Retime Frame curve
+    /// goes in a straight line where a control point of it is taken away (pp. 1078 and 1081).
+    /// The clip lasts as long as it did, and what is before the two segments and after them
+    /// shows what it showed. The first segment has no speed point to clear (`out_of_range`,
+    /// `speed_point`), and a speed that no segment may have is refused (`speed`,
+    /// `retime_unit`).
+    ClearSpeedPoint {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// A frame of the segment, counted from the first frame of the clip.
+        at: i64,
+        /// Whether the clips linked to it lose theirs at the same frame of the timeline.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Put a clip back to the speed of its source, forward, with no speed points (Reset to
+    /// 100% of the Retime Controls, p. 1074). It begins where it did in its media, and lasts
+    /// as many frames as show at that speed, once, what it showed from the lowest place of its
+    /// path to the highest. With `ripple`, what is after the clip moves with its end; without,
+    /// a clip that would cover the next one is cut at its end, and the edit is clamped.
+    ResetSpeed {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// Whether what follows moves with the end of the clip.
+        #[serde(default)]
+        ripple: bool,
+        /// Whether the clips linked to it are put back too.
         #[serde(default = "yes")]
         linked: bool,
     },
@@ -1629,6 +1762,43 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             linked,
             ..
         } => misc::set_speed(&mut work, &clip, speed, reverse, ripple, linked),
+        Edit::AddSpeedPoint {
+            clip, at, linked, ..
+        } => retiming::retime(&mut work, &clip, Some(at), Retiming::Point, false, linked),
+        Edit::SetSegmentSpeed {
+            clip,
+            at,
+            speed,
+            ripple,
+            linked,
+            ..
+        } => {
+            let change = Retiming::Speed(speed);
+            retiming::retime(&mut work, &clip, Some(at), change, ripple, linked)
+        }
+        Edit::FreezeFrame {
+            clip,
+            at,
+            hold,
+            ripple,
+            linked,
+            ..
+        } => {
+            let change = Retiming::Freeze(hold);
+            retiming::retime(&mut work, &clip, Some(at), change, ripple, linked)
+        }
+        Edit::ReverseSegment {
+            clip, at, linked, ..
+        } => retiming::retime(&mut work, &clip, Some(at), Retiming::Reverse, false, linked),
+        Edit::ClearSpeedPoint {
+            clip, at, linked, ..
+        } => retiming::retime(&mut work, &clip, Some(at), Retiming::Clear, false, linked),
+        Edit::ResetSpeed {
+            clip,
+            ripple,
+            linked,
+            ..
+        } => retiming::retime(&mut work, &clip, None, Retiming::Reset, ripple, linked),
         Edit::AddCue {
             track,
             start,
@@ -1846,6 +2016,12 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::RemoveTransition { timeline, .. }
         | Edit::SetTransition { timeline, .. }
         | Edit::SetSpeed { timeline, .. }
+        | Edit::AddSpeedPoint { timeline, .. }
+        | Edit::SetSegmentSpeed { timeline, .. }
+        | Edit::FreezeFrame { timeline, .. }
+        | Edit::ReverseSegment { timeline, .. }
+        | Edit::ClearSpeedPoint { timeline, .. }
+        | Edit::ResetSpeed { timeline, .. }
         | Edit::AddCue { timeline, .. }
         | Edit::SetCue { timeline, .. }
         | Edit::RemoveCue { timeline, .. }

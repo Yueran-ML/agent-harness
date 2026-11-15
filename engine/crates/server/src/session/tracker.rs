@@ -38,6 +38,7 @@ use columbina_model::grade::{
     Bounds, Corrector, NodeKind, Param, Target, Window, WindowPoint, WindowShape,
 };
 use columbina_model::keyframes::KeyClock;
+use columbina_model::span::Reading;
 use columbina_model::{Clip, Media, Source};
 use columbina_track::{
     CloudOptions, Component, Components, Direction, Job, Luma, PointOptions, Region, TrackData,
@@ -398,8 +399,13 @@ fn plan(
             }
         }
     };
-    // Forward is forward on the timeline: backward in the source of a clip played backward.
-    let direction = if clip.reverse {
+    // Forward is forward on the timeline: backward in the source where the clip plays it
+    // backward at the frame that first shows the picture of the playhead.
+    let shown_at = map
+        .range(..=request.frame)
+        .next_back()
+        .map_or(clip.start, |(_, at)| *at);
+    let direction = if backward_at(clip, shown_at - clip.start) {
         match request.direction {
             Direction::Forward => Direction::Reverse,
             Direction::Reverse => Direction::Forward,
@@ -433,6 +439,26 @@ fn plan(
         },
         data,
     })
+}
+
+/// Whether a clip plays its source backward at its frame `k`: as the segment of its speed points
+/// that the frame is in goes, or as the clip of one speed does. A freeze goes neither way: the
+/// pictures after it come as the next segment that plays goes, or, where none does, as the last
+/// one before it went.
+fn backward_at(clip: &Clip, k: i64) -> bool {
+    let reading = Reading::of(clip);
+    let Some(course) = reading.course() else {
+        return clip.reverse;
+    };
+    let segments = course.segments();
+    let at = segments
+        .partition_point(|segment| segment.from <= k)
+        .saturating_sub(1);
+    segments[at..]
+        .iter()
+        .chain(segments[..at].iter().rev())
+        .find(|segment| !segment.speed.is_freeze())
+        .is_some_and(|segment| segment.speed.is_backward())
 }
 
 /// The window's outline in its local coordinates at `at`, for the tracker to look within.
@@ -1157,6 +1183,46 @@ mod tests {
         let (_, bytes) = state.track_commit(&plan, &mut gesture, &long(3)).unwrap();
         assert!(bytes > 0);
         assert!(state.gesture_last.is_some_and(|last| last > idle));
+    }
+
+    /// Forward is forward on the timeline: a track goes backward in the source where the clip
+    /// plays it backward at the frame that first shows the picture of the playhead, picture 12,
+    /// which a clip with speed points does segment by segment.
+    #[test]
+    fn a_track_goes_the_way_that_the_clip_plays_where_it_shows_the_picture() {
+        use columbina_model::retime::{Retime, SignedSpeed, SpeedPoint};
+        let direction = |length: i64, points: &[(i64, i64)]| {
+            let mut project = project(Window::new("w1", WindowShape::circular()));
+            let clip = &mut project.timelines[0].tracks[0].clips[0];
+            clip.length = length;
+            clip.set_mapping(Some(Retime {
+                points: points
+                    .iter()
+                    .map(|&(frame, num)| SpeedPoint {
+                        frame,
+                        speed: SignedSpeed { num, den: 1 },
+                    })
+                    .collect(),
+            }));
+            plan(&project, &start("w1"), 7, Kind::Desktop, "track-1".into())
+                .unwrap()
+                .track
+                .direction
+        };
+        // A clip of one speed, forward and backward.
+        assert_eq!(direction(100, &[(0, 1)]), Direction::Forward);
+        assert_eq!(direction(100, &[(0, -1)]), Direction::Reverse);
+        // Up 50 frames and down again, picture 12 is first shown on the way up; down 50 and up
+        // again, on the way down.
+        assert_eq!(direction(100, &[(0, 1), (50, -1)]), Direction::Forward);
+        assert_eq!(direction(100, &[(0, -1), (50, 1)]), Direction::Reverse);
+        // Picture 12 held from frame 12: what follows it is the way back, or nothing, and then
+        // the way that led to it.
+        assert_eq!(
+            direction(42, &[(0, 1), (12, 0), (30, -1)]),
+            Direction::Reverse
+        );
+        assert_eq!(direction(42, &[(0, 1), (12, 0)]), Direction::Forward);
     }
 
     /// The cost of writing a track of 10 000 frames into its window, as a track does: the

@@ -1147,7 +1147,8 @@ pub enum OpError {
     /// clip of its length: none, more than 1024, the first not at frame 0, not in the order of
     /// their frames, or one at the end of the clip or after it), `retime_unit` (their speeds
     /// have no unit of 32 bits), `frame` (the clip has no such frame), `hold` (a freeze of less
-    /// than a frame), `retime_constant` (they are of one speed, which a clip keeps as its
+    /// than a frame), `speed_point` (the speed point of the first segment, at frame 0, is not
+    /// one to clear), `retime_constant` (they are of one speed, which a clip keeps as its
     /// speed), `retime_speed` (the clip has another speed than 1/1, or plays backward, beside
     /// them), `retime_source` (the clip is not of media that lasts: a title, a colour or a
     /// still) and `retimed` (a change that only a clip of one speed takes is made to a clip
@@ -1720,6 +1721,9 @@ fn range_message(what: &str) -> String {
         }
         "frame" => "the clip has no such frame".into(),
         "hold" => "a freeze lasts one frame at least".into(),
+        "speed_point" => {
+            "the first segment of a clip has no speed point to clear: its own is at frame 0".into()
+        }
         "retime_constant" => {
             "speed points of one speed are kept as the speed of the clip, and not as speed points"
                 .into()

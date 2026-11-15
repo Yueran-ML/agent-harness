@@ -467,6 +467,7 @@ mod tests {
             "retime_unit",
             "frame",
             "hold",
+            "speed_point",
             "retime_constant",
             "retime_speed",
             "retime_source",

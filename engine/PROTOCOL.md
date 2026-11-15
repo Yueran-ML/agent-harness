@@ -713,7 +713,13 @@ clients; a client must not write `project.json` itself.
   two clips: where the sound is resampled it is continuous there, and where its pitch is kept
   or moved (`pitch_correction`, `pitch`) each segment is stretched on its own.
   The edits of the Retime Controls change them (see Edits): `add_speed_point`,
-  `set_segment_speed`, `freeze_frame`, `reverse_segment`, `clear_speed_point`, `reset_speed`.
+  `set_segment_speed`, `freeze_frame`, `reverse_segment`, `clear_speed_point`, `reset_speed`,
+  and `set_speed_points`, which sets them whole as a drag of a speed point does.
+  `crates/model/tests/data/retime.json` holds clips with speed points and what the engine reads
+  of them (the tick at each frame, what is shown, the frame that shows a tick, the curves, the
+  frames of keys, the pieces of sound and the samples they read, a head trimmed and a tail
+  moved), for a client to check its copy against (`desktop/src/studio/retime.ts`,
+  `src/columbina/video/retime.py`).
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
   `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
   Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; `x`/`y`
@@ -2245,6 +2251,7 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `reverse_segment` | `clip`, `at`, `linked?` | Reverse Segment: the segment that frame `at` is in plays the other way at its speed; the clip keeps its length (see below). |
 | `clear_speed_point` | `clip`, `at`, `linked?` | Clear Speed Point: the speed point at the left of the segment that frame `at` is in is cleared, and that segment and the one before it become one of one speed; the clip keeps its length (see below). |
 | `reset_speed` | `clip`, `ripple?`, `linked?` | Reset to 100%: the clip plays at the speed of its source, forward, with no speed points, and lasts as many frames as show once what it showed. `ripple` as for `set_speed`, false by default (see below). |
+| `set_speed_points` | `clip`, `retime`, `keep?: start\|end`, `linked?` | The speed points of the clip set whole (`retime` as `set_retime` takes it), the clip lasting as long as it did: a drag of a speed point, or of a control point of the Retime Frame curve, sends it at each move. The end `keep` of the path, where it begins by default, stays at the tick of the media that it is at (see below). |
 | `add_cue` | `track`, `start`, `length`, `text` | Add one subtitle. |
 | `set_cue` | `id`, `start?`, `length?`, `text?` | Change given subtitle settings. |
 | `remove_cue` | `id` | Remove one subtitle. |
@@ -2268,7 +2275,8 @@ picture of the next group from its sound.
 
 The edits of the Retime Controls (DaVinci Resolve Reference Manual 20, pp. 1070–1082) change
 the speed points of a clip (`retime`, see the project): `add_speed_point`,
-`set_segment_speed`, `freeze_frame`, `reverse_segment`, `clear_speed_point` and `reset_speed`.
+`set_segment_speed`, `freeze_frame`, `reverse_segment`, `clear_speed_point`, `reset_speed` and
+`set_speed_points`.
 A clip of one speed takes them too: its one segment is the whole clip, and it has `retime`
 from then on, unless the edit leaves it one speed, which is written as `speed` and `reverse`.
 `at` is a frame of the clip that is named, counted from its first, from 0 to `length - 1`
@@ -2317,6 +2325,23 @@ has does none: alone in a transaction it is refused as `empty`.
   track is cut at its end where that clip starts, the edit being reported in `clamped`. That
   is what `set_speed` does; the Selection mode of the manual overwrites the next clip
   instead.
+- `set_speed_points` sets the speed points whole and names no frame: `retime` is checked as
+  `set_retime` checks it, for a clip of the length that the clip has, and speed points of one
+  speed are written as `speed` and `reverse`. `keep` says which end of the path stays where it
+  is in the media: `start` (the default), the place where the first frame of the clip begins,
+  or `end`, the place where its last frame ends. The clip then begins in its media
+  (`source.in`) as many ticks later as the tick of that end, counted from where the clip
+  begins and rounded down, is lower along the new speed points than along the old; so the end
+  stays at its tick exactly, and, with `start`, the frames of a first segment that goes
+  forward at the speed that it had show the ticks that they showed (where a frame of it lasts
+  no whole number of ticks, that tick or the one beside it). The moves of a drag, each made
+  on what the one before left, add up to one move from where the drag began, and the speed
+  points that the clip had put `source.in` back to the tick. With `linked`, the clips linked
+  to it that have its `start`, its `length` and the speed points that it had take the same
+  `retime`, each keeping that end of its own path; any other linked clip is left as it is.
+  Unlike the other edits, it is the same whatever went before it: sent again it does one
+  `set_retime` of the clip that it names, which changes nothing, so a transaction of a
+  gesture that repeats it is not refused as `empty`.
 - The sound of a clip with speed points follows them (see `retime` above). So a linked clip of
   sound that takes one of these edits sounds along the same path as its picture is shown: it
   slows and quickens with it, plays backward where a segment does, and is silent through a

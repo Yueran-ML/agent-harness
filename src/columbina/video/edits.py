@@ -124,6 +124,7 @@ __all__ = [
     "set_retime",
     "set_segment_speed",
     "set_speed",
+    "set_speed_points",
     "set_timeline",
     "set_timeline_audio",
     "set_track",
@@ -939,6 +940,33 @@ def reset_speed(
         "timeline": timeline,
         "clip": clip,
         "ripple": ripple,
+        "linked": linked,
+    }
+
+
+def set_speed_points(
+    timeline: str,
+    clip: str,
+    retime: Retime,
+    *,
+    keep: Literal["start", "end"] = "start",
+    linked: bool = True,
+) -> dict[str, Any]:
+    """The speed points of a clip set whole, the clip lasting as long as it did.
+
+    It is what a drag of a speed point sends at each move. ``keep`` says which end of the path
+    stays where it is in the media: ``start``, where the first frame of the clip begins, or
+    ``end``, where its last frame ends; the clip then begins in its media where that keeps the
+    end at its tick, which :func:`set_retime` does not see to. With ``linked``, the clips linked
+    to it that start with it, last as long and play as it did take the same speed points. Sent
+    again, it sets them once more and changes nothing. Refused as :func:`set_retime` is.
+    """
+    return {
+        "edit": "set_speed_points",
+        "timeline": timeline,
+        "clip": clip,
+        "retime": _json(retime),
+        "keep": keep,
         "linked": linked,
     }
 

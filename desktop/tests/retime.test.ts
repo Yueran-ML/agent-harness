@@ -1,10 +1,10 @@
 /**
  * The course of a clip through its source (`src/studio/retime`), against the numbers of the engine.
  *
- * The engine writes no file of cases for speed points (its `tests/data/key-clocks.json` has clips
- * of one speed only), so the numbers expected here are those of the tests of the engine itself,
- * copied by hand, each with the test that it is from: `retime.rs` and `resolve.rs` of
- * `engine/crates/model/src`. The cases of one speed are held against what the desktop counted
+ * The numbers expected here are those of the tests of the engine itself, copied by hand, each
+ * with the test that it is from: `retime.rs` and `resolve.rs` of `engine/crates/model/src`. The
+ * file of cases that the engine writes for speed points (`tests/data/retime.json`) is held in
+ * `retime-golden.test.ts`. The cases of one speed are held against what the desktop counted
  * before there were speed points (`ticksOfScaled`), and against `key-clocks.json`.
  */
 import { readFileSync } from 'node:fs';
@@ -12,7 +12,8 @@ import { describe, expect, it } from 'vitest';
 import type { Clip, Media, Rate, Retime } from '../src/studio/engine';
 import { keyClockOf, ticksOfScaled } from '../src/studio/color/keyFrames';
 import {
-  backwardAt, clipCourse, constantRetime, courseOf, movedPoint, percentOf, percentToLast, retimeCourse, samplesAt, soundPieces, speedOfPercent,
+  backwardAt, beginsLater, clipCourse, constantRetime, courseOf, frameCurveIn, insideMedia, movedPoint, pathTick, percentOf, percentToLast, raisedPoint,
+  retimeCourse, samplesAt, soundPieces, speedOfPercent,
 } from '../src/studio/retime';
 import { clip } from './timeline-fixture';
 
@@ -312,5 +313,89 @@ describe('the speeds that a drag of a handle makes', () => {
     expect([movedPoint(read, 1, 0), movedPoint(read, 1, 80), movedPoint(read, 0, 5), movedPoint(read, 3, 90)]).toEqual([null, null, null, null]);
     // What it gives is the speed points of a clip of that length.
     expect(courseOf(movedPoint(read, 2, 99)!, 100)).not.toBeNull();
+  });
+});
+
+describe('where a clip begins in its media once its speed points are set whole', () => {
+  it('finds the tick at which the path begins and the one at which it stops', () => {
+    // 10 frames up, 20 down and 20 up: the path begins 10 frames above its lowest place and stops 20 above it.
+    const turned = course(retime([0, 1, 1], [10, -1, 1], [30, 1, 1]), 50);
+    expect([pathTick(turned, 'start', PAL, 25), pathTick(turned, 'end', PAL, 25)]).toEqual([10n, 20n]);
+    // Backward from end to end at twice the speed, it begins at its highest place and stops at its lowest.
+    const backward = course(retime([0, -2, 1]), 25);
+    expect([pathTick(backward, 'start', PAL, 25), pathTick(backward, 'end', PAL, 25)]).toEqual([50n, 0n]);
+    // 25 frames at half the speed stop half way through a tick: it is rounded down.
+    expect(pathTick(course(retime([0, 1, 2]), 25), 'end', PAL, 25)).toBe(12n);
+  });
+
+  // edit/retiming.rs, `speed_points_set_whole_keep_where_the_path_begins_to_the_tick`.
+  it('keeps the place where the path begins at its tick, though the lowest place of the path moves by less than one', () => {
+    const before = course(retime([0, 1, 1], [10, -1, 1], [30, 1, 1]), 50);
+    // The speed point at frame 30 at frame 37: 27 frames down at 74% go 19.98 frames, so the path begins 9.98 frames above its lowest place.
+    const after = course(retime([0, 1, 1], [10, -37, 50], [37, 77, 50]), 50);
+    expect(beginsLater(before, after, 'start', PAL, 25)).toBe(1n);
+    // c5 begins at frame 50 of m1, and then at frame 51: its first 10 frames show the pictures 60 to 69, as they did.
+    const first = (read: typeof before, begins: number) => Array.from({ length: 10 }, (_, k) => Number(read.tick(begins, k, PAL, 25)));
+    expect(first(after, 51)).toEqual(first(before, 50));
+    expect(first(before, 50)).toEqual([60, 61, 62, 63, 64, 65, 66, 67, 68, 69]);
+    // The speed points that it had put it back where it began, and the same speed points move it nowhere.
+    expect(beginsLater(after, before, 'start', PAL, 25)).toBe(-1n);
+    expect(beginsLater(after, after, 'start', PAL, 25)).toBe(0n);
+  });
+
+  // edit/retiming.rs, `speed_points_set_whole_may_keep_where_the_path_stops`.
+  it('keeps the place where the path stops instead, where it is told to', () => {
+    const two = course(retime([0, 1, 1], [20, 1, 1]), 50);
+    const slower = course(retime([0, 1, 2], [20, 1, 1]), 50);
+    // The first 20 frames go 10 frames of the source and not 20: kept where it stops, the clip begins 10 frames later.
+    expect([beginsLater(two, slower, 'end', PAL, 25), beginsLater(two, slower, 'start', PAL, 25)]).toEqual([10n, 0n]);
+    // A clip of one speed at half of it shows the last 25 frames of the 50 that it showed.
+    expect(beginsLater(course(retime([0, 1, 1]), 50), course(retime([0, 1, 2]), 50), 'end', PAL, 25)).toBe(25n);
+    // Turned round, it comes down to where it stopped: it begins there, 50 frames later.
+    expect(beginsLater(course(retime([0, 1, 1]), 50), course(retime([0, -1, 1]), 50), 'end', PAL, 25)).toBe(50n);
+  });
+
+  it('says whether a clip shows only what its media has', () => {
+    // 100 frames forward in media of 250: from its frame 150 they end where the media ends.
+    const plain = course(retime([0, 1, 1]), 100);
+    expect([0n, 150n, 151n, -1n].map(begins => insideMedia(plain, begins, 250n, PAL, 25))).toEqual([true, true, false, false]);
+    // Backward, the same frames of the media are shown.
+    const backward = course(retime([0, -1, 1]), 100);
+    expect([0n, 150n, 151n, -1n].map(begins => insideMedia(backward, begins, 250n, PAL, 25))).toEqual([true, true, false, false]);
+  });
+});
+
+describe('the Retime Frame curve of a clip', () => {
+  // 20 frames as the source is, a picture held for 10, and 30 frames back at half the speed.
+  const frozen = course(retime([0, 1, 1], [20, 0, 1], [30, -1, 2]), 60);
+
+  it('has a control point at each speed point and at the end of the clip, at the frame of the media that the path is at', () => {
+    // The clip begins 100 frames into its media: it rises to 120, stays, and falls to 105.
+    expect(frameCurveIn(frozen, 100, PAL, 25)).toEqual([{ frame: 0, source: 100 }, { frame: 20, source: 120 }, { frame: 30, source: 120 }, { frame: 60, source: 105 }]);
+    // Ticks of 1/15360 of a second are brought to frames of the timeline.
+    expect(frameCurveIn(course(retime([0, 2, 1]), 10), 2 * SCALE, PAL, SCALE)).toEqual([{ frame: 0, source: 50 }, { frame: 10, source: 70 }]);
+  });
+
+  it('gives the segments either side of a control point that is raised other speeds, the frames of the speed points staying', () => {
+    // The second point 5 frames higher: 25 frames of the source in the first 20, at 125%, and 5 back in the 10 of the freeze, at 50%.
+    expect(raisedPoint(frozen, 1, 5)).toEqual({ retime: retime([0, 5, 4], [20, -1, 2], [30, -1, 2]), keep: 'start' });
+    // The first point 5 frames higher: its segment goes 15 frames in its 20, and the end of the path is what stays in the media.
+    expect(raisedPoint(frozen, 0, 5)).toEqual({ retime: retime([0, 3, 4], [20, 0, 1], [30, -1, 2]), keep: 'end' });
+    // The end of the clip 6 frames lower: the last segment goes back 21 frames in its 30, at 70%.
+    expect(raisedPoint(frozen, 3, -6)).toEqual({ retime: retime([0, 1, 1], [20, 0, 1], [30, -7, 10]), keep: 'start' });
+    // Not raised, a speed that is a whole hundredth stays what it is.
+    expect(raisedPoint(frozen, 2, 0)).toEqual({ retime: retime([0, 1, 1], [20, 0, 1], [30, -1, 2]), keep: 'start' });
+  });
+
+  it('brings the speeds to whole hundredths that a segment may have: a freeze where it is level, and no faster than 10000%', () => {
+    // The end of the clip raised to within a tenth of a frame of where the last segment begins: less than half a hundredth, a freeze.
+    expect(raisedPoint(frozen, 3, 14.9)!.retime.points[2].speed).toEqual({ num: 0, den: 1 });
+    // 13 frames in 30 are 43.33%: 43%.
+    expect(raisedPoint(frozen, 3, 28)!.retime.points[2].speed).toEqual({ num: 43, den: 100 });
+    // Far up, the segment before the point plays as fast as one may, and the one after it comes back as fast.
+    expect(raisedPoint(frozen, 1, 5000)!.retime.points.map(point => point.speed)).toEqual([{ num: 100, den: 1 }, { num: -100, den: 1 }, { num: -1, den: 2 }]);
+    // What it gives is the speed points of a clip of that length, and there is no such point outside them.
+    expect(courseOf(raisedPoint(frozen, 1, 5000)!.retime, 60)).not.toBeNull();
+    expect([raisedPoint(frozen, 4, 1), raisedPoint(frozen, -1, 1), raisedPoint(frozen, 1, Number.NaN)]).toEqual([null, null, null]);
   });
 });

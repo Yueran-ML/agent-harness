@@ -26,14 +26,25 @@
 //! shows what it showed, the last first, as a clip of one speed does that is played backward,
 //! and what follows goes on from where it then stops. A clip put back to its own speed begins
 //! where it did, and shows from there, forward and once, all that it showed.
+//!
+//! # The speed points set whole
+//!
+//! A drag of a speed point sends the speed points of the clip whole at each of its moves
+//! ([`set_points`]). One end of the path then stays at the tick of the media that it is at,
+//! exactly: the clip begins as many ticks later as the tick of that end, counted from where the
+//! clip begins, is lower with the new speed points than with the old. The tick of an end is
+//! rounded down once for each of the two, not once for their difference as
+//! [`crate::retime::Course::later_as`] rounds it, so that the moves of a drag, each made on
+//! what the one before it left, add up to one move from where the drag began, and a drag that
+//! is taken back leaves the clip beginning where it did.
 
 use std::collections::HashSet;
 
 use super::work::{fit_fades, retime_as, Work};
-use super::{Edge, EditError};
-use crate::ops::{lasts, OpError};
+use super::{Edge, EditError, PathEnd};
+use crate::ops::{lasts, Op, OpError};
 use crate::project::{Clip, Id};
-use crate::retime::{Retime, Retimed, SignedSpeed, Trimmed};
+use crate::retime::{Course, Retime, Retimed, SignedSpeed, Trimmed};
 use crate::time::{Rate, Speed};
 
 /// What an edit of the Retime Controls does to a clip, at a frame of it.
@@ -266,10 +277,110 @@ pub(super) fn retime(
     Ok(())
 }
 
+/// The tick at which the path of a clip begins, or with [`PathEnd::End`] stops, counted from
+/// where the clip begins in its media: in ticks of `scale`, rounded down, on a timeline of
+/// `rate`.
+///
+/// A frame of a segment that goes forward, or of a freeze, shows the place where the frame
+/// begins, and one of a segment that goes backward the place where it ends. So the path
+/// begins at what frame 0 shows, or, where the first segment goes backward, at what the frame
+/// before the clip shows as that segment goes; and it stops at what the frame after the clip
+/// shows as the last segment goes, or, backward, at what the last frame of the clip shows.
+fn end_tick(course: &Course, end: PathEnd, rate: Rate, scale: u32) -> i64 {
+    let segments = course.segments();
+    let frame = match end {
+        PathEnd::Start => {
+            let backward = segments.first().is_some_and(|s| s.speed.is_backward());
+            -i64::from(backward)
+        }
+        PathEnd::End => {
+            let backward = segments.last().is_some_and(|s| s.speed.is_backward());
+            course.length() - i64::from(backward)
+        }
+    };
+    course.offset(frame, rate, scale)
+}
+
+/// `clip` made to play along `retime`, lasting as long as it does, with the end `keep` of its
+/// path at the tick of its media that it is at: it begins as many ticks later in its media as
+/// the tick of that end is lower along `retime` than along the mapping that the clip has (see
+/// the module).
+fn with_points(clip: &Clip, retime: &Retime, keep: PathEnd, rate: Rate) -> Result<Clip, OpError> {
+    let mut new = clip.clone();
+    let Some(begins) = clip.source_in() else {
+        return Ok(new);
+    };
+    let before = clip.mapping().course(clip.length)?;
+    let after = retime.course(clip.length)?;
+    let was = end_tick(&before, keep, rate, begins.scale);
+    let now = end_tick(&after, keep, rate, begins.scale);
+    let trimmed = Trimmed {
+        retime: retime.clone(),
+        length: clip.length,
+        later: was.saturating_sub(now),
+    };
+    retime_as(&mut new, trimmed, begins);
+    Ok(new)
+}
+
+/// Set the speed points of `clip` whole, the clip lasting as long as it did and the end `keep`
+/// of its path staying at the tick of its media that it is at ([`with_points`]). With
+/// `linked`, the clips linked to it that start with it, last as long and play as it did take
+/// the same speed points, each keeping that end of its own path; any other linked clip is
+/// left as it is.
+///
+/// It is the same whatever went before it, as the operation that it is worked out into is:
+/// made on a clip that plays so already, it sets the speed points of the clip that it names
+/// once more, and changes nothing. So a drag may send it at each of its moves, once more as
+/// it ends, and again while the pointer is held still, and none of these is an edit that does
+/// nothing, which a transaction refuses.
+pub(super) fn set_points(
+    work: &mut Work,
+    clip: &str,
+    retime: &Retime,
+    keep: PathEnd,
+    linked: bool,
+) -> Result<(), EditError> {
+    let rate = work.rate();
+    let (_, given) = work.owned(clip)?;
+    if !lasts(work.project(), &given) {
+        return Err(range("retime_source"));
+    }
+    let played = given.mapping();
+    let mut changed = vec![];
+    for id in work.group(&[clip.into()], linked)? {
+        let (_, c) = work.owned(&id)?;
+        let named = c.id == given.id;
+        let beside = lasts(work.project(), &c)
+            && (c.start, c.length) == (given.start, given.length)
+            && c.mapping() == played;
+        if named || beside {
+            let new = with_points(&c, retime, keep, rate)?;
+            if named || new != c {
+                changed.push((c, new));
+            }
+        }
+    }
+    for (old, new) in &changed {
+        if old == new {
+            let again = Op::SetRetime {
+                timeline: work.timeline_id(),
+                id: old.id.clone(),
+                retime: Some(old.mapping()),
+                length: None,
+            };
+            work.op(again)?;
+        } else {
+            work.replay(new)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::fixture::*;
-    use super::super::{Edit, EditError};
+    use super::super::{Edit, EditError, PathEnd};
     use crate::ops::{Op, OpError};
     use crate::project::{Alignment, Clip, Rgba, Source};
     use crate::time::Speed;
@@ -329,6 +440,16 @@ mod tests {
             clip: clip.into(),
             ripple,
             linked: true,
+        }
+    }
+
+    fn whole(clip: &str, points: &[(i64, i64, u32)], keep: PathEnd, linked: bool) -> Edit {
+        Edit::SetSpeedPoints {
+            timeline: "t1".into(),
+            clip: clip.into(),
+            retime: speed_points(points),
+            keep,
+            linked,
         }
     }
 
@@ -1023,6 +1144,236 @@ mod tests {
         assert_eq!(read(odd), segment_speed("c5", 0, (24000, 1001), false));
         let unknown = serde_json::json!({
             "edit": "reset_speed", "timeline": "t1", "clip": "c5", "at": 3,
+        });
+        assert!(serde_json::from_value::<Edit>(unknown).is_err());
+    }
+
+    #[test]
+    fn speed_points_set_whole_keep_where_the_path_begins_to_the_tick() {
+        // c5 goes 10 frames up, 20 down and 20 up, from frame 60 of m1: it begins at frame 50,
+        // the lowest that it shows.
+        let mut before = project();
+        let points = [(0, 1, 1), (10, -1, 1), (30, 1, 1)];
+        retime(&mut before, "c5", &points, 50);
+        let shown = pictures(&before, "c5");
+        assert_eq!((shown[0], shown[9], shown[29]), (60, 69, 50));
+        // The speed point at frame 30 dragged to frame 37, the speeds either side brought to
+        // whole hundredths: 27 frames down at 74% go 19.98 frames of m1, so the lowest place of
+        // the path is 0.02 of a frame nearer to where it begins. Where the path begins is
+        // then 9.98 frames above where the clip begins, the tick 9 and no longer the tick 10:
+        // the clip begins one tick later, and its first segment shows the ticks that it showed.
+        let moved = [(0, 1, 1), (10, -37, 50), (37, 77, 50)];
+        let mut project = before.clone();
+        let done = edit(&mut project, whole("c5", &moved, PathEnd::Start, true));
+        assert!(!done.clamped);
+        assert_eq!(the(&project, "c5").retime, Some(speed_points(&moved)));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 50, 51)]));
+        // It is given its speed points before it is moved there.
+        assert!(
+            matches!(
+                done.done.as_slice(),
+                [Op::SetRetime { .. }, Op::TrimClip { .. }]
+            ),
+            "{:?}",
+            done.done
+        );
+        assert_eq!(pictures(&project, "c5")[..10], shown[..10]);
+        // Sent again, it sets the same speed points once more, and nothing changes.
+        let after = project.clone();
+        let again = edit(&mut project, whole("c5", &moved, PathEnd::Start, true));
+        assert_eq!(again.done, [set_retime("c5", &moved, None)]);
+        assert_eq!(project, after);
+        // The speed points that the clip had put it back as it was, beginning where it did.
+        edit(&mut project, whole("c5", &points, PathEnd::Start, true));
+        assert_eq!(project, before);
+        // And so does the edit taken back.
+        let done = edit(&mut project, whole("c5", &moved, PathEnd::Start, true));
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn speed_points_set_whole_may_keep_where_the_path_stops() {
+        // c5 in two segments of its own speed, the first of which is then played at half of
+        // it: 20 frames that go 10 frames of m1.
+        let mut before = project();
+        retime(&mut before, "c5", &[(0, 1, 1), (20, 1, 1)], 50);
+        let shown = pictures(&before, "c5");
+        let slower = [(0, 1, 2), (20, 1, 1)];
+        // Kept where it stops, the path begins 10 frames later in m1, and the clip with it:
+        // what follows the segment shows what it showed.
+        let mut project = before.clone();
+        let done = edit(&mut project, whole("c5", &slower, PathEnd::End, true));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 50, 60)]));
+        let now = pictures(&project, "c5");
+        let slow: Vec<i64> = (0..20).map(|k| 60 + k / 2).collect();
+        assert_eq!(now[..20], slow);
+        assert_eq!(now[20..], shown[20..]);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // Kept where it begins, the clip begins where it did, and what follows the segment
+        // shows what is 10 frames earlier in m1.
+        let done = edit(&mut project, whole("c5", &slower, PathEnd::Start, true));
+        assert_eq!(done.done, [set_retime("c5", &slower, None)]);
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 50, 50)]));
+        let now = pictures(&project, "c5");
+        let early: Vec<i64> = (20..50).map(|k| 40 + k).collect();
+        assert_eq!(now[20..], early);
+        // A clip of one speed takes them too, and one speed is kept as the speed of the clip:
+        // at half its speed and kept where it stops, c5 shows the last 25 frames of the 50
+        // that it showed.
+        let mut project = super::super::fixture::project();
+        edit(&mut project, whole("c5", &[(0, 1, 2)], PathEnd::End, true));
+        let c5 = the(&project, "c5");
+        assert_eq!(
+            (c5.speed, c5.reverse, c5.retime),
+            (Speed { num: 1, den: 2 }, false, None)
+        );
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 50, 75)]));
+        assert_eq!(pictures(&project, "c5")[49], 99);
+    }
+
+    #[test]
+    fn the_clips_linked_to_a_clip_that_play_as_it_does_take_its_speed_points() {
+        let before = project();
+        let ramp = [(0, 1, 1), (50, 1, 2)];
+        let points = Some(speed_points(&ramp));
+        // The picture named, and the sound named: they start together, last as long and play
+        // alike.
+        for named in ["c1", "c2"] {
+            let mut project = before.clone();
+            edit(&mut project, whole(named, &ramp, PathEnd::Start, true));
+            assert_eq!(the(&project, "c1").retime, points);
+            assert_eq!(the(&project, "c2").retime, points);
+        }
+        // Told not to take the linked clips, the edit leaves them.
+        let mut project = before.clone();
+        edit(&mut project, whole("c1", &ramp, PathEnd::Start, false));
+        assert_eq!(the(&project, "c1").retime, points);
+        assert_eq!(the(&project, "c2"), the(&before, "c2"));
+        // A linked clip that plays otherwise is left as it is.
+        let mut project = before.clone();
+        let alone = Edit::AddSpeedPoint {
+            timeline: "t1".into(),
+            clip: "c2".into(),
+            at: 30,
+            linked: false,
+        };
+        edit(&mut project, alone);
+        let sound = the(&project, "c2");
+        edit(&mut project, whole("c1", &ramp, PathEnd::Start, true));
+        assert_eq!(the(&project, "c1").retime, points);
+        assert_eq!(the(&project, "c2"), sound);
+        // So is one that does not last as long: the sound of a split edit.
+        let split = l_cut();
+        let mut project = split.clone();
+        edit(&mut project, whole("c1", &ramp, PathEnd::Start, true));
+        assert_eq!(the(&project, "c1").retime, points);
+        assert_eq!(the(&project, "c2"), the(&split, "c2"));
+        // A linked clip on a locked track is left, and a clip on one is not changed by name.
+        let mut project = with(before.clone(), vec![lock("A1")]);
+        edit(&mut project, whole("c1", &ramp, PathEnd::Start, true));
+        assert_eq!(the(&project, "c1").retime, points);
+        assert_eq!(the(&project, "c2"), the(&before, "c2"));
+        assert_eq!(
+            refused(
+                with(before.clone(), vec![lock("V1")]),
+                whole("c1", &ramp, PathEnd::Start, true)
+            ),
+            EditError::Locked { track: "V1".into() }
+        );
+        // A transition at the end of the clip stays.
+        let mut project = with(
+            before,
+            vec![transition("V1", "c1", "c3", 10, Alignment::Center)],
+        );
+        edit(&mut project, whole("c1", &ramp, PathEnd::Start, true));
+        assert_eq!(the(&project, "c1").retime, points);
+        assert_eq!(
+            transitions(&project, "V1"),
+            [("c1".into(), "c3".into(), 10)]
+        );
+    }
+
+    #[test]
+    fn speed_points_that_are_not_those_of_the_clip_are_refused() {
+        let before = project();
+        // A speed point at the end of the clip, and a speed that no segment plays at.
+        let late = whole("c5", &[(0, 1, 1), (50, 2, 1)], PathEnd::Start, true);
+        assert_eq!(refused(before.clone(), late), out_of_range("retime"));
+        let fast = whole("c5", &[(0, 1, 1), (20, 101, 1)], PathEnd::Start, true);
+        assert_eq!(refused(before.clone(), fast), out_of_range("speed"));
+        // c1 begins at the start of m1: backward from where its path begins, it would show
+        // what is before that.
+        let backward = whole("c1", &[(0, -1, 1)], PathEnd::Start, true);
+        assert_eq!(
+            refused(before.clone(), backward),
+            EditError::Op(OpError::OutOfSource {
+                media: "m1".into(),
+                why: "before_start"
+            })
+        );
+        // Kept where it stops, the path comes down to there: the clip shows the 100 frames of
+        // m1 after those that it showed, the last first.
+        let mut project = before.clone();
+        let turned = whole("c1", &[(0, -1, 1)], PathEnd::End, true);
+        edit(&mut project, turned);
+        let back: Vec<i64> = (0..100).map(|k| 199 - k).collect();
+        assert_eq!(pictures(&project, "c1"), back);
+        assert_eq!(clips(&project, "V1")[0], ("c1".into(), 0, 100, 100));
+        let missing = whole("c9", &[(0, 1, 2)], PathEnd::Start, true);
+        assert_eq!(
+            refused(before.clone(), missing),
+            EditError::Op(OpError::Missing {
+                what: "clip",
+                id: "c9".into()
+            })
+        );
+        // A clip that does not last has no speed points.
+        let mut project = before;
+        let colour = Source::Color {
+            color: Rgba([0, 0, 0, 255]),
+        };
+        project.timelines[0].tracks[1].clips[0] = Clip::new("c5", colour, 120, 50);
+        project.validate().unwrap();
+        assert_eq!(
+            refused(project, whole("c5", &[(0, 1, 2)], PathEnd::Start, true)),
+            out_of_range("retime_source")
+        );
+    }
+
+    #[test]
+    fn the_edit_that_sets_the_speed_points_whole_is_read_by_its_name() {
+        let read = |json: serde_json::Value| serde_json::from_value::<Edit>(json).unwrap();
+        // The start of the path is kept, and `linked` is on, where they are left out; a speed
+        // that is left out is that of the source.
+        assert_eq!(
+            read(serde_json::json!({
+                "edit": "set_speed_points", "timeline": "t1", "clip": "c5",
+                "retime": { "points": [
+                    { "frame": 0 }, { "frame": 20, "speed": { "num": -1, "den": 2 } },
+                ] },
+            })),
+            whole("c5", &[(0, 1, 1), (20, -1, 2)], PathEnd::Start, true)
+        );
+        assert_eq!(
+            read(serde_json::json!({
+                "edit": "set_speed_points", "timeline": "t1", "clip": "c5",
+                "retime": { "points": [{ "frame": 0, "speed": { "num": 1, "den": 2 } }] },
+                "keep": "end", "linked": false,
+            })),
+            whole("c5", &[(0, 1, 2)], PathEnd::End, false)
+        );
+        // Written, the end that is kept is left out where it is the start.
+        let kept = |keep: PathEnd| {
+            let one = whole("c5", &[(0, 1, 2)], keep, true);
+            serde_json::to_value(one).unwrap().get("keep").cloned()
+        };
+        assert_eq!(kept(PathEnd::Start), None);
+        assert_eq!(kept(PathEnd::End), Some(serde_json::json!("end")));
+        let unknown = serde_json::json!({
+            "edit": "set_speed_points", "timeline": "t1", "clip": "c5",
+            "retime": { "points": [{ "frame": 0 }] }, "at": 3,
         });
         assert!(serde_json::from_value::<Edit>(unknown).is_err());
     }

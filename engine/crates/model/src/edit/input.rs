@@ -94,6 +94,7 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::RemoveTransition { .. }
         | Edit::SetSpeed { .. }
         | Edit::ResetSpeed { .. }
+        | Edit::SetSpeedPoints { .. }
         | Edit::RemoveCue { .. }
         | Edit::AddTrack { .. }
         | Edit::RemoveTrack { .. }

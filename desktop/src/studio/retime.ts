@@ -499,8 +499,8 @@ export function speedOfPercent(percent: number): Speed {
 }
 
 /** The slowest and the fastest that a segment plays, in hundredths of the speed of the source. */
-const SLOWEST = 1;
-const FASTEST = 10_000;
+export const SLOWEST = 1;
+export const FASTEST = 10_000;
 
 /**
  * `rise / (frames * unit)` as whole hundredths of the speed of the source: the speed at which a
@@ -548,4 +548,118 @@ export function movedPoint(course: Course, index: number, to: number): Retime | 
       : at === index ? { frame: to, speed: speedOfPercent(right) }
         : { frame: segment.from, speed: segment.speed }));
   return { points };
+}
+
+// --- Where a clip begins in its media as its speed points are set whole (the edit `set_speed_points`).
+
+/** An end of the path of a clip: where it begins, the place at which the first frame of the clip begins, or where it stops, the place at which its last frame ends. */
+export type PathEnd = 'start' | 'end';
+
+/**
+ * The tick at which the path of a clip begins, or with `end` stops, counted from where the clip
+ * begins in its media: in ticks of `scale`, rounded down (`edit::retiming::end_tick`). A frame of a
+ * segment that goes backward shows the place where the frame ends, so the path begins at what the
+ * frame before the clip shows as such a first segment goes, and stops at what the last frame of the
+ * clip shows where the last segment goes backward; forward, and in a freeze, it begins at what
+ * frame 0 shows and stops at what the frame after the clip shows.
+ */
+export function pathTick(course: Course, end: PathEnd, rate: Rate, scale: number): bigint {
+  const segments = course.segments;
+  if (end === 'start') return course.offset(segments[0].step < 0n ? -1 : 0, rate, scale);
+  return course.offset(segments[segments.length - 1].step < 0n ? course.length - 1 : course.length, rate, scale);
+}
+
+/**
+ * How many ticks of `scale` later a clip begins in its media once the edit `set_speed_points` has
+ * made it play along `after` in place of `before`, with the end `keep` of its path kept
+ * (`edit::retiming::with_points`): as many as the tick of that end is lower along `after`. The end
+ * then stays at the tick of the media that it was at, exactly; and where the start is kept, each
+ * frame of a first segment that goes forward at the speed that it had shows the tick that it
+ * showed (or, where a frame of it lasts no whole number of ticks, that tick or the one beside it).
+ * The tick of each course is rounded down by itself, so the moves of a drag, each made on what the
+ * one before it left, add up to one move from where the drag began.
+ */
+export function beginsLater(before: Course, after: Course, keep: PathEnd, rate: Rate, scale: number): bigint {
+  return within(pathTick(before, keep, rate, scale) - pathTick(after, keep, rate, scale));
+}
+
+/**
+ * Whether a clip that plays along `course` and begins at `begins` in media that lasts `duration`,
+ * both in ticks of `scale`, shows only what the media has, as the engine checks it of a clip with
+ * no transition (`ops::in_source`): no frame shows what is before the start of the media, none
+ * shows its end or what is after it, and what the frames show ends no later than the media does.
+ */
+export function insideMedia(course: Course, begins: bigint, duration: bigint, rate: Rate, scale: number): boolean {
+  const [lowest, highest] = course.shown(0, 0, rate, scale);
+  return begins + lowest >= 0n && begins + highest < duration && begins + course.reach(0, 0, rate, scale) <= duration;
+}
+
+// --- The Retime Frame curve of a clip (Reference Manual 20, pp. 1078–1081), and the drags of its control points.
+
+/**
+ * The control points of the Retime Frame curve of a clip that begins at `begins` ticks of `scale`
+ * in its media: one at each speed point and one at the end of the clip, each with the frame of the
+ * media that the path is at there, counted at the rate of the timeline from the start of the media.
+ * They are numbers to draw by, and nothing is counted from them.
+ */
+export function frameCurveIn(course: Course, begins: bigint | number, rate: Rate, scale: number): FramePoint[] {
+  const per = scale * rate.den;
+  const first = per > 0 ? (Number(begins) * rate.num) / per : 0;
+  return course.frameCurve().map(point => ({ frame: point.frame, source: first + point.source }));
+}
+
+/**
+ * The speed, in whole hundredths of the speed of the source, at which a segment goes `rise` frames
+ * of the source in `frames` frames of the clip: the nearest that a segment may have. Less than half
+ * a hundredth either way is a freeze, and a segment plays no faster than a hundred times the speed
+ * of the source.
+ */
+function percentNear(rise: number, frames: number): number {
+  if (frames <= 0 || !Number.isFinite(rise)) return 0;
+  const percent = Math.round((100 * rise) / frames);
+  // A speed of -0 is a freeze as one of 0 is.
+  return percent === 0 ? 0 : Math.max(-FASTEST, Math.min(FASTEST, percent));
+}
+
+/** What a drag of a control point of the Retime Frame curve asks of the engine: the speed points whole, and the end of the path that stays where it is in the media (`set_speed_points`). */
+export interface Reshaped { retime: Retime; keep: PathEnd }
+
+/**
+ * The speed points of a clip with the control point `index` of its Retime Frame curve raised by
+ * `rise` frames of the source (at the rate of the timeline; below 0, lowered), the frames of the
+ * speed points staying: what a drag of the control point up or down asks for. The control points
+ * are the speed points, in their order, and the end of the clip, which is the last (`index` is
+ * then the number of segments).
+ *
+ * The frame of the clip at the point then shows another frame of the source, and the speeds of the
+ * segments either side change, each brought to a whole hundredth of the speed of the source that a
+ * segment may have (`percentNear`). The segment after the point goes on to the place where it
+ * stopped from where the segment before it then stops, so only its own hundredth moves what
+ * follows. The first point has no segment before it: the first segment then begins elsewhere and
+ * stops where it did, and the end of the path is what stays in the media (`keep`), so that the
+ * clip begins in its media as much later as the point was raised. Null where there is no such
+ * point.
+ */
+export function raisedPoint(course: Course, index: number, rise: number): Reshaped | null {
+  const count = course.segments.length;
+  if (!Number.isInteger(index) || index < 0 || index > count || !Number.isFinite(rise)) return null;
+  const lasts = (segment: Segment) => segment.to - segment.from;
+  /** How far the path goes over a segment, in frames of the source. */
+  const goes = (segment: Segment) => Number(segment.step * BigInt(lasts(segment))) / course.unit;
+  const speeds = course.segments.map(segment => segment.speed);
+  const before = index > 0 ? course.segments[index - 1] : null;
+  const after = index < count ? course.segments[index] : null;
+  /** How far the segment before the point then goes. */
+  let left = 0;
+  if (before) {
+    const percent = percentNear(goes(before) + rise, lasts(before));
+    speeds[index - 1] = speedOfPercent(percent);
+    left = (percent * lasts(before)) / 100;
+  }
+  if (after) {
+    const wanted = before ? goes(before) + goes(after) - left : goes(after) - rise;
+    speeds[index] = speedOfPercent(percentNear(wanted, lasts(after)));
+  }
+  const points: SpeedPoint[] = course.segments.map((segment, at) => ({ frame: segment.from, speed: speeds[at] }));
+  return { retime: { points }, keep: index === 0 ? 'end' : 'start' };
 }

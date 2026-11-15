@@ -10,8 +10,54 @@ import {
 
 /** How a value is written beside the graph: times `factor`, with `digits` places and a unit. */
 export interface CurveDisplay { factor: number; unit: string; digits: number }
-/** A setting that the editor draws: its name, its colour, what it is, and the values that it takes. */
-export interface Curve { id: string; label: string; color: string; param: Param; bounds: Range; display?: CurveDisplay }
+/**
+ * The frames that a curve is drawn over, where they are not those of the keys of the settings: the
+ * frames of a clip from its first, say. A curve over them has their ruler, their playhead and
+ * their frames in use, and curves over the same frames are drawn together.
+ */
+export interface CurveClock {
+  /** What tells these frames from others: curves whose clocks have one id are over the same frames. */
+  id: string;
+  /** The frame under the playhead, or null where there is none. */
+  playhead: number | null;
+  /** The frames that are in use, first and last: what lies outside is shaded, and a fitted view shows them. */
+  range: readonly [number, number] | null;
+  /** Move the playhead to a frame. */
+  onSeek: (frame: number) => void;
+}
+/** What a drag of a point of a line leaves: its points, and what the graph says of it meanwhile, where that is not the value and the frame of the point. */
+export interface LineDrag { keys: Keyframe[]; tip?: string }
+/**
+ * A curve that is no setting with keys but a line through points that whoever holds the editor
+ * reads from something else (the Retime curves of a clip, Reference Manual 20, pp. 1078–1081). Its
+ * points are the keys of the curve's `param`, each `linear` (a straight line to the next) or `hold`
+ * (level to the next, and a step there), and its own rules say what a pointer does to them:
+ * - a drag moves the one point pressed, to where `drag` puts it;
+ * - Alt-click and a double click on the line ask for a point there (`add`), and Delete asks for the
+ *   points chosen to be taken away (`remove`); whoever holds the editor does it, and the line is
+ *   drawn again as it then is.
+ * Such a line has no Bezier handles and is not eased, copied, pasted or nudged: the buttons of the
+ * tool bar are off while it is the curve that is edited.
+ */
+export interface CurveLine {
+  /** Whether it is shown before its box is ticked, and listed with the settings that have keys. */
+  shown: boolean;
+  /**
+   * The points as a drag of the point at `index`, by `frames` along and by `value` up, leaves
+   * them: as many as there were, in their order. Null where the point may not go there, and the
+   * drag then stays where its last move took it. `initial` are the points as the drag began.
+   */
+  drag: (initial: readonly Keyframe[], index: number, frames: number, value: number) => LineDrag | null;
+  /** Put a point on the line at a frame. */
+  add?: (frame: number) => void;
+  /** Take away the points at these frames. */
+  remove?: (frames: readonly number[]) => void;
+}
+/**
+ * A setting that the editor draws: its name, its colour, what it is, and the values that it takes.
+ * With `line` it is a line with rules of its own, and with `clock` it is over frames of its own.
+ */
+export interface Curve { id: string; label: string; color: string; param: Param; bounds: Range; display?: CurveDisplay; clock?: CurveClock; line?: CurveLine }
 /** What a setting is to be, after an edit. */
 export interface CurveChange { id: string; param: Param }
 /** The curve that is edited and its keys that are chosen, by their frames: a key keeps its frame where others come and go. */
@@ -48,7 +94,10 @@ type Drag =
   | { kind: 'keys'; curve: Curve; view: View; start: Point; initial: Keyframe[]; indices: number[]; moved: boolean; axis: 'x' | 'y' | null; click: number | null; last: Param | null }
   | { kind: 'handle'; curve: Curve; view: View; start: Point; initial: Keyframe[]; index: number; side: Side; moved: boolean; last: Param | null };
 
-const hasKeys = (curve: Curve) => typeof curve.param !== 'number' && curve.param.keys.length > 0;
+/** Whether a curve is shown before its box is ticked: a setting that has keys, and a line that says so. */
+const hasKeys = (curve: Curve) => (curve.line ? curve.line.shown : typeof curve.param !== 'number' && curve.param.keys.length > 0);
+/** The frames that a curve is over, by the id of its clock: '' for those of the keys of the settings. */
+const clockOf = (curve: Curve | null | undefined) => curve?.clock?.id ?? '';
 
 /**
  * A curve editor for the keys of settings, as the Curve Editor of DaVinci Resolve's Edit page
@@ -88,6 +137,14 @@ const hasKeys = (curve: Curve) => typeof curve.param !== 'number' && curve.param
  *
  * The view fits the curves shown until a key or a handle is dragged or the wheel is turned; from
  * then it stays, so that nothing moves under the pointer, until Full Extent Zoom.
+ *
+ * A curve may be over frames of its own (`CurveClock`), as the Retime curves of a clip are over the
+ * frames of the clip and not over those of its keys. Curves over different frames cannot be laid
+ * over one another: the graph draws the curves that are over the frames of the one that is edited,
+ * with the ruler, the playhead and the frames in use of those frames, and keeps a view of each.
+ * A curve may also be a line with rules of its own (`CurveLine`): its points are drawn and chosen
+ * as keys are, one of them is dragged at a time, and the tool bar's buttons of interpolation, of
+ * copying and of pasting are off for it, since its stretches are straight or level by what it is.
  *
  * Left for the Spline Editor of the Fusion page, which is to be this component with more around
  * it: B-spline and loops (`Curve` would say how a setting goes on outside its keys), the Hand and
@@ -130,8 +187,8 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
   const choose = (next: CurveSelection) => { setOwn(next); onSelect?.(next); };
   /** The curves shown or hidden by hand; the others are shown where they have keys. */
   const [ticked, setTicked] = useState<Record<string, boolean>>({});
-  /** The frames shown, once the view no longer fits itself. */
-  const [span, setSpan] = useState<{ from: number; to: number } | null>(null);
+  /** The frames shown of each clock, by its id, once its view no longer fits itself. */
+  const [spans, setSpans] = useState<Record<string, { from: number; to: number }>>({});
   /** The values shown of each curve whose view no longer fits itself. */
   const [scales, setScales] = useState<Record<string, Range>>({});
   /** The curve that is dragged, as the drag has it. */
@@ -167,11 +224,21 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
   const listed = useMemo(() => [...curves.filter(hasKeys), ...curves.filter(curve => !hasKeys(curve))], [curves]);
   const visible = curves.filter(curve => ticked[curve.id] ?? hasKeys(curve));
   const active = visible.find(curve => curve.id === chosen.curve) ?? visible.find(hasKeys) ?? visible[0] ?? null;
+  /** The frames that the graph is over: those of the curve that is edited. */
+  const clock = active?.clock ?? null;
+  const clockId = clockOf(active);
+  /** The curves drawn: those shown that are over the frames of the graph. */
+  const drawn = visible.filter(curve => clockOf(curve) === clockId);
+  const head = clock ? clock.playhead : playhead;
+  const used = clock ? clock.range : range;
+  /** Whether the curve that is edited is a line with rules of its own. */
+  const lined = Boolean(active?.line);
   const paramOf = (curve: Curve): Param => (live && live.id === curve.id ? live.param : curve.param);
   const keysOf = (curve: Curve): readonly Keyframe[] => { const param = paramOf(curve); return typeof param === 'number' ? [] : param.keys; };
   const rect = plotRect(size);
-  const fitted = fitView(visible.map(curve => curve.param), range ?? []);
-  const frames = span ?? { from: fitted.from, to: fitted.to };
+  const fitted = fitView(drawn.map(curve => curve.param), used ?? []);
+  const frames = spans[clockId] ?? { from: fitted.from, to: fitted.to };
+  const setSpan = (id: string, next: { from: number; to: number }) => setSpans(old => ({ ...old, [id]: next }));
   const valuesOf = (curve: Curve): Range => {
     const kept = scales[curve.id];
     if (kept) return kept;
@@ -183,7 +250,7 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
   const ruler: View = { ...frames, low: 0, high: 1 };
   const selected = active && chosen.curve === active.id ? selectedIn(keysOf(active), chosen.frames) : [];
   /** The curves in the order in which a pointer finds them: the one that is edited first. */
-  const order = active ? [active, ...visible.filter(curve => curve.id !== active.id)] : visible;
+  const order = active ? [active, ...drawn.filter(curve => curve.id !== active.id)] : drawn;
   const said = (curve: Curve, value: number) => {
     const display = curve.display;
     return display ? `${(value * display.factor).toFixed(display.digits)}${display.unit}` : String(Number(value.toFixed(3)));
@@ -199,13 +266,21 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
   const capture = (event: PointerEvent<SVGSVGElement>) => {
     try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* A pointer that is no longer down has nothing to keep. */ }
   };
-  const seek = (at: Point) => onSeek(Math.round(frameAt(ruler, rect, at.x)) + 0);
+  const seek = (at: Point) => (clock ? clock.onSeek : onSeek)(Math.round(frameAt(ruler, rect, at.x)) + 0);
   const commit = (curve: Curve, param: Param) => onCommit([{ id: curve.id, param }]);
 
   /** Put a key on a curve where a pointer is, and choose it. */
   const addKey = (curve: Curve, at: Point) => {
     if (disabled) return;
     const frame = Math.round(frameAt(viewOf(curve), rect, at.x)) + 0;
+    if (curve.line) {
+      // Whoever holds the editor puts the point on its line: it is chosen once it is there.
+      if (!curve.line.add) return;
+      anchor.current = frame;
+      choose({ curve: curve.id, frames: [frame] });
+      curve.line.add(frame);
+      return;
+    }
     const made = insertKey(curve.param, frame);
     if (!made) return;
     anchor.current = frame;
@@ -251,7 +326,8 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
       // A key taken out of what is chosen is not dragged.
       if (disabled || !next.includes(frame)) return;
       drag.current = {
-        kind: 'keys', curve, view, start: at, initial: keys.map(key => ({ ...key })), indices: selectedIn(keys, next), moved: false, axis: null,
+        // Of a line with rules of its own, the one point pressed is dragged.
+        kind: 'keys', curve, view, start: at, initial: keys.map(key => ({ ...key })), indices: curve.line ? [index] : selectedIn(keys, next), moved: false, axis: null,
         // A press on one of several chosen keeps them all for a drag; let go where it was, it chooses that one alone.
         click: !add && was.length > 1 && was.includes(frame) ? frame : null, last: null,
       };
@@ -290,7 +366,7 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
     if (!d.moved) {
       d.moved = true;
       // From here the view stays as it is: nothing is to move under the pointer.
-      setSpan({ from: d.view.from, to: d.view.to });
+      setSpan(clockOf(d.curve), { from: d.view.from, to: d.view.to });
       setScales(old => ({ ...old, [d.curve.id]: { low: d.view.low, high: d.view.high } }));
     }
     let keys: Keyframe[];
@@ -299,10 +375,17 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
       else if (d.axis === null) d.axis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
       if (d.axis === 'x') dy = 0;
       else if (d.axis === 'y') dx = 0;
-      const moved = moveKeys(d.initial, d.indices, (dx / rect.width) * (d.view.to - d.view.from), (-dy / rect.height) * (d.view.high - d.view.low), d.curve.bounds);
+      const along = (dx / rect.width) * (d.view.to - d.view.from);
+      const raise = (-dy / rect.height) * (d.view.high - d.view.low);
+      // A point of a line goes where its rules put it, in time alone or in value alone until the pointer has left the other way by the slop of a press.
+      const made: LineDrag | null = d.curve.line
+        ? d.curve.line.drag(d.initial, d.indices[0], Math.abs(dx) < SLOP_PX ? 0 : along, Math.abs(dy) < SLOP_PX ? 0 : raise)
+        : { keys: moveKeys(d.initial, d.indices, along, raise, d.curve.bounds) };
+      if (!made) return;
+      const moved = made.keys;
       choose({ curve: d.curve.id, frames: d.indices.map(index => moved[index].frame) });
       const first = moved[d.indices[0]];
-      setTip(`${d.curve.label} ${said(d.curve, first.value)} · ${first.frame}`);
+      setTip(made.tip === undefined ? `${d.curve.label} ${said(d.curve, first.value)} · ${first.frame}` : `${d.curve.label} ${made.tip}`);
       keys = moved;
     } else {
       keys = dragHandle(d.initial, d.index, d.side, frameAt(d.view, rect, at.x), valueAtY(d.view, rect, at.y), d.curve.bounds);
@@ -363,7 +446,7 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
     const at = pointOf(event);
     if (event.shiftKey) {
       const step = (by > 0 ? 0.1 : -0.1) * (frames.to - frames.from);
-      setSpan({ from: frames.from + step, to: frames.to + step });
+      setSpan(clockId, { from: frames.from + step, to: frames.to + step });
     } else if (event.altKey) {
       if (!active) return;
       const view = viewOf(active);
@@ -371,7 +454,7 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
       setScales(old => ({ ...old, [active.id]: { low: next.low, high: next.high } }));
     } else {
       const next = zoomed(ruler, by < 0 ? 1.25 : 0.8, { frame: frameAt(ruler, rect, at.x) });
-      setSpan({ from: next.from, to: next.to });
+      setSpan(clockId, { from: next.from, to: next.to });
     }
   };
 
@@ -380,32 +463,40 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
   const picked = active && chosen.curve === active.id ? selectedIn(base, chosen.frames) : [];
   const able = active !== null && !disabled && picked.length > 0;
   const ease = (kind: KeyEase) => {
-    if (!active || !able || drag.current) return;
+    if (!active || !able || lined || drag.current) return;
     const keys = setInterp(base, picked, kind);
     if (spliceOf(base, keys) !== null) commit(active, { keys });
   };
   const remove = () => {
     if (!active || !able || drag.current) return;
+    if (active.line) {
+      // Whoever holds the editor takes the points off its line.
+      if (!active.line.remove) return;
+      anchor.current = null;
+      choose({ curve: active.id, frames: [] });
+      active.line.remove(picked.map(index => base[index].frame));
+      return;
+    }
     const param = deleteKeys(active.param, picked, playhead ?? undefined);
     anchor.current = null;
     choose({ curve: active.id, frames: [] });
     commit(active, param);
   };
   const copy = (): boolean => {
-    if (!active || picked.length === 0) return false;
+    if (!active || lined || picked.length === 0) return false;
     clipboard.keys = copyKeys(base, picked);
     redraw(count => count + 1);
     return true;
   };
   const paste = () => {
-    if (!active || disabled || drag.current || playhead === null) return;
+    if (!active || lined || disabled || drag.current || playhead === null) return;
     const made = pasteKeys(active.param, clipboard.keys, playhead, active.bounds);
     if (!made) return;
     choose({ curve: active.id, frames: made.frames });
     if (typeof active.param === 'number' || spliceOf(active.param.keys, made.keys) !== null) commit(active, { keys: made.keys });
   };
   const nudge = (by: number) => {
-    if (!active || !able || drag.current) return;
+    if (!active || !able || lined || drag.current) return;
     const keys = moveKeys(base, picked, by, 0, active.bounds);
     if (spliceOf(base, keys) === null) return;
     choose({ curve: active.id, frames: picked.map(index => keys[index].frame) });
@@ -436,7 +527,7 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
   const right = rect.left + rect.width;
   const bottom = rect.top + rect.height;
   const within = (x: number) => Math.min(right, Math.max(rect.left, x));
-  const playheadX = playhead === null ? null : xOf(ruler, rect, playhead);
+  const playheadX = head === null ? null : xOf(ruler, rect, head);
   return <section ref={root} className="curve-editor" role="group" aria-label={title ?? words.title} tabIndex={0} data-disabled={disabled || undefined}
     data-test="curve-editor" onKeyDown={keyDown}>
     {/* A button pressed with the pointer gives the keyboard back to the editor, so that its keys go on working (and Space does not press the button again). */}
@@ -444,14 +535,14 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
       <strong>{title ?? words.title}</strong>
       <div className="curve-editor-tools" role="group" aria-label={words.interpolation}>
         {KEY_EASES.map(kind => <button key={kind} type="button" className="icon-btn" aria-label={names[kind]} title={names[kind]} data-ease={kind}
-          aria-pressed={interpIs(base, picked, kind)} disabled={!able} onClick={() => ease(kind)}>
+          aria-pressed={!lined && interpIs(base, picked, kind)} disabled={!able || lined} onClick={() => ease(kind)}>
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d={GLYPHS[kind]} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </button>)}
       </div>
-      <button type="button" className="icon-btn" aria-label={words.fit} title={words.fit} data-test="curve-fit" onClick={() => { setSpan(null); setScales({}); }}><Maximize2 size={14} /></button>
-      <button type="button" className="icon-btn" aria-label={words.copy} title={`${words.copy} (Ctrl+C)`} data-test="curve-copy" disabled={picked.length === 0} onClick={() => { copy(); }}><Copy size={14} /></button>
+      <button type="button" className="icon-btn" aria-label={words.fit} title={words.fit} data-test="curve-fit" onClick={() => { setSpans({}); setScales({}); }}><Maximize2 size={14} /></button>
+      <button type="button" className="icon-btn" aria-label={words.copy} title={`${words.copy} (Ctrl+C)`} data-test="curve-copy" disabled={lined || picked.length === 0} onClick={() => { copy(); }}><Copy size={14} /></button>
       <button type="button" className="icon-btn" aria-label={words.paste} title={`${words.paste} (Ctrl+V)`} data-test="curve-paste"
-        disabled={disabled || active === null || playhead === null || clipboard.keys.length === 0} onClick={paste}><ClipboardPaste size={14} /></button>
+        disabled={disabled || active === null || lined || playhead === null || clipboard.keys.length === 0} onClick={paste}><ClipboardPaste size={14} /></button>
       <span className="curve-editor-gap" />
       {tools}
     </header>
@@ -471,9 +562,9 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
       <defs><clipPath id={clip}><rect x={rect.left} y={rect.top} width={rect.width} height={rect.height} /></clipPath></defs>
       <rect className="curve-editor-ruler" x={0} y={0} width={size.width} height={rect.top} />
       <rect className="curve-editor-plot" x={rect.left} y={rect.top} width={rect.width} height={rect.height} />
-      {range && <>
-        <rect className="curve-editor-outside" x={rect.left} y={rect.top} width={Math.max(0, within(xOf(ruler, rect, range[0])) - rect.left)} height={rect.height} />
-        <rect className="curve-editor-outside" x={within(xOf(ruler, rect, range[1]))} y={rect.top} width={Math.max(0, right - within(xOf(ruler, rect, range[1])))} height={rect.height} />
+      {used && <>
+        <rect className="curve-editor-outside" x={rect.left} y={rect.top} width={Math.max(0, within(xOf(ruler, rect, used[0])) - rect.left)} height={rect.height} />
+        <rect className="curve-editor-outside" x={within(xOf(ruler, rect, used[1]))} y={rect.top} width={Math.max(0, right - within(xOf(ruler, rect, used[1])))} height={rect.height} />
       </>}
       {ticksOf(frames.from, frames.to, Math.max(2, Math.floor(rect.width / 72)), true).map(frame => {
         const x = xOf(ruler, rect, frame);
@@ -519,7 +610,7 @@ export function CurveEditor({ curves, playhead, selection, onSelect, range = nul
         {box && <rect className="curve-editor-box" x={Math.min(box.a.x, box.b.x)} y={Math.min(box.a.y, box.b.y)} width={Math.abs(box.b.x - box.a.x)} height={Math.abs(box.b.y - box.a.y)} />}
       </g>
       {playheadX !== null && playheadX >= rect.left && playheadX <= right
-        && <line className="curve-editor-playhead" data-frame={playhead ?? undefined} x1={playheadX} x2={playheadX} y1={0} y2={size.height} />}
+        && <line className="curve-editor-playhead" data-frame={head ?? undefined} x1={playheadX} x2={playheadX} y1={0} y2={size.height} />}
       {tip && <text className="curve-editor-tip" x={rect.left + 8} y={rect.top + 14}>{tip}</text>}
     </svg>
   </section>;

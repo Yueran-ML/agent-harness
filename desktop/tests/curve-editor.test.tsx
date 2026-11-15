@@ -416,11 +416,12 @@ describe('the Curve Editor of the Edit page', () => {
     wire([keyed(quarter)]);
     expect(document.querySelector('[data-test="clip-curves"]')!.getAttribute('data-clip')).toBe('c1');
     expect(screen.getByRole('group', { name: 'Curve Editor · Interview' })).toBeDefined();
-    // The ten settings of the transform and the crop, the one with keys first and shown.
+    // The ten settings of the transform and the crop, the one with keys first and shown; and after them the two Retime curves of a clip of
+    // media, hidden while the clip has no speed points (`retime-curves.test.tsx`).
     const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
     expect(boxes.map(box => box.getAttribute('aria-label'))).toEqual(['Position X', 'Zoom', 'Position Y', 'Rotation angle', 'Opacity',
-      'Crop left', 'Crop right', 'Crop top', 'Crop bottom', 'Softness']);
-    expect(boxes.map(box => box.checked)).toEqual([true, ...Array.from({ length: 9 }, () => false)]);
+      'Crop left', 'Crop right', 'Crop top', 'Crop bottom', 'Softness', 'Retime Frame', 'Retime Speed']);
+    expect(boxes.map(box => box.checked)).toEqual([true, ...Array.from({ length: 11 }, () => false)]);
     expect(document.querySelectorAll(`.curve-key[data-curve="${X}"]`)).toHaveLength(3);
     // The playhead is at frame 30 of the timeline: the picture 20 of the clip.
     expect(document.querySelector('.curve-editor-playhead')!.getAttribute('data-frame')).toBe('20');

@@ -1241,7 +1241,9 @@ it shows, so the clip gets longer or shorter); freeze_frame: clip,at,hold,ripple
 picture is held hold frames more, the clip lasts hold more); reverse_segment: clip,at,linked?
 (that segment plays the other way, same length); clear_speed_point: clip,at,linked? (clears the
 point at the left of at's segment; it and the one before become one speed, same length);
-reset_speed: clip,ripple?,linked? (100% forward, no speed points). video_info then lists the
+reset_speed: clip,ripple?,linked? (100% forward, no speed points); set_speed_points: clip,
+retime:{points:[...]},keep?:"start"|"end",linked? (all its speed points at once, same length;
+the picture at that end of its path stays where it is). video_info then lists the
 clip's retime:{points:[{frame,speed}]} (num<0 backward, 0/1 a freeze; speed is 1/1) and its
 source in/out are the lowest and highest place shown. Its sound follows the speed points and
 is silent in a freeze. set_speed is refused (retimed) on such a clip until reset_speed. Basic

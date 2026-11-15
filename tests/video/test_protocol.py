@@ -165,7 +165,7 @@ def test_the_edits_of_speed_points_are_of_the_protocol_and_known_to_the_fake_eng
     retiming = fake_engine._RETIMING  # pyright: ignore[reportPrivateUsage]
     assert retiming == {
         "add_speed_point", "set_segment_speed", "freeze_frame", "reverse_segment",
-        "clear_speed_point", "reset_speed",
+        "clear_speed_point", "reset_speed", "set_speed_points",
     }  # fmt: skip
     assert retiming <= set(EDITS)
     assert retiming <= fake_engine._EDITS  # pyright: ignore[reportPrivateUsage]
@@ -182,6 +182,7 @@ def test_the_edits_of_speed_points_are_of_the_protocol_and_known_to_the_fake_eng
         edits.reverse_segment("t1", "c1", 1),
         edits.clear_speed_point("t1", "c1", 1),
         edits.reset_speed("t1", "c1", ripple=True),
+        edits.set_speed_points("t1", "c1", points, keep="end"),
         edits.set_retime("t1", "c1", points, length=5),
     ]
     wrong: list[str] = []

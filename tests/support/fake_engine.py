@@ -16,7 +16,8 @@ track that is not locked, as the engine does for clips that play forward; ``add_
 ``remove_track`` do what they say; an edit of the Retime Controls (``add_speed_point``,
 ``set_segment_speed``, ``freeze_frame``, ``reverse_segment``, ``clear_speed_point``,
 ``reset_speed``) becomes one ``set_retime`` of the clip that it names, its speed points counted
-as the engine counts them, and nothing else moves; any other edit is answered with a
+as the engine counts them, and nothing else moves; ``set_speed_points`` becomes one
+``set_retime`` of the speed points that it gives; any other edit is answered with a
 ``set_timeline`` that changes nothing. An edit that names a locked track, or a clip on one, is
 refused with ``locked``. A render writes a few bytes where it is told to, and tells its progress
 to every connection.
@@ -172,6 +173,7 @@ _RETIMING = {
     "reverse_segment",
     "clear_speed_point",
     "reset_speed",
+    "set_speed_points",
 }
 """The edits of the Retime Controls, which change the speed points of a clip."""
 
@@ -867,10 +869,18 @@ class Fake:
         source, what the media has, an overlap), the move of ``source.in`` to the lowest place
         of the path, the ripple, the linked clips, the transitions, a speed kept as it is
         given, and one speed written as the speed of the clip; an edit that changes nothing is
-        answered with its operation all the same.
+        answered with its operation all the same. ``set_speed_points`` gives the speed points
+        themselves, which are set as they are given.
         """
         clip = self._found_clip(timeline["id"], edit["clip"], index)
         name = edit["edit"]
+        if name == "set_speed_points":
+            return {
+                "op": "set_retime",
+                "timeline": timeline["id"],
+                "id": clip["id"],
+                "retime": edit["retime"],
+            }
         length = int(clip["length"])
         retime: Any = clip.get("retime")
         written: list[Any] = retime["points"] if retime else []

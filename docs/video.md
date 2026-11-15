@@ -83,7 +83,14 @@ size and frame rate, by default those of the first video in the pool) and opens 
   timeline with the curves of the chosen clip: drag keys in time and value, double-click a
   curve to add one, Delete to take the chosen ones away, set them to Linear, Ease In, Ease
   Out, Ease In and Out or Hold, drag the handles of a Bezier key, copy and paste keys, and
-  zoom with the wheel (Full Extent Zoom fits all). A clip that has keys shows them in the
+  zoom with the wheel (Full Extent Zoom fits all). For a clip of media it also lists the
+  **Retime Frame** and **Retime Speed** curves, drawn over the frames of the clip. On Retime
+  Frame, whose points are the speed points and the end of the clip, drag a point up or down to
+  make that frame of the clip show another frame of the source, or sideways to move the speed
+  point in time; double-click the line to add a speed point, and Delete clears the chosen
+  ones. On Retime Speed, drag a step up or down to change the speed of its segment. Speeds
+  made by dragging are whole percents, and the buttons of interpolation are off for these two
+  curves, whose segments are straight. A clip that has keys shows them in the
   timeline as diamonds along its lower edge, and a press on one takes the playhead there.
   The Keyframe button beside the clip's name opens its **keyframe track** under the clip: a
   row for all its keys and a row for each setting that has keys. A click chooses a key (Ctrl
@@ -108,7 +115,8 @@ size and frame rate, by default those of the first video in the pool) and opens 
   at the playhead), Clear Speed Point, Reverse Segment, Reset Speed and Reset Clip. Dragging the
   upper handle of a speed point changes the speed of the segment before it, and what follows comes
   sooner or later; dragging the lower handle moves the speed point while the clip keeps its length,
-  so the speeds on both sides change. A speed made by dragging is a whole percent. With the Trim
+  so the speeds on both sides change and the pictures before them stay where they were. A speed
+  made by dragging is a whole percent. With the Trim
   tool what follows the clip moves with its end. A clip with speed points says the slowest and the
   fastest of its speeds beside its name; its sound follows them, silent in a freeze and backward
   where a segment is reversed; and Change Clip Speed (R) clears them and gives the clip one speed.
@@ -440,7 +448,9 @@ transform or crop),
 `set_track`, `set_media` and `set_timeline`. The speed of a clip may change on the way, as with
 Resolve's Retime Controls: `add_speed_point`, `set_segment_speed`, `freeze_frame`,
 `reverse_segment`, `clear_speed_point` and `reset_speed` change the speed points of a clip at a
-frame counted from its first, and the basic operation `set_retime` sets them all at once. The
+frame counted from its first, and the basic operation `set_retime` sets them all at once
+(the edit `set_speed_points` does so too, and keeps the place where the clip's path begins, or
+stops, where it is in the media). The
 sound of the clip follows its speed points and is silent through a freeze, and `set_speed` is
 refused for such a clip until `reset_speed`. The engine decides track locks, links and available
 handles. Timeline positions are integer frames; source times use ticks and their scale. `null`
@@ -669,7 +679,7 @@ client has been absent for a while.
 
 ## Not in this version
 
-The Retime Speed and Retime Frame curves of the Curve Editor, speed ramps and Rewind, Frame Blend and
+Speed ramps and Rewind, Frame Blend and
 Optical Flow, markers, Fit
 to Fill, Close Up, multicam and lining clips up by timecode come in later phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
 Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,

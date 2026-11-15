@@ -54,7 +54,9 @@
 //! [`Edit::ClearSpeedPoint`] and [`Edit::ResetSpeed`]. Each is made at a frame of the clip that
 //! it names, counted from its first, and the clips linked to it take it at the same frame of
 //! the timeline, each counted from its own start; a linked clip that the frame is not in is
-//! left as it is. A title, a colour and a still are refused with `out_of_range`
+//! left as it is. [`Edit::SetSpeedPoints`] sets them whole, as a drag of a speed point does at
+//! each move, with one end of the path kept at its tick of the media. A title, a colour and a
+//! still are refused with `out_of_range`
 //! (`retime_source`). The frames of the clip before the segment that is changed show the
 //! pictures that they showed: where the lowest place of the path is then another, the clip
 //! begins that much later in its media, or earlier. Those that make the clip longer or shorter
@@ -91,6 +93,7 @@ use crate::grade::{Target, Window};
 use crate::keyframes::Align;
 use crate::ops::{apply_done, InsertsOf, LanesOf, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
+use crate::retime::Retime;
 use crate::time::{Speed, Time};
 
 pub use automation::{
@@ -681,6 +684,32 @@ pub enum Edit {
         #[serde(default = "yes")]
         linked: bool,
     },
+    /// Set the speed points of a clip whole, the clip lasting as long as it did: what a drag
+    /// of a speed point of the Retime Controls, or of a control point of the Retime Frame curve,
+    /// asks for at each of its moves (pp. 1075 and 1078–1081). One end of the path of the clip
+    /// ([`crate::retime`]) stays at the tick of the media that it is at, and the clip begins
+    /// that much later in its media, or earlier, where the lowest place of the path is then
+    /// another: where the path begins is kept, the frames of a first segment that plays as it
+    /// did show the pictures that they showed. Speed points of one speed are kept as the speed
+    /// of the clip. The edit is the same whatever went before it: made again, it sets the
+    /// speed points of the clip that it names once more, and changes nothing.
+    SetSpeedPoints {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The speed points, as [`crate::ops::Op::SetRetime`] takes them: those of a clip of
+        /// the length that the clip has.
+        retime: Retime,
+        /// The end of the path that stays where it is in the media: where it begins, if this
+        /// is left out.
+        #[serde(default, skip_serializing_if = "PathEnd::is_start")]
+        keep: PathEnd,
+        /// Whether the clips linked to it that start with it, last as long and play as it did
+        /// take the same speed points.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
     /// Put a subtitle on a track of subtitles.
     AddCue {
         /// The timeline.
@@ -1255,6 +1284,29 @@ pub enum Edge {
     Out,
 }
 
+/// An end of the path of a clip through its source ([`crate::retime`]): the one that stays at
+/// the tick of the media that it is at where [`Edit::SetSpeedPoints`] sets the speed points of
+/// the clip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathEnd {
+    /// Where the path begins: the place at which the first frame of the clip begins.
+    #[default]
+    Start,
+    /// Where the path stops: the place at which the last frame of the clip ends.
+    End,
+}
+
+impl PathEnd {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde passes a reference"
+    )]
+    fn is_start(&self) -> bool {
+        *self == Self::Start
+    }
+}
+
 /// A setting of a clip that has keyframes (see [`Edit::ClipGainKeys`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1799,6 +1851,13 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             linked,
             ..
         } => retiming::retime(&mut work, &clip, None, Retiming::Reset, ripple, linked),
+        Edit::SetSpeedPoints {
+            clip,
+            retime,
+            keep,
+            linked,
+            ..
+        } => retiming::set_points(&mut work, &clip, &retime, keep, linked),
         Edit::AddCue {
             track,
             start,
@@ -2022,6 +2081,7 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::ReverseSegment { timeline, .. }
         | Edit::ClearSpeedPoint { timeline, .. }
         | Edit::ResetSpeed { timeline, .. }
+        | Edit::SetSpeedPoints { timeline, .. }
         | Edit::AddCue { timeline, .. }
         | Edit::SetCue { timeline, .. }
         | Edit::RemoveCue { timeline, .. }

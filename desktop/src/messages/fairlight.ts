@@ -186,6 +186,7 @@ const entries = {
   'Freeze Frame': ['冻结帧', 'フリーズフレーム'], 'Reverse Segment': ['倒放片段', 'セグメントを反転'],
   'Reset Speed': ['重置速度', '速度をリセット'], 'Reset Clip': ['重置片段', 'クリップをリセット'],
   'Change the speed of the segment before': ['更改前一段的速度', '前のセグメントの速度を変更'], 'Move the speed point': ['移动速度点', '速度ポイントを移動'],
+  'Retime Frame': ['变速帧', 'リタイムフレーム'], 'Retime Speed': ['变速速度', 'リタイム速度'],
   'This clip has speed points. Changing its speed here clears them.': ['此片段带有速度点。在这里更改速度会清除它们。', 'このクリップには速度ポイントがあります。ここで速度を変更すると消去されます。'],
   'Clip gain': ['片段音量', 'クリップゲイン'], 'Clip fades': ['片段淡变', 'クリップフェード'],
   'Fade In': ['淡入', 'フェードイン'], 'Fade Out': ['淡出', 'フェードアウト'],

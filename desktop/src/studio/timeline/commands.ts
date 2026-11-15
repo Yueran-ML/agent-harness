@@ -1,4 +1,4 @@
-import type { Alignment, CrossfadeLevel, Cue, Insert, InsertsOf, KeyInterp, LanePoint, LanesOf, Op, Speed, Time, TitleStyle, TrackKind, TransitionKind } from '../engine';
+import type { Alignment, CrossfadeLevel, Cue, Insert, InsertsOf, KeyInterp, LanePoint, LanesOf, Op, Retime, Speed, Time, TitleStyle, TrackKind, TransitionKind } from '../engine';
 import type { ClipClipboard } from './clipboard';
 
 /** Input commands, not project operations: the engine expands them into the accepted `done` list. */
@@ -58,6 +58,12 @@ export type Edit = { timeline: string } & (
   | { edit: 'clear_speed_point'; clip: string; at: number; linked?: boolean }
   /** The clip plays at the speed of its source, forward, with no speed points. */
   | { edit: 'reset_speed'; clip: string; ripple?: boolean; linked?: boolean }
+  /**
+   * The speed points of the clip set whole, the clip lasting as long as it did: what a drag of a speed point sends at each move. The end
+   * `keep` of its path (where it begins, left out) stays at the tick of the media that it is at, the clip beginning that much later or
+   * earlier in its media. With `linked`, the clips linked to it that start with it, last as long and play as it did take them too.
+   */
+  | { edit: 'set_speed_points'; clip: string; retime: Retime; keep?: 'start' | 'end'; linked?: boolean }
   | { edit: 'add_cue'; track: string; start: number; length: number; text: string }
   | { edit: 'set_cue'; id: string; start?: number; length?: number; text?: string }
   | { edit: 'remove_cue'; id: string }

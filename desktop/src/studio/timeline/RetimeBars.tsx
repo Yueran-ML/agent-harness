@@ -5,10 +5,10 @@ import { CoveringMenu } from '../color/CoveringMenu';
 import type { MenuItem } from '../color/ColorMenu';
 import type { Clip, Retime, Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
-import { clipCourse, courseOf, movedPoint, percentOf, percentToLast, speedOfPercent, type Course } from '../retime';
+import { clipCourse, constantRetime, courseOf, movedPoint, percentOf, percentToLast, speedOfPercent, type Course } from '../retime';
 import type { Change, Edit, Transaction } from './commands';
 import { HEADER_WIDTH } from './geometry';
-import { clipLocations, movableClips } from './selection';
+import { clipLocations } from './selection';
 import { useAudioGesture } from './useAudioGesture';
 
 /**
@@ -43,8 +43,8 @@ interface Drag {
   at: number;
   /** The course of the clip at the press: every move is worked out from it. */
   course: Course;
-  /** The clips linked to it that play along the same speed points, which a move of a speed point takes along. */
-  partners: string[];
+  /** The speed points of the clip at the press: what a move back to where the handle was, and a drag taken back, give it again. */
+  was: Retime;
   moved: boolean;
   /** Whether a move has begun the gesture, which is then to be ended or taken back. */
   started: boolean;
@@ -123,18 +123,24 @@ export const RetimeBars = memo(function RetimeBars({ open, rows, ...shared }: Sh
  *   of the clip does so for the last segment. A freeze shows nothing that could last longer, and
  *   its handle does not move;
  * - the lower handle moves the speed point, the clip lasting as long as it did, so the speeds
- *   either side change (`movedPoint`): one gesture (`useAudioGesture`) of `set_retime`, which sets
- *   the speed points whole and is the same whatever went before, so the picture follows the drag
- *   and the whole is one step to undo. Escape takes it back.
+ *   either side change (`movedPoint`): one gesture (`useAudioGesture`) of the edit
+ *   `set_speed_points`, which sets the speed points whole and is the same whatever went before,
+ *   so the picture follows the drag and the whole is one step to undo. Escape takes it back. The
+ *   engine keeps the place where the path of the clip begins at its tick of the media, moving
+ *   where the clip begins in its media (`source.in`) where the lowest place of the path is then
+ *   another: so the frames before the two segments show the pictures that they showed (the tick
+ *   is the one that `beginsLater` of `../retime` counts). It gives the same speed points to the
+ *   clips linked to the clip that lie with it and play as it did, where `linked` is on.
  * A speed that a drag makes is a whole hundredth of the speed of the source, which the engine
  * takes beside any other speeds of the clip. With `ripple` (the Trim tool) what follows the clip
  * moves with its end; with `linked` the clips linked to it take the change.
  *
  * A clip on a locked track shows its controls, and none of them changes it.
  *
- * Left for later (all in DaVinci Resolve's Retime Controls): the Retime Speed and Retime Frame
- * curves (pp. 1078–1081), Rewind and Speed Ramp of the pop-up menu (p. 1077), the Retime Process
- * and Motion Estimation of the Inspector (p. 1082), and typing a speed into the bar.
+ * The Retime Frame and Retime Speed curves of the clip (pp. 1078–1081) are in the Curve Editor
+ * (`../keyframes/ClipCurves`). Left for later (all in DaVinci Resolve's Retime Controls): Rewind
+ * and Speed Ramp of the pop-up menu (p. 1077), the Retime Process and Motion Estimation of the
+ * Inspector (p. 1082), and typing a speed into the bar.
  */
 function RetimeBar({ bridge, session, revision, timeline, clip, locked, top, height, playhead, ripple, linked, apply, onToggle, onFailure }: Shared & {
   clip: Clip; locked: boolean; top: number; height: number;
@@ -152,7 +158,7 @@ function RetimeBar({ bridge, session, revision, timeline, clip, locked, top, hei
   const segments = course.segments;
 
   const send = (edit: Edit) => { void apply({ revision, ops: [edit] }); };
-  const setRetime = (ids: readonly string[], retime: Retime | null): Change[] => ids.map((id): Change => ({ op: 'set_retime', timeline: timeline.id, id, retime }));
+  const setPoints = (retime: Retime): Change[] => [{ edit: 'set_speed_points', timeline: timeline.id, clip: clip.id, retime, linked }];
 
   const down = (event: PointerEvent<HTMLElement>, handle: 'upper' | 'lower', index: number) => {
     // A press on a handle is the handle's: the timeline would choose or drag a clip with it.
@@ -162,15 +168,9 @@ function RetimeBar({ bridge, session, revision, timeline, clip, locked, top, hei
     event.preventDefault();
     root.current?.focus({ preventScroll: true });
     const at = index < own.segments.length ? own.segments[index].from : clip.length;
-    // The clips linked to this one that play along the very same speed points go with a speed point that is moved.
-    const same = JSON.stringify(clip.retime ?? null);
-    const locations = clipLocations(timeline);
-    const partners = handle === 'lower' && linked ? movableClips(timeline, [clip.id], true).movable.filter((id) => {
-      const other = locations.get(id)?.clip;
-      return other !== undefined && id !== clip.id && other.start === clip.start && other.length === clip.length && JSON.stringify(other.retime ?? null) === same;
-    }) : [];
     const scale = Number(event.currentTarget.closest('.timeline')?.getAttribute('data-scale')) || 1;
-    drag.current = { pointer: event.pointerId, x: event.clientX, scale, handle, index, at, course: own, partners, moved: false, started: false, to: at, percent: null };
+    const was = clip.retime ?? constantRetime(clip.speed, clip.reverse);
+    drag.current = { pointer: event.pointerId, x: event.clientX, scale, handle, index, at, course: own, was, moved: false, started: false, to: at, percent: null };
     try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* A pointer that is no longer down has nothing to keep. */ }
   };
 
@@ -198,17 +198,17 @@ function RetimeBar({ bridge, session, revision, timeline, clip, locked, top, hei
     const to = Math.max(before.from + 1, Math.min(wanted, d.course.segments[d.index].to - 1));
     if (to === d.to) return;
     // Back where it was, the speed points are those that the clip had, to the fraction.
-    const retime = to === d.at ? clip.retime ?? null : movedPoint(d.course, d.index, to);
+    const retime = to === d.at ? d.was : movedPoint(d.course, d.index, to);
     if (!retime) return;
     if (!d.started) {
-      // What the gesture puts back where it is taken back: the speed points as they were at the press.
-      if (!gesture.start(setRetime([clip.id, ...d.partners], clip.retime ?? null))) { drag.current = null; return; }
+      // What the gesture puts back where it is taken back: the speed points as they were at the press, which put the clip back where it began in its media too.
+      if (!gesture.start(setPoints(d.was))) { drag.current = null; return; }
       d.started = true;
     }
     d.to = to;
     const speeds = [retime.points[d.index - 1].speed, retime.points[d.index].speed];
     setLive({ handle: 'lower', index: d.index, to, retime, tip: speeds.map(speed => percentText(percentOf(speed))).join(' · ') });
-    gesture.preview(setRetime([clip.id, ...d.partners], retime));
+    gesture.preview(setPoints(retime));
   };
 
   const up = (event: PointerEvent<HTMLElement>) => {

@@ -13,6 +13,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import { emptyGrade, type Clip, type Retime, type Timeline as TimelineModel } from '../src/studio/engine';
+import { beginsLater, courseOf } from '../src/studio/retime';
 import { HEADER_WIDTH, RULER_HEIGHT } from '../src/studio/timeline/geometry';
 import { arrowGap, CHANGE_SPEEDS } from '../src/studio/timeline/RetimeBars';
 import { Timeline } from '../src/studio/timeline/Timeline';
@@ -102,7 +103,8 @@ const command = async (segment: number, name: string) => {
   await settle();
 };
 const edit = (fields: Record<string, unknown>) => ({ revision: 17, ops: [{ timeline: 't1', clip: 'c1', ...fields }] });
-const setRetime = (points: Retime, id = 'c1') => ({ op: 'set_retime', timeline: 't1', id, retime: points });
+/** What a move of a speed point sends: the speed points of the clip whole, as an edit, which the engine gives to the clips linked to it that play as it does. */
+const setPoints = (points: Retime) => ({ edit: 'set_speed_points', timeline: 't1', clip: 'c1', retime: points, linked: true });
 
 describe('the Retime Controls of a clip', () => {
   it('are shown from the menu of the clip and with Ctrl+R on the clips chosen, and put away the same way or with their button', () => {
@@ -322,7 +324,7 @@ describe('the handles of a speed point', () => {
     // The bar shows the speed points as the drag has them, whatever the timeline is given meanwhile.
     expect(told()).toEqual([[80, 'forward', 0, 25], [0, 'freeze', 25, 5], [-50, 'backward', 30, 30]]);
     await settle();
-    expect(applied(call)).toEqual([{ revision: 17, ops: [setRetime(moved)], gesture: { id: expect.any(String) } }]);
+    expect(applied(call)).toEqual([{ revision: 17, ops: [setPoints(moved)], gesture: { id: expect.any(String) } }]);
     // It stays strictly before the end of its segment.
     fireEvent.pointerMove(lower, pointer(900));
     expect(told()).toEqual([[69, 'forward', 0, 29], [0, 'freeze', 29, 1], [-50, 'backward', 30, 30]]);
@@ -331,7 +333,7 @@ describe('the handles of a speed point', () => {
     await settle();
     // The last move ends the gesture: the whole drag is one step to undo.
     const sent = applied(call);
-    expect(sent.at(-1)).toEqual({ revision: 17, ops: [setRetime(moved)], gesture: { id: sent[0].gesture.id, end: true } });
+    expect(sent.at(-1)).toEqual({ revision: 17, ops: [setPoints(moved)], gesture: { id: sent[0].gesture.id, end: true } });
     expect(sent.every(each => each.gesture.id === sent[0].gesture.id)).toBe(true);
     expect(tip()).toBeNull();
   });
@@ -344,10 +346,10 @@ describe('the handles of a speed point', () => {
     fireEvent.pointerDown(lower, pointer(100)); fireEvent.pointerMove(lower, pointer(140));
     expect(tip()).toBe('0% · −75%');
     await settle();
-    expect(applied(call)[0].ops).toEqual([setRetime(retime([0, 1, 1], [20, 0, 1], [40, -3, 4]))]);
+    expect(applied(call)[0].ops).toEqual([setPoints(retime([0, 1, 1], [20, 0, 1], [40, -3, 4]))]);
     fireEvent.keyDown(barOf()!, { key: 'Escape' });
     await settle();
-    expect(applied(call).at(-1)).toEqual({ revision: 17, ops: [setRetime(POINTS)], gesture: { id: expect.any(String), end: true } });
+    expect(applied(call).at(-1)).toEqual({ revision: 17, ops: [setPoints(POINTS)], gesture: { id: expect.any(String), end: true } });
     expect(told()).toEqual([[100, 'forward', 0, 20], [0, 'freeze', 20, 10], [-50, 'backward', 30, 30]]);
     // The release after it does nothing more.
     fireEvent.pointerUp(lower, pointer(140));
@@ -359,7 +361,38 @@ describe('the handles of a speed point', () => {
     fireEvent.pointerDown(lower, pointer(100)); fireEvent.pointerMove(lower, pointer(140)); fireEvent.pointerMove(lower, pointer(100)); fireEvent.pointerUp(lower, pointer(100));
     await settle();
     expect(applied(call).length).toBeGreaterThan(before);
-    expect(applied(call).at(-1)).toEqual({ revision: 20, ops: [setRetime(POINTS)], gesture: { id: expect.any(String), end: true } });
+    expect(applied(call).at(-1)).toEqual({ revision: 20, ops: [setPoints(POINTS)], gesture: { id: expect.any(String), end: true } });
+  });
+
+  it('keep the pictures before the segments that change where the lowest place of the path moves with a speed point', async () => {
+    // c1 begins 500 frames into its media and goes 10 frames up, 30 down and 20 up: its path is lowest at frame 40, 20 frames below where it
+    // begins, and that is where the clip begins in its media.
+    const turned = retime([0, 1, 1], [10, -1, 1], [40, 1, 1]);
+    const { call } = wire(timelineOf([clip('c1', 10, 60, { retime: turned, source: { kind: 'media', media: 'm1', in: { ticks: 500, scale: 25 } } })]));
+    open();
+    const lower = handle('lower', 40);
+    // 28 px: the speed point goes from frame 40 to 47. The 30 frames down are gone in 37, at 81%, and the 20 frames up in 13, at 154%.
+    fireEvent.pointerDown(lower, pointer(100)); fireEvent.pointerMove(lower, pointer(128));
+    expect(tip()).toBe('−81% · 154%');
+    const moved = retime([0, 1, 1], [10, -81, 100], [47, 77, 50]);
+    await settle();
+    // One edit, which leaves it to the engine to keep the place where the path begins: no operation that leaves `source.in` where it is.
+    expect(applied(call)).toEqual([{ revision: 17, ops: [setPoints(moved)], gesture: { id: expect.any(String) } }]);
+    // 37 frames at 81% go 29.97 frames: the lowest place of the path is 0.03 of a frame nearer to where it begins, which is then at the tick 19
+    // above where the clip begins and no longer at the tick 20. So the clip begins one tick later, as the engine counts it and the page after it.
+    const [before, after] = [courseOf(turned, 60)!, courseOf(moved, 60)!];
+    const later = beginsLater(before, after, 'start', rate, 25);
+    expect(later).toBe(1n);
+    for (let frame = 0; frame < 10; frame++) {
+      // Every frame of the first segment shows the tick that it showed. Had the clip begun where it did, it would show the tick before.
+      expect(after.tick(500n + later, frame, rate, 25)).toBe(before.tick(500, frame, rate, 25));
+      expect(after.tick(500, frame, rate, 25)).toBe(before.tick(500, frame, rate, 25) - 1n);
+    }
+    // Taken back, the speed points that the clip had put it back where it began, to the tick.
+    fireEvent.keyDown(barOf()!, { key: 'Escape' });
+    await settle();
+    expect(applied(call).at(-1)).toEqual({ revision: 17, ops: [setPoints(turned)], gesture: { id: expect.any(String), end: true } });
+    expect(beginsLater(before, after, 'start', rate, 25) + beginsLater(after, before, 'start', rate, 25)).toBe(0n);
   });
 
   it('take along the clips linked to it that play along the same speed points, and say a refusal that comes to the drag', async () => {
@@ -370,8 +403,8 @@ describe('the handles of a speed point', () => {
     call.mockResolvedValueOnce(refusal('out_of_source'));
     fireEvent.pointerDown(lower, pointer(100)); fireEvent.pointerMove(lower, pointer(120));
     const moved = retime([0, 4, 5], [25, 0, 1], [30, -1, 2]);
-    // c5 lies with it and plays as it does; c6 is linked too, and lies elsewhere.
-    expect(applied(call)[0].ops).toEqual([setRetime(moved), setRetime(moved, 'c5')]);
+    // c5 lies with it and plays as it does, and c6 is linked too and lies elsewhere: the one edit names the clip, and the engine takes c5 along.
+    expect(applied(call)[0].ops).toEqual([setPoints(moved)]);
     await settle();
     expect(screen.getByRole('alert').textContent).toContain('The chosen range extends beyond the source.');
     // The drag is over: the bar shows the clip as it is.

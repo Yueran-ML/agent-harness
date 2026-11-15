@@ -452,6 +452,7 @@ fn visit_edit<E>(
         | Edit::ReverseSegment { timeline, .. }
         | Edit::ClearSpeedPoint { timeline, .. }
         | Edit::ResetSpeed { timeline, .. }
+        | Edit::SetSpeedPoints { timeline, .. }
         | Edit::AddCue { timeline, .. }
         | Edit::SetCue { timeline, .. }
         | Edit::RemoveCue { timeline, .. }
@@ -587,6 +588,7 @@ fn visit_edit<E>(
         | Edit::ReverseSegment { clip, .. }
         | Edit::ClearSpeedPoint { clip, .. }
         | Edit::ResetSpeed { clip, .. }
+        | Edit::SetSpeedPoints { clip, .. }
         | Edit::ClipGainKeys { clip, .. }
         | Edit::ClipGainRange { clip, .. } => f(clip, Role::Names)?,
         Edit::Roll { left, right, .. } | Edit::AddTransition { left, right, .. } => {

@@ -6,6 +6,17 @@ change what was there before.
 
 ## Unreleased
 
+- The Curve Editor of the Edit page lists the Retime Frame and Retime Speed curves of a clip
+  of media (studio, phase 4), drawn over the frames of the clip. On the Retime Frame curve a
+  point dragged up or down makes that frame of the clip show another frame of the source, a
+  point dragged sideways moves the speed point in time, a double click on the line adds a
+  speed point and Delete clears the chosen ones; on the Retime Speed curve a step dragged up
+  or down changes the speed of its segment. A drag is one step to undo, and the speeds that
+  it makes are whole percents from 1% to 10000%. A drag of a speed point, here and with the
+  lower handle of the Retime Controls, now keeps the pictures before it where they were when
+  the lowest place of the clip's path moves with it: it is sent as the new edit
+  `set_speed_points`, which sets the speed points whole and keeps the place where the path
+  begins, or stops, at its tick of the media.
 - A clip of the Edit page's timeline has Retime Controls (studio, phase 4), shown with Ctrl+R
   or from the clip's right-click menu: over the clip, the speed of each of its segments in
   percent, arrows that point the way the segment plays and stand nearer each other the faster

@@ -23,6 +23,8 @@ interface Options {
   root: RefObject<HTMLElement | null>; scroll: RefObject<HTMLDivElement | null>; view: { scale: number; left: number };
   onSeek: (frame: number, scrubbing: boolean) => void; fit: () => void; zoom: (factor: number) => void;
   onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
+  /** Show the Retime Controls of clips, or put them away (Ctrl+R); left out by a page that has none. */
+  onRetime?: (clips: readonly string[]) => void;
   onCopyClips?: (clips: readonly string[]) => boolean;
   /** The transition chosen on the timeline, for the inspector; null where none is. */
   onTransition?: (transition: string | null) => void;
@@ -290,6 +292,7 @@ export function useEditing(options: Options) {
       case 'marks': setMarks(result.marks); break;
       case 'seek': context.onSeek(result.frame, false); break;
       case 'speed': context.onSpeed?.(result.clips); break;
+      case 'retime': context.onRetime?.(result.clips); break;
       case 'tool': chooseTool(result.tool); break;
       case 'snap': setSnapping(value => !value); break;
       case 'linked': setLinked(value => !value); break;

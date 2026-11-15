@@ -21,7 +21,7 @@ export type EditAction =
   | { kind: 'gain'; delta: -3 | -1 | 1 | 3 }
   | { kind: 'audio-transition' }
   | { kind: 'tool'; tool: Tool }
-  | { kind: 'snap' | 'linked' | 'fit' | 'cancel' | 'speed' | 'enabled' | 'link' | 'transition' | 'blade' }
+  | { kind: 'snap' | 'linked' | 'fit' | 'cancel' | 'speed' | 'retime' | 'enabled' | 'link' | 'transition' | 'blade' }
   /** Lock or unlock a track by its number among those of its kind (V1 is 1), or all tracks of that kind (`number` null). */
   | { kind: 'lock'; tracks: 'video' | 'audio'; number: number | null }
   | { kind: 'history'; method: 'history.undo' | 'history.redo' }
@@ -55,6 +55,8 @@ export function editKey(key: Key): EditAction | null {
     if (key.shift) return null;
     if (value === 'b' || value === '\\') return { kind: 'blade' };
     if (value === 't') return { kind: 'transition' };
+    // Ctrl+R shows the Retime Controls of the clips chosen, or puts them away (Clip › Retime Controls, Reference Manual 20, p. 1074).
+    if (value === 'r') return { kind: 'retime' };
     return null;
   }
   if (key.alt && key.shift) {
@@ -115,6 +117,8 @@ export type EditResult =
   | { kind: 'seek'; monitor: Monitor; frame: number }
   | { kind: 'marks'; marks: Marks }
   | { kind: 'speed'; clips: string[] }
+  /** Show the Retime Controls of these clips, or put them away: the page keeps which are open. */
+  | { kind: 'retime'; clips: string[] }
   | { kind: 'tool'; tool: Tool }
   | { kind: 'snap' | 'linked' | 'fit' | 'cancel' }
   | { kind: 'zoom'; direction: -1 | 1 }
@@ -308,7 +312,7 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   }
   const chosenTracks = [...new Set(selected.map(id => locations.get(id)!.track.id))];
   // Clips chosen, all of them on locked tracks: an edit of the clips chosen does nothing, and says why.
-  const bySelection = ['delete', 'blade', 'speed', 'enabled', 'link'].includes(action.kind) || (action.kind === 'transition' && !context.cut);
+  const bySelection = ['delete', 'blade', 'speed', 'retime', 'enabled', 'link'].includes(action.kind) || (action.kind === 'transition' && !context.cut);
   if (bySelection && selected.length === 0 && lockedPartners.length > 0) return { kind: 'refused', reason: 'locked' };
   const activeTracks = Object.values(targets).filter((id): id is string => typeof id === 'string');
   if (action.kind === 'quick') {
@@ -385,6 +389,7 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     return { kind: 'seek', monitor: 'timeline', frame: Math.max(0, Math.min(duration(timeline) - 1, next)) };
   }
   if (action.kind === 'speed') return selected.length ? { kind: 'speed', clips: selected } : null;
+  if (action.kind === 'retime') return selected.length ? { kind: 'retime', clips: selected } : null;
   if (action.kind === 'enabled') {
     const enabled = selected.every(id => !locations.get(id)!.clip.enabled);
     return transaction(selected.map(id => ({ op: 'set_clip', timeline: timeline.id, id, enabled })));

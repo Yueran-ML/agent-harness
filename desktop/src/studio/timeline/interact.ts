@@ -2,6 +2,7 @@ import type { Clip, Media, Timeline } from '../engine';
 import type { Change, Edit, Transaction } from './commands';
 import { clipLocations, movableClips, editingPeers, type Located } from './selection';
 import { snap } from './snap';
+import { retimeCourse, type Course } from '../retime';
 
 export type Tool = 'select' | 'trim' | 'blade';
 export type Hit = 'move' | 'trim_in' | 'trim_out' | 'slip' | 'slide' | 'blade' | { kind: 'roll'; left: string; right: string };
@@ -49,12 +50,68 @@ export function beginDrag(timeline: Timeline, revision: number, selection: reado
   return { timeline, revision, ids, clip: id, action, origin, linked, rippleTrim, locations, lockedPartners };
 }
 
-function handles(clip: Clip, timeline: Timeline, media: readonly Media[]): { before: number; after: number } {
+/** The most frames from 0 on that `fits` holds for, where it holds for every count below one that it holds for; `Infinity` where it never fails. */
+function most(fits: (frames: number) => boolean): number {
+  if (!fits(1)) return 0;
+  let low = 1;
+  let high = 2;
+  while (fits(high)) {
+    low = high;
+    high *= 2;
+    if (high > 2 ** 40) return Infinity;
+  }
+  while (high - low > 1) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (fits(middle)) low = middle;
+    else high = middle;
+  }
+  return low;
+}
+
+/**
+ * How many frames the head of a clip with speed points may be moved out, and its tail, before it
+ * would show what is not in its media: its first segment goes on before the clip and its last
+ * after it (`Retime::from_frame`, `Retime::with_length`), and what it then shows, from the lowest
+ * place of the path to where the highest ends (`Course::shown`, `Course::reach`), lies within the
+ * media. The engine counts the same, and rounds where the clip then begins to a tick: where a
+ * frame lasts no whole number of ticks this may be a frame more than the engine gives, and the
+ * engine's answer is what is drawn in the end.
+ */
+function retimedRoom(course: Course, begins: { ticks: number; scale: number }, duration: { ticks: number; scale: number }, timeline: Timeline): { before: number; after: number } {
+  const fits = (before: number, after: number) => {
+    const lowest = BigInt(begins.ticks) + course.shown(before, after, timeline.rate, begins.scale)[0];
+    const end = BigInt(begins.ticks) + course.reach(before, after, timeline.rate, begins.scale);
+    return lowest >= 0n && end * BigInt(duration.scale) <= BigInt(duration.ticks) * BigInt(begins.scale);
+  };
+  return { before: most(frames => fits(frames, 0)), after: most(frames => fits(0, frames)) };
+}
+
+/**
+ * The frames of its media that a clip has beyond its ends, at its speed: `before` those before the
+ * place where it begins in its media, `after` those after what it shows (a clip that plays
+ * backward shows them at its other end, which `dragTo` turns round).
+ *
+ * A clip with speed points has no one speed to count them at. For a trim or a roll they are the
+ * frames that its head and its tail may be moved out by (`retimedRoom`), in the order of the
+ * timeline. For a slip (`slipped`), which begins the clip as many frames of its source later at
+ * the speed of the source, they are the frames of the media before the lowest place of its path
+ * and after the highest.
+ */
+function handles(clip: Clip, timeline: Timeline, media: readonly Media[], slipped = false): { before: number; after: number } {
   if (clip.source.kind !== 'media') return { before: Infinity, after: Infinity };
   const source = clip.source;
   const item = media.find(item => item.id === source.media);
   if (item?.facts.video?.still) return { before: Infinity, after: Infinity };
   if (!item) return { before: 0, after: 0 };
+  const course = retimeCourse(clip);
+  if (course && !slipped) return retimedRoom(course, source.in, item.facts.duration, timeline);
+  if (course) {
+    const frame = timeline.rate.den / timeline.rate.num;
+    const begins = source.in.ticks / source.in.scale;
+    const shown = Number(course.span(timeline.rate, source.in.scale)) / source.in.scale;
+    const ends = item.facts.duration.ticks / item.facts.duration.scale;
+    return { before: Math.floor(begins / frame + 1e-8), after: Math.floor((ends - begins - shown) / frame + 1e-8) };
+  }
   const step = timeline.rate.den / timeline.rate.num * clip.speed.num / clip.speed.den;
   const start = source.in.ticks / source.in.scale;
   const end = item.facts.duration.ticks / item.facts.duration.scale;
@@ -146,7 +203,7 @@ export function dragTo(gesture: Gesture, frame: number, options: {
       else clamp(1 - clip.length, Math.min(after, free.after));
     }
   } else if (action === 'slip') {
-    for (const { clip } of moving) { const available = handles(clip, timeline, options.media); clamp(-available.before, available.after); }
+    for (const { clip } of moving) { const available = handles(clip, timeline, options.media, true); clamp(-available.before, available.after); }
   } else if (action === 'slide') clamp(-Math.min(...moving.map(({ clip }) => clip.start)), Infinity);
   else {
     const left = locations.get(action.left)!.clip;

@@ -5,6 +5,7 @@
  * thumbnail say of each. Pure, so that the page and its tests work from the same rules.
  */
 import type { Clip, ClipTrack, Grade, Group, Media, Rate, Timeline } from '../engine';
+import { retimeCourse } from '../retime';
 import { framesOf, rateOf } from '../timecode';
 
 /** A clip of a video track, with its number on the Color page and the track it is on. */
@@ -97,13 +98,20 @@ export function stepClip(shown: readonly ColorClip[], current: ColorClip | null,
 
 /**
  * The frame of its source that a clip shows `offset` frames after its first: the frame of its
- * media, at the media's own rate, through its speed and its direction. Titles and colours have none.
+ * media, at the media's own rate, through its speed and its direction, or along its speed points.
+ * Titles and colours have none.
  */
 export function sourceFrameAt(clip: Clip, offset: number, timelineRate: Rate, media: Media | undefined): number | null {
   if (clip.source.kind !== 'media' || media === undefined) return null;
   const rate = rateOf(media);
   const first = framesOf(clip.source.in, rate);
   const into = Math.max(0, Math.min(clip.length - 1, offset));
+  const course = retimeCourse(clip);
+  if (course) {
+    // The place of the path at the frame, in frames of the timeline's rate above where the clip begins in its media, in frames of the media.
+    const place = Number(course.place(into)) / course.unit;
+    return first + Math.floor(place * (timelineRate.den / timelineRate.num) * (rate.num / rate.den) + 1e-6);
+  }
   const along = clip.reverse ? clip.length - 1 - into : into;
   // Seconds of the timeline, times the speed, in frames of the media.
   const frames = along * (timelineRate.den / timelineRate.num) * (clip.speed.num / clip.speed.den) * (rate.num / rate.den);

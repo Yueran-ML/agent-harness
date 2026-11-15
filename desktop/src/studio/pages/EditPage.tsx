@@ -10,6 +10,7 @@ import { BypassButton, useBypassColor } from '../BypassColor';
 import { Timeline, type TimelineHandle } from '../timeline/Timeline';
 import { useAudioScrubbing } from '../timeline/scrub';
 import { useKeyTracks } from '../timeline/useKeyTracks';
+import { useRetimeControls } from '../timeline/useRetimeControls';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { NewTimeline } from './NewTimeline';
@@ -56,6 +57,10 @@ export const TWO_MONITORS_PX = 1280;
  * A clip of picture whose transform or crop has keys shows them on the timeline, and its Keyframe
  * button opens its keyframe track beneath it (pp. 1108–1111). Which tracks are open is the page's to
  * keep (`useKeyTracks`), not the project's: several may be, and another timeline begins with none.
+ *
+ * Ctrl+R, or Retime Controls of a clip's right-click menu, shows the Retime Controls on the clips
+ * chosen: the speed of each segment, its pop-up menu, and the handles of the speed points
+ * (pp. 1070–1077). Which clips show them is the page's to keep too (`useRetimeControls`).
  *
  * Quick Export, at the right of the bar beside the inspector, opens the export of the timeline
  * shown, with its In and Out points. Ctrl+M is left unbound: in DaVinci Resolve it adds a marker and
@@ -105,6 +110,7 @@ export function EditPage({
   const openCurves = useCallback(() => setCurvesOpen(true), []);
   const closeCurves = useCallback(() => setCurvesOpen(false), []);
   const keyTracks = useKeyTracks(selected, session);
+  const retimeControls = useRetimeControls(selected, session);
   const [stripSelection, setStripSelection] = useState<string[]>([]);
   useEffect(() => setStripSelection([]), [session, selected?.id]);
   const [narrow, setNarrow] = useState(false);
@@ -264,6 +270,7 @@ export function EditPage({
         curvesOpen={curvesOpen}
         onCurves={toggleCurves}
         keyTracks={keyTracks}
+        retimeControls={retimeControls}
       />
       {mixerOpen && selected && <EditMixer key={`${session}/${selected.id}`} bridge={bridge} session={session} revision={revision} timeline={selected}
         frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} selected={stripSelection} onSelect={setStripSelection} />}

@@ -5,6 +5,8 @@ import { useFairlightText } from '../fairlight/words';
 import { channelNames } from '../fairlight/ChannelLanes';
 import { ChannelWaveform } from '../timeline/ChannelWaveform';
 import { Waveforms } from '../timeline/waveforms';
+import { frameAtSource, sourceAtFrame } from '../timeline/audioKeys';
+import { retimeCourse } from '../retime';
 import { AuditionCursor, FileTransport, pointerFraction, useFileAudition } from './FileAudition';
 
 export function useFileWaveforms(bridge: Pick<EngineBridge, 'call' | 'onEvent'>, session: number) {
@@ -31,7 +33,13 @@ export function FileWaveforms({ bridge, session, clip, track, media, timeline, s
 }) {
   const t = useFairlightText(), { box, width, waves } = useFileWaveforms(bridge, session);
   const start = clip.source.kind === 'media' ? clip.source.in.ticks / clip.source.in.scale : 0;
-  const end = start + clip.length * timeline.rate.den / timeline.rate.num * clip.speed.num / clip.speed.den;
+  // A clip with speed points shows its media from where it begins in it, the lowest place of their path, to the highest.
+  const course = retimeCourse(clip);
+  const end = course ? start + Number(course.highest) / course.unit * timeline.rate.den / timeline.rate.num
+    : start + clip.length * timeline.rate.den / timeline.rate.num * clip.speed.num / clip.speed.den;
+  // The time of the source under a pointer so far along the lane, which is as long as the clip: along the speed points, where the clip has them.
+  const sourceAt = (fraction: number) => (course ? sourceAtFrame(clip, timeline.rate, clip.start + fraction * clip.length)
+    : start + (clip.reverse ? 1 - fraction : fraction) * (end - start));
   const available = !unapplied && clip.source.kind === 'media' && media?.facts.audio !== undefined && media?.facts.audio !== null;
   const limit = media ? media.facts.duration.ticks / media.facts.duration.scale : end;
   const audition = useFileAudition(bridge, session, { kind: 'clip', timeline: timeline.id, clip: clip.id }, Math.max(0, start), Math.min(end, limit), !available);
@@ -45,17 +53,19 @@ export function FileWaveforms({ bridge, session, clip, track, media, timeline, s
           // Enter or Space on the lane has no pointer position: keep the current one.
           if (event.detail === 0) { audition.locate(audition.position, index); return; }
           const fraction = pointerFraction(event);
-          if (fraction !== null) audition.locate(start + (clip.reverse ? 1 - fraction : fraction) * (end - start), index);
+          if (fraction !== null) audition.locate(sourceAt(fraction), index);
         }
       }} onPointerMove={event => {
         if (!available || event.buttons || event.ctrlKey || event.metaKey || event.shiftKey || event.pointerType === 'touch') return;
         const fraction = pointerFraction(event);
-        if (fraction !== null) audition.skim(start + (clip.reverse ? 1 - fraction : fraction) * (end - start), index);
+        if (fraction !== null) audition.skim(sourceAt(fraction), index);
       }} onPointerLeave={audition.leave}>
       <span className="file-channel-name">{name}</span>
       {width > 0 && <ChannelWaveform clip={clip} track={track} media={media} index={index} rate={timeline.rate}
         from={clip.start} to={clip.start + clip.length} scale={width / Math.max(1, clip.length)} waves={waves} />}
-      <AuditionCursor position={audition.position} start={start} end={end} reverse={clip.reverse} />
+      {/* With speed points the cursor is at the first frame of the clip that reads the time auditioned. */}
+      {course ? <AuditionCursor position={frameAtSource(clip, timeline.rate, audition.position)} start={clip.start} end={clip.start + clip.length} />
+        : <AuditionCursor position={audition.position} start={start} end={end} reverse={clip.reverse} />}
     </button>)}
     <FileTransport audition={audition} disabled={!available || Math.min(end, limit) <= Math.max(0, start)} />
     {unapplied && <p role="status">{t('Apply channel changes before auditioning them.')}</p>}

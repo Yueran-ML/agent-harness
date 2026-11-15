@@ -1,9 +1,10 @@
 import { memo, useCallback, useDeferredValue, useMemo, useSyncExternalStore } from 'react';
 import { useWords } from '../../app/locale';
 import type { ChannelSource, Clip, Rate } from '../engine';
+import { retimeCourse } from '../retime';
 import type { PeakData, Waveforms } from './waveforms';
 
-export type WaveClip = Pick<Clip, 'start' | 'length' | 'source' | 'speed' | 'reverse'>;
+export type WaveClip = Pick<Clip, 'start' | 'length' | 'source' | 'speed' | 'reverse' | 'retime'>;
 
 /** How wide a tile of a waveform is, in CSS pixels. */
 export const TILE = 512;
@@ -23,6 +24,41 @@ function paths(data: PeakData, clip: WaveClip, rate: Rate, from: number, to: num
     const into = Math.max(0, Math.min(clip.length, frame - clip.start));
     return (clip.reverse ? begins + (clip.length - into) * step : begins + into * step) * data.rate;
   };
+  // A clip with speed points sounds along their path, a piece for each segment that plays: a column
+  // of pixels shows what those of its frames read that are of such a segment, and nothing where the
+  // clip holds one picture, which is silent.
+  const parts = retimeCourse(clip)?.parts();
+  if (parts) {
+    const seconds = rate.den / rate.num;
+    const lows = new Array<number>(data.channels);
+    const highs = new Array<number>(data.channels);
+    for (let column = 0; column < columns; column++) {
+      const first = Math.max(0, Math.min(clip.length, from + (to - from) * column / columns - clip.start));
+      const last = Math.max(0, Math.min(clip.length, from + (to - from) * (column + 1) / columns - clip.start));
+      let sounds = false;
+      for (const part of parts) {
+        const starts = Math.max(first, part.from);
+        const ends = Math.min(last, part.to);
+        if (part.step === 0 || ends <= starts) continue;
+        let a = (begins + (part.at + part.step * (starts - part.from)) * seconds) * data.rate;
+        let b = (begins + (part.at + part.step * (ends - part.from)) * seconds) * data.rate;
+        if (a > b) [a, b] = [b, a];
+        for (let channel = 0; channel < data.channels; channel++) {
+          data.extent(a, b, channel, extent);
+          lows[channel] = sounds ? Math.min(lows[channel], extent[0]) : extent[0];
+          highs[channel] = sounds ? Math.max(highs[channel], extent[1]) : extent[1];
+        }
+        sounds = true;
+      }
+      if (!sounds) continue;
+      const x = tenth((column + 0.5) * width / columns);
+      for (let channel = 0; channel < data.channels; channel++) {
+        const center = (channel + 0.5) * 60 / data.channels + 2;
+        shapes[channel] += `M${x},${tenth(center - highs[channel] / 127 * half)}V${tenth(center - lows[channel] / 127 * half)}`;
+      }
+    }
+    return shapes;
+  }
   for (let column = 0; column < columns; column++) {
     let a = bin(from + (to - from) * column / columns);
     let b = bin(from + (to - from) * (column + 1) / columns);

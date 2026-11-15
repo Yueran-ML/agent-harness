@@ -31,7 +31,7 @@ import { Palettes, type CenterPalette, type LeftPalette, type RightPanel } from 
 import { useColorScopes } from '../color/Scopes';
 import { ThumbnailTimeline } from '../color/ThumbnailTimeline';
 import { placeOf, type EditedNode } from '../color/useNodeEdit';
-import { keyClockOf } from '../color/keyFrames';
+import { keyClockOf, keyRunsOf } from '../color/keyFrames';
 import { makeDefaultNode } from '../color/nodeEdits';
 import { refusalText } from '../inspector/refusal';
 import { useColorGallery } from '../color/Gallery';
@@ -255,7 +255,7 @@ export function ColorPage({
   const clockMedia = current?.clip.source.kind === 'media' ? mediaById.get(current.clip.source.media) : undefined;
   const clock = current && selected ? keyClockOf(current.clip, selected.rate, clockMedia) : undefined;
   const clockInputs = JSON.stringify([selected?.rate, current?.clip.start, current?.clip.length, current?.clip.source,
-    current?.clip.speed, current?.clip.reverse, clockMedia?.facts.video?.rate, clockMedia?.facts.video?.still, clockMedia?.facts.duration]);
+    current?.clip.speed, current?.clip.reverse, current?.clip.retime ?? null, clockMedia?.facts.video?.rate, clockMedia?.facts.video?.still, clockMedia?.facts.duration]);
   const placed = placeOf(shownLevel, selected?.id ?? null, current?.clip ?? null, frame ?? 0, clock);
   const editedNode = shownGrade?.nodes.find(node => node.id === currentNode) ?? null;
   const defaultNode = grades.defaultNode;
@@ -275,7 +275,9 @@ export function ColorPage({
     if (selected === null) return null;
     if (shownLevel === 'timeline') return { first: 0, last: Math.max(timelineEnd, 1) - 1, clock: TIMELINE_CLOCK };
     if (!current) return null;
-    return { first: current.clip.start, last: current.clip.start + Math.max(current.clip.length, 1) - 1, clock: keyClockOf(current.clip, selected.rate, clockMedia) };
+    // A clip with speed points shows its keys along them: its clock goes one way along each segment only.
+    const runs = keyRunsOf(current.clip);
+    return { first: current.clip.start, last: current.clip.start + Math.max(current.clip.length, 1) - 1, clock: keyClockOf(current.clip, selected.rate, clockMedia), ...(runs ? { runs } : {}) };
   }, [shownLevel, timelineEnd, clockInputs, selected === null, current === null]);
   const seekTo = useCallback((to: number) => timelineMonitor.seek(to, false), [timelineMonitor.seek]);
   const keyframes = useKeyframeEditing({ grade: shownGrade, target: grades.target, gradeKey, current: currentNode, span: keySpan, frame,

@@ -11,15 +11,17 @@
  * has its playhead go from right to left.
  */
 import { ticksOf } from '../keyframes/curveGeometry';
-import type { KeyClock } from './keyFrames';
+import { firstShowing, keyRangeOf, type KeyClock, type KeyRun } from './keyFrames';
 import { easeShare, type KeyKind, type KeyTrack } from './nodeKeys';
 
 /**
  * Where a grade is shown: the frames of the timeline from `first` to `last`, both shown, and the
  * clock of its keys there. A clip's grade and its group's are shown over the clip, with its clock;
- * the timeline's over the whole timeline, whose frames its keys count.
+ * the timeline's over the whole timeline, whose frames its keys count. The clock goes one way along
+ * the span, unless it is that of a clip with speed points: then `runs` are the stretches of the span
+ * along each of which it goes one way (`keyRunsOf`).
  */
-export interface KeySpan { first: number; last: number; clock: KeyClock }
+export interface KeySpan { first: number; last: number; clock: KeyClock; runs?: readonly KeyRun[] }
 
 /** The clock of the keys of a timeline's grade: its own frames. */
 export const TIMELINE_CLOCK: KeyClock = frame => frame;
@@ -31,6 +33,7 @@ export function keyFrameAt(span: KeySpan, frame: number): number {
 
 /** The frames of keys that a span shows, least and greatest. */
 export function keyRange(span: KeySpan): [number, number] {
+  if (span.runs) return keyRangeOf(span.clock, span.runs);
   const ends = [span.clock(span.first), span.clock(span.last)];
   return [Math.min(...ends), Math.max(...ends)];
 }
@@ -39,10 +42,16 @@ export function keyRange(span: KeySpan): [number, number] {
  * The frame of the timeline at which a span shows a frame of keys: the first that has come to it,
  * through speed and direction (as `frameOfKey` finds it for a clip). The clock goes one way along
  * the span, so it is found by halving. A frame before those that are shown is at the first frame
- * (the last, where the clip plays backward), and one after them at the last (the first).
+ * (the last, where the clip plays backward), and one after them at the last (the first). Along the
+ * speed points of a clip it is the first frame of the first run that comes by it (`firstShowing`).
  */
 export function timelineFrameOf(span: KeySpan, keyFrame: number): number {
   if (span.last <= span.first) return span.first;
+  if (span.runs) {
+    // A clip with speed points: the first frame that shows the frame of keys, one out of what is shown held to the nearest that is.
+    const [low, high] = keyRangeOf(span.clock, span.runs);
+    return firstShowing(span.clock, span.runs, Math.min(Math.max(keyFrame, low), high)) ?? span.first;
+  }
   const rising = span.clock(span.last) >= span.clock(span.first);
   let from = span.first;
   let to = span.last;

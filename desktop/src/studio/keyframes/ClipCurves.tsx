@@ -2,7 +2,7 @@ import { useRef, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { keyClockOf } from '../color/keyFrames';
+import { keyClockOf, shownKeyRange } from '../color/keyFrames';
 import { CLIP_KEYED, type Clip, type ClipKeyed, type Media, type Param, type Timeline } from '../engine';
 import { CLIP_BOUNDS, CLIP_SETTINGS, frameOfKey, keyFrameOf, keyOps, mediaOf, paramOf, settingNames } from '../inspector/clipKeys';
 import { refusalOf } from '../inspector/refusal';
@@ -98,8 +98,8 @@ function Curves({ bridge, session, revision, timeline, media, clip, locked, fram
     id: path, label: names[path], color: COLORS[path], param: paramOf(clip, path), bounds: CLIP_BOUNDS[path], display: displays[path],
   }));
   const clock = keyClockOf(clip, timeline.rate, mediaOf(clip, media));
-  const ends = [clock(clip.start), clock(clip.start + Math.max(clip.length, 1) - 1)];
-  const range: [number, number] = [Math.min(...ends), Math.max(...ends)];
+  // The frames of keys that the clip shows: with speed points, from the lowest picture of their path to the highest.
+  const range = shownKeyRange(clip, clock);
   const source = clip.source;
   const name = source.kind === 'media' ? mediaOf(clip, media)?.name ?? source.media : source.kind === 'title' ? source.text : words.label.studio.timeline.color;
 

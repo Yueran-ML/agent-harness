@@ -8,6 +8,7 @@ import { audioValue, frameAtSource, keyTime, seconds, sourceAtFrame, sourceSampl
 import type { AudioGesture } from './useAudioGesture';
 import type { Change } from './commands';
 import type { Marks } from './snap';
+import { backwardAt } from '../retime';
 import { useFairlightText } from '../fairlight/words';
 
 export interface AudioClipboard { keys: CopiedAudioKey[] }
@@ -152,7 +153,9 @@ export function VolumeLine({ clip, timeline, rate, scale, height, sampleRate, sn
     event.preventDefault(); event.stopPropagation();
     if (key === 'escape') { finish(true); setMenu(null); return; }
     if (key === '[' || key === ']') {
-      const ordered = keys.map(each => ({ at: keyId(each), frame: frameAtSource(clip, rate, keyId(each)) })).sort((a, b) => a.frame - b.frame);
+      // A key of a time that a clip with speed points never comes by is nowhere on the clip to go to.
+      const ordered = keys.map(each => ({ at: keyId(each), frame: frameAtSource(clip, rate, keyId(each)) }))
+        .filter(each => !clip.retime || (each.frame >= clip.start && each.frame <= clip.start + clip.length)).sort((a, b) => a.frame - b.frame);
       const index = navigation.current ? ordered.findIndex(each => each.at === navigation.current!.at) : -1;
       const target = index >= 0 ? ordered[index + (key === '[' ? -1 : 1)]
         : key === '[' ? ordered.filter(each => each.frame < frame - 1e-8).at(-1) : ordered.find(each => each.frame > frame + 1e-8);
@@ -167,7 +170,9 @@ export function VolumeLine({ clip, timeline, rate, scale, height, sampleRate, sn
     const chosen = keys.filter(each => selected.includes(keyId(each)));
     if (ctrl && (key === 'c' || key === 'x') && chosen.length) {
       const ordered = chosen.map(each => ({ ...each, frame: frameAtSource(clip, rate, seconds(each.at)) })).sort((a, b) => a.frame - b.frame);
-      clipboard.keys = ordered.map(each => ({ offset: (each.frame - ordered[0].frame) * rate.den / rate.num, value: each.value, interp: clip.reverse ? mirrored(each.interp ?? 'linear') : each.interp }));
+      // Where the clip plays backward the keys are passed the other way: with speed points, where the segment that a key is in does.
+      clipboard.keys = ordered.map(each => ({ offset: (each.frame - ordered[0].frame) * rate.den / rate.num, value: each.value,
+        interp: backwardAt(clip, each.frame - clip.start) ? mirrored(each.interp ?? 'linear') : each.interp }));
     }
     if (locked || gesture.active()) return;
     if (key === 'backspace' || key === 'delete' || (ctrl && key === 'x')) {
@@ -176,7 +181,8 @@ export function VolumeLine({ clip, timeline, rate, scale, height, sampleRate, sn
       const pasted = clipboard.keys.map(each => ({ ...each, frame: frame + each.offset * rate.num / rate.den }));
       if (pasted.some(each => each.frame < clip.start || each.frame > clip.start + clip.length)) return;
       const additions = pasted.map(each => ({ edit: 'clip_gain_keys' as const, timeline, clip: clip.id, action: 'add' as const,
-        at: keyTime(clip, rate, each.frame, sampleRate, false), value: each.value, interp: clip.reverse ? mirrored(each.interp ?? 'linear') : each.interp }));
+        at: keyTime(clip, rate, each.frame, sampleRate, false), value: each.value,
+        interp: backwardAt(clip, each.frame - clip.start) ? mirrored(each.interp ?? 'linear') : each.interp }));
       gesture.commit(additions); setSelected(additions.map(each => seconds(each.at)));
     }
   };

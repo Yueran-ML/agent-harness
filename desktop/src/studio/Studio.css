@@ -1112,6 +1112,173 @@
   white-space: nowrap;
 }
 
+/* --- The Retime Controls of a clip, laid over it: the speed of each segment, arrows that go its way, and a handle at each speed point. */
+.retime-bar {
+  position: absolute;
+  /* Over the lanes, under the headers of the tracks and the playhead, as a keyframe track is. */
+  z-index: 2;
+  /* At the frames of its clip (--start, --length), times the pixels of a frame, past the headers of the tracks (--header). */
+  left: calc((var(--header) + var(--start) * var(--scale)) * 1px);
+  width: calc(var(--length) * var(--scale) * 1px);
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 3px;
+  outline: none;
+  /* The clip beneath is pressed and dragged through it: only its buttons and its handles take the pointer. */
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+}
+
+.retime-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* At its frames of the clip (--from, --frames). */
+  left: calc(var(--from) * var(--scale) * 1px);
+  width: calc(var(--frames) * var(--scale) * 1px);
+  box-sizing: border-box;
+  overflow: hidden;
+  /* As the source is; another speed is marked, and a freeze. */
+  color: var(--accent);
+}
+
+.retime-segment[data-changed] {
+  color: var(--warn);
+}
+
+.retime-segment[data-way='freeze'] {
+  color: var(--bad);
+}
+
+.retime-arrows {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 19px;
+  height: 9px;
+  background: currentColor;
+  /* One arrow every --gap pixels: nearer each other the faster the segment plays. */
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Cpath d='M2 1l4 3.5L2 8' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E") 0 50% / calc(var(--gap) * 1px) 9px repeat-x;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Cpath d='M2 1l4 3.5L2 8' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E") 0 50% / calc(var(--gap) * 1px) 9px repeat-x;
+}
+
+.retime-segment[data-way='backward'] .retime-arrows {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Cpath d='M6 1L2 4.5L6 8' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Cpath d='M6 1L2 4.5L6 8' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E");
+}
+
+/* A freeze goes nowhere: bars, as near each other as the arrows of the source's own speed. */
+.retime-segment[data-way='freeze'] .retime-arrows {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Cpath d='M4 1v7' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Cpath d='M4 1v7' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E");
+}
+
+.retime-speed {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  max-width: 100%;
+  transform: translateX(-50%);
+  padding: 0 4px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--ink-0);
+  color: inherit;
+  font-size: 10px;
+  line-height: 14px;
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.retime-speed:focus-visible,
+.retime-close:focus-visible {
+  outline: 1px solid var(--focus);
+}
+
+/* A speed point: a line down the clip at its frame (--at), with a handle at its upper end and one at its lower. */
+.retime-point {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--at) * var(--scale) * 1px);
+  width: 0;
+  border-left: 1px solid var(--moon-0);
+}
+
+.retime-handle {
+  position: absolute;
+  left: -5px;
+  width: 9px;
+  height: 12px;
+  padding: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--ink-0);
+  border-radius: 2px;
+  background: var(--moon-0);
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.retime-handle[data-retime-handle='upper'] {
+  top: 0;
+}
+
+.retime-handle[data-retime-handle='lower'] {
+  bottom: 0;
+  background: var(--warn);
+}
+
+/* The handle at the end of the clip is whole within it. */
+.retime-point[data-end] {
+  border-left: 0;
+}
+
+.retime-point[data-end] .retime-handle {
+  left: -9px;
+}
+
+.retime-handle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.retime-close {
+  position: absolute;
+  top: 2px;
+  /* Beside the Keyframe button of the clip, which is at its corner. */
+  right: 20px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 3px;
+  background: var(--ink-0);
+  color: var(--moon-1);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.retime-tip {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--ink-0);
+  color: var(--moon-0);
+  font-size: 10px;
+  line-height: 14px;
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* A studio too narrow for anything beside the monitor stacks the pool above it. */
 @container studio (max-width: 760px) {
   .edit-page {

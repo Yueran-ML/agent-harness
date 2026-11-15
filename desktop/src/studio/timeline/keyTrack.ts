@@ -6,14 +6,15 @@
  *
  * A key is at a frame of the keys (`Keyframe.frame`: a picture of the clip's media, or a frame of
  * the clip itself), and is shown at the frame of the timeline at which the clip shows that picture
- * (`keyTimes`, `frameOfKey`), through the clip's speed and direction. A key of a picture that the
+ * (`keyTimes`, `frameOfKey`), through the clip's speed and direction, or along its speed points:
+ * the first frame that shows it, where the clip holds the picture or comes back to it. A key of a picture that the
  * clip does not show is still there and is not drawn (p. 1114). The arithmetic of the keys is that of
  * the Curve Editor (`../keyframes/curveGeometry`): only what several settings do together is here.
  *
  * A key that is chosen is known by its setting and its frame (`keyId`), so it stays chosen where
  * other keys come and go, and one that is gone is chosen no longer.
  */
-import { keyClockOf } from '../color/keyFrames';
+import { keyClockOf, shownKeyRange } from '../color/keyFrames';
 import type { Clip, ClipKeyed, Keyframe, Media, Param, Timeline } from '../engine';
 import { CLIP_SETTINGS, frameOfKey, hasKeys, keyTimes, mediaOf, paramOf } from '../inspector/clipKeys';
 import { copyKeys, deleteKeys, moveKeys, pasteKeys, spliceOf, type CopiedKey, type Range } from '../keyframes/curveGeometry';
@@ -68,10 +69,8 @@ export function keyRows(clip: Clip, timeline: Pick<Timeline, 'rate'>, media: rea
   const settings = keyedSettings(clip);
   if (clip.length <= 0) return settings.map(path => ({ path, keys: [] }));
   const clock = keyClockOf(clip, timeline.rate, mediaOf(clip, media));
-  const first = clock(clip.start);
-  const last = clock(clip.start + clip.length - 1);
-  const low = Math.min(first, last);
-  const high = Math.max(first, last);
+  // The pictures that the clip shows, which one with speed points may show anywhere between its ends.
+  const [low, high] = shownKeyRange(clip, clock);
   return settings.map((path) => {
     const param = paramOf(clip, path);
     const keys = live?.get(path) ?? (typeof param === 'number' ? [] : param.keys);

@@ -28,6 +28,10 @@ export const percentOf = (speed: Speed) => Number(((speed.num / speed.den) * 100
  * The edits that change the speed of the clips chosen, in one transaction: a group of linked clips
  * all chosen changes as one (`linked`), a clip chosen without its partners alone. Titles and solid
  * colours have no speed, and are left out.
+ *
+ * A clip with speed points has no one speed, and the engine refuses `set_speed` for it and for the
+ * clips linked to it (`retimed`): it is put back to the speed of its source first (`reset_speed`),
+ * its speed points cleared, and then given the speed, in the same transaction.
  */
 export function speedEdits(timeline: Timeline, ids: readonly string[], speed: Speed, reverse: boolean | undefined, ripple: boolean): Edit[] {
   const locations = clipLocations(timeline);
@@ -42,6 +46,8 @@ export function speedEdits(timeline: Timeline, ids: readonly string[], speed: Sp
     const whole = clip.link !== null && (groups.get(clip.link) ?? []).every(member => chosen.has(member));
     if (whole && done.has(clip.link!)) continue;
     if (whole) done.add(clip.link!);
+    const members = whole ? groups.get(clip.link!) ?? [id] : [id];
+    if (members.some(member => locations.get(member)?.clip.retime)) edits.push({ edit: 'reset_speed', timeline: timeline.id, clip: id, ripple, linked: whole });
     edits.push({ edit: 'set_speed', timeline: timeline.id, clip: id, speed, ...(reverse === undefined ? {} : { reverse }), ripple, linked: whole });
   }
   return edits;
@@ -51,6 +57,11 @@ export function speedEdits(timeline: Timeline, ids: readonly string[], speed: Sp
  * DaVinci Resolve's Change Clip Speed, opened with R or from the inspector: the speed in percent,
  * whether the clips play backward, and whether what follows moves with their ends (Ripple
  * Sequence). It lies over the page, so the views of both monitors are hidden while it is open.
+ *
+ * A clip with speed points has no one speed to show: the field is empty for it, the dialog says
+ * that changing its speed here clears its speed points, and a speed or a direction that is given
+ * does so (see `speedEdits`). Its segments are changed one by one with the Retime Controls of the
+ * timeline.
  */
 export function SpeedDialog({ clips: ids, timeline, bridge, session, revision, onClose }: {
   clips: readonly string[]; timeline: Timeline; bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; onClose: () => void;
@@ -61,8 +72,9 @@ export function SpeedDialog({ clips: ids, timeline, bridge, session, revision, o
   const hints = words.hint.studio.inspector;
   const locations = clipLocations(timeline);
   const clips = ids.flatMap(id => { const found = locations.get(id); return found && !found.track.locked && found.clip.source.kind === 'media' ? [found.clip] : []; });
-  const was = common(clips, clip => percentOf(clip.speed));
-  const wasReverse = common(clips, clip => clip.reverse);
+  const retimed = clips.some(clip => clip.retime);
+  const was = common(clips, clip => (clip.retime ? null : percentOf(clip.speed)));
+  const wasReverse = common(clips, clip => (clip.retime ? null : clip.reverse));
   const [percent, setPercent] = useState(was === null ? '' : String(was));
   const [reverse, setReverse] = useState<boolean | null>(wasReverse);
   const [ripple, setRipple] = useState(true);
@@ -79,7 +91,7 @@ export function SpeedDialog({ clips: ids, timeline, bridge, session, revision, o
   const validPercent = percent.trim() !== '' && Number.isFinite(value) && value >= SLOWEST && value <= FASTEST;
   const valid = !speedChanged || validPercent;
   const first = clips[0];
-  const length = validPercent && first ? Math.max(1, Math.round(first.length * (first.speed.num / first.speed.den) / (value / 100))) : null;
+  const length = validPercent && first && !first.retime ? Math.max(1, Math.round(first.length * (first.speed.num / first.speed.den) / (value / 100))) : null;
   const warning = clips.some(clip => (correctionChanged ? correction : clip.pitch_correction) && (() => {
     const percent = speedChanged && validPercent ? value : percentOf(clip.speed); return percent < 50 || percent > 200;
   })());
@@ -109,6 +121,7 @@ export function SpeedDialog({ clips: ids, timeline, bridge, session, revision, o
           <span aria-hidden="true">%</span>
         </span>
         {percent.trim() !== '' && !valid && <p className="caption" role="alert">{hints.speedRange}</p>}
+        {retimed && <p className="caption" role="note" data-test="speed-retimed">{t('This clip has speed points. Changing its speed here clears them.')}</p>}
         {length !== null && clips.length === 1 && <p className="mono caption" data-test="speed-duration">{labels.duration} {timecode(length, timeline.rate)}</p>}
         <label className="speed-check"><input ref={box} type="checkbox" checked={reverse === true} onChange={event => { setReverse(event.target.checked); setReverseChanged(true); }} />{labels.reverse}</label>
         <label className="speed-check"><input type="checkbox" checked={ripple} onChange={event => setRipple(event.target.checked)} />{labels.ripple}</label>

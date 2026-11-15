@@ -27,6 +27,10 @@ import { AudioPlayhead, type AudioOverlayContext } from './AudioOverlay';
 import { ClipKeyTracks, type ClipKeyTracksContext, type KeyTracksState } from './ClipKeyMarks';
 import { KeyframeTracks } from './KeyframeTracks';
 import { keyTrackHeights, type KeyTrackClipboard } from './keyTrack';
+import { RetimeBars } from './RetimeBars';
+import type { RetimeControlsState } from './useRetimeControls';
+import { clipLocations } from './selection';
+import { useFairlightText } from '../fairlight/words';
 import './timeline.css';
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
@@ -48,7 +52,7 @@ export interface TimelineViewport { scale: number; left: number; top: number; he
 export type TimelineScrolling = 'fixed' | 'page' | 'none';
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
   cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling, trackMenuItems,
-  headerDetail, renameOnClick = false, lockedHeights, groupResize = false, onMarks, curvesOpen = false, onCurves, keyTracks }: {
+  headerDetail, renameOnClick = false, lockedHeights, groupResize = false, onMarks, curvesOpen = false, onCurves, keyTracks, retimeControls }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -107,6 +111,14 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
    * the page keeps (`useKeyTracks`). Left out, no clip shows keys and nothing is mounted for them.
    */
   keyTracks?: KeyTracksState;
+  /**
+   * The Retime Controls of clips (the Edit page): given, Ctrl+R and Retime Controls of a clip's
+   * right-click menu show them on the clips chosen or put them away, and they are laid over the
+   * clips that they are open on (`RetimeBars`; Reference Manual 20, pp. 1070–1077). `open` are
+   * those clips, which the page keeps (`useRetimeControls`). Left out, or with none open, nothing
+   * is mounted for them.
+   */
+  retimeControls?: RetimeControlsState;
   onTrackSelect?: (track: string) => void;
   /** View-only selection shared with the mixer; it does not change edit destination tracks. */
   selectedTracks?: readonly string[];
@@ -119,6 +131,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
 }) {
   const words = useWords();
   const labels = words.label.studio.timeline;
+  const t = useFairlightText();
   const root = useRef<HTMLElement>(null);
   const audioClipboard = useRef<AudioClipboard>({ keys: [] });
   useEffect(() => { audioClipboard.current.keys = []; }, [session]);
@@ -268,7 +281,15 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     setView(old => { const left = Math.max(0, Math.round(shown * old.scale - old.width / 2)); return old.left === left ? old : { ...old, left }; });
   }, [center, scrolling, dragging, shown, view.scale, view.width, setView]);
   useEffect(() => { onView?.(view); }, [view, onView]);
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, onCopyClips, cut, audioOnlyDrop });
+  const openRetime = retimeControls?.open;
+  const toggleRetime = retimeControls?.onToggle;
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onRetime: toggleRetime, onSelection, onTransition, onCue, onCopyClips, cut, audioOnlyDrop });
+  // The commands of a clip's right-click menu: those of the clipboard and, on a page that has them, the Retime Controls of a clip of media.
+  const clipItems = (clip?: string): TrackMenu['items'] => {
+    const items = editing.clipboard.items(clip);
+    if (!clip || !timeline || !toggleRetime || clipLocations(timeline).get(clip)?.clip.source.kind !== 'media') return items;
+    return [...items, { id: 'retime-controls', label: t('Retime Controls'), run: () => toggleRetime([clip]) }];
+  };
   const clipboardMenu = useRef(editing.clipboard.items); clipboardMenu.current = editing.clipboard.items;
   const openEditMenu = useCallback((anchor: HTMLElement) => {
     const button = anchor.getBoundingClientRect();
@@ -279,7 +300,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     bridge, timeline: timeline.id, revision, session, sampleRate: timeline.sample_rate,
     snapping: editing.snapping, marks: editing.marks, clipboard: audioClipboard.current, gainLine, onSeek, onFailure: audioFailure,
   } : undefined, [bridge, timeline?.id, timeline?.sample_rate, revision, session, editing.snapping, editing.marks, gainLine, onSeek, audioFailure]);
-  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks, clipboardItems: editing.clipboard.items }));
+  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks, clipboardItems: clipItems }));
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;
@@ -423,7 +444,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
         return;
       }
       const items: TrackMenu['items'] = header ? [addTrack]
-        : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!, clicked) }] : editing.clipboard.items(clip);
+        : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!, clicked) }] : clipItems(clip);
       if (items.length === 0) return;
       event.preventDefault();
       if (track.dataset.kind !== 'subtitle' && !event.target.closest('.timeline-track-header')) {
@@ -461,6 +482,9 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
         {ghostViews}
         {openKeyTracks && openKeyTracks.length > 0 && <KeyframeTracks bridge={bridge} session={session} revision={revision} timeline={timeline} media={media}
           open={openKeyTracks} rows={rows} scale={view.scale} playhead={playheadNow} clipboard={keyClipboard.current} />}
+        {openRetime && openRetime.length > 0 && toggleRetime && <RetimeBars bridge={bridge} session={session} revision={revision} timeline={timeline}
+          open={openRetime} rows={rows} playhead={playheadNow} ripple={editing.tool === 'trim'} linked={editing.linked} apply={editing.apply}
+          onToggle={toggleRetime} onFailure={audioFailure} />}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`covered-${item.id}`} className="timeline-covered" data-covered={item.id}

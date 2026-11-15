@@ -1,14 +1,26 @@
 import type { AudioKey, AudioParam, Clip, Rate, Time } from '../engine';
 import { sourceInterval } from './waveforms';
 import { clamp } from '../audio/taper';
+import { retimeCourse } from '../retime';
 export const seconds = (time: Time) => time.ticks / time.scale;
 export const sampleTime = (time: number, rate: number): Time => ({ ticks: Math.round(time * rate), scale: rate });
-/** sourceInterval supplies the existing speed/reverse mapping, including its source-in offset. */
+/** sourceInterval supplies the existing speed/reverse mapping, including its source-in offset, and the path of a clip with speed points. */
 export function sourceAtFrame(clip: Clip, rate: Rate, frame: number): number {
   return sourceInterval(clip, rate, frame, frame)[0];
 }
+/**
+ * The frame of the timeline at which a clip reads the time `source` of its media, which need not
+ * be a whole frame. A clip with speed points may come by a time more than once, or hold it through
+ * a freeze: this is the first frame at which a segment that plays reads it. A time that the clip
+ * never comes by is before its first frame, where nothing of the clip is drawn.
+ */
 export function frameAtSource(clip: Clip, rate: Rate, source: number): number {
   const start = clip.source.kind === 'media' ? seconds(clip.source.in) : 0;
+  const course = retimeCourse(clip);
+  if (course) {
+    const frames = course.framesAt((source - start) / (rate.den / rate.num));
+    return frames.length > 0 ? clip.start + frames[0] : clip.start - 1;
+  }
   const offset = (source - start) / (rate.den / rate.num * clip.speed.num / clip.speed.den);
   return clip.start + (clip.reverse ? clip.length - offset : offset);
 }
@@ -17,7 +29,10 @@ export function frameAtSource(clip: Clip, rate: Rate, source: number): number {
 export function sourceSampleBounds(clip: Clip, rate: Rate, sampleRate: number): [number, number] {
   const origin = clip.source.kind === 'media' ? clip.source.in : { ticks: 0, scale: 1 };
   const scale = BigInt(origin.scale), samples = BigInt(sampleRate);
-  const span = BigInt(clip.length) * BigInt(rate.den) * BigInt(clip.speed.num) * scale / (BigInt(rate.num) * BigInt(clip.speed.den));
+  // With speed points the clip shows from the lowest place of their path, where it begins in its media, to the highest (`span::source_span`).
+  const course = retimeCourse(clip);
+  const span = course ? course.span(rate, origin.scale)
+    : BigInt(clip.length) * BigInt(rate.den) * BigInt(clip.speed.num) * scale / (BigInt(rate.num) * BigInt(clip.speed.den));
   const low = BigInt(origin.ticks) * samples, high = (BigInt(origin.ticks) + span) * samples;
   return [Number(low / scale + (low % scale > 0n ? 1n : 0n)), Number(high / scale - (high % scale < 0n ? 1n : 0n))];
 }

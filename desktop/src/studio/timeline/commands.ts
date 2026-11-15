@@ -43,6 +43,21 @@ export type Edit = { timeline: string } & (
   | { edit: 'remove_transition'; id: string }
   | { edit: 'set_transition'; id: string; kind?: TransitionKind; length?: number; align?: Alignment; fade_in_level_db?: CrossfadeLevel; fade_out_level_db?: CrossfadeLevel }
   | { edit: 'set_speed'; clip: string; speed: Speed; reverse?: boolean; ripple: boolean; linked: boolean }
+  // The edits of the Retime Controls (PROTOCOL.md, Edits; Reference Manual 20, pp. 1070–1082). `at` is a
+  // frame of the clip, counted from its first. With `linked`, the clips linked to it take the change at
+  // the same frame of the timeline; with `ripple`, what follows moves with the end of the clip.
+  /** A speed point at frame `at`: the segment there becomes two of its speed. */
+  | { edit: 'add_speed_point'; clip: string; at: number; linked?: boolean }
+  /** The segment that frame `at` is in plays at `speed`, the way that it went, and shows what it showed. */
+  | { edit: 'set_segment_speed'; clip: string; at: number; speed: Speed; ripple?: boolean; linked?: boolean }
+  /** The picture of frame `at` is held for `hold` frames more. */
+  | { edit: 'freeze_frame'; clip: string; at: number; hold: number; ripple?: boolean; linked?: boolean }
+  /** The segment that frame `at` is in plays the other way. */
+  | { edit: 'reverse_segment'; clip: string; at: number; linked?: boolean }
+  /** The speed point at the left of the segment that frame `at` is in is cleared. */
+  | { edit: 'clear_speed_point'; clip: string; at: number; linked?: boolean }
+  /** The clip plays at the speed of its source, forward, with no speed points. */
+  | { edit: 'reset_speed'; clip: string; ripple?: boolean; linked?: boolean }
   | { edit: 'add_cue'; track: string; start: number; length: number; text: string }
   | { edit: 'set_cue'; id: string; start?: number; length?: number; text?: string }
   | { edit: 'remove_cue'; id: string }

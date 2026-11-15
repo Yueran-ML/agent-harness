@@ -101,6 +101,17 @@ size and frame rate, by default those of the first video in the pool) and opens 
 - **Speed.** R (or the button in the inspector) changes the speed of the clips chosen, from 1% to
   10000%, forward or reversed, with or without rippling what follows. Sound changes pitch with
   speed in this version.
+- **Retime Controls.** Ctrl+R (or Retime Controls in a clip's right-click menu) shows them on the
+  clips chosen, and puts them away again: the speed of each segment of the clip in percent, arrows
+  that point the way it plays and stand nearer each other the faster it plays, and a handle at each
+  speed point. The menu of a segment's speed has Change Speed, Add Speed Point and Freeze Frame (both
+  at the playhead), Clear Speed Point, Reverse Segment, Reset Speed and Reset Clip. Dragging the
+  upper handle of a speed point changes the speed of the segment before it, and what follows comes
+  sooner or later; dragging the lower handle moves the speed point while the clip keeps its length,
+  so the speeds on both sides change. A speed made by dragging is a whole percent. With the Trim
+  tool what follows the clip moves with its end. A clip with speed points says the slowest and the
+  fastest of its speeds beside its name; its sound follows them, silent in a freeze and backward
+  where a segment is reversed; and Change Clip Speed (R) clears them and gives the clip one speed.
 - **Effects library.** Dissolve, dip to black or white and the audio crossfade are dropped on an
   edit point, centred on it, or ending or starting there by where they fall; on a transition
   already there, they change its kind. A title or a solid colour dropped on a video track
@@ -175,6 +186,7 @@ Resolve's other pages or common use.
 | Ctrl+T | Standard transition (one second) at the edit points of the clips chosen, or at the playhead; on the Cut page a dissolve at the nearest edit point | 1020 |
 | D | Turns the clips chosen off or on | 796 |
 | R | Changes the speed of the clips chosen | — |
+| Ctrl+R | Shows or hides the Retime Controls of the clips chosen | 1074 |
 | Alt+Shift+1–8, 9, F1–F8 | Locks or unlocks V1–V8, all video tracks, A1–A8 | 762 |
 | Ctrl+= / Ctrl+− | Zooms in or out around the playhead | 711 |
 | Shift+Z | Fits the whole timeline; again, back to the zoom before | 711 |
@@ -652,7 +664,8 @@ client has been absent for a while.
 
 ## Not in this version
 
-Speed curves on the Edit page, markers, Fit
+The Retime Speed and Retime Frame curves of the Curve Editor, speed ramps and Rewind, Frame Blend and
+Optical Flow, markers, Fit
 to Fill, Close Up, multicam and lining clips up by timecode come in later phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
 Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,
 Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version, nor,

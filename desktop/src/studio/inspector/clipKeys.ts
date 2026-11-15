@@ -9,7 +9,7 @@
  * the pictures of its media, or its own frames from its first. Each function here gives the
  * operations to send, and none where nothing would change.
  */
-import { keyClockOf } from '../color/keyFrames';
+import { firstShowing, keyClockOf, keyRangeOf, keyRunsOf } from '../color/keyFrames';
 import type { Bounds } from '../color/corrector';
 import type { Messages } from '../../messages/en';
 import { NO_CROP, type Clip, type ClipKeyed, type Keyframe, type Media, type Op, type Param, type Timeline } from '../engine';
@@ -176,10 +176,19 @@ export function keyOps(timeline: string, clip: Clip, path: ClipKeyed, after: Par
  * that has come to it, found as `keyTimes` finds the frames of keys, through speed and direction.
  * A picture before those that the clip shows is at its first frame (its last, where it plays
  * backward), and one after them at its last (its first).
+ *
+ * A clip with speed points may show a picture at several frames, where it freezes or turns back
+ * over it: this is the first of them (`firstShowing`). A picture below those that it shows is at
+ * the first frame that shows its lowest, and one above them at the first that shows its highest.
  */
 export function frameOfKey(clip: Clip, timeline: Pick<Timeline, 'rate'>, media: readonly Media[], keyFrame: number): number {
   if (clip.length <= 0) return clip.start;
   const clock = keyClockOf(clip, timeline.rate, mediaOf(clip, media));
+  const runs = keyRunsOf(clip);
+  if (runs) {
+    const [low, high] = keyRangeOf(clock, runs);
+    return firstShowing(clock, runs, Math.min(Math.max(keyFrame, low), high)) ?? clip.start;
+  }
   const last = clip.start + clip.length - 1;
   const rising = clock(last) >= clock(clip.start);
   // The clock goes one way along the clip: the first frame that has come to the picture.
@@ -198,12 +207,18 @@ export function frameOfKey(clip: Clip, timeline: Pick<Timeline, 'rate'>, media: 
  * The frames of the timeline at which a clip shows the pictures that the keys of a setting are at,
  * in the order of the timeline: for each key the first frame that shows its picture, or the first
  * that shows a later one where the clip plays too fast to show it. Keys of pictures that the clip
- * does not show are left out.
+ * does not show are left out. A clip with speed points shows a key where it first comes by its
+ * picture (`firstShowing`): once, though it may hold the picture or come back to it.
  */
 export function keyTimes(clip: Clip, timeline: Pick<Timeline, 'rate'>, media: readonly Media[], path: ClipKeyed): number[] {
   const param = paramOf(clip, path);
   if (typeof param === 'number' || clip.length <= 0) return [];
   const clock = keyClockOf(clip, timeline.rate, mediaOf(clip, media));
+  const runs = keyRunsOf(clip);
+  if (runs) {
+    const found = param.keys.flatMap((key) => { const at = firstShowing(clock, runs, key.frame); return at === null ? [] : [at]; });
+    return [...new Set(found)].sort((a, b) => a - b);
+  }
   const first = clip.start;
   const last = clip.start + clip.length - 1;
   const rising = clock(last) >= clock(first);

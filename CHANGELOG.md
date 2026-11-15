@@ -6,6 +6,16 @@ change what was there before.
 
 ## Unreleased
 
+- A clip of the Edit page's timeline has Retime Controls (studio, phase 4), shown with Ctrl+R
+  or from the clip's right-click menu: over the clip, the speed of each of its segments in
+  percent, arrows that point the way the segment plays and stand nearer each other the faster
+  it plays, and a handle at each speed point. The menu of a segment changes its speed, adds a
+  speed point or a freeze frame at the playhead, reverses the segment, clears its speed point,
+  and resets the segment or the whole clip. The upper handle of a speed point, dragged,
+  changes the speed of the segment before it; the lower handle moves the speed point while
+  the clip keeps its length, as one step to undo. A clip with speed points says the slowest
+  and the fastest of its speeds, its waveform, its volume line and the keyframes of its
+  picture follow the speed points, and Change Clip Speed gives such a clip one speed again.
 - The Color page has its Keyframe Editor (studio, phase 4), at the right of the palettes: a
   track for each node of the grade under a master track, with dynamic keyframes (diamonds,
   Ctrl+[) and static ones (circles, Ctrl+]), put on every node in the All mode or on the

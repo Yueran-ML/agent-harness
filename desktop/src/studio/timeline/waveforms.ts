@@ -1,5 +1,6 @@
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type ChannelSource, type Clip, type Rate } from '../engine';
+import { retimeCourse } from '../retime';
 
 /** Min/max pyramid: zoomed-out pixels retain peaks without scanning the whole source on every scroll. */
 export class PeakData {
@@ -54,9 +55,22 @@ export class PeakData {
   }
 }
 
-/** A display interval maps to the continuous source interval, in seconds; reverse swaps its ends. */
+/**
+ * A display interval maps to the continuous source interval, in seconds; reverse swaps its ends.
+ * A clip with speed points reads its source along their path: the interval is from the lowest
+ * place of the path over those frames to the highest, which it may come to anywhere among them.
+ */
 export function sourceInterval(clip: Clip, rate: Rate, from: number, to: number): [number, number] {
   const start = clip.source.kind === 'media' ? clip.source.in.ticks / clip.source.in.scale : 0;
+  const course = retimeCourse(clip);
+  if (course) {
+    const first = Math.max(0, from - clip.start);
+    const last = Math.max(first, Math.min(clip.length, to - clip.start));
+    // The path goes one way along a segment: it is lowest and highest at the ends of the interval or at a speed point between them.
+    const places = [course.along(first), course.along(last), ...course.parts().filter(part => part.from > first && part.from < last).map(part => part.at)];
+    const frame = rate.den / rate.num;
+    return [start + Math.min(...places) * frame, start + Math.max(...places) * frame];
+  }
   const step = rate.den / rate.num * clip.speed.num / clip.speed.den;
   const a = Math.max(0, from - clip.start);
   const b = Math.min(clip.length, to - clip.start);

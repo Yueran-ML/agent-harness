@@ -25,9 +25,9 @@ as one transaction.
 import enum
 from collections.abc import Iterable, Mapping, Sequence
 from fractions import Fraction
-from typing import Any, Final, Literal
+from typing import Annotated, Any, Final, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from columbina.data import Data
 
@@ -280,26 +280,6 @@ class Retime(Data):
     points: list[SpeedPoint] = Field(min_length=1, max_length=1024)
 
 
-class TitleStyle(Data):
-    """How the text of a title is drawn.
-
-    Attributes:
-        font: The family of the font, or empty for the one that the engine chooses.
-        size: The height of its letters in pixels of the timeline.
-        color: The colour of its letters, as ``#rrggbbaa``.
-        x: Where its anchor is across the picture: 0 at the left edge, 1 at the right.
-        y: Where its anchor is down the picture: 0 at the top edge, 1 at the bottom.
-        align: Which side of the text the anchor is on.
-    """
-
-    font: str = ""
-    size: int = Field(default=72, ge=1)
-    color: str = Field(default="#ffffffff", pattern=r"^#[0-9a-f]{8}$")
-    x: float = 0.5
-    y: float = 0.5
-    align: Literal["left", "center", "right"] = "center"
-
-
 class Key(Data):
     """A keyframe of a setting of a clip's picture.
 
@@ -321,6 +301,48 @@ class Keys(Data):
     """A setting with keyframes, in the order of their frames, one at least."""
 
     keys: list[Key]
+
+
+_Size = Annotated[int, Field(ge=1)] | Annotated[float, Field(ge=1, allow_inf_nan=False)] | Keys
+"""The size of a title: a number from 1 on, kept whole where it is given whole so that it is
+written as the engine writes it, or keys."""
+
+
+class TitleStyle(Data):
+    """How the text of a title is drawn.
+
+    Its size and the place of its anchor are each a number, or :class:`Keys`, as the settings
+    of a :class:`Transform` are; its font, its colour and its alignment are as they are given
+    on every frame.
+
+    Attributes:
+        font: The family of the font, or empty for the one that the engine chooses.
+        size: The height of its letters in pixels of the timeline: from 1 to 4096, which need
+            not be a whole number.
+        color: The colour of its letters, as ``#rrggbbaa``.
+        x: Where its anchor is across the picture: 0 at the left edge, 1 at the right.
+        y: Where its anchor is down the picture: 0 at the top edge, 1 at the bottom.
+        align: Which side of the text the anchor is on.
+    """
+
+    font: str = ""
+    size: _Size = 72
+    color: str = Field(default="#ffffffff", pattern=r"^#[0-9a-f]{8}$")
+    x: float | Keys = 0.5
+    y: float | Keys = 0.5
+    align: Literal["left", "center", "right"] = "center"
+
+    @field_validator("size")
+    @classmethod
+    def _size_as_the_engine_keeps_it(cls, size: float | Keys) -> float | Keys:
+        if isinstance(size, Keys):
+            # The engine holds each key of a size to what a size may be.
+            if any(not key.value >= 1 for key in size.keys):
+                raise ValueError("each key of the size of a title is 1 at the least")
+            return size
+        # The engine writes a whole size with no keys without a fraction, as it did before a
+        # size took keys: so is it written here, whichever way it was given.
+        return int(size) if float(size).is_integer() else size
 
 
 class Transform(Data):
@@ -1251,7 +1273,8 @@ def set_clip_keys(timeline: str, id: str, path: str, param: float | Keys) -> dic
 
     ``path`` names the setting in the clip: ``transform.x``, ``transform.y``,
     ``transform.scale``, ``transform.rotation`` or ``transform.opacity``, and ``crop.left``,
-    ``crop.right``, ``crop.top``, ``crop.bottom`` or ``crop.softness``.
+    ``crop.right``, ``crop.top``, ``crop.bottom`` or ``crop.softness``; and, of a clip whose
+    source is a title only, ``title.size``, ``title.x`` or ``title.y``, a setting of its style.
     """
     written = _json(param) if isinstance(param, Keys) else param
     return {"op": "set_clip_keys", "timeline": timeline, "id": id, "path": path, "param": written}

@@ -330,10 +330,10 @@ fn a_title_a_colour_and_a_still_count_the_frames_of_the_clip() {
     let mut project = project();
     let style = TitleStyle {
         font: String::new(),
-        size: 40,
+        size: 40.0.into(),
         color: columbina_model::Rgba([255; 4]),
-        x: 0.5,
-        y: 0.5,
+        x: 0.5.into(),
+        y: 0.5.into(),
         align: columbina_model::TextAlign::Center,
     };
     let source = Source::Title {

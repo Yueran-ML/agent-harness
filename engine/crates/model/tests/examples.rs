@@ -29,10 +29,10 @@ fn title(text: &str) -> Source {
         text: text.into(),
         style: TitleStyle {
             font: String::new(),
-            size: 96,
+            size: 96.0.into(),
             color: Rgba([255, 255, 255, 255]),
-            x: 0.5,
-            y: 0.5,
+            x: 0.5.into(),
+            y: 0.5.into(),
             align: TextAlign::Center,
         },
     }
@@ -1153,6 +1153,48 @@ fn position_keys() -> Op {
 }
 
 /// Set n9, the node of `first_node`, by `params`.
+/// Keys of the size of the letters of the title c8: they grow over its first second.
+fn size_keys() -> Op {
+    Op::SetClipKeys {
+        timeline: "t1".into(),
+        id: "c8".into(),
+        path: "title.size".into(),
+        param: Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 48.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 24,
+                value: 96.0,
+                interp: Interp::Hold,
+            },
+        ]),
+    }
+}
+
+/// Keys of how far down the anchor of the title c8 is: it rises from below the picture.
+fn anchor_keys() -> Op {
+    Op::SetClipKeys {
+        timeline: "t1".into(),
+        id: "c8".into(),
+        path: "title.y".into(),
+        param: Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 1.25,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 40,
+                value: 0.5,
+                interp: Interp::Linear,
+            },
+        ]),
+    }
+}
+
 fn set_n9(params: serde_json::Value) -> Op {
     Op::SetNode {
         grade: c1(),
@@ -1460,6 +1502,48 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                     interp: Interp::Linear,
                 }],
             },
+        ),
+        ("set_clip_keys of the size of a title", vec![], size_keys()),
+        (
+            "set_clip_keys of a number in place of the keys of a title",
+            vec![size_keys()],
+            Op::SetClipKeys {
+                timeline: "t1".into(),
+                id: "c8".into(),
+                path: "title.size".into(),
+                param: Param::Fixed(120.0),
+            },
+        ),
+        (
+            "splice_clip_keys of where a title is",
+            vec![anchor_keys()],
+            Op::SpliceClipKeys {
+                timeline: "t1".into(),
+                id: "c8".into(),
+                path: "title.y".into(),
+                at: 1,
+                remove: 0,
+                keys: vec![Key {
+                    frame: 20,
+                    value: 0.625,
+                    interp: Interp::Linear,
+                }],
+            },
+        ),
+        (
+            "set_clip of a title with keys in its style",
+            vec![],
+            serde_json::from_value(serde_json::json!({
+                "op": "set_clip", "timeline": "t1", "id": "c8",
+                "source": {"kind": "title", "text": "Hello", "style": {
+                    "font": "", "size": 96, "color": "#ffffffff", "y": 0.5, "align": "left",
+                    "x": {"keys": [
+                        {"frame": 0, "value": -0.25, "interp": "linear"},
+                        {"frame": 49, "value": 1.0, "interp": "linear"},
+                    ]},
+                }},
+            }))
+            .unwrap(),
         ),
         (
             "set_node with keyframes",

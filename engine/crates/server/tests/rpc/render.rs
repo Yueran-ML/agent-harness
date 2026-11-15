@@ -506,7 +506,10 @@ fn reference(frame: i64, decoder: &mut VideoDecoder, style: &Value) -> Scene {
         scene.layers.push(SceneLayer {
             source: Source::Title(Text {
                 text: "Columbina".into(),
-                style: serde_json::from_value(style.clone()).unwrap(),
+                // The style has no keys: it is what it is at any frame.
+                style: serde_json::from_value::<columbina_model::TitleStyle>(style.clone())
+                    .unwrap()
+                    .at(0.0),
             }),
             transform: Transform::NONE,
             opacity: 1.0,

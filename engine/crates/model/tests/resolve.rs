@@ -130,10 +130,10 @@ fn project_of(plan: &Plan) -> Project {
                     text: "Title".into(),
                     style: columbina_model::TitleStyle {
                         font: String::new(),
-                        size: 96,
+                        size: 96.0.into(),
                         color: Rgba([255, 255, 255, 255]),
-                        x: 0.5,
-                        y: 0.5,
+                        x: 0.5.into(),
+                        y: 0.5.into(),
                         align: columbina_model::TextAlign::Center,
                     },
                 },

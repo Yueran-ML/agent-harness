@@ -916,6 +916,7 @@ export const zhCN: Messages = {
         zoom: '缩放', positionX: '位置 X', positionY: '位置 Y', rotation: '旋转角度', opacity: '不透明度',
         fadeIn: '淡入（帧）', fadeOut: '淡出（帧）', volume: '音量', pan: '声像',
         text: '文本', size: '大小', color: '颜色', align: '对齐', alignLeft: '左对齐', alignCenter: '居中对齐', alignRight: '右对齐',
+        titleSize: '文本大小', titleX: '文本位置 X', titleY: '文本位置 Y',
         kind: '类型', length: '时长（帧）', start: '起始于剪辑点', middle: '居中于剪辑点', end: '结束于剪辑点', removeTransition: '删除转场',
         name: '名称', resolution: '分辨率', width: '宽度', height: '高度', custom: '自定义', frameRate: '帧率', sampleRate: '音频采样率',
         changeSpeed: '更改片段速度', titleText: '标题', useLongest: (frames: number) => `改用 ${frames} 帧`,

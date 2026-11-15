@@ -1,12 +1,15 @@
 //! The keys of the settings of a clip (schema 5's transform): the operations that set them by
 //! their paths ([`Op::SetClipKeys`], [`Op::SpliceClipKeys`]), what takes them back, what they
-//! refuse, and where a keyed transform puts the picture at a frame of the timeline.
+//! refuse, and where a keyed transform puts the picture at a frame of the timeline. And those
+//! of the style of a title, the size of its letters and the place of its anchor, which are set
+//! by the same operations on a clip that is a title.
 
 use columbina_model::catalog;
 use columbina_model::grade::{Interp, Key, Param};
-use columbina_model::resolve::video_at;
+use columbina_model::resolve::{video_at, Content};
 use columbina_model::{
-    apply, apply_done, Clip, Op, OpError, Placed, Project, Rgba, Source, Speed, Transform,
+    apply, apply_done, Clip, Op, OpError, Placed, Project, Rgba, Source, Speed, Styled, TextAlign,
+    TitleStyle, Transform,
 };
 use serde_json::{json, Value};
 
@@ -24,24 +27,32 @@ fn key(frame: i64, value: f64) -> Key {
     }
 }
 
-fn set(path: &str, param: Param) -> Op {
+fn set_of(id: &str, path: &str, param: Param) -> Op {
     Op::SetClipKeys {
         timeline: "t1".into(),
-        id: "c1".into(),
+        id: id.into(),
         path: path.into(),
         param,
     }
 }
 
-fn splice(path: &str, at: usize, remove: usize, keys: Vec<Key>) -> Op {
+fn set(path: &str, param: Param) -> Op {
+    set_of("c1", path, param)
+}
+
+fn splice_of(id: &str, path: &str, at: usize, remove: usize, keys: Vec<Key>) -> Op {
     Op::SpliceClipKeys {
         timeline: "t1".into(),
-        id: "c1".into(),
+        id: id.into(),
         path: path.into(),
         at,
         remove,
         keys,
     }
+}
+
+fn splice(path: &str, at: usize, remove: usize, keys: Vec<Key>) -> Op {
+    splice_of("c1", path, at, remove, keys)
 }
 
 fn c1(project: &Project) -> &Clip {
@@ -154,15 +165,14 @@ fn the_settings_that_take_keys_are_those_of_the_catalog_and_are_checked_as_the_c
             "crop.right",
             "crop.top",
             "crop.bottom",
-            "crop.softness"
+            "crop.softness",
+            "title.size",
+            "title.x",
+            "title.y"
         ]
     );
     for entry in catalog::clip() {
-        // What a new clip has is what the catalog says it has at first.
-        let mut probe = Project::sample();
-        let (_, inverse) = applied(&mut probe, set(&entry.path, Param::Fixed(entry.high)));
-        assert_eq!(inverse, set(&entry.path, Param::Fixed(entry.default)));
-        applied(&mut probe, set(&entry.path, Param::Fixed(entry.low)));
+        starts_as_listed(entry);
     }
     for path in [
         "transform",
@@ -576,4 +586,499 @@ fn a_still_keeps_its_keys_at_their_frames_of_the_timeline_and_media_on_its_pictu
     edited(&mut moving, trim);
     assert_eq!(x_keys(&moving, "c1"), [(20, 0.0), (60, 1.0)]);
     assert_eq!(seen_at(&moving, &[40]), [(0.5, 0.0)]);
+}
+
+// The style of a title: the size of its letters and the place of its anchor take keys.
+
+/// Check that what a new clip has is what the catalog says it has at first, and that the
+/// setting is taken at both its bounds: on the clip of media of the sample, or, for a setting
+/// that only a title has, on a new title.
+fn starts_as_listed(entry: &catalog::Entry) {
+    let (mut probe, id) = if entry.path.starts_with("title.") {
+        (with_a_title(), "k1")
+    } else {
+        (Project::sample(), "c1")
+    };
+    let high = set_of(id, &entry.path, Param::Fixed(entry.high));
+    let (_, inverse) = applied(&mut probe, high);
+    let first = set_of(id, &entry.path, Param::Fixed(entry.default));
+    assert_eq!(inverse, first);
+    applied(&mut probe, set_of(id, &entry.path, Param::Fixed(entry.low)));
+}
+
+#[test]
+fn the_catalog_lists_the_size_of_a_title_in_pixels_under_the_title_of_the_inspector() {
+    let size = catalog::of_clip("title.size").unwrap();
+    assert_eq!((size.default, size.low, size.high), (72.0, 1.0, 4096.0));
+    assert_eq!(
+        serde_json::to_value(size).unwrap(),
+        json!({
+            "path": "title.size", "default": 72.0, "low": 1.0, "high": 4096.0,
+            "unit": "pixels", "page": "edit", "palette": "title", "clock": "source_frame",
+        })
+    );
+    // Its anchor is a share of the picture, at the middle at first, and may be keyed from far
+    // beyond one edge to far beyond the other.
+    for (path, unit) in [("title.x", "widths"), ("title.y", "heights")] {
+        let entry = catalog::of_clip(path).unwrap();
+        assert_eq!((entry.default, entry.low, entry.high), (0.5, -16.0, 16.0));
+        assert_eq!(serde_json::to_value(entry.unit).unwrap(), json!(unit));
+    }
+}
+
+/// The sample with a title `k1` on V1 from frame 200 for 50 frames, as a client makes a new
+/// one: letters 72 pixels high, anchored at the middle of the picture.
+fn with_a_title() -> Project {
+    let mut project = Project::sample();
+    let title = Source::Title {
+        text: "Title".into(),
+        style: TitleStyle {
+            font: String::new(),
+            size: 72.0.into(),
+            color: Rgba([255, 255, 255, 255]),
+            x: 0.5.into(),
+            y: 0.5.into(),
+            align: TextAlign::Center,
+        },
+    };
+    project.timelines[0].tracks[0]
+        .clips
+        .push(Clip::new("k1", title, 200, 50));
+    project.next_id = 10;
+    project.validate().unwrap();
+    project
+}
+
+fn style_of<'p>(project: &'p Project, id: &str) -> &'p TitleStyle {
+    let clip = project.timelines[0].tracks[0]
+        .clips
+        .iter()
+        .find(|c| c.id == id)
+        .unwrap();
+    match &clip.source {
+        Source::Title { style, .. } => style,
+        other => panic!("{id} is no title: {other:?}"),
+    }
+}
+
+/// How the title that V1 shows at a frame is drawn there.
+fn styled_at(project: &Project, frame: i64) -> Styled {
+    let layers = video_at(&project.timelines[0], project, frame);
+    assert_eq!(layers.len(), 1, "{frame}");
+    match &layers[0].content {
+        Content::Title { style, .. } => style.clone(),
+        other => panic!("frame {frame} shows no title: {other:?}"),
+    }
+}
+
+#[test]
+fn the_style_of_a_title_is_written_as_numbers_where_it_has_no_keys_and_read_with_keys() {
+    let mut project = with_a_title();
+    // A title with no keys is written as it was before its style could have them, to the byte:
+    // its size a whole number with no fraction.
+    let source = &project.timelines[0].tracks[0].clips[1].source;
+    assert_eq!(
+        serde_json::to_string(source).unwrap(),
+        concat!(
+            r##"{"kind":"title","text":"Title","style":{"font":"","size":72,"##,
+            r##""color":"#ffffffff","x":0.5,"y":0.5,"align":"center"}}"##
+        )
+    );
+    // A size written with a fraction of nothing is read as the same, and written without it.
+    let read: Source = serde_json::from_value(json!({
+        "kind": "title", "text": "Title",
+        "style": {"font": "", "size": 72.0, "color": "#ffffffff", "x": 0.5, "y": 0.5, "align": "center"},
+    }))
+    .unwrap();
+    assert_eq!(&read, source);
+    assert_eq!(
+        serde_json::to_value(&read).unwrap()["style"]["size"],
+        json!(72)
+    );
+    // One that is not a whole number is a size too, as a key between two others leaves it.
+    applied(&mut project, set_of("k1", "title.size", Param::Fixed(72.5)));
+    let written = serde_json::to_value(style_of(&project, "k1")).unwrap();
+    assert_eq!(written["size"], json!(72.5));
+    applied(
+        &mut project,
+        set_of(
+            "k1",
+            "title.size",
+            Param::Keys(vec![key(0, 64.0), key(40, 128.0)]),
+        ),
+    );
+    applied(
+        &mut project,
+        set_of("k1", "title.y", Param::Keys(vec![key(10, 0.25)])),
+    );
+    let written = serde_json::to_value(&project).unwrap();
+    let style = &written["timelines"][0]["tracks"][0]["clips"][1]["source"]["style"];
+    assert_eq!(
+        *style,
+        json!({
+            "font": "",
+            "size": {"keys": [
+                {"frame": 0, "value": 64.0, "interp": "linear"},
+                {"frame": 40, "value": 128.0, "interp": "linear"},
+            ]},
+            "color": "#ffffffff",
+            "x": 0.5,
+            "y": {"keys": [{"frame": 10, "value": 0.25, "interp": "linear"}]},
+            "align": "center",
+        })
+    );
+    assert_eq!(Project::from_value(written).unwrap(), project);
+}
+
+#[test]
+fn the_keys_of_the_style_of_a_title_are_set_whole_and_spliced_and_each_is_taken_back() {
+    let mut project = with_a_title();
+    // The first keys of a number are done as the keys set whole, and taken back as the number.
+    let (done, inverse) = applied(
+        &mut project,
+        splice_of("k1", "title.size", 0, 0, vec![key(10, 96.0)]),
+    );
+    assert_eq!(
+        done,
+        set_of("k1", "title.size", Param::Keys(vec![key(10, 96.0)]))
+    );
+    assert_eq!(inverse, set_of("k1", "title.size", Param::Fixed(72.0)));
+    // A key put after it, and the first moved and changed.
+    let (_, inverse) = applied(
+        &mut project,
+        splice_of("k1", "title.size", 1, 0, vec![key(20, 144.0)]),
+    );
+    assert_eq!(inverse, splice_of("k1", "title.size", 1, 1, vec![]));
+    let (_, inverse) = applied(
+        &mut project,
+        splice_of("k1", "title.size", 0, 1, vec![key(5, 80.5)]),
+    );
+    assert_eq!(
+        inverse,
+        splice_of("k1", "title.size", 0, 1, vec![key(10, 96.0)])
+    );
+    assert_eq!(
+        style_of(&project, "k1").size,
+        Param::Keys(vec![key(5, 80.5), key(20, 144.0)])
+    );
+    // The place of the anchor, across and down, each apart from the other.
+    let (_, inverse) = applied(
+        &mut project,
+        set_of(
+            "k1",
+            "title.x",
+            Param::Keys(vec![key(0, -0.5), key(49, 1.5)]),
+        ),
+    );
+    assert_eq!(inverse, set_of("k1", "title.x", Param::Fixed(0.5)));
+    applied(&mut project, set_of("k1", "title.y", Param::Fixed(0.875)));
+    // A number in place of the keys.
+    let (_, inverse) = applied(&mut project, set_of("k1", "title.size", Param::Fixed(40.0)));
+    assert_eq!(
+        inverse,
+        set_of(
+            "k1",
+            "title.size",
+            Param::Keys(vec![key(5, 80.5), key(20, 144.0)])
+        )
+    );
+    let style = style_of(&project, "k1");
+    assert_eq!(
+        (&style.size, &style.y),
+        (&Param::Fixed(40.0), &Param::Fixed(0.875))
+    );
+    assert!(style.is_animated());
+}
+
+#[test]
+fn the_settings_of_a_title_are_those_of_a_title_only_and_are_checked_as_its_style_is() {
+    let mut project = with_a_title();
+    // A clip of media has no style of a title, and neither has a colour: as a path that the
+    // catalog does not list.
+    let colour = Clip::new(
+        "k2",
+        Source::Color {
+            color: Rgba([255, 0, 0, 255]),
+        },
+        300,
+        50,
+    );
+    project.timelines[0].tracks[0].clips.push(colour);
+    project.validate().unwrap();
+    for id in ["c1", "k2"] {
+        for path in ["title.size", "title.x", "title.y"] {
+            let missing = json!({"reason": "missing", "what": "setting", "id": path});
+            assert_eq!(
+                refused(&mut project, set_of(id, path, Param::Fixed(0.5))),
+                missing,
+                "{id} {path}"
+            );
+            assert_eq!(
+                refused(&mut project, splice_of(id, path, 0, 0, vec![key(0, 1.0)])),
+                missing,
+                "{id} {path}"
+            );
+        }
+    }
+    // What a title has under another name takes no keys.
+    for path in [
+        "title",
+        "title.color",
+        "title.font",
+        "title.align",
+        "title.text",
+        "style.size",
+    ] {
+        assert_eq!(
+            refused(&mut project, set_of("k1", path, Param::Fixed(0.5))),
+            json!({"reason": "missing", "what": "setting", "id": path}),
+            "{path}"
+        );
+    }
+    let out = json!({"reason": "out_of_range", "what": "size"});
+    for param in [
+        Param::Fixed(0.5),
+        Param::Fixed(4096.5),
+        Param::Fixed(f64::NAN),
+        Param::Keys(vec![key(0, 64.0), key(9, 0.0)]),
+        Param::Keys(vec![key(0, 4097.0)]),
+        // Keys are at frames in order, and there is one at least.
+        Param::Keys(vec![key(9, 64.0), key(9, 72.0)]),
+        Param::Keys(vec![]),
+    ] {
+        assert_eq!(
+            refused(&mut project, set_of("k1", "title.size", param.clone())),
+            out,
+            "{param:?}"
+        );
+    }
+    // The least and the most are sizes.
+    applied(&mut project, set_of("k1", "title.size", Param::Fixed(1.0)));
+    applied(
+        &mut project,
+        set_of(
+            "k1",
+            "title.size",
+            Param::Keys(vec![key(0, 1.0), key(9, 4096.0)]),
+        ),
+    );
+    assert_eq!(
+        refused(
+            &mut project,
+            splice_of("k1", "title.size", 2, 0, vec![key(5, 64.0)])
+        ),
+        out
+    );
+    let out = json!({"reason": "out_of_range", "what": "position"});
+    for (path, param) in [
+        ("title.x", Param::Fixed(f64::INFINITY)),
+        ("title.y", Param::Keys(vec![key(0, 0.5), key(9, f64::NAN)])),
+    ] {
+        assert_eq!(
+            refused(&mut project, set_of("k1", path, param.clone())),
+            out,
+            "{path} {param:?}"
+        );
+    }
+    // The anchor may be far beyond the picture.
+    applied(&mut project, set_of("k1", "title.x", Param::Fixed(-40.0)));
+}
+
+#[test]
+fn set_clip_puts_a_style_with_keys_whole_and_puts_back_the_one_that_was() {
+    let mut project = with_a_title();
+    let before = project.timelines[0].tracks[0].clips[1].source.clone();
+    let op: Op = serde_json::from_value(json!({
+        "op": "set_clip", "timeline": "t1", "id": "k1",
+        "source": {"kind": "title", "text": "Title", "style": {
+            "font": "", "size": 48, "color": "#ffffffff", "align": "left", "y": 0.5,
+            "x": {"keys": [
+                {"frame": 0, "value": 0, "interp": "linear"},
+                {"frame": 40, "value": 1, "interp": "hold"},
+            ]},
+        }},
+    }))
+    .unwrap();
+    let (_, inverse) = applied(&mut project, op);
+    let style = style_of(&project, "k1");
+    assert_eq!(style.size, Param::Fixed(48.0));
+    assert_eq!(
+        style.x,
+        Param::Keys(vec![
+            key(0, 0.0),
+            Key {
+                frame: 40,
+                value: 1.0,
+                interp: Interp::Hold
+            }
+        ])
+    );
+    let Op::SetClip { source, .. } = inverse else {
+        panic!("{inverse:?}")
+    };
+    assert_eq!(source, Some(before));
+    // A style that is whole numbers again is set as it always was.
+    let plain: Op = serde_json::from_value(json!({
+        "op": "set_clip", "timeline": "t1", "id": "k1",
+        "source": {"kind": "title", "text": "Title", "style": {
+            "font": "", "size": 72, "color": "#ffffffff", "x": 0.5, "y": 0.5, "align": "center",
+        }},
+    }))
+    .unwrap();
+    applied(&mut project, plain);
+    assert_eq!(project, with_a_title());
+    // And one whose keys are not those of a size is refused as the size is.
+    let wrong: Op = serde_json::from_value(json!({
+        "op": "set_clip", "timeline": "t1", "id": "k1",
+        "source": {"kind": "title", "text": "Title", "style": {
+            "font": "", "color": "#ffffffff", "x": 0.5, "y": 0.5, "align": "center",
+            "size": {"keys": [{"frame": 0, "value": 5000, "interp": "linear"}]},
+        }},
+    }))
+    .unwrap();
+    assert_eq!(
+        refused(&mut project, wrong),
+        json!({"reason": "out_of_range", "what": "size"})
+    );
+}
+
+#[test]
+fn a_keyed_style_is_at_each_frame_what_its_keys_are_at_that_frame_of_the_title() {
+    let mut project = with_a_title();
+    for (path, keys) in [
+        ("title.size", vec![key(0, 64.0), key(40, 128.0)]),
+        ("title.y", vec![key(10, 0.25), key(30, 0.75)]),
+        (
+            "title.x",
+            vec![
+                Key {
+                    frame: 0,
+                    value: 0.25,
+                    interp: Interp::Hold,
+                },
+                key(20, 0.75),
+            ],
+        ),
+    ] {
+        apply(&mut project, set_of("k1", path, Param::Keys(keys))).unwrap();
+    }
+    // The title begins at frame 200 of the timeline, and its keys count from there.
+    for (frame, size, x, y) in [
+        (200, 64.0, 0.25, 0.25),
+        (210, 80.0, 0.25, 0.25),
+        (215, 88.0, 0.25, 0.375),
+        (219, 94.4, 0.25, 0.475),
+        (220, 96.0, 0.75, 0.5),
+        (230, 112.0, 0.75, 0.75),
+        (240, 128.0, 0.75, 0.75),
+        (249, 128.0, 0.75, 0.75),
+    ] {
+        let styled = styled_at(&project, frame);
+        assert!(
+            (styled.size - size).abs() < 1e-9,
+            "{frame}: {}",
+            styled.size
+        );
+        assert!((styled.x - x).abs() < 1e-12, "{frame}: {}", styled.x);
+        assert!((styled.y - y).abs() < 1e-12, "{frame}: {}", styled.y);
+        // What takes no keys is as the style has it.
+        assert_eq!(
+            (styled.font.as_str(), styled.color, styled.align),
+            ("", Rgba([255, 255, 255, 255]), TextAlign::Center)
+        );
+    }
+    // A style with no keys is the same numbers at every frame.
+    let plain = with_a_title();
+    for frame in [200, 249] {
+        let styled = styled_at(&plain, frame);
+        assert_eq!((styled.size, styled.x, styled.y), (72.0, 0.5, 0.5));
+    }
+}
+
+/// The sample with a title whose letters grow over its first 40 frames and whose anchor goes
+/// right from its frame 10 to its frame 20.
+fn with_a_title_that_grows() -> Project {
+    let mut project = with_a_title();
+    for (path, keys) in [
+        ("title.size", vec![key(0, 64.0), key(40, 128.0)]),
+        ("title.x", vec![key(10, 0.25), key(20, 0.75)]),
+    ] {
+        apply(&mut project, set_of("k1", path, Param::Keys(keys))).unwrap();
+    }
+    project
+}
+
+/// The size and the place across of what V1 shows at each of `frames`.
+fn styled_over(project: &Project, frames: &[i64]) -> Vec<(f64, f64)> {
+    frames
+        .iter()
+        .map(|&frame| {
+            let styled = styled_at(project, frame);
+            (styled.size, styled.x)
+        })
+        .collect()
+}
+
+fn frames_of(param: &Param) -> Vec<i64> {
+    match param {
+        Param::Keys(keys) => keys.iter().map(|k| k.frame).collect(),
+        Param::Fixed(_) => vec![],
+    }
+}
+
+#[test]
+fn a_trim_of_the_head_of_a_title_leaves_the_keys_of_its_style_at_their_frames_of_the_timeline() {
+    let frames = [210, 215, 220, 230, 245];
+    let mut project = with_a_title_that_grows();
+    let before = styled_over(&project, &frames);
+    edited(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "in", "delta": 10}),
+    );
+    let style = style_of(&project, "k1");
+    assert_eq!(frames_of(&style.size), [-10, 30]);
+    assert_eq!(frames_of(&style.x), [0, 10]);
+    // What takes no keys is left as it was.
+    assert_eq!(style.y, Param::Fixed(0.5));
+    assert_eq!(styled_over(&project, &frames), before);
+    // Its head moved out again, by more than it was moved in.
+    edited(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "in", "delta": -30}),
+    );
+    let style = style_of(&project, "k1");
+    assert_eq!(frames_of(&style.size), [20, 60]);
+    assert_eq!(frames_of(&style.x), [30, 40]);
+    assert_eq!(styled_over(&project, &frames), before);
+    // Its tail leaves its keys alone.
+    edited(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "out", "delta": -5}),
+    );
+    assert_eq!(frames_of(&style_of(&project, "k1").size), [20, 60]);
+}
+
+#[test]
+fn the_halves_of_a_title_cut_by_the_blade_are_drawn_as_it_was() {
+    let frames: Vec<i64> = (200..250).step_by(5).collect();
+    let mut project = with_a_title_that_grows();
+    let before = styled_over(&project, &frames);
+    edited(
+        &mut project,
+        json!({"edit": "blade", "timeline": "t1", "at": 215, "tracks": ["V1"]}),
+    );
+    let clips = &project.timelines[0].tracks[0].clips;
+    assert_eq!(clips.len(), 3);
+    let first = style_of(&project, "k1");
+    assert_eq!(
+        (frames_of(&first.size), frames_of(&first.x)),
+        (vec![0, 40], vec![10, 20])
+    );
+    let second = clips.iter().find(|c| c.start == 215).unwrap().id.clone();
+    let second = style_of(&project, &second);
+    assert_eq!(
+        (frames_of(&second.size), frames_of(&second.x)),
+        (vec![-15, 25], vec![-5, 5])
+    );
+    assert_eq!(styled_over(&project, &frames), before);
 }

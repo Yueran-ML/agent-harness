@@ -1,22 +1,27 @@
-//! The keys of the settings of a clip, set by their paths: `transform.x`, `crop.left`.
+//! The keys of the settings of a clip, set by their paths: `transform.x`, `crop.left`,
+//! `title.size`.
 //!
 //! The settings of a clip that take keys are those that the catalog lists
 //! ([`crate::catalog::clip`]). They are set as the keys of a node of a grade are
 //! ([`Op::SetKeys`], [`Op::SpliceKeys`]), but the clip itself holds them, and it is checked as
-//! any change of a clip is.
+//! any change of a clip is. Those of the style of a title, under `title`, are the settings of
+//! a clip whose source is a title: a clip of media or of a colour has none of them, as it has
+//! none at a path that the catalog does not list.
 
 use super::{check_clip, clip_at, missing, range, timeline_at, Op, OpError};
 use crate::catalog;
 use crate::grade::{Key, Param};
-use crate::project::{Clip, Project};
+use crate::project::{Clip, Project, Source};
 
-/// The setting of a clip at a path that the catalog lists, or none.
+/// The setting of a clip at a path that the catalog lists, or none: none too for a setting of
+/// the style of a title where the clip is not a title.
 fn setting<'c>(clip: &'c mut Clip, path: &str) -> Option<&'c mut Param> {
     catalog::of_clip(path)?;
     let (of, name) = path.split_once('.')?;
-    match of {
-        "transform" => clip.transform.setting_mut(name),
-        "crop" => clip.crop.setting_mut(name),
+    match (of, &mut clip.source) {
+        ("transform", _) => clip.transform.setting_mut(name),
+        ("crop", _) => clip.crop.setting_mut(name),
+        ("title", Source::Title { style, .. }) => style.setting_mut(name),
         _ => None,
     }
 }

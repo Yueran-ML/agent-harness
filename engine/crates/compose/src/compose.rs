@@ -96,7 +96,9 @@ const CONVERT_PARAMS_SIZE: u64 = 32;
 /// The invocations of a group of the shaders of `convert.wgsl`, across.
 const CONVERT_GROUP: u32 = 64;
 
-/// How many texts laid out are kept, the last drawn.
+/// How many texts laid out are kept, the last drawn. A text is kept by all that changes its
+/// pixels, the size of its letters among it: a title whose size has keys is another text at
+/// each frame, so the texts of a long change of size are let go as they come, the oldest first.
 const TEXTS_KEPT: usize = 64;
 
 /// How many parts of a text drawn into pixels are kept on the card, the last drawn.
@@ -1200,6 +1202,8 @@ pub struct Compositor {
     generation: u64,
     planes: HashMap<Shape, Vec<Planes>>,
     texts: HashMap<TextKey, LaidText>,
+    /// How many parts of texts it has drawn into pixels since it was made.
+    text_draws: u64,
     /// What binds the uniform of a pass of a filter and its source, and its pipeline, made as
     /// it is first needed.
     filter_layout: wgpu::BindGroupLayout,
@@ -1418,6 +1422,7 @@ impl Compositor {
             generation: 0,
             planes: HashMap::new(),
             texts: HashMap::new(),
+            text_draws: 0,
             frame: 0,
             gpu,
         }
@@ -1496,6 +1501,22 @@ impl Compositor {
     #[must_use]
     pub fn neighbourhood_bytes(&self) -> u64 {
         self.spares.bytes()
+    }
+
+    /// How many parts of texts it has drawn into pixels since it was made: for the tests, that
+    /// a title that only moves is not drawn again.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn texts_drawn(&self) -> u64 {
+        self.text_draws
+    }
+
+    /// How many texts laid out it keeps: for the tests, that a title whose size changes at
+    /// every frame leaves no more of them than a few.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn texts_kept(&self) -> usize {
+        self.texts.len()
     }
 
     /// Compose `scene` into `target`, which is of its size and on the same card. It returns once
@@ -2746,9 +2767,8 @@ impl Compositor {
                     let style = &title.style;
                     let place = placement(canvas, canvas, &layer.transform);
                     #[allow(clippy::cast_possible_truncation, reason = "a size of letters")]
-                    let size = |per: f64| {
-                        (f64::from(style.size.min(4096)) * f64::from(scene.units) * per) as f32
-                    };
+                    let size =
+                        |per: f64| (style.size.min(4096.0) * f64::from(scene.units) * per) as f32;
                     let put = self.put_fitted(
                         |per| Spec::title(title, size(per).max(1.0)),
                         raster_scale(scale),
@@ -2921,6 +2941,7 @@ impl Compositor {
             view
         } else {
             let raster = text::draw(&mut text.laid, window);
+            self.text_draws += 1;
             let view = text_texture(gpu, &raster);
             text.parts.insert(
                 0,

@@ -1066,6 +1066,7 @@ export const en = {
         zoom: 'Zoom', positionX: 'Position X', positionY: 'Position Y', rotation: 'Rotation angle', opacity: 'Opacity',
         fadeIn: 'Fade in (frames)', fadeOut: 'Fade out (frames)', volume: 'Volume', pan: 'Pan',
         text: 'Text', size: 'Size', color: 'Color', align: 'Alignment', alignLeft: 'Align left', alignCenter: 'Align center', alignRight: 'Align right',
+        titleSize: 'Text size', titleX: 'Text position X', titleY: 'Text position Y',
         kind: 'Type', length: 'Duration (frames)', start: 'Start on edit', middle: 'Center on edit', end: 'End on edit', removeTransition: 'Delete transition',
         name: 'Name', resolution: 'Resolution', width: 'Width', height: 'Height', custom: 'Custom', frameRate: 'Frame rate', sampleRate: 'Audio sample rate',
         changeSpeed: 'Change clip speed', titleText: 'Title', useLongest: (frames: number) => `Use ${frames} frames`,

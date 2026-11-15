@@ -274,10 +274,10 @@ mod tests {
             text: "Title".into(),
             style: TitleStyle {
                 font: String::new(),
-                size: 96,
+                size: 96.0.into(),
                 color: crate::project::Rgba([255, 255, 255, 255]),
-                x: 0.5,
-                y: 0.5,
+                x: 0.5.into(),
+                y: 0.5.into(),
                 align: TextAlign::Center,
             },
         };

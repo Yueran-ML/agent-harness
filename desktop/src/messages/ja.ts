@@ -967,6 +967,7 @@ export const ja: Messages = {
         zoom: 'ズーム', positionX: '位置 X', positionY: '位置 Y', rotation: '回転角度', opacity: '不透明度',
         fadeIn: 'フェードイン（フレーム）', fadeOut: 'フェードアウト（フレーム）', volume: 'ボリューム', pan: 'パン',
         text: 'テキスト', size: 'サイズ', color: 'カラー', align: '揃え', alignLeft: '左揃え', alignCenter: '中央揃え', alignRight: '右揃え',
+        titleSize: 'テキストサイズ', titleX: 'テキスト位置 X', titleY: 'テキスト位置 Y',
         kind: '種類', length: '長さ（フレーム）', start: '編集点から開始', middle: '編集点の中央', end: '編集点で終了', removeTransition: 'トランジションを削除',
         name: '名前', resolution: '解像度', width: '幅', height: '高さ', custom: 'カスタム', frameRate: 'フレームレート', sampleRate: 'オーディオサンプルレート',
         changeSpeed: 'クリップ速度変更', titleText: 'タイトル', useLongest: (frames: number) => `${frames} フレームにする`,

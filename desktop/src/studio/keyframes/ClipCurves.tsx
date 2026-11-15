@@ -5,7 +5,7 @@ import type { EngineBridge } from '../../bridge';
 import { keyClockOf, shownKeyRange } from '../color/keyFrames';
 import { CLIP_KEYED, type Clip, type ClipKeyed, type Keyframe, type Media, type Param, type Retime, type Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
-import { CLIP_BOUNDS, CLIP_SETTINGS, frameOfKey, keyFrameOf, keyOps, mediaOf, paramOf, settingNames } from '../inspector/clipKeys';
+import { CLIP_BOUNDS, CLIP_SETTINGS, frameOfKey, keyFrameOf, keyOps, mediaOf, paramOf, settingNames, settingsOf } from '../inspector/clipKeys';
 import { refusalOf } from '../inspector/refusal';
 import { useCommit } from '../inspector/useCommit';
 import {
@@ -18,12 +18,16 @@ import { clipLocations } from '../timeline/selection';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { CurveEditor, NO_SELECTION, type Curve, type CurveChange, type CurveClock, type CurveDisplay, type CurveSelection, type LineDrag } from './CurveEditor';
 
-/** The settings of a clip that take keys, in the order of the Video tab of the Inspector: the keyframe track of the timeline lists them so too. */
+/**
+ * The settings of a clip that take keys, in the order of the Inspector, its Video tab and then the Title tab: the keyframe track of the
+ * timeline lists them so too. A clip that is no title has none of the last three, and no curve of them (`settingsOf`).
+ */
 export const CLIP_CURVES: readonly ClipKeyed[] = CLIP_SETTINGS;
 /** The colour of the curve of each setting, as each track of DaVinci Resolve's Keyframe Editor has one (Reference Manual 20, p. 1113). */
 const COLORS: Record<ClipKeyed, string> = {
   'transform.scale': '#e9b949', 'transform.x': '#e5534b', 'transform.y': '#57ab5a', 'transform.rotation': '#539bf5', 'transform.opacity': '#c9d1d9',
   'crop.left': '#b083f0', 'crop.right': '#f69d50', 'crop.top': '#39c5cf', 'crop.bottom': '#e275ad', 'crop.softness': '#8ddb8c',
+  'title.size': '#f0883e', 'title.x': '#ff938a', 'title.y': '#6bc46d',
 };
 const isKeyed = (path: string): path is ClipKeyed => (CLIP_KEYED as readonly string[]).includes(path);
 
@@ -44,7 +48,7 @@ interface SpeedPlan { at: number; percent: number; was: number }
 /**
  * The Curve Editor of the Edit page (DaVinci Resolve Reference Manual 20, pp. 1116–1119), beneath
  * the timeline: the settings of the transform and of the crop of the one clip of picture that is
- * chosen, as curves over the frames that their keys count. One clip of picture with its linked
+ * chosen, and of the style of a title where it is one, as curves over the frames that their keys count. One clip of picture with its linked
  * sound chosen is one clip; with none or several chosen it says so and shows nothing.
  *
  * A drag of keys or of a handle is one gesture (`useAudioGesture`, as a drag of the keys of a clip's
@@ -149,6 +153,7 @@ function Curves({ bridge, session, revision, timeline, media, clip, locked, fram
 
   const names = settingNames(labels);
   // As the Video tab writes them: the place in pixels of the timeline, the turn in degrees, the rest but the zoom in percent.
+  // And as the Title tab writes those of a title: its size and the place of its anchor in pixels of the timeline.
   const percent: CurveDisplay = { factor: 100, unit: '%', digits: 1 };
   const displays: Record<ClipKeyed, CurveDisplay> = {
     'transform.scale': { factor: 1, unit: '', digits: 3 },
@@ -156,8 +161,11 @@ function Curves({ bridge, session, revision, timeline, media, clip, locked, fram
     'transform.y': { factor: timeline.height, unit: 'px', digits: 1 },
     'transform.rotation': { factor: 1, unit: '°', digits: 1 },
     'transform.opacity': percent, 'crop.left': percent, 'crop.right': percent, 'crop.top': percent, 'crop.bottom': percent, 'crop.softness': percent,
+    'title.size': { factor: 1, unit: 'px', digits: 1 },
+    'title.x': { factor: timeline.width, unit: 'px', digits: 1 },
+    'title.y': { factor: timeline.height, unit: 'px', digits: 1 },
   };
-  const settings: Curve[] = CLIP_CURVES.map(path => ({
+  const settings: Curve[] = settingsOf(clip).map(path => ({
     id: path, label: names[path], color: COLORS[path], param: paramOf(clip, path), bounds: CLIP_BOUNDS[path], display: displays[path],
   }));
   const found = mediaOf(clip, media);

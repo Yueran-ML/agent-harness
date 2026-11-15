@@ -31,8 +31,8 @@ export const ClipKeyTracks = createContext<ClipKeyTracksContext | null>(null);
 /**
  * The keys of a clip of picture drawn on it, as DaVinci Resolve marks a keyframed clip in the
  * timeline (Reference Manual 20, pp. 1108–1109): along its lower edge a diamond at each frame of
- * the timeline at which a setting of its transform or crop has a key (`keyMarks`, through the
- * clip's speed and direction), and at the right of its name the Keyframe button, which opens and
+ * the timeline at which a setting of its transform or crop, or of the style of a title, has a key
+ * (`keyMarks`, through the clip's speed and direction), and at the right of its name the Keyframe button, which opens and
  * closes its keyframe track (`KeyTrack`). The button shows while the pointer is on the clip, while
  * the clip is chosen and while its track is open.
  *

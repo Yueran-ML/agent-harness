@@ -689,7 +689,9 @@ pub enum Op {
     /// Put a number, or keys, in place of a setting of a clip that takes keys
     /// ([`crate::catalog::clip`]), named by its path: `transform.x`. Its inverse puts back
     /// what the setting was. The keys are at the frames that the keys of the clip's grade are
-    /// at ([`crate::keyframes`]).
+    /// at ([`crate::keyframes`]). The settings of the style of a title, `title.size`,
+    /// `title.x` and `title.y`, are those of a clip that is a title: any other clip has no
+    /// such setting (`missing`, `setting`).
     SetClipKeys {
         /// The timeline.
         timeline: Id,
@@ -1749,8 +1751,10 @@ fn range_message(what: &str) -> String {
             .into(),
         "crop" => "the crop is not of shares from 0 to 1".into(),
         "text" => format!("the text is empty or longer than {LONGEST_TEXT} characters"),
-        "size" => "the size of the title is not from 1 to 4096".into(),
-        "position" => "the place of the title is not of finite numbers".into(),
+        "size" => "the size of the title is not from 1 to 4096, as a number or at each key".into(),
+        "position" => {
+            "the place of the title is not of finite numbers, as numbers or at each key".into()
+        }
         "language" => "the language is not a short tag of BCP 47".into(),
         "by" => "it moves by no frame".into(),
         "clips" => "it names no clip".into(),
@@ -3823,12 +3827,7 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
             if text.chars().count() > LONGEST_TEXT {
                 return Err(range("text"));
             }
-            if !(1..=4096).contains(&style.size) {
-                return Err(range("size"));
-            }
-            if !style.x.is_finite() || !style.y.is_finite() {
-                return Err(range("position"));
-            }
+            style.check()?;
         }
         (Source::Color { .. }, _) => {
             if kind != TrackKind::Video {
@@ -6323,10 +6322,10 @@ mod tests {
             text: text.into(),
             style: TitleStyle {
                 font: String::new(),
-                size: 96,
+                size: 96.0.into(),
                 color: Rgba([255, 255, 255, 255]),
-                x: 0.5,
-                y: 0.5,
+                x: 0.5.into(),
+                y: 0.5.into(),
                 align: TextAlign::Center,
             },
         }
@@ -6605,19 +6604,19 @@ mod tests {
             made(source, "V1")
         };
         assert_eq!(
-            refused(styled(&|s: &mut TitleStyle| s.size = 0)),
+            refused(styled(&|s: &mut TitleStyle| s.size = 0.0.into())),
             range("size")
         );
         assert_eq!(
-            refused(styled(&|s: &mut TitleStyle| s.size = 4097)),
+            refused(styled(&|s: &mut TitleStyle| s.size = 4097.0.into())),
             range("size")
         );
         assert_eq!(
-            refused(styled(&|s: &mut TitleStyle| s.x = f64::NAN)),
+            refused(styled(&|s: &mut TitleStyle| s.x = f64::NAN.into())),
             range("position")
         );
         assert_eq!(
-            refused(styled(&|s: &mut TitleStyle| s.y = f64::INFINITY)),
+            refused(styled(&|s: &mut TitleStyle| s.y = f64::INFINITY.into())),
             range("position")
         );
         let short = insert("V1", Clip::new("", colour(), 150, 0));

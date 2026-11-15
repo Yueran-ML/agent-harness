@@ -493,7 +493,7 @@ fn windows_gpu_mix_with_windowless_pre_and_post_clip_grades() {
 #[test]
 fn windows_gpu_title_uses_its_transparent_canvas_before_visible_texture_cropping() {
     use columbina_compose::Text;
-    use columbina_model::project::{Rgba, TextAlign, TitleStyle};
+    use columbina_model::project::{Rgba, Styled, TextAlign};
     let Some(gpu) = gpu_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let grade = serial(vec![corrector("w", |c| {
@@ -515,9 +515,9 @@ fn windows_gpu_title_uses_its_transparent_canvas_before_visible_texture_cropping
         for x in [0.0, -0.4] {
             let title = Source::Title(Text {
                 text: text.into(),
-                style: TitleStyle {
+                style: Styled {
                     font: String::new(),
-                    size: 28,
+                    size: 28.0,
                     color: Rgba([64, 64, 64, 128]),
                     x: 0.5,
                     y: 0.5,
@@ -567,7 +567,7 @@ fn windows_gpu_title_uses_its_transparent_canvas_before_visible_texture_cropping
 #[test]
 fn windows_gpu_title_neighbourhood_keeps_window_canvas_mapping_when_cropped() {
     use columbina_compose::Text;
-    use columbina_model::project::{Rgba, TextAlign, TitleStyle};
+    use columbina_model::project::{Rgba, Styled, TextAlign};
     let Some(gpu) = gpu_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let grade = serial(vec![
@@ -586,9 +586,9 @@ fn windows_gpu_title_neighbourhood_keeps_window_canvas_mapping_when_cropped() {
     ]);
     let title = Source::Title(Text {
         text: "MMMMMMMMMM".into(),
-        style: TitleStyle {
+        style: Styled {
             font: String::new(),
-            size: 28,
+            size: 28.0,
             color: Rgba([64, 64, 64, 128]),
             x: 0.5,
             y: 0.5,

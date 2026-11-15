@@ -360,10 +360,10 @@ fn title_of(spec: &Spec) -> Source {
         text,
         style: TitleStyle {
             font: String::new(),
-            size: if spec.c % 16 == 2 { 0 } else { 96 },
+            size: if spec.c % 16 == 2 { 0.0 } else { 96.0 }.into(),
             color: Rgba([255, 255, 255, 255]),
-            x: 0.5,
-            y: 0.875,
+            x: 0.5.into(),
+            y: 0.875.into(),
             align: TextAlign::Center,
         },
     }

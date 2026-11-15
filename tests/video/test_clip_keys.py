@@ -321,6 +321,179 @@ async def test_a_frame_of_the_timeline_is_the_frame_of_the_picture_shown_there(
     }
 
 
+def style_of(fake: Fake, clip: str) -> dict[str, Any]:
+    """The style of a title of V1, as the fake engine keeps it."""
+    clips = fake.project["timelines"][0]["tracks"][0]["clips"]
+    return next(one for one in clips if one["id"] == clip)["source"]["style"]
+
+
+async def test_the_size_and_the_place_of_a_title_take_keys_by_the_paths_of_its_style(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+
+    async def call(path: str, action: str, **more: Any) -> dict[str, Any]:
+        asked = desk.call("video_clip_keys", clip="c3", path=path, action=action, **more)
+        return result(await asked)
+
+    # c3 is a title on frames 40 to 59, of letters 40 pixels high, anchored in the middle.
+    assert style_of(fake, "c3") == {
+        "align": "center", "color": "#ffffffff", "font": "", "size": 40, "x": 0.5, "y": 0.5,
+    }  # fmt: skip
+    # A size that is a number takes its first key: a title counts its own frames, from 0.
+    told = await call("title.size", "put", frame=45, value=96)
+    first = {"frame": 5, "value": 96, "interp": "linear"}
+    spliced = {"op": "splice_clip_keys", "path": "title.size"}
+    assert sent(fake, "c3") == {**spliced, "at": 0, "remove": 0, "keys": [first]}
+    assert style_of(fake, "c3")["size"] == {"keys": [first]}
+    assert told == {
+        "revision": 1,
+        "operations": 1,
+        "timeline": "t1",
+        "clip": "c3",
+        "path": "title.size",
+        "key": {"timeline_frame": 45, "frame": 5},
+        "key_frames": "frames of the clip, from 0",
+        "setting": {"keys": [{"timeline_frame": 45, **first}]},
+    }
+    # A size between two whole numbers is one too, as a size between two keys is.
+    told = await call("title.size", "put", frame=55, value=48.5, interp="hold")
+    last = {"frame": 15, "value": 48.5, "interp": "hold"}
+    assert sent(fake, "c3") == {**spliced, "at": 1, "remove": 0, "keys": [last]}
+    assert [key["timeline_frame"] for key in told["setting"]["keys"]] == [45, 55]
+    # A key put where there is one takes its place, and keeps its interpolation.
+    await call("title.size", "put", frame=55, value=64)
+    assert sent(fake, "c3") == {**spliced, "at": 1, "remove": 1, "keys": [{**last, "value": 64}]}
+    # A key is taken away by its frame of the timeline; the last leaves its value as the number.
+    await call("title.size", "remove", frame=45)
+    assert sent(fake, "c3") == {**spliced, "at": 0, "remove": 1, "keys": []}
+    told = await call("title.size", "remove", frame=55)
+    assert sent(fake, "c3") == {"op": "set_clip_keys", "path": "title.size", "param": 64}
+    assert style_of(fake, "c3")["size"] == 64
+    assert told["setting"] == 64
+    # Its anchor is keyed alike, and may be beyond the picture, as that of a title that rolls in.
+    await call("title.y", "put", frame=40, value=1.25)
+    told = await call("title.y", "put", frame=59, value=-0.25)
+    assert sent(fake, "c3") == {
+        "op": "splice_clip_keys",
+        "path": "title.y",
+        "at": 1,
+        "remove": 0,
+        "keys": [{"frame": 19, "value": -0.25, "interp": "linear"}],
+    }
+    assert told["setting"] == {
+        "keys": [
+            {"timeline_frame": 40, "frame": 0, "value": 1.25, "interp": "linear"},
+            {"timeline_frame": 59, "frame": 19, "value": -0.25, "interp": "linear"},
+        ]
+    }
+    await call("title.x", "put", frame=50, value=0.25, interp="hold")
+    assert style_of(fake, "c3")["x"] == {"keys": [{"frame": 10, "value": 0.25, "interp": "hold"}]}
+    # Every key is cleared at once, to a value given or to that of the first.
+    told = await call("title.y", "clear")
+    assert sent(fake, "c3") == {"op": "set_clip_keys", "path": "title.y", "param": 1.25}
+    assert told["setting"] == 1.25
+    await call("title.x", "clear", value=0.5)
+    assert sent(fake, "c3") == {"op": "set_clip_keys", "path": "title.x", "param": 0.5}
+    # The title is as it was but for what was set, and what takes no keys was not touched.
+    assert style_of(fake, "c3") == {
+        "align": "center", "color": "#ffffffff", "font": "", "size": 64, "x": 0.5, "y": 1.25,
+    }  # fmt: skip
+    assert all(len(ops) == 1 for ops in fake.transactions)
+    assert len(fake.steps) == len(fake.transactions) == 10
+
+
+async def test_the_style_of_a_title_is_keyed_on_a_title_only_and_within_its_bounds(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    size = "Size of a title, the height of its letters in pixels: 1 to 4096, 72 in a new title"
+    put = {"action": "put", "frame": 45, "value": 96}
+    for asked, why in [
+        # A clip of media has no style: it is said here as the engine would refuse the path.
+        (
+            {"clip": "c1", "path": "title.size", "action": "put", "frame": 110, "value": 96},
+            "c1 is not a title; title.size is a setting of the style of a title",
+        ),
+        (
+            {"clip": "c2", "path": "title.y", "action": "put", "frame": 10, "value": 0.5},
+            "c2 is not a title; title.y is a setting of the style of a title",
+        ),
+        (
+            {"clip": "c9", "path": "title.x", "action": "put", "frame": 10, "value": 0.5},
+            "c9 is a clip of sound on A1",
+        ),
+        ({"path": "title.size", **put, "value": 0.5}, f"title.size is 0.5, out of range ({size})"),
+        ({"path": "title.size", **put, "value": 4097}, f"is 4097, out of range ({size})"),
+        ({"path": "title.size", "action": "clear", "value": 0}, "title.size is 0, out of range"),
+        (
+            {"path": "title.x", **put, "value": 16.5},
+            "title.x is 16.5, out of range (Position X of a title's anchor, in widths of the "
+            "picture: -16 to 16, 0.5 in a new title)",
+        ),
+        (
+            {"path": "title.y", **put, "value": -17},
+            "title.y is -17, out of range (Position Y of a title's anchor, in heights of the "
+            "picture: -16 to 16, 0.5 in a new title)",
+        ),
+        (
+            {"path": "title.size", "action": "put", "frame": 45},
+            f"put needs value, what title.size is at the key ({size})",
+        ),
+        ({"path": "title.size", "action": "clear"}, "title.size has no keys to clear"),
+        ({"path": "title.size", **put, "frame": 60}, "frame 60 is not in clip c3"),
+        # A name alone is the setting that has it; x and y are the transform's, which every
+        # clip of picture has, unless the path names the title.
+        ({"path": "size", **put}, "(did you mean title.size?)"),
+        ({"path": "title.height", **put}, "and of a title title.size, x, y"),
+        ({"path": "x", **put}, "(did you mean transform.x?)"),
+        ({"path": "title.scale", **put}, "(did you mean transform.scale?)"),
+        ({"path": "style.x", **put}, "(did you mean transform.x?)"),
+        ({"path": "title.X", **put}, "(did you mean title.x?)"),
+    ]:
+        refused = await desk.call("video_clip_keys", **{"clip": "c3", **asked})
+        assert refused.error is not None, asked
+        assert refused.error.code == "VIDEO_KEYS", asked
+        assert why in refused.text, (asked, refused.text)
+    assert fake.transactions == []
+    assert fake.steps == []
+    # The engine refuses the path of a title on any other clip as a path that it does not
+    # know, whoever sends it, and takes it on a title.
+    for path in ("title.size", "title.x", "title.y", "title.color", "style.size"):
+        refused = await desk.call(
+            "video_edit", edits=[{"op": "set_clip_keys", "id": "c1", "path": path, "param": 1}]
+        )
+        assert refused.error is not None, path
+        assert refused.error.code == "VIDEO_MISSING", path
+        assert f"there is no setting {path}" in refused.text
+    first = {"frame": 0, "value": 0.0, "interp": "linear"}
+    last = {"frame": 19, "value": 1.0, "interp": "hold"}
+
+    def splice(clip: str, remove: int, keys: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "op": "splice_clip_keys",
+            "id": clip,
+            "path": "title.y",
+            "at": 0,
+            "remove": remove,
+            "keys": keys,
+        }
+
+    refused = await desk.call("video_edit", edits=[splice("c2", 0, [first])])
+    assert refused.error is not None
+    assert refused.error.code == "VIDEO_MISSING"
+    # Nothing that was refused changed the project, and the title takes what the others do not.
+    assert fake.steps == []
+    result(await desk.call("video_edit", edits=[splice("c3", 0, [first, last])]))
+    assert len(fake.steps) == 1
+    assert style_of(fake, "c3")["y"] == {"keys": [first, last]}
+    # A setting keeps one key at least.
+    refused = await desk.call("video_edit", edits=[splice("c3", 2, [])])
+    assert refused.error is not None
+    assert refused.error.code == "VIDEO_OUT_OF_RANGE"
+    assert style_of(fake, "c3")["y"] == {"keys": [first, last]}
+
+
 async def test_every_case_of_the_engine_is_keyed_at_the_frame_that_the_engine_counts(
     studio: tuple[Desk, Fake],
 ) -> None:

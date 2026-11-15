@@ -1,14 +1,11 @@
 import { useWords } from '../../app/locale';
-import { useContext } from 'react';
-import { ChevronLeft, ChevronRight, Spline } from 'lucide-react';
+import { Spline } from 'lucide-react';
 import { COMPOSITES } from '../color/nodeEdits';
-import { RETIME_PROCESSES, type Clip, type ClipKeyed, type Media, type Op, type Timeline } from '../engine';
-import { useFairlightText } from '../fairlight/words';
-import { clipLocations } from '../timeline/selection';
-import { addKey, keyAt, keyFrameOf, keyTimes, paramOf, putValue, removeKey, settingAt } from './clipKeys';
+import { RETIME_PROCESSES, type Clip, type ClipKeyed, type Media, type Timeline } from '../engine';
+import { useClipKeyFields } from './ClipKeyFields';
 import { common, setClips, transitionEdges } from './common';
-import { ChoiceField, FieldsLocked, KeyDiamond, NumberField } from './fields';
-import type { Build, Commit } from './useCommit';
+import { ChoiceField, NumberField } from './fields';
+import type { Commit } from './useCommit';
 
 /**
  * The fades of clips, in frames: each at most what the clip has beside its other fade. An edge with
@@ -48,7 +45,8 @@ export function Fades({ clips, timeline, commit, fineModifiers = false }: { clip
  * Each setting of the transform and of the crop takes keys (Reference Manual 20, Ch. 53). A field
  * shows what its setting is at the playhead; the diamond beside it puts a key there, or takes away
  * the one there, and the arrows go to the key before and after. A setting that has keys takes a
- * value typed or dragged as a key at the playhead; one without is one number, as before.
+ * value typed or dragged as a key at the playhead; one without is one number, as before. The
+ * fields and their buttons are those of `useClipKeyFields`, which the Title tab has too.
  *
  * Where the page has a Curve Editor (`onCurves`), a button at the top opens it on the clip chosen
  * (the Curve button of a keyframed clip in DaVinci Resolve, p. 1108).
@@ -60,37 +58,8 @@ export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSe
 }) {
   const words = useWords().label.studio;
   const labels = words.inspector;
-  const t = useFairlightText();
-  const locked = useContext(FieldsLocked);
   const ids = clips.map(clip => clip.id);
-  const at = (clip: Clip, now: Pick<Timeline, 'rate'> = timeline) => keyFrameOf(clip, now, media, frame);
-  /** What each chosen clip that may be set gives, worked out from the timeline as it is when it is sent. */
-  const each = (ops: (clip: Clip, now: Timeline) => Op[]): Build => now => {
-    const locations = clipLocations(now);
-    return ids.flatMap(id => {
-      const located = locations.get(id);
-      return !located || located.track.locked ? [] : ops(located.clip, now);
-    });
-  };
-  const value = (path: ClipKeyed, shown: (kept: number) => number) => common(clips, clip => shown(settingAt(clip, path, at(clip))));
-  const set = (path: ClipKeyed, kept: number) => void commit(each((clip, now) => putValue(now.id, clip, path, kept, at(clip, now))));
-  const keys = (path: ClipKeyed, label: string) => {
-    const hits = clips.map(clip => keyAt(paramOf(clip, path), at(clip)));
-    const all = hits.length > 0 && hits.every(Boolean);
-    const times = [...new Set(clips.flatMap(clip => keyTimes(clip, timeline, media, path)))].sort((a, b) => a - b);
-    const go = (direction: -1 | 1) => {
-      const target = direction < 0 ? times.filter(time => time < frame).at(-1) : times.find(time => time > frame);
-      if (target !== undefined) onSeek(target, false);
-    };
-    // The diamond says three things apart: the setting has no keys, it has keys (`data-keyed`), a key is at the playhead (`data-hit`, and pressed where every clip has one).
-    return <div className="audio-param-keys" role="group" aria-label={label} data-keys={path}>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Previous keyframe')} title={t('Previous keyframe')} disabled={!times.some(time => time < frame)} onClick={() => go(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t(all ? 'Remove keyframe' : 'Add keyframe')} title={t(all ? 'Remove keyframe' : 'Add keyframe')} aria-pressed={all}
-        data-keyed={times.length > 0 || undefined} data-hit={hits.some(Boolean) || undefined}
-        disabled={locked} onClick={() => void commit(each((clip, now) => all ? removeKey(now.id, clip, path, at(clip, now)) : addKey(now.id, clip, path, at(clip, now))))}><KeyDiamond /></button>
-      <button type="button" className="icon-btn" aria-label={label + ': ' + t('Next keyframe')} title={t('Next keyframe')} disabled={!times.some(time => time > frame)} onClick={() => go(1)}><ChevronRight size={14} aria-hidden="true" /></button>
-    </div>;
-  };
+  const { value, set, keys } = useClipKeyFields({ clips, timeline, commit, media, frame, onSeek });
   /** A side of the crop or its softness, shown in percent of the picture. */
   const cropped = (name: string, path: ClipKeyed, label: string) => <>
     <NumberField name={name} label={label} value={value(path, kept => kept * 100)} fallback={0} unit="%"

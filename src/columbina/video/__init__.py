@@ -1209,7 +1209,8 @@ blend mode: normal, multiply, screen, overlay...) and retime_process (nearest|fr
 what a slowed clip shows between two source frames). A transform or crop setting may be
 {keys:[{frame,value,interp}]}, frames counted as grade keyframes are; set_clip_keys
 {id,path:"transform.x"|"crop.left",param} and splice_clip_keys {id,path,at,remove,keys}
-set one setting's keys. Existing ids come
+set one setting's keys; a title's style.size, x and y take keys too, by the paths
+"title.size"|"title.x"|"title.y". Existing ids come
 from video_info; $names refer to new objects in this batch. Receipts include done operations,
 created names and clamped input indices. Locked tracks and unavailable source handles are
 enforced by the engine.
@@ -1328,11 +1329,11 @@ parent:null}} to create a bin. Consult video_info after edits for final ids and 
 
 _CLIP_KEYS = (
     "Put, remove or clear one keyframe of a setting of a clip's picture; one undo step. path: "
-    "transform.x|y|scale|rotation|opacity or crop.left|right|top|bottom|softness. x, y: widths, "
-    "heights of the timeline's picture (right, down); scale: a factor; rotation: degrees "
-    "clockwise; opacity, crop: shares 0-1. frame: a timeline frame within the clip. The key is "
-    "kept on the picture shown there, at its frame of the clip's media (of the clip, for a title "
-    "or a still); the result gives both frames."
+    "transform.x|y|scale|rotation|opacity, crop.left|right|top|bottom|softness or a title's "
+    "title.size|x|y. x, y: widths, heights of the timeline's picture (right, down); scale: a "
+    "factor; rotation: degrees clockwise; opacity, crop: shares 0-1; size: px. frame: a timeline "
+    "frame within the clip. The key is kept on the picture shown there, at its frame of the "
+    "clip's media (of the clip, for a title or a still); the result gives both."
 )
 
 VIDEOS = ServiceKey[Videos]("videos")

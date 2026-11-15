@@ -60,10 +60,10 @@ fn cases() -> Vec<(&'static str, Clip, Option<Media>, Rate)> {
     sound.facts.video = None;
     let style = TitleStyle {
         font: String::new(),
-        size: 40,
+        size: 40.0.into(),
         color: Rgba([255; 4]),
-        x: 0.5,
-        y: 0.5,
+        x: 0.5.into(),
+        y: 0.5.into(),
         align: TextAlign::Center,
     };
     let title = Clip::new(

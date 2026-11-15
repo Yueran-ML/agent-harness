@@ -81,8 +81,8 @@ export const KeyframeTracks = memo(function KeyframeTracks({ bridge, session, re
  * The keyframe track of one clip, as the Keyframe Editor that DaVinci Resolve opens beneath a clip
  * in the timeline (Reference Manual 20, pp. 1109–1111): as wide as the clip, a group row whose
  * diamonds stand for every key at their frame, and beneath it a row for each setting of the
- * transform and of the crop that has keys, each key a diamond at the frame of the timeline at which
- * the clip shows its picture.
+ * transform and of the crop that has keys, and of the style of a title where the clip is one, each
+ * key a diamond at the frame of the timeline at which the clip shows its picture.
  *
  * What a pointer and the keyboard do:
  * - a click on a diamond chooses its key, or with the group row every key at that frame; Ctrl or

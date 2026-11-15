@@ -1365,24 +1365,37 @@ class Fake:
             # A clip that a test built without a crop has none, as one that the engine reads.
             none = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0}
             clip.setdefault("crop", none)
+        if of == "title":
+            # The size and the place of a title are in the style of its source. A clip of
+            # anything else has no such setting, and is refused as a path that is not known is.
+            source = cast("dict[str, Any]", clip["source"])
+            if source.get("kind") != "title":
+                message = f"there is no setting {path}"
+                data = {"index": index, "reason": "missing", "what": "setting", "id": path}
+                raise RefusedError(-32001, message, {**data, "message": message})
+            holder = cast("dict[str, Any]", source["style"])
+        else:
+            holder = cast("dict[str, Any]", clip[of])
         if op["op"] == "set_clip_keys":
-            clip[of][name] = op["param"]
+            holder[name] = op["param"]
             return
-        now = clip[of][name]
+        now = holder[name]
         keys: list[Any] = list(cast("dict[str, Any]", now)["keys"]) if isinstance(now, dict) else []
         keys[op["at"] : op["at"] + op["remove"]] = op["keys"]
         if not keys:
             message = "a setting keeps one key at least"
             data = {"index": index, "reason": "out_of_range", "what": "keys"}
             raise RefusedError(-32001, message, {**data, "message": message})
-        clip[of][name] = {"keys": keys}
+        holder[name] = {"keys": keys}
 
 
 _CLIP_KEYED = frozenset(
     [f"transform.{name}" for name in ("x", "y", "scale", "rotation", "opacity")]
     + [f"crop.{name}" for name in ("left", "right", "top", "bottom", "softness")]
+    + [f"title.{name}" for name in ("size", "x", "y")]
 )
-"""The settings of a clip that take keys, as the engine's catalog lists them."""
+"""The settings of a clip that take keys, as the engine's catalog lists them. Those of ``title``
+are of the style of a clip whose source is a title."""
 
 
 def _clip(source: dict[str, Any], start: int, length: int) -> dict[str, Any]:

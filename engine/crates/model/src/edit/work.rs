@@ -511,12 +511,17 @@ impl<'a> Work<'a> {
                 length: new.length,
             })?;
         }
-        // The keys of a clip that counts its own frames, moved as its head was (see `own_frames`).
-        if (&old.transform, &old.crop) != (&new.transform, &new.crop) {
+        // The keys of a clip that counts its own frames, moved as its head was (see
+        // `own_frames`): those of its transform and of its crop, and those of the style of a
+        // title, which is set with its source. A clip of media begins elsewhere in its source
+        // by the trim above, and is not given its source here.
+        let restyled = matches!(new.source, Source::Title { .. }) && old.source != new.source;
+        if restyled || (&old.transform, &old.crop) != (&new.transform, &new.crop) {
             let mut op = set_fades(&self.timeline_id(), &new.id, new.fade_in, new.fade_out);
             if let Op::SetClip {
                 transform,
                 crop,
+                source,
                 fade_in,
                 fade_out,
                 ..
@@ -525,6 +530,7 @@ impl<'a> Work<'a> {
                 (*fade_in, *fade_out) = (None, None);
                 *transform = (old.transform != new.transform).then(|| new.transform.clone());
                 *crop = (old.crop != new.crop).then(|| new.crop.clone());
+                *source = restyled.then(|| new.source.clone());
             }
             self.op(op)?;
         }

@@ -526,6 +526,64 @@ def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> N
     assert edits.set_clip_keys("t1", "c2", "crop.softness", 0.25)["path"] == "crop.softness"
 
 
+def test_the_size_and_the_place_of_a_title_are_numbers_or_keys() -> None:
+    # A title of plain numbers is written as it was before its style took keys, to the letter:
+    # a whole size without a fraction, whichever way it was given.
+    plain = '{"font":"","size":72,"color":"#ffffffff","x":0.5,"y":0.5,"align":"center"}'
+    assert TitleStyle().model_dump_json() == plain
+    assert TitleStyle.model_validate_json(plain).model_dump_json() == plain
+    assert TitleStyle(size=72.0).model_dump_json() == plain
+    assert type(TitleStyle(size=72.0).size) is int
+    # A size between two whole numbers is one too, as a key put between two keys leaves it.
+    assert TitleStyle(size=72.5).model_dump(mode="json")["size"] == 72.5
+    # Each of the three is a number or keys, as the settings of a transform are.
+    grows = Keys(keys=[Key(frame=0, value=48), Key(frame=24, value=96.5, interp="hold")])
+    rolls = Keys(keys=[Key(frame=0, value=1.25), Key(frame=49, value=-0.25)])
+    style = TitleStyle(size=grows, x=0.25, y=rolls, align="left")
+    written = {
+        "font": "",
+        "size": {
+            "keys": [
+                {"frame": 0, "value": 48.0, "interp": "linear"},
+                {"frame": 24, "value": 96.5, "interp": "hold"},
+            ]
+        },
+        "color": "#ffffffff",
+        "x": 0.25,
+        "y": {
+            "keys": [
+                {"frame": 0, "value": 1.25, "interp": "linear"},
+                {"frame": 49, "value": -0.25, "interp": "linear"},
+            ]
+        },
+        "align": "left",
+    }
+    assert style.model_dump(mode="json") == written
+    assert TitleStyle.model_validate(written) == style
+    assert TitleStyle.model_validate_json(style.model_dump_json()) == style
+    # The style is set whole by set_clip with the source, keys and all.
+    clip = edits.set_clip("t1", "c2", source=of_title("Hi", 1, style))
+    assert clip["source"] == {"kind": "title", "text": "Hi", "style": written}
+    # And one setting of it by its path.
+    assert edits.set_clip_keys("t1", "c2", "title.size", grows) == {
+        "op": "set_clip_keys",
+        "timeline": "t1",
+        "id": "c2",
+        "path": "title.size",
+        "param": written["size"],
+    }
+    assert edits.splice_clip_keys("t1", "c2", "title.y", 0, 0, rolls.keys)["path"] == "title.y"
+    # A size that the engine would refuse, as a number or at a key, is refused here.
+    for wrong in (
+        lambda: TitleStyle(size=0.5),
+        lambda: TitleStyle(size=float("inf")),
+        lambda: TitleStyle(size=float("nan")),
+        lambda: TitleStyle(size=Keys(keys=[Key(frame=0, value=48), Key(frame=9, value=0.5)])),
+    ):
+        with pytest.raises(ValidationError):
+            wrong()
+
+
 def test_a_retime_process_is_written_as_the_engine_reads_it() -> None:
     blend = edits.set_clip("t1", "c2", retime_process="frame_blend")
 

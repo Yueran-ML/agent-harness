@@ -63,7 +63,7 @@ use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
 use crate::grade::Composite;
 use crate::keyframes::KeyClock;
 use crate::project::{
-    Clip, Cropped, Cue, Id, Media, Placed, Project, Rgba, Source, Timeline, TitleStyle, Track,
+    Clip, Cropped, Cue, Id, Media, Placed, Project, Rgba, Source, Styled, Timeline, Track,
     TrackKind, Transition, TransitionKind,
 };
 use crate::retime::{RetimeProcess, Sounding};
@@ -84,8 +84,9 @@ pub enum Content {
     Title {
         /// What it says.
         text: String,
-        /// How it is drawn.
-        style: TitleStyle,
+        /// How it is drawn at the frame: the settings of its style that have keys are the
+        /// numbers that they are there.
+        style: Styled,
     },
     /// A colour over the whole picture.
     Color {
@@ -217,6 +218,21 @@ fn layer(
     }
     let k = frame - clip.start;
     let mut blend = None;
+    // A transform, a crop and the style of a title with no keys are the same at every frame:
+    // the clock is not asked.
+    let keyed = clip.transform.is_animated()
+        || clip.crop.is_animated()
+        || matches!(&clip.source, Source::Title { style, .. } if style.is_animated());
+    let at = if keyed {
+        KeyClock::of(clip, project, t.rate).at(frame)
+    } else {
+        0
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a frame of keys is within 2^53 of 0"
+    )]
+    let at = at as f64;
     let content = match &clip.source {
         Source::Media { media, source_in } => {
             let found = project.media.iter().find(|m| m.id == *media)?;
@@ -237,21 +253,11 @@ fn layer(
         }
         Source::Title { text, style } => Content::Title {
             text: text.clone(),
-            style: style.clone(),
+            style: style.at(at),
         },
         Source::Color { color } => Content::Color { rgba: *color },
     };
-    // A transform and a crop with no keys are the same at every frame: the clock is not asked.
-    let at = if clip.transform.is_animated() || clip.crop.is_animated() {
-        KeyClock::of(clip, project, t.rate).at(frame)
-    } else {
-        0
-    };
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "a frame of keys is within 2^53 of 0"
-    )]
-    let (placed, cropped) = (clip.transform.at(at as f64), clip.crop.at(at as f64));
+    let (placed, cropped) = (clip.transform.at(at), clip.crop.at(at));
     Some(Layer {
         clip: clip.id.clone(),
         track: track.id.clone(),
@@ -1256,10 +1262,10 @@ mod tests {
                 text: "Hello".into(),
                 style: crate::project::TitleStyle {
                     font: String::new(),
-                    size: 96,
+                    size: 96.0.into(),
                     color: Rgba([255, 255, 255, 255]),
-                    x: 0.5,
-                    y: 0.5,
+                    x: 0.5.into(),
+                    y: 0.5.into(),
                     align: crate::project::TextAlign::Center,
                 },
             },

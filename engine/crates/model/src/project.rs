@@ -643,9 +643,10 @@ pub struct Clip {
 }
 
 impl Clip {
-    /// Put every key of its transform, of its crop and of its grade `by` frames later (earlier
-    /// where `by` is below 0): for a clip whose keys count its own frames, as an edit that
-    /// moves its head does, so that each key stays at its frame of the timeline.
+    /// Put every key of its transform, of its crop, of the style of its title and of its grade
+    /// `by` frames later (earlier where `by` is below 0): for a clip whose keys count its own
+    /// frames, as an edit that moves its head does, so that each key stays at its frame of the
+    /// timeline.
     pub(crate) fn shift_keys(&mut self, by: i64) {
         if by == 0 {
             return;
@@ -656,6 +657,10 @@ impl Clip {
         }
         if self.crop.is_animated() {
             self.crop = self.crop.with_key_frames(&to);
+        }
+        // A style with no keys comes back as it is.
+        if let Source::Title { style, .. } = &mut self.source {
+            *style = style.with_key_frames(&to);
         }
         if self.grade.has_keys() {
             self.grade = self.grade.with_key_frames(to);
@@ -716,13 +721,123 @@ pub enum Source {
 }
 
 /// How the text of a title is drawn.
+///
+/// The size of its letters and the place of its anchor are each a number, or keys ([`Param`]),
+/// as the settings of a [`Transform`] are, and each is written as a number where it has no
+/// keys, as it was before it could have them: a size that is a whole number without a fraction,
+/// as the whole number that it was. The keys are at the frames that the keys of the clip's
+/// transform are at, which for a title are its own frames from its first, 0
+/// ([`crate::keyframes::KeyClock`]). Its font, its colour and the side of its anchor take no
+/// keys.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TitleStyle {
     /// The family of the font, or empty for the one that the engine chooses.
     pub font: String,
-    /// The height of its letters in pixels of the timeline: from 1 to 4096.
-    pub size: u32,
+    /// The height of its letters in pixels of the timeline: from 1 to 4096, and between two
+    /// keys not always a whole number of them.
+    #[serde(serialize_with = "whole_or_param")]
+    pub size: Param,
+    /// The colour of its letters.
+    pub color: Rgba,
+    /// Where its anchor is across the picture: 0 at the left edge, 1 at the right.
+    pub x: Param,
+    /// Where its anchor is down the picture: 0 at the top edge, 1 at the bottom.
+    pub y: Param,
+    /// Which side of the text the anchor is on.
+    pub align: TextAlign,
+}
+
+/// Write a setting that was a whole number before it could have keys: one number that is whole
+/// as that whole number, `96` and not `96.0`, so that a project written before is written as it
+/// was to the byte; and any other as a [`Param`] is written.
+fn whole_or_param<S: Serializer>(param: &Param, serializer: S) -> Result<S::Ok, S::Error> {
+    match param {
+        Param::Fixed(value)
+            if value.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(value) =>
+        {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a whole number from 0 to the most of 32 bits"
+            )]
+            let whole = *value as u32;
+            serializer.serialize_u32(whole)
+        }
+        _ => param.serialize(serializer),
+    }
+}
+
+impl TitleStyle {
+    /// The most that the letters of a title are high, in pixels of the timeline.
+    pub const MOST_SIZE: f64 = 4096.0;
+
+    /// The names of its settings that take keys, as a path names them after `title.`.
+    pub const SETTINGS: [&'static str; 3] = ["size", "x", "y"];
+
+    /// How the title is drawn at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> Styled {
+        Styled {
+            font: self.font.clone(),
+            size: self.size.value_at(frame),
+            color: self.color,
+            x: self.x.value_at(frame),
+            y: self.y.value_at(frame),
+            align: self.align,
+        }
+    }
+
+    /// Whether any of its settings has keys.
+    #[must_use]
+    pub fn is_animated(&self) -> bool {
+        [&self.size, &self.x, &self.y]
+            .iter()
+            .any(|setting| setting.is_animated())
+    }
+
+    /// It with each key of its settings at the frame `to` of its frame
+    /// ([`Param::with_key_frames`]).
+    #[must_use]
+    pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> TitleStyle {
+        TitleStyle {
+            font: self.font.clone(),
+            size: self.size.with_key_frames(to),
+            color: self.color,
+            x: self.x.with_key_frames(to),
+            y: self.y.with_key_frames(to),
+            align: self.align,
+        }
+    }
+
+    /// The setting of a name, one of [`TitleStyle::SETTINGS`].
+    pub(crate) fn setting_mut(&mut self, name: &str) -> Option<&mut Param> {
+        match name {
+            "size" => Some(&mut self.size),
+            "x" => Some(&mut self.x),
+            "y" => Some(&mut self.y),
+            _ => None,
+        }
+    }
+
+    /// Check its settings, each a number or keys: the size from 1 to
+    /// [`TitleStyle::MOST_SIZE`], and the place of the anchor finite.
+    pub(crate) fn check(&self) -> Result<(), crate::ops::OpError> {
+        self.size.check("size", 1.0, Self::MOST_SIZE)?;
+        self.x.check_with("position", |_| true)?;
+        self.y.check_with("position", |_| true)
+    }
+}
+
+/// How the text of a title is drawn at one moment: the font, the colour and the side of the
+/// anchor of a [`TitleStyle`], and each of its settings that take keys as the number that it
+/// is there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Styled {
+    /// The family of the font, or empty for the one that the engine chooses.
+    pub font: String,
+    /// The height of its letters in pixels of the timeline.
+    pub size: f64,
     /// The colour of its letters.
     pub color: Rgba,
     /// Where its anchor is across the picture: 0 at the left edge, 1 at the right.
@@ -1785,10 +1900,10 @@ mod tests {
             text: "标题".into(),
             style: TitleStyle {
                 font: String::new(),
-                size: 96,
+                size: 96.0.into(),
                 color: Rgba([255, 255, 255, 255]),
-                x: 0.5,
-                y: 0.5,
+                x: 0.5.into(),
+                y: 0.5.into(),
                 align: TextAlign::Center,
             },
         };

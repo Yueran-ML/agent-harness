@@ -11,7 +11,7 @@ use columbina_compose::{
     Source, Target, Text, Transform, WORKING_FORMAT,
 };
 use columbina_media::{NativePicture, Picture};
-use columbina_model::project::{Rgba, TextAlign, TitleStyle};
+use columbina_model::project::{Rgba, Styled, TextAlign};
 
 /// The codes of BT.709 of limited range of R'G'B' from 0 to 1.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -348,10 +348,10 @@ fn a_dissolve_half_way_mixes_the_two_pictures_half_and_half() {
     assert_no_errors(&gpu);
 }
 
-fn style(size: u32, x: f64, y: f64, align: TextAlign) -> TitleStyle {
-    TitleStyle {
+fn style(size: u32, x: f64, y: f64, align: TextAlign) -> Styled {
+    Styled {
         font: String::new(),
-        size,
+        size: f64::from(size),
         color: Rgba([255, 255, 255, 255]),
         x,
         y,
@@ -973,7 +973,7 @@ fn two_layers_that_meet_at_a_pixel_leave_no_seam_between_them() {
     assert_no_errors(&gpu);
 }
 
-fn title(text: &str, style: TitleStyle, transform: Transform) -> SceneLayer {
+fn title(text: &str, style: Styled, transform: Transform) -> SceneLayer {
     layer(
         Source::Title(Text {
             text: text.into(),
@@ -1107,6 +1107,112 @@ fn titles_are_sized_in_pixels_of_the_timeline() {
         (b1 - b0).abs_diff(2 * (d1 - d0)) <= 4,
         "{b0}..{b1}, {d0}..{d1}"
     );
+}
+
+/// A title whose size has keys is drawn at each frame at the size that its keys give there, as
+/// the same title is drawn with that size as one number: pixel for pixel, at a size that is a
+/// whole number of pixels and at one that is not.
+#[test]
+fn a_title_at_a_size_between_two_keys_is_drawn_as_one_of_that_size_as_a_number() {
+    use columbina_model::grade::{Interp, Key, Param};
+    use columbina_model::project::TitleStyle;
+    let Some(gpu) = gpu_for_tests() else { return };
+    let key = |frame, value| Key {
+        frame,
+        value,
+        interp: Interp::Linear,
+    };
+    let keyed = TitleStyle {
+        font: String::new(),
+        size: Param::Keys(vec![key(0, 24.0), key(10, 56.0)]),
+        color: Rgba([255, 255, 255, 255]),
+        x: 0.5.into(),
+        y: 0.5.into(),
+        align: TextAlign::Center,
+    };
+    // Each is drawn by a compositor of its own, which has kept no text of the other.
+    let drawn = |style: Styled| {
+        let mut compositor = Compositor::new(Arc::clone(&gpu));
+        let layers = vec![title("Columbina", style, Transform::NONE)];
+        let frame = preview(&gpu, &mut compositor, &scene(320, 180, layers));
+        assert_eq!(compositor.texts_drawn(), 1);
+        frame
+    };
+    let mut widths = Vec::new();
+    for (frame, size) in [(0.0, 24.0), (3.0, 33.6), (5.0, 40.0), (10.0, 56.0)] {
+        let plain = TitleStyle {
+            size: Param::Fixed(size),
+            ..keyed.clone()
+        };
+        assert!((keyed.at(frame).size - size).abs() < 1e-9, "frame {frame}");
+        let (between, number) = (drawn(keyed.at(frame)), drawn(plain.at(frame)));
+        assert!(
+            between.pixels == number.pixels,
+            "frame {frame}: not the pixels of a title of {size}"
+        );
+        let ([x0, _, x1, _], count) = lit(&between, 180, 128);
+        assert!(count > 100, "frame {frame}: {count} pixels lit");
+        widths.push(x1 - x0);
+    }
+    // And the letters are larger at each of the frames, as the keys say.
+    assert!(widths.is_sorted_by(|a, b| a < b), "{widths:?}");
+    assert_no_errors(&gpu);
+}
+
+/// A title whose anchor has keys is drawn into pixels once, and those pixels are put where
+/// each frame has the anchor. A size of its own at each frame is drawn at each, and of all
+/// those sizes the compositor keeps no more texts than it keeps of any.
+#[test]
+fn a_title_that_moves_is_not_drawn_again_and_one_that_grows_is_drawn_at_each_size() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let shown = |size: f64, x: f64, y: f64| {
+        let layers = vec![title(
+            "Columbina",
+            Styled {
+                size,
+                ..style(24, x, y, TextAlign::Center)
+            },
+            Transform::NONE,
+        )];
+        scene(320, 180, layers)
+    };
+    let first = preview(&gpu, &mut compositor, &shown(24.0, 0.3, 0.25));
+    assert_eq!(compositor.texts_drawn(), 1);
+    let ([x0, y0, x1, y1], count) = lit(&first, 180, 128);
+    assert!(count > 100, "{count} pixels lit");
+    // Its anchor 0.4 of the width to the right and half the height down, at another frame:
+    // the pixels that were drawn, 128 to the right and 90 down.
+    let moved = preview(&gpu, &mut compositor, &shown(24.0, 0.7, 0.75));
+    assert_eq!(compositor.texts_drawn(), 1);
+    let ([m0, n0, m1, n1], _) = lit(&moved, 180, 128);
+    assert!(
+        (m0 + m1).abs_diff(x0 + x1 + 256) <= 4,
+        "{x0}..{x1}, {m0}..{m1}"
+    );
+    assert!(
+        (n0 + n1).abs_diff(y0 + y1 + 180) <= 4,
+        "{y0}..{y1}, {n0}..{n1}"
+    );
+    assert!((m1 - m0).abs_diff(x1 - x0) <= 2, "{x0}..{x1}, {m0}..{m1}");
+    // A hundred sizes, a quarter of a pixel apart: the first is the one that was kept, and
+    // each of the others is drawn once.
+    let target = Target::preview(&gpu, 320, 180).unwrap();
+    let size_at = |step: u32| 24.0 + f64::from(step) * 0.25;
+    for step in 0..100 {
+        compositor
+            .render(&shown(size_at(step), 0.5, 0.5), &target)
+            .unwrap();
+    }
+    assert_eq!(compositor.texts_drawn(), 100);
+    // No more texts are kept than the 64 that the compositor keeps, the last drawn; so a size
+    // that it was at a moment ago is not drawn again.
+    assert!(compositor.texts_kept() <= 64, "{}", compositor.texts_kept());
+    compositor
+        .render(&shown(size_at(90), 0.4, 0.6), &target)
+        .unwrap();
+    assert_eq!(compositor.texts_drawn(), 100);
+    assert_no_errors(&gpu);
 }
 
 /// How long a picture of 4K drawn three times smaller and subtitles of 4K take: run with

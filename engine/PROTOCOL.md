@@ -740,7 +740,16 @@ clients; a client must not write `project.json` itself.
   place the anchor as shares of the picture (0 at the left or top edge, 1 at the right or
   bottom), any finite number (outside 0…1 the anchor is off the picture); align
   `left|center|right` says which side of the text the anchor is on. Title text may be empty and
-  is at most 1000 characters.
+  is at most 1000 characters. Each of `size`, `x` and `y` is a number, or
+  `{"keys": [{frame, value, interp}, ...]}` as the settings of `transform` are (below): the
+  keys count the frames of the title from its first, 0 (see Frames of keys), their frames
+  rise strictly, and each value is within the setting's range (`out_of_range` with `what`
+  `size` or `position`). A size need not be a whole number: between two keys it seldom is, and
+  the letters are drawn at the size of the frame. A setting with no keys is written as a
+  number, a whole size without a fraction (`96`), so a project whose titles have no keys reads
+  and writes as it did. `set_clip` with a `source` puts the style whole, keys and all;
+  `set_clip_keys` and `splice_clip_keys` set one of the three, by `title.size`, `title.x` or
+  `title.y`. `font`, `color` and `align` take no keys.
 - Colors accept exactly eight hexadecimal digits after `#`, with either letter case; returned
   operations and saved projects normalize them to lowercase `#rrggbbaa` (alpha last).
 - `transform` is `{x,y,scale,rotation,opacity}`: offsets as shares of timeline width/height,
@@ -2053,8 +2062,8 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_track` | `timeline`, `id`, `name?`, `color?` (`#rrggbbaa`, null restores the unspecified default), `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (the last three of a track of sound only; on another `wrong_track` with `what` of the setting) |
 | `move_track` | `timeline`, `id`, `index`: zero-based index in the final complete track list, including video, audio and subtitle tracks; preserves the existing object and every ID/reference. Out-of-range or unchanged indexes are refused as `out_of_range` (`what: "track index"`). Like other basic track operations it can be undone while locked. |
 | `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `crop?` (whole), `composite?`, `retime_process?` (`nearest` or `frame_blend`), `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
-| `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness` (listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`). Any other path is `missing` with `what` `setting`. Its inverse is the `set_clip_keys` of the setting as it was. |
-| `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`). |
+| `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness`, and, of a clip whose source is a title, `title.size`, `title.x`, `title.y` of its style (all listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`; those of `title.x` and `title.y`, as those of `transform.x` and `transform.y`, are what a control offers, and the model takes any finite number). Any other path is `missing` with `what` `setting`, and so is a path under `title` on a clip that is not a title. Its inverse is the `set_clip_keys` of the setting as it was. |
+| `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`, and `size` or `position` for the style of a title). |
 | `set_retime` | `timeline`, `id`, `retime` (the speed points `{points: [...]}`, or `null`, which must be written, for the speed of the source, forward), `length?` (the new length of the clip in frames, for a change that makes it longer or shorter): sets how the clip plays its source, whole, so a drag may send it again and again. Speed points of one speed are written as the `speed` and `reverse` of the clip. `start` and `source.in` stay: `trim_clip` moves them. Refused for a title, a colour or a still (`out_of_range`, `retime_source`), for speed points that are not those of a clip of that length (`out_of_range`: `retime`, `speed`, `retime_unit`), where the clip would show what is not in its media (`out_of_source`), and where it would cover frames of another clip of its track (`overlap`): nothing is moved out of its way. A clip with speed points refuses the `speed` and `reverse` of `set_clip` (`out_of_range`, `retimed`). Inverse: `set_retime` of how the clip played before, and of its length. |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
@@ -3334,10 +3343,12 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
   later with their pictures, which is what Stretch Keyframes does. (Maintain Timing, which
   would keep them at their frames of the timeline, is not offered.)
 - A **title**, a **colour** and a **still** (one picture held) have no frames of their own: the
-  keys of their grades, transforms and crops count the frames of the clip from its first (0).
+  keys of their grades, transforms and crops, and those of the style of a title (its `size`,
+  `x` and `y`), count the frames of the clip from its first (0).
   An edit that moves the head of such a clip (a `trim` of its start, with or without a ripple,
   a `roll`, a `slide`, a `blade`, and whatever else cuts it in two) moves its keys the other
-  way by as many frames, with a `set_clip` and a `set_grade` in the same step, so that each key
+  way by as many frames, with a `set_clip` (which carries the `source` of a title whose style
+  has keys) and a `set_grade` in the same step, so that each key
   stays at its frame of the timeline, as the keys of media stay on their pictures. The basic
   operations do not: after a `trim_clip` alone, the keys are as far from the new head as they
   were from the old.

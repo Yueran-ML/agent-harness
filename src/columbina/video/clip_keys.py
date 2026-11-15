@@ -1,4 +1,4 @@
-"""The keys of a clip's picture: its transform and its crop, keyed one key at a time.
+"""The keys of a clip's picture, its transform, its crop and a title's style, one at a time.
 
 ``video_clip_keys`` puts a key of one setting of a clip, takes one away, or clears them all, as
 ``video_grade_keys`` does of a setting of a node: :func:`columbina.video.grading.key_op` works
@@ -12,6 +12,10 @@ still, the frame of the clip from its first. So the tool is given a frame of the
 finds the frame of the key as the engine finds it (:class:`KeyClock`, which counts as
 ``KeyClock`` of ``engine/crates/model/src/keyframes.rs`` counts and must be kept the same), and
 tells both, with the frame of the timeline that each key of the setting is shown at.
+
+The settings of a title's style, ``title.size``, ``title.x`` and ``title.y``, are of a clip whose
+source is a title only: the engine refuses them of any other clip as it refuses a path that it
+does not know, and so the tool says so before anything is sent.
 """
 
 import difflib
@@ -41,6 +45,18 @@ class KeysError(Exception):
     """What is wrong with what ``video_clip_keys`` was asked, said so that it can be put right."""
 
 
+@dataclass(frozen=True)
+class _Styled(Number):
+    """A setting of a title's style, which has no value that changes nothing.
+
+    Its ``default`` is what the engine's catalog gives it, the value that a new title has.
+    """
+
+    def told(self) -> str:
+        """Its range and what it is in a new title, in words."""
+        return f"{self.name}: {self.low:g} to {self.high:g}, {self.default:g} in a new title"
+
+
 SETTINGS: dict[str, Number] = {
     "transform.x": Number("Position X, right, in widths of the timeline's picture", 0, -16, 16),
     "transform.y": Number("Position Y, down, in heights of the timeline's picture", 0, -16, 16),
@@ -52,11 +68,18 @@ SETTINGS: dict[str, Number] = {
     "crop.top": Number("Crop Top, a share of the height of the clip's picture", 0, 0, 1),
     "crop.bottom": Number("Crop Bottom, a share of the height of the clip's picture", 0, 0, 1),
     "crop.softness": Number("Crop Softness, a share of the height of the clip's picture", 0, 0, 1),
+    "title.size": _Styled("Size of a title, the height of its letters in pixels", 72, 1, 4096),
+    "title.x": _Styled("Position X of a title's anchor, in widths of the picture", 0.5, -16, 16),
+    "title.y": _Styled("Position Y of a title's anchor, in heights of the picture", 0.5, -16, 16),
 }
 """The settings of a clip that take keys, by their paths in the clip, with the bounds that the
-engine's catalog gives them (``clip`` of ``engine/crates/model/tests/data/catalog.json``)."""
+engine's catalog gives them (``clip`` of ``engine/crates/model/tests/data/catalog.json``). Those
+of ``title`` are of the style of a clip whose source is a title, and of no other clip."""
 
-_PATHS = "transform.x, y, scale, rotation, opacity and crop.left, right, top, bottom, softness"
+_PATHS = (
+    "transform.x, y, scale, rotation, opacity and crop.left, right, top, bottom, softness, "
+    "and of a title title.size, x, y"
+)
 _AS_DAVINCI = {"zoom": "scale", "angle": "rotation"}
 """What the Inspector calls a setting, where a model may name it so."""
 
@@ -70,8 +93,15 @@ def setting_of(path: str) -> Number:
     spec = SETTINGS.get(path)
     if spec is not None:
         return spec
-    # A name alone, under the wrong one of the two, misspelt or as DaVinci has it, is that name.
-    names = {one.rsplit(".", 1)[-1]: one for one in SETTINGS}
+    # A name alone, under the wrong one of the three, misspelt or as DaVinci has it, is that
+    # name. A name that two of them have, x or y, is that of the one that the path names, or
+    # of the transform, which every clip of picture has.
+    named = path.split(".", 1)[0].lower()
+    names: dict[str, str] = {}
+    for one in SETTINGS:
+        holder, name = one.split(".")
+        if name not in names or holder == named:
+            names[name] = one
     last = path.rsplit(".", 1)[-1].lower()
     last = _AS_DAVINCI.get(last, last)
     close = [last] if last in names else difflib.get_close_matches(last, list(names), n=1)
@@ -253,9 +283,16 @@ def _clock(
     return KeyClock.of(clip, Rate.model_validate(timeline["rate"]), media)
 
 
+def _is_title(clip: Mapping[str, Any]) -> bool:
+    return _object(clip.get("source")).get("kind") == "title"
+
+
 def _now(clip: Mapping[str, Any], path: str, spec: Number) -> Any:
     """What the setting at ``path`` of a clip is: a number, or keys."""
     of, name = path.split(".")
+    if of == "title":
+        # The style of a title is in its source, and not in the clip beside its transform.
+        return _object(_object(clip.get("source")).get("style")).get(name, spec.default)
     return _object(clip.get(of)).get(name, spec.default)
 
 
@@ -314,11 +351,12 @@ async def keys(
 ) -> dict[str, Any]:
     """Put a key of one setting of a clip's picture, take one away, or clear them all.
 
-    ``frame`` is a frame of the timeline, within the clip; the key is at the frame of the
-    clip's keys that the clip is at there (:class:`KeyClock`). The other keys of the setting are
-    not sent: a key put at a frame that has one takes its place, and keeps its interpolation
-    where none is given; the last key taken away leaves its value as a number; ``clear``
-    leaves ``value``, or the value of the first key.
+    ``path`` is one of :data:`SETTINGS`; ``title.size``, ``title.x`` and ``title.y`` are of a
+    clip whose source is a title. ``frame`` is a frame of the timeline, within the clip; the key
+    is at the frame of the clip's keys that the clip is at there (:class:`KeyClock`). The other
+    keys of the setting are not sent: a key put at a frame that has one takes its place, and
+    keeps its interpolation where none is given; the last key taken away leaves its value as a
+    number; ``clear`` leaves ``value``, or the value of the first key.
 
     Returns:
         The revision made; ``key``, the key that was put or taken away, by the frame of the
@@ -342,6 +380,11 @@ async def keys(
     def build(project: Mapping[str, Any]) -> list[dict[str, Any]]:
         on = timeline_of(project, timeline)
         found = _picture_clip(on, clip)
+        if path.startswith("title.") and not _is_title(found):
+            raise KeysError(
+                f"{clip} is not a title; {path} is a setting of the style of a title, and the "
+                "transform and the crop are of every clip of picture"
+            )
         clock = _clock(project, on, found)
         now = _now(found, path, spec)
         at = None

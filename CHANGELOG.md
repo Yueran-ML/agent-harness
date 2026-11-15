@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- The size and the position of a title take keyframes (studio, phase 4), as the transform
+  and the cropping of a clip do: each is a number or keys, with the diamond and the arrows
+  beside its field in the Inspector, the diamonds and the keyframe track on the clip, and
+  its curve in the Curve Editor. Text whose size changes is drawn at the size of each
+  frame, and a title without keys is drawn, read and written as it was. The agent keys
+  them with `video_clip_keys`, or `set_clip_keys` and `splice_clip_keys`, by the paths
+  `title.size`, `title.x` and `title.y`, which only a title has. The colour, the font and
+  the alignment of a title take no keys yet.
 - What a first pass by hand found in the studio of the desktop app is put right. The Color
   page is laid out in its two bands again (the gallery, the viewer and the node editor above
   the palettes): its grid had been lost to a rule of the studio's stylesheet, which is loaded

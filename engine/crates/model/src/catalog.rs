@@ -15,7 +15,8 @@
 //!
 //! The catalog lists what the nodes of the Color page hold: a corrector, and a Key Mixer,
 //! whose inputs and output each have a gain and an offset; and what a clip holds of the Edit
-//! page: the settings of its transform and of its crop ([`clip`]). The keys of all of them are
+//! page: the settings of its transform and of its crop, and, of a clip that is a title, the
+//! size of its letters and the place of its anchor ([`clip`]). The keys of all of them are
 //! counted in the
 //! frames of the source of the clip ([`crate::keyframes`]). The operations that set the keys of
 //! a setting by its path take the paths that are listed: [`crate::ops::Op::SetKeys`] those of a
@@ -24,6 +25,9 @@
 //! The place and the turn of a clip may be any finite numbers in the model, as they were before
 //! they took keys; for them the catalog gives the values that the editors show, 16 pictures
 //! either way and ten turns, and for the scale the least that the Inspector sets, a hundredth.
+//! The anchor of a title may be anywhere too, and is given as far either way, so that a title
+//! may be keyed from beyond an edge of the picture to beyond the other. A title has no size
+//! that changes nothing: its entry gives the size that the clients give a new title, 72.
 
 use std::sync::OnceLock;
 
@@ -50,6 +54,8 @@ pub enum Unit {
     Heights,
     /// Widths of the picture.
     Widths,
+    /// Pixels of the timeline.
+    Pixels,
 }
 
 /// The page that shows a setting.
@@ -93,6 +99,8 @@ pub enum Palette {
     Composite,
     /// The Cropping of the Inspector.
     Cropping,
+    /// The Title of the Inspector, which a clip that is a title has.
+    Title,
 }
 
 /// What the keys of a setting are counted in.
@@ -329,7 +337,8 @@ pub fn key_mixer() -> &'static [Entry] {
 }
 
 /// The settings of a clip that take keys: those of its transform and of its crop, named as the
-/// clip holds them, `transform.x`, `crop.left`.
+/// clip holds them, `transform.x`, `crop.left`; and those of the style of a title, which a clip
+/// that is a title has, named under `title`: `title.size`.
 #[must_use]
 pub fn clip() -> &'static [Entry] {
     static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
@@ -345,7 +354,9 @@ pub fn clip() -> &'static [Entry] {
             clock: Clock::SourceFrame,
         };
         let most = crate::project::Transform::MOST_SCALE;
+        let largest = crate::project::TitleStyle::MOST_SIZE;
         let (place, share) = ([0.0, -16.0, 16.0], [0.0, 0.0, 1.0]);
+        let anchor = [0.5, -16.0, 16.0];
         vec![
             one("transform.x", place, Unit::Widths, Palette::Transform),
             one("transform.y", place, Unit::Heights, Palette::Transform),
@@ -372,6 +383,14 @@ pub fn clip() -> &'static [Entry] {
             one("crop.top", share, Unit::Heights, Palette::Cropping),
             one("crop.bottom", share, Unit::Heights, Palette::Cropping),
             one("crop.softness", share, Unit::Heights, Palette::Cropping),
+            one(
+                "title.size",
+                [72.0, 1.0, largest],
+                Unit::Pixels,
+                Palette::Title,
+            ),
+            one("title.x", anchor, Unit::Widths, Palette::Title),
+            one("title.y", anchor, Unit::Heights, Palette::Title),
         ]
     })
 }

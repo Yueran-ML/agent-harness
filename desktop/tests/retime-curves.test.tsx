@@ -141,7 +141,9 @@ describe('the Retime curves of a clip in the Curve Editor', () => {
 
   it('are not there for a title, a colour or a still, which have no speed', () => {
     const title = wire([clip('c1', 10, 60, { source: { kind: 'title', text: 'Hello', style: { font: 'Inter', size: 72, color: '#ffffffff', x: 0.5, y: 0.5, align: 'center' } } })]);
-    expect(boxes()).toHaveLength(10);
+    // The ten settings of every clip of picture, and the three of the style of a title: its size and the place of its anchor.
+    expect(boxes()).toHaveLength(13);
+    expect(boxes().slice(10).map(([name]) => name)).toEqual(['Text size', 'Text position X', 'Text position Y']);
     expect(screen.queryByRole('button', { name: 'Retime Frame' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Retime Speed' })).toBeNull();
     title.unmount();

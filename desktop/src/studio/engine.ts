@@ -129,7 +129,13 @@ export interface Transform { x: Param; y: Param; scale: Param; rotation: Param; 
 export interface Crop { left: Param; right: Param; top: Param; bottom: Param; softness: Param }
 /** The picture whole: the crop of a clip that says nothing of it. */
 export const NO_CROP: Crop = { left: 0, right: 0, top: 0, bottom: 0, softness: 0 };
-export interface TitleStyle { font: string; size: number; color: string; x: number; y: number; align: 'left' | 'center' | 'right' }
+/**
+ * How the text of a title is drawn. Its size, in pixels of the timeline from 1 to 4096, and the place of
+ * its anchor, as shares of the picture, are each a number or keys, as the settings of a transform are:
+ * the keys of a title count its own frames from its first, 0. The font, the colour and the side of the
+ * anchor are one value on every frame.
+ */
+export interface TitleStyle { font: string; size: Param; color: string; x: Param; y: Param; align: 'left' | 'center' | 'right' }
 export type ClipSource =
   | { kind: 'media'; media: string; in: Time }
   | { kind: 'title'; text: string; style: TitleStyle }
@@ -1956,8 +1962,17 @@ function splicedKeys(before: Param, op: { path: string; at: number; remove: numb
 export const CLIP_KEYED = [
   'transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity',
   'crop.left', 'crop.right', 'crop.top', 'crop.bottom', 'crop.softness',
+  'title.size', 'title.x', 'title.y',
 ] as const;
 export type ClipKeyed = (typeof CLIP_KEYED)[number];
+/** The settings of the style of a title that take keys, named after `title.` as a path names them: no clip but a title has them. */
+export const TITLE_KEYED = ['size', 'x', 'y'] as const;
+export type TitleKeyed = (typeof TITLE_KEYED)[number];
+/** The setting of the style of a title that a path of `CLIP_KEYED` names, or null for a path of the transform or of the crop. */
+export function titleSetting(path: string): TitleKeyed | null {
+  const name = path.startsWith('title.') ? path.slice('title.'.length) : '';
+  return (TITLE_KEYED as readonly string[]).includes(name) ? (name as TitleKeyed) : null;
+}
 
 /** A clip as the engine keeps its Retime Process: written only where it mixes two pictures, so that a clip set to `nearest` has none. */
 function processKept(clip: Clip): Clip {
@@ -1981,7 +1996,15 @@ function retimed(clip: Clip, retime: Retime | null, length: number | undefined):
 }
 /** A clip with the setting at one of the paths of `CLIP_KEYED` changed (`set_clip_keys`, `splice_clip_keys`). */
 function withClipSetting(clip: Clip, path: string, change: (before: Param) => Param): Clip {
-  if (!(CLIP_KEYED as readonly string[]).includes(path)) throw new CopyMismatch(`there is no setting ${path} of clip ${clip.id} in the copy`);
+  const missing = () => new CopyMismatch(`there is no setting ${path} of clip ${clip.id} in the copy`);
+  if (!(CLIP_KEYED as readonly string[]).includes(path)) throw missing();
+  const styled = titleSetting(path);
+  if (styled) {
+    // The style of a title is in its source: a clip of media or a colour has no such setting, as the engine refuses it.
+    const source = clip.source;
+    if (source.kind !== 'title') throw missing();
+    return { ...clip, source: { ...source, style: { ...source.style, [styled]: change(source.style[styled]) } } };
+  }
   // A clip that a client built may say nothing of its crop: it has none.
   return settingPut({ ...clip, crop: clip.crop ?? NO_CROP }, path, change, `clip ${clip.id}`) as Clip;
 }

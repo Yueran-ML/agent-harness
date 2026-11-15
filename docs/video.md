@@ -103,7 +103,9 @@ size and frame rate, by default those of the first video in the pool) and opens 
   the timeline: Nearest shows the one picture that it falls in, and Frame Blend mixes that
   picture with the next by how far between them the frame falls. On an
   audio track: volume, pan and fades; for a title: text, size, colour, position and alignment;
-  for a solid colour: its colour. A number is typed, or dragged sideways (with Shift ten times
+  for a solid colour: its colour. The size and the position of a title take keyframes as the
+  transform does: the same diamond and arrows beside their fields, the diamonds and the
+  keyframe track on the clip, and their curves in the Curve Editor. A number is typed, or dragged sideways (with Shift ten times
   as fast), and is sent once when it is let go; Escape takes it back and a double-click on its
   label resets it. With several clips chosen only what they share is shown. A transition shows
   its kind, length and alignment; where the media has too few frames for it, the inspector
@@ -448,7 +450,7 @@ shot), `blade`, `move`, `insert_move`, `trim`, `roll`, `slip`, `slide`, `set_spe
 `set_cue`, `remove_cue` and `cues_from`. A batch may mix them with the basic operations of the
 protocol, such as `add_timeline`, `add_bin`, `set_clip` (transform, crop, composite mode,
 retime process, gain, pan, fades), `set_clip_keys` and `splice_clip_keys` (the keyframes of one setting of a clip's
-transform or crop),
+transform or crop, or of a title's size or position),
 `set_track`, `set_media` and `set_timeline`. The speed of a clip may change on the way, as with
 Resolve's Retime Controls: `add_speed_point`, `set_segment_speed`, `freeze_frame`,
 `reverse_segment`, `clear_speed_point` and `reset_speed` change the speed points of a clip at a
@@ -508,6 +510,8 @@ grade's summary.
 - `video_clip_keys` does the same for one setting of a clip's picture on the Edit page, named
   by its path: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`,
   `transform.opacity`, `crop.left`, `crop.right`, `crop.top`, `crop.bottom` or `crop.softness`.
+  A title, and no other clip, also has `title.size`, the height of its letters in pixels,
+  and `title.x` and `title.y`, where its anchor is as shares of the picture.
   Its `frame` is a frame of the timeline, within the clip: the tool finds the frame of the
   clip's media whose picture is shown there, as the engine does, keeps the key at it, and tells
   both frames, with the frame of the timeline at which each key of the setting is shown. A path

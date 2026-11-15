@@ -1528,6 +1528,76 @@ mod tests {
         assert_eq!(frames.len(), path.len());
     }
 
+    /// A title whose anchor has keys is exported where its keys put it at each frame: one
+    /// that goes down the picture is lower at a later frame, by as much as its keys say, as
+    /// the timeline monitor shows it.
+    #[test]
+    fn an_export_shows_a_title_where_the_keys_of_its_style_put_it_at_each_frame() {
+        use columbina_model::project::{Rgba, TextAlign, TitleStyle};
+        use columbina_model::{Clip, Interp, Key, Param};
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let (width, height) = (640, 360);
+        let mut project = Project::sample();
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (width, height);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        // White letters 48 pixels high, anchored at their middle: a quarter of the way down
+        // at the first frame of the title, three quarters at its fifth.
+        let key = |frame, value| Key {
+            frame,
+            value,
+            interp: Interp::Linear,
+        };
+        let title = columbina_model::Source::Title {
+            text: "Columbina".into(),
+            style: TitleStyle {
+                font: String::new(),
+                size: 48.0.into(),
+                color: Rgba([255, 255, 255, 255]),
+                x: 0.5.into(),
+                y: Param::Keys(vec![key(0, 0.25), key(4, 0.75)]),
+                align: TextAlign::Center,
+            },
+        };
+        timeline.tracks[0].clips = vec![Clip::new("c1", title, 0, 5)];
+        let frames = exported(&project, 5, width, height);
+        // The row halfway between the first and the last that the letters light.
+        let middle = |rgba: &[u8]| {
+            let lit: Vec<u32> = (0..height)
+                .filter(|y| {
+                    let row = (y * width * 4) as usize..((y + 1) * width * 4) as usize;
+                    let pixels = rgba[row].as_chunks::<4>().0;
+                    pixels.iter().any(|pixel| pixel[0] > 128)
+                })
+                .collect();
+            let (first, last) = lit
+                .first()
+                .zip(lit.last())
+                .expect("the title lights no row");
+            (first + last) / 2
+        };
+        let (top, between, bottom) = (middle(&frames[0]), middle(&frames[2]), middle(&frames[4]));
+        // About its anchor at the first frame, and a quarter of the height lower at each of
+        // the two after: the same letters, put elsewhere.
+        assert!(top.abs_diff(height / 4) <= 24, "{top}");
+        assert!(
+            top < between && between < bottom,
+            "{top}, {between}, {bottom}"
+        );
+        assert!(
+            (between - top).abs_diff(height / 4) <= 3,
+            "{top}, {between}"
+        );
+        assert!(
+            (bottom - between).abs_diff(height / 4) <= 3,
+            "{between}, {bottom}"
+        );
+    }
+
     /// A clip at half its speed whose Retime Process is Frame Blend is exported so: a frame
     /// whose place is where a picture of the media begins shows that picture, to the bit as
     /// Nearest shows it, and a frame between two shows the two mixed by halves. With Nearest

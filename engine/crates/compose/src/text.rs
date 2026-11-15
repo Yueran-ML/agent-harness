@@ -1,6 +1,13 @@
 //! Text laid out and drawn into pixels on the processor ([cosmic-text]): titles, in the font,
 //! size, colour and alignment of their style, and subtitles, white with a black outline.
 //!
+//! A title is laid out and drawn at the size that it has at the frame, which need not be a
+//! whole number of pixels: one whose size has keys is drawn anew at each frame, at that
+//! frame's size, and never made larger or smaller from pixels drawn at another. The letters
+//! drawn are kept by their size to be drawn again, so a size that changes at every frame
+//! leaves letters of every size that it went through: those kept are let go, all of them,
+//! once they take more than [`GLYPH_BYTES`].
+//!
 //! A text is laid out first ([`lay_out`]), which says how large it is without drawing it, and
 //! then drawn into pixels a part at a time ([`draw`]): the part that is seen on the canvas, at
 //! most [`MOST_PIXELS`] of them, so that a title of letters 4096 pixels high, many lines long,
@@ -17,7 +24,7 @@
 
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use columbina_model::project::{TextAlign, TitleStyle};
+use columbina_model::project::{Styled, TextAlign};
 use std::collections::HashMap;
 
 use cosmic_text::{
@@ -31,11 +38,16 @@ pub(crate) const MOST_PIXELS: u64 = 4096 * 2048;
 /// Letters higher than this many pixels are drawn, and not kept to be drawn again.
 const LARGE: f32 = 256.0;
 
+/// How many bytes of letters drawn are kept to be drawn again, at most: some thousands of
+/// letters of a size that titles and subtitles have, which no project without keys comes to
+/// soon, and some seconds of a title whose size changes at every frame.
+const GLYPH_BYTES: usize = 64 << 20;
+
 /// A title: what it says, and how it is drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Text {
     pub text: String,
-    pub style: TitleStyle,
+    pub style: Styled,
 }
 
 /// Part of a text drawn into pixels: R'G'B'A, premultiplied, `width` × `height` of them from
@@ -104,6 +116,21 @@ fn outline_of(
         height: rows,
         mask: dilate(&cover, columns, rows, radius),
     })
+}
+
+/// Let go of the letters drawn and kept, once they take more than [`GLYPH_BYTES`]: a text
+/// drawn after draws its letters again, as it drew them first.
+fn forget_glyphs_beyond(glyphs: &mut SwashCache) {
+    let bytes: usize = glyphs
+        .image_cache
+        .values()
+        .flatten()
+        .map(|image| image.data.len())
+        .sum();
+    if bytes > GLYPH_BYTES {
+        glyphs.image_cache.clear();
+        glyphs.outline_command_cache.clear();
+    }
 }
 
 fn fonts() -> &'static Mutex<Fonts> {
@@ -312,6 +339,7 @@ pub(crate) fn draw(laid: &mut Laid, window: [u32; 4]) -> Raster {
         if outlines.len() > OUTLINES_KEPT {
             outlines.clear();
         }
+        forget_glyphs_beyond(glyphs);
         (glyphs, outlines)
     };
     let base = Color::rgba(r, g, b, 255);
@@ -618,9 +646,9 @@ mod tests {
     fn a_title_is_drawn_in_its_font_or_in_the_one_of_the_engine() {
         let title = |font: &str| Text {
             text: "Hello".into(),
-            style: TitleStyle {
+            style: Styled {
                 font: font.into(),
-                size: 96,
+                size: 96.0,
                 color: columbina_model::project::Rgba([255, 255, 255, 255]),
                 x: 0.5,
                 y: 0.5,

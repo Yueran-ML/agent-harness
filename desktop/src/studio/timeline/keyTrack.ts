@@ -1,8 +1,9 @@
 /**
  * The keyframe track of a clip on the timeline of the Edit page, as DaVinci Resolve shows the keys
  * of a clip beneath it (Reference Manual 20, Ch. 53, pp. 1108–1114): where the keys of the settings
- * of a clip's transform and crop are on the timeline, which of them are chosen, and what an edit of
- * the track leaves of them. Pure: nothing here changes what it is given.
+ * of a clip's transform and crop, and of the style of a title, are on the timeline, which of them
+ * are chosen, and what an edit of the track leaves of them. Pure: nothing here changes what it is
+ * given.
  *
  * A key is at a frame of the keys (`Keyframe.frame`: a picture of the clip's media, or a frame of
  * the clip itself), and is shown at the frame of the timeline at which the clip shows that picture
@@ -16,7 +17,7 @@
  */
 import { keyClockOf, shownKeyRange } from '../color/keyFrames';
 import type { Clip, ClipKeyed, Keyframe, Media, Param, Timeline } from '../engine';
-import { CLIP_SETTINGS, frameOfKey, hasKeys, keyTimes, mediaOf, paramOf } from '../inspector/clipKeys';
+import { frameOfKey, hasKeys, hasSetting, keyTimes, mediaOf, paramOf, settingsOf } from '../inspector/clipKeys';
 import { copyKeys, deleteKeys, moveKeys, pasteKeys, spliceOf, type CopiedKey, type Range } from '../keyframes/curveGeometry';
 import { clipLocations } from './selection';
 
@@ -30,9 +31,9 @@ export const KEY_TRACK_RISE = 3;
 /** A move in time changes no value, and a paste puts the values that were copied: neither is held to the bounds of an editor. */
 const ANY: Range = { low: -Infinity, high: Infinity };
 
-/** The settings of a clip that have keys, in the order of the Video tab of the Inspector. */
+/** The settings of a clip that have keys, in the order of the Inspector: those of its Video tab, and those of the style of a title after them. */
 export function keyedSettings(clip: Clip): ClipKeyed[] {
-  return CLIP_SETTINGS.filter(path => typeof paramOf(clip, path) === 'object');
+  return settingsOf(clip).filter(path => typeof paramOf(clip, path) === 'object');
 }
 
 /** A frame of the timeline at which a clip shows keys, and the settings that have a key there. */
@@ -45,7 +46,7 @@ export interface KeyMark { at: number; paths: ClipKeyed[] }
  */
 export function keyMarks(clip: Clip, timeline: Pick<Timeline, 'rate'>, media: readonly Media[]): KeyMark[] {
   const marks = new Map<number, ClipKeyed[]>();
-  for (const path of CLIP_SETTINGS) {
+  for (const path of settingsOf(clip)) {
     for (const at of keyTimes(clip, timeline, media, path)) {
       const paths = marks.get(at);
       if (paths) paths.push(path);
@@ -146,13 +147,15 @@ export function copyChosen(clip: Clip, chosen: ReadonlySet<string>): CopiedSetti
 /**
  * Copied keys pasted into a clip so that the first of them all is at `at`, a frame of the keys, and
  * the others as far after it as they were (p. 1114): each into the setting that it was copied from,
- * which gets its first keys so where it had none. Gives the settings that change, and the keys
- * pasted, to be chosen.
+ * which gets its first keys so where it had none. Keys copied from the style of a title are left
+ * out where the clip is no title, which has no such setting. Gives the settings that change, and
+ * the keys pasted, to be chosen.
  */
 export function pasteCopied(clip: Clip, copied: readonly CopiedSetting[], at: number): { changes: SettingChange[]; chosen: string[] } {
   const changes: SettingChange[] = [];
   const chosen: string[] = [];
   for (const { path, lead, keys } of copied) {
+    if (!hasSetting(clip, path)) continue;
     const param = paramOf(clip, path);
     const made = pasteKeys(param, keys, at + lead, ANY);
     if (!made) continue;

@@ -12,7 +12,7 @@ use columbina_compose::{
     Scene, SceneLayer, Source, Stage, Target, Text, TextureKind, Transform, YuvCoding, YuvMatrix,
 };
 use columbina_media::{NativePicture, Picture};
-use columbina_model::project::{Rgba, TextAlign, TitleStyle};
+use columbina_model::project::{Rgba, Styled, TextAlign};
 
 /// The codes of R'G'B' from 0 to 1, made Y'CbCr by `coding`, in 8 bits or 10.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -251,9 +251,9 @@ fn the_same_picture_of_another_coding_is_drawn_in_the_same_colour_into_an_export
 fn busy(color: &LayerColor, grade: &Stage, output: &Stage) -> Scene {
     let coding = YuvCoding::default();
     let picture = Arc::new(picture(32, 36, true, codes([0.7, 0.4, 0.2], coding, true)));
-    let style = TitleStyle {
+    let style = Styled {
         font: String::new(),
-        size: 12,
+        size: 12.0,
         color: Rgba([255, 255, 255, 255]),
         x: 0.5,
         y: 0.3,

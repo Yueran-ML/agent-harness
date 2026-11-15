@@ -17,7 +17,7 @@ use columbina_compose::{
     Source, Stage, Target, Text, Transform,
 };
 use columbina_media::{NativePicture, Picture};
-use columbina_model::project::{Cropped, Rgba, TextAlign, TitleStyle};
+use columbina_model::project::{Cropped, Rgba, Styled, TextAlign};
 
 /// The colour under the layers that are cut, and the colour of those layers.
 const UNDER: [f32; 3] = [0.2, 0.5, 0.8];
@@ -338,9 +338,9 @@ fn mixed(crop: Crop) -> Scene {
 fn title(text: &str, x: f64) -> SceneLayer {
     layer(Source::Title(Text {
         text: text.into(),
-        style: TitleStyle {
+        style: Styled {
             font: String::new(),
-            size: 32,
+            size: 32.0,
             color: Rgba([255, 255, 255, 255]),
             x,
             y: 0.5,

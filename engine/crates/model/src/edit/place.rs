@@ -9,7 +9,7 @@ use super::{Created, EditError, Material};
 use crate::keyframes::{aligned, aligned_crop, aligned_transform, Align, KeyBase};
 use crate::ops::OpError;
 use crate::project::{Clip, Id, Source, TrackKind};
-use crate::span::{frames_for_span, source_tick};
+use crate::span::{frames_for, frames_for_span, source_tick};
 use crate::time::{Speed, Time};
 
 /// The tracks that the picture and the sound of a source go on, as an edit gives them: left
@@ -138,7 +138,7 @@ pub(super) fn longest(work: &Work, probe: &Clip) -> i64 {
         return crate::ops::LARGEST;
     }
     let span = media.facts.duration.ticks - begins.ticks;
-    let frames = |span| frames_for_span(span, probe.speed, work.rate(), begins.scale);
+    let frames = |span| frames_for(probe, span, work.rate(), begins.scale);
     // Its last frame shows a place before the end.
     let mut length = frames(span).min(frames(span - 1) + 1);
     let with = |length| Clip {
@@ -306,6 +306,11 @@ pub(super) fn replace(
             source: made.source.clone(),
             ..old.clone()
         };
+        // A title, a colour and a still have no speed points: in place of a clip that has
+        // them, such a source plays as it is.
+        if new.retime.is_some() && !crate::ops::lasts(work.project(), &new) {
+            new.set_mapping(None);
+        }
         if let (
             Material::Media {
                 from: Some(from), ..

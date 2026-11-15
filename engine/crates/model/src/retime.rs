@@ -1,6 +1,8 @@
 //! The mathematics of retiming (Reference Manual of Resolve 20, pp. 1070–1082): where a clip
-//! that changes its speed on the way reads its source. Only the sums are here: a clip does not
-//! hold a mapping yet, and nothing is drawn or stretched by it.
+//! that changes its speed on the way reads its source. A clip that does so holds its mapping
+//! ([`crate::project::Clip::retime`]) and reads its picture through it ([`crate::span`]); a clip
+//! of one speed holds none, and its speed and its direction instead. The sound of a clip that
+//! holds one is not stretched by it yet: it is not heard.
 //!
 //! # One mapping
 //!
@@ -44,6 +46,15 @@
 //! added where the speed does not change moves no frame. A count too large for an `i64` is
 //! `i64::MAX`, and one too far below nought `i64::MIN`.
 //!
+//! Where the head or the tail of a clip is moved ([`Retime::from_frame`],
+//! [`Retime::with_length`]), the lowest place of its path may be another, and the clip then
+//! begins that much later in its media, or earlier: so many units of a frame, brought to ticks
+//! once, rounded down. Where that is a whole number of ticks, as it is where a unit of a frame
+//! is one, and where the lowest place stays, every frame that the clip keeps shows the tick that
+//! it showed. Elsewhere a frame shows that tick or the one before it, as a frame of a clip of
+//! one speed does that is cut at a rate whose frames do not last whole ticks: a place of the
+//! media is a whole number of ticks, and so is where a clip begins in it.
+//!
 //! # The way back
 //!
 //! [`Course::frame_of`] gives the frame that a place of the media is shown in: the frame of a
@@ -59,6 +70,10 @@
 //! ([`Retime::with_freeze`]); a segment is turned round ([`Retime::with_segment_reversed`]); and
 //! the clip is put back to its own speed ([`Retime::reset`]). Whether the clips after it make
 //! room for a clip that grows, or are covered by it, is for the timeline to say (p. 1075).
+//!
+//! An edit of the timeline that moves the head of a clip, or cuts it in two, takes the mapping
+//! from a frame on ([`Retime::from_frame`]), and one that moves its tail takes it to a length
+//! ([`Retime::with_length`]): each says how much later the clip then begins in its media.
 
 use std::cmp::Ordering;
 
@@ -232,6 +247,19 @@ pub struct Retimed {
     pub retime: Retime,
     /// How many frames the clip lasts with it.
     pub length: i64,
+}
+
+/// A mapping of a clip whose head or tail was moved, with what the clip then needs so that the
+/// frames that it keeps show what they showed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Trimmed {
+    /// The new mapping. It may be of one speed, which a clip keeps as its speed.
+    pub retime: Retime,
+    /// How many frames the clip lasts with it.
+    pub length: i64,
+    /// How many ticks later the clip begins in its media: earlier, where it is below 0. It is
+    /// how far the lowest place of the path moved, rounded down (see the module).
+    pub later: i64,
 }
 
 /// The greatest number that divides both.
@@ -635,6 +663,98 @@ impl Retime {
                 .collect(),
         }
     }
+
+    /// The mapping of a clip of `length` frames from its frame `from` on: that of a clip whose
+    /// head is moved to the frame, and of the second half of one that is cut in two there. The
+    /// speed points before the frame are dropped, the segment that the frame is in begins the
+    /// clip, and the speed points after it come `from` frames sooner. Where `from` is below 0
+    /// the head is moved out: the first segment goes on before what was the first frame, and
+    /// every other speed point comes so many frames later.
+    ///
+    /// Frame `k` of the clip, from `from` on, is frame `k - from` of the new one, and shows the
+    /// place that it showed where the clip begins [`Trimmed::later`] ticks of `scale` later in
+    /// its media, on a timeline of `rate`: to the tick, or the tick before it where the lowest
+    /// place of the path moved by no whole number of ticks (see the module).
+    ///
+    /// # Errors
+    /// The mapping is not one of the clip, as [`Retime::check`] says; the clip has no frame
+    /// `from`, which is its end or after it ([`OpError::OutOfRange`] of `frame`); or the clip
+    /// would last more than [`LARGEST`] frames ([`OpError::TooLarge`] of `length`).
+    pub fn from_frame(
+        &self,
+        from: i64,
+        length: i64,
+        rate: Rate,
+        scale: u32,
+    ) -> Result<Trimmed, OpError> {
+        let course = self.course(length)?;
+        if from >= length {
+            return Err(out("frame"));
+        }
+        let first = self
+            .points
+            .partition_point(|point| point.frame <= from)
+            .saturating_sub(1);
+        let mut points = Vec::with_capacity(self.points.len() - first);
+        points.push(SpeedPoint {
+            frame: 0,
+            speed: self.points[first].speed,
+        });
+        for point in &self.points[first + 1..] {
+            points.push(SpeedPoint {
+                frame: moved(point.frame, -i128::from(from))?,
+                speed: point.speed,
+            });
+        }
+        let retime = Retime { points };
+        let length = moved(length, -i128::from(from))?;
+        let onward = retime.course(length)?;
+        let later = course.later(from, &onward, rate, scale);
+        Ok(Trimmed {
+            retime,
+            length,
+            later,
+        })
+    }
+
+    /// The mapping of a clip of `length` frames made to last `to` frames at its end: that of a
+    /// clip whose tail is moved, and of the first half of one that is cut in two. A shorter clip
+    /// loses the speed points at its new end and after it ([`Retime::cut_to`]); in a longer one
+    /// the last segment goes on.
+    ///
+    /// Every frame that the clip keeps shows the place that it showed where the clip begins
+    /// [`Trimmed::later`] ticks of `scale` later in its media, on a timeline of `rate`, as
+    /// [`Retime::from_frame`] has it: the lowest place of the path is another where the tail
+    /// that is cut away, or the one that is added, goes below the rest.
+    ///
+    /// # Errors
+    /// The mapping is not one of the clip, as [`Retime::check`] says; `to` is less than one
+    /// frame ([`OpError::OutOfRange`] of `length`); or it is more than [`LARGEST`]
+    /// ([`OpError::TooLarge`] of `length`).
+    pub fn with_length(
+        &self,
+        to: i64,
+        length: i64,
+        rate: Rate,
+        scale: u32,
+    ) -> Result<Trimmed, OpError> {
+        let course = self.course(length)?;
+        if to < 1 {
+            return Err(out("length"));
+        }
+        let retime = if to < length {
+            self.cut_to(to)
+        } else {
+            self.clone()
+        };
+        let onward = retime.course(to)?;
+        let later = course.later(0, &onward, rate, scale);
+        Ok(Trimmed {
+            retime,
+            length: to,
+            later,
+        })
+    }
 }
 
 /// A segment of a clip: the frames from one speed point to the next, at one speed.
@@ -864,6 +984,52 @@ impl Course {
             }
         }
         (lowest, highest)
+    }
+
+    /// The highest place that the path of the clip comes to, with `before` frames more before
+    /// its first frame and `after` more after its last, as [`Course::shown`] has them: where
+    /// what its frames show ends, in ticks of `scale` after where the clip begins in its media,
+    /// on a timeline of `rate`. It is where the last frame of a way up ends, and where the
+    /// first frame of a way down begins. For a mapping of one speed that plays forward it is
+    /// [`crate::span::ticks_of_scaled`] of the frames of the clip and those after it, and
+    /// backward of its frames and those before it. The clip shows no more than its media has
+    /// where this is no later than the end of the media.
+    #[must_use]
+    pub fn reach(&self, before: i64, after: i64, rate: Rate, scale: u32) -> i64 {
+        let earliest = -i128::from(before.max(0));
+        let ends = i128::from(self.length) + i128::from(after.max(0));
+        let count = self.segments.len();
+        let mut highest = i128::MIN;
+        for (index, segment) in self.segments.iter().enumerate() {
+            // A segment goes one way: the path is highest in it where it begins or where it
+            // ends.
+            let from = if index == 0 {
+                earliest
+            } else {
+                i128::from(segment.from)
+            };
+            let to = if index + 1 == count {
+                ends
+            } else {
+                i128::from(segment.to)
+            };
+            highest = highest.max(segment.place(from)).max(segment.place(to));
+        }
+        self.ticks(highest, rate, scale)
+    }
+
+    /// How many ticks of `scale` later a clip begins in its media, on a timeline of `rate`,
+    /// where it goes on from frame `from` of this course as `onward` does: `onward` is the
+    /// course of this mapping from that frame on, or cut at its end, so its frame 0 is frame
+    /// `from` of this one, its path is this one's from there, and each of its speeds is one of
+    /// these. It is how far the lowest place of that path is above the lowest of this one,
+    /// rounded down.
+    fn later(&self, from: i64, onward: &Course, rate: Rate, scale: u32) -> i64 {
+        // The unit of `onward` divides this one, since its speeds are among these.
+        let times = i128::from(self.unit / onward.unit.max(1));
+        let here = self.segment_of(from).place(i128::from(from));
+        let there = onward.segments[0].at.saturating_mul(times);
+        self.ticks(here.saturating_sub(there), rate, scale)
     }
 
     /// The first frame of `segment` in which the place `tick` is on show: the frame that shows
@@ -1760,5 +1926,242 @@ mod tests {
         assert!(serde_json::from_str::<SpeedPoint>(r#"{ "frame": 0, "ease": 1 }"#).is_err());
         let extra = r#"{ "num": 1, "den": 1, "percent": 100 }"#;
         assert!(serde_json::from_str::<SignedSpeed>(extra).is_err());
+    }
+
+    #[test]
+    fn a_clip_from_a_frame_on_shows_what_it_showed_from_there() {
+        // Forward, backward, with a freeze, and all of them mixed; each with its length.
+        let mappings = [
+            (retime(&[(0, 1, 1)]), 40),
+            (retime(&[(0, 137, 250)]), 40),
+            (retime(&[(0, -137, 250)]), 40),
+            (retime(&[(0, 2, 1), (9, 0, 1), (15, 1, 3)]), 40),
+            (retime(&[(0, -1, 2), (11, -5, 3), (30, 0, 1)]), 40),
+            (
+                retime(&[(0, 1, 3), (7, -2, 7), (20, 0, 1), (26, 5, 2), (40, -1, 1)]),
+                60,
+            ),
+        ];
+        for (mapping, length) in mappings {
+            let course = mapping.course(length).unwrap();
+            let unit = course.unit();
+            // Where a unit of a frame lasts a whole number of ticks, every frame is on its
+            // tick. At 29.97 frames a second in thousandths of a second, and at 25 in ticks
+            // of 1/15360, it lasts none: a frame is on its tick or on the one before.
+            let grids = [
+                (PAL, 25 * unit, true),
+                (NTSC, 30000 * unit, true),
+                (NTSC, 1000, false),
+                (PAL, SCALE, false),
+            ];
+            for (rate, scale, whole) in grids {
+                // Also with the head moved out, where the first segment goes on before it.
+                for from in -3..length {
+                    let trimmed = mapping.from_frame(from, length, rate, scale).unwrap();
+                    assert_eq!(trimmed.length, length - from);
+                    let onward = trimmed.retime.course(trimmed.length).unwrap();
+                    // The frames that are kept, and those that a transition shows after them.
+                    for k in from..length + 3 {
+                        let was = course.tick(1000, k, rate, scale);
+                        let is = onward.tick(1000 + trimmed.later, k - from, rate, scale);
+                        let what = format!("frame {k} from {from} of {mapping:?}, {rate:?}");
+                        if whole {
+                            assert_eq!(is, was, "{what} in {scale}");
+                        } else {
+                            assert!(is == was || is == was - 1, "{what}: {is} for {was}");
+                        }
+                    }
+                }
+            }
+        }
+        // A clip that plays backward from end to end begins in its media where its last frame
+        // is, which a head that moves leaves where it was: every frame is on its tick at any
+        // rate.
+        let backward = retime(&[(0, -137, 250)]);
+        let course = backward.course(40).unwrap();
+        for from in -3..40 {
+            let trimmed = backward.from_frame(from, 40, NTSC, 1000).unwrap();
+            assert_eq!((&trimmed.retime, trimmed.later), (&backward, 0));
+            let onward = trimmed.retime.course(trimmed.length).unwrap();
+            for k in from..43 {
+                assert_eq!(
+                    onward.tick(1000, k - from, NTSC, 1000),
+                    course.tick(1000, k, NTSC, 1000),
+                    "frame {k} from {from}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_head_of_a_clip_is_moved_in_and_out() {
+        let mapping = retime(&[(0, 1, 1), (4, 2, 1), (8, 1, 2)]);
+        assert_eq!(
+            shows(&mapping, 12),
+            [0, 1, 2, 3, 4, 6, 8, 10, 12, 12, 13, 13]
+        );
+        // From frame 5: the segment that it is in begins the clip, 6 frames of the source on.
+        let trimmed = mapping.from_frame(5, 12, PAL, 25).unwrap();
+        assert_eq!(trimmed.retime, retime(&[(0, 2, 1), (3, 1, 2)]));
+        assert_eq!((trimmed.length, trimmed.later), (7, 6));
+        assert_eq!(shows(&trimmed.retime, 7), [0, 2, 4, 6, 6, 7, 7]);
+        // From a speed point: it is the first.
+        let trimmed = mapping.from_frame(8, 12, PAL, 25).unwrap();
+        assert_eq!(trimmed.retime, retime(&[(0, 1, 2)]));
+        assert_eq!((trimmed.length, trimmed.later), (4, 12));
+        assert_eq!(
+            trimmed.retime.as_constant(),
+            Some((Speed { num: 1, den: 2 }, false))
+        );
+        // From frame 0 it is as it was.
+        let trimmed = mapping.from_frame(0, 12, PAL, 25).unwrap();
+        assert_eq!(
+            (&trimmed.retime, trimmed.length, trimmed.later),
+            (&mapping, 12, 0)
+        );
+        // Moved out by 2 frames: the first segment goes on before, and the clip begins 2 frames
+        // of the source earlier.
+        let trimmed = mapping.from_frame(-2, 12, PAL, 25).unwrap();
+        assert_eq!(trimmed.retime, retime(&[(0, 1, 1), (6, 2, 1), (10, 1, 2)]));
+        assert_eq!((trimmed.length, trimmed.later), (14, -2));
+        assert_eq!(
+            shows(&trimmed.retime, 14),
+            [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 14, 15, 15]
+        );
+        // A clip that goes up and then further down than it came begins where it ends: with
+        // its head moved past the way up, it is one that plays backward, from where it began.
+        let deep = retime(&[(0, 1, 1), (2, -1, 1)]);
+        assert_eq!(shows(&deep, 10), [6, 7, 7, 6, 5, 4, 3, 2, 1, 0]);
+        let trimmed = deep.from_frame(4, 10, PAL, 25).unwrap();
+        assert_eq!(trimmed.retime, retime(&[(0, -1, 1)]));
+        assert_eq!((trimmed.length, trimmed.later), (6, 0));
+        assert_eq!(shows(&trimmed.retime, 6), [5, 4, 3, 2, 1, 0]);
+        // The clip has no such frame, or would last too long.
+        assert_eq!(
+            mapping.from_frame(12, 12, PAL, 25).unwrap_err(),
+            range("frame")
+        );
+        assert_eq!(
+            mapping.from_frame(i64::MAX, 12, PAL, 25).unwrap_err(),
+            range("frame")
+        );
+        assert_eq!(
+            mapping.from_frame(-LARGEST, 12, PAL, 25).unwrap_err(),
+            OpError::TooLarge { what: "length" }
+        );
+        assert_eq!(
+            mapping.from_frame(i64::MIN, 12, PAL, 25).unwrap_err(),
+            OpError::TooLarge { what: "length" }
+        );
+        let wrong = retime(&[(0, 1, 1), (12, 2, 1)]);
+        assert_eq!(
+            wrong.from_frame(5, 12, PAL, 25).unwrap_err(),
+            range("retime")
+        );
+    }
+
+    #[test]
+    fn the_tail_of_a_clip_is_moved_in_and_out() {
+        let mapping = retime(&[(0, 1, 1), (4, 2, 1), (8, 1, 2)]);
+        // Shorter, the speed points at its new end and after it go; longer, its last segment
+        // goes on. A clip that only goes up begins where it did.
+        let shorter = mapping.with_length(8, 12, PAL, 25).unwrap();
+        assert_eq!(shorter.retime, retime(&[(0, 1, 1), (4, 2, 1)]));
+        assert_eq!((shorter.length, shorter.later), (8, 0));
+        let shortest = mapping.with_length(4, 12, PAL, 25).unwrap();
+        assert_eq!(shortest.retime.as_constant(), Some((Speed::ONE, false)));
+        let longer = mapping.with_length(14, 12, PAL, 25).unwrap();
+        assert_eq!(
+            (&longer.retime, longer.length, longer.later),
+            (&mapping, 14, 0)
+        );
+        assert_eq!(shows(&longer.retime, 14)[10..], [13, 13, 14, 14]);
+        // A clip that ends on a way down further than it came begins where it ends: with its
+        // tail moved in it begins later in its media, and with its tail moved out, earlier.
+        let deep = retime(&[(0, 1, 1), (2, -1, 1)]);
+        assert_eq!(shows(&deep, 10), [6, 7, 7, 6, 5, 4, 3, 2, 1, 0]);
+        let shorter = deep.with_length(5, 10, PAL, 25).unwrap();
+        assert_eq!(
+            (&shorter.retime, shorter.length, shorter.later),
+            (&deep, 5, 5)
+        );
+        assert_eq!(shows(&shorter.retime, 5), [1, 2, 2, 1, 0]);
+        let longer = deep.with_length(12, 10, PAL, 25).unwrap();
+        assert_eq!(
+            (&longer.retime, longer.length, longer.later),
+            (&deep, 12, -2)
+        );
+        assert_eq!(
+            shows(&longer.retime, 12),
+            [8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+        );
+        // Every frame that is kept is on its tick where a unit of a frame lasts whole ticks,
+        // and on it or on the one before elsewhere.
+        let mixed = retime(&[(0, 1, 3), (7, -2, 7), (20, 0, 1), (26, 5, 2), (40, -1, 1)]);
+        let course = mixed.course(60).unwrap();
+        for (rate, scale, whole) in [(NTSC, 30000 * 42, true), (NTSC, 1000, false)] {
+            for to in 1..70 {
+                let trimmed = mixed.with_length(to, 60, rate, scale).unwrap();
+                let onward = trimmed.retime.course(to).unwrap();
+                for k in -3..to.min(60) {
+                    let was = course.tick(1000, k, rate, scale);
+                    let is = onward.tick(1000 + trimmed.later, k, rate, scale);
+                    if whole {
+                        assert_eq!(is, was, "frame {k} of {to}");
+                    } else {
+                        assert!(is == was || is == was - 1, "frame {k} of {to}");
+                    }
+                }
+            }
+        }
+        // A clip of no frame, or of too many.
+        assert_eq!(
+            mapping.with_length(0, 12, PAL, 25).unwrap_err(),
+            range("length")
+        );
+        assert_eq!(
+            mapping.with_length(LARGEST + 1, 12, PAL, 25).unwrap_err(),
+            OpError::TooLarge { what: "length" }
+        );
+        mapping.with_length(LARGEST, 12, PAL, 25).unwrap();
+        let wrong = retime(&[(0, 1, 1), (12, 2, 1)]);
+        assert_eq!(
+            wrong.with_length(5, 12, PAL, 25).unwrap_err(),
+            range("retime")
+        );
+    }
+
+    #[test]
+    fn what_a_clip_shows_ends_at_the_highest_place_of_its_path() {
+        let mapping = retime(&[(0, 1, 1), (4, 2, 1), (8, 1, 2)]);
+        let course = mapping.course(12).unwrap();
+        assert_eq!(course.reach(0, 0, PAL, 25), 14);
+        assert_eq!(course.reach(0, 0, PAL, 25), course.span(PAL, 25));
+        // With 3 frames more after it, at half the speed, it goes a frame and a half on.
+        assert_eq!(course.reach(2, 3, PAL, 25), 15);
+        // Backward, the frames before the clip are the highest.
+        let backward = retime(&[(0, -1, 1)]).course(10).unwrap();
+        assert_eq!(backward.reach(0, 0, PAL, 25), 10);
+        assert_eq!(backward.reach(2, 3, PAL, 25), 12);
+        // Up 6 frames and down again: where it turns.
+        let turned = retime(&[(0, 1, 1), (6, -1, 1)]).course(10).unwrap();
+        assert_eq!(turned.reach(0, 0, PAL, 25), 6);
+        assert_eq!(turned.shown(0, 0, PAL, 25), (0, 5));
+        // A freeze frame goes nowhere.
+        assert_eq!(Retime::still().course(5).unwrap().reach(4, 4, PAL, 25), 0);
+        // Of one speed, it is the ticks of the frames, as a clip of that speed counts them.
+        for (speed, reverse) in [
+            (Speed { num: 137, den: 250 }, false),
+            (Speed { num: 137, den: 250 }, true),
+        ] {
+            let course = Retime::constant(speed, reverse).course(40).unwrap();
+            for (rate, scale) in [(PAL, SCALE), (NTSC, 1000)] {
+                let (before, after) = if reverse { (5, 2) } else { (2, 5) };
+                assert_eq!(
+                    course.reach(before, after, rate, scale),
+                    span::ticks_of_scaled(45, speed, rate, scale)
+                );
+            }
+        }
     }
 }

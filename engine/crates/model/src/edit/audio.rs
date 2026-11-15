@@ -785,11 +785,16 @@ fn timeline_origin(clip: &Clip, rate: crate::time::Rate) -> Time {
 
 /// The volume of `from` for clip `to`: each key as far from where `to` starts on the timeline,
 /// in its media, as it is from where `from` starts, whichever way each plays; so the envelope is
-/// heard at the same places of each clip.
+/// heard at the same places of each clip. Keys are not put so from or to a clip with speed
+/// points, whose media is not as far from its start at every frame as its frames are: that is
+/// refused (`out_of_range`, `retimed`).
 fn volume_for(from: &Clip, to: &Clip, rate: crate::time::Rate) -> Result<AudioParam, EditError> {
     let (a, b) = (timeline_origin(from, rate), timeline_origin(to, rate));
     let mirror = from.reverse != to.reverse;
     match &from.gain_db {
+        AudioParam::Keys(_) if from.retime.is_some() || to.retime.is_some() => {
+            Err(range("retimed"))
+        }
         AudioParam::Keys(keys) if mirror || !same(a, b) => {
             let mut moved = keys
                 .iter()

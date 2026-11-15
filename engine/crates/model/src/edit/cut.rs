@@ -1547,4 +1547,109 @@ mod tests {
             rows(&[("c1", 0, 100, 0), ("c3", 100, 50, 150), ("c5", 150, 50, 50)])
         );
     }
+
+    /// The fixture with speed points on c5, which is on V2 from frame 120 for 50 frames, from
+    /// frame 50 of m1: 10 frames forward, a picture held for 10, back over the 10, and on at
+    /// twice the speed.
+    fn retimed() -> crate::Project {
+        let mut project = project();
+        let points = [(0, 1, 1), (10, 0, 1), (20, -1, 1), (30, 2, 1)];
+        retime(&mut project, "c5", &points, 50);
+        project
+    }
+
+    #[test]
+    fn a_clip_with_speed_points_is_cut_in_two_along_them() {
+        let before = retimed();
+        let shown = pictures(&before, "c5");
+        // Through the freeze, at its frame 20: the first half keeps the speed points before
+        // the cut, and the second those after it, which begin it; each begins in the media at
+        // the lowest place that it shows.
+        let mut project = before.clone();
+        let done = edit(&mut project, blade(140, Some(&["V2"]), true));
+        assert_eq!(
+            clips(&project, "V2"),
+            rows(&[("c5", 120, 20, 50), ("c10", 140, 30, 50)])
+        );
+        assert_eq!(
+            the(&project, "c5").retime,
+            Some(speed_points(&[(0, 1, 1), (10, 0, 1)]))
+        );
+        assert_eq!(
+            the(&project, "c10").retime,
+            Some(speed_points(&[(0, -1, 1), (10, 2, 1)]))
+        );
+        let halves = [pictures(&project, "c5"), pictures(&project, "c10")].concat();
+        assert_eq!(halves, shown);
+        // Taken back, the clip is whole again.
+        undo(&mut project, &done);
+        project.next_id = before.next_id;
+        assert_eq!(project, before);
+        // At its last speed point: the second half is a clip of twice the speed.
+        let mut project = before.clone();
+        edit(&mut project, blade(150, Some(&["V2"]), true));
+        assert_eq!(
+            clips(&project, "V2"),
+            rows(&[("c5", 120, 30, 50), ("c10", 150, 20, 50)])
+        );
+        let second = the(&project, "c10");
+        assert_eq!(
+            (second.speed, second.reverse, second.retime),
+            (crate::time::Speed { num: 2, den: 1 }, false, None)
+        );
+        let halves = [pictures(&project, "c5"), pictures(&project, "c10")].concat();
+        assert_eq!(halves, shown);
+        // After it: the first half keeps all its speed points, and is only shorter.
+        let mut project = before.clone();
+        edit(&mut project, blade(165, Some(&["V2"]), true));
+        assert_eq!(
+            clips(&project, "V2"),
+            rows(&[("c5", 120, 45, 50), ("c10", 165, 5, 80)])
+        );
+        assert_eq!(the(&project, "c5").retime, the(&before, "c5").retime);
+        let halves = [pictures(&project, "c5"), pictures(&project, "c10")].concat();
+        assert_eq!(halves, shown);
+    }
+
+    #[test]
+    fn a_clip_with_speed_points_is_moved_and_copied_with_them() {
+        let before = retimed();
+        let shown = pictures(&before, "c5");
+        let mapping = the(&before, "c5").retime;
+        let mut project = before.clone();
+        edit(&mut project, move_by(&["c5"], 30, None, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 150, 50, 50)]));
+        assert_eq!(the(&project, "c5").retime, mapping);
+        assert_eq!(pictures(&project, "c5"), shown);
+        // A copy has them too.
+        let mut project = before.clone();
+        let copy = Edit::PlaceCopies {
+            timeline: "t1".into(),
+            copies: vec![crate::edit::CopyOf {
+                clip: "c5".into(),
+                track: "V2".into(),
+                start: 0,
+            }],
+            grouped: false,
+        };
+        edit(&mut project, copy);
+        assert_eq!(
+            clips(&project, "V2"),
+            rows(&[("c10", 0, 50, 50), ("c5", 120, 50, 50)])
+        );
+        assert_eq!(the(&project, "c10").retime, mapping);
+        assert_eq!(pictures(&project, "c10"), shown);
+        // Deleted, it is gone, and it comes back with them.
+        let mut project = before.clone();
+        let lifted = Edit::Lift {
+            timeline: "t1".into(),
+            clips: vec!["c5".into()],
+            linked: true,
+            grouped: false,
+        };
+        let done = edit(&mut project, lifted);
+        assert_eq!(clips(&project, "V2"), rows(&[]));
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+    }
 }

@@ -26,6 +26,10 @@
 //! are always written, and may each be left out where a project is read, as its default. A
 //! project of schema 3 is read into schema 4 so that it sounds as it did (see
 //! [`crate::upgrade`]).
+//!
+//! Within schema 5 a clip may have speed points (`retime`, see [`crate::retime`]): where its
+//! speed changes on the way. They are written only on a clip that has them, so a clip of one
+//! speed is written as it was before them, and a project without them is read as it was.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -38,6 +42,7 @@ use crate::color::ColorFacts;
 use crate::color_management::{ColorOverride, ColorSettings};
 use crate::grade::{Composite, Grade, Group, Param};
 use crate::ops::Invalid;
+use crate::retime::Retime;
 use crate::time::{Rate, Speed, Time};
 
 /// The schema of a project that this engine reads and writes.
@@ -532,8 +537,9 @@ impl Serialize for Track {
 ///
 /// The source is media, from a place in it, or a title or a colour that the engine makes, which
 /// go on tracks of picture only. A clip of media shows its frames at its speed, forward or
-/// backward (see [`crate::span`]). Its transform is used on a track of picture, and its settings
-/// of sound on a track of sound; they are kept on the other kind too, as they were set.
+/// backward, or along its speed points where its speed changes on the way (see
+/// [`crate::span`]). Its transform is used on a track of picture, and its settings of sound on
+/// a track of sound; they are kept on the other kind too, as they were set.
 ///
 /// The ticks that its frames last are counted rounded down, so its last frame may end less than
 /// one tick past the end of its source; whoever reads the source for it stops at the end.
@@ -550,10 +556,19 @@ pub struct Clip {
     pub source: Source,
     /// Whether it is seen or heard.
     pub enabled: bool,
-    /// How fast it plays its source.
+    /// How fast it plays its source. It is 1/1 where the clip has speed points, which say how
+    /// it plays instead.
     pub speed: Speed,
-    /// Whether it plays its source backward.
+    /// Whether it plays its source backward. It does not where the clip has speed points.
     pub reverse: bool,
+    /// Its speed points, where its speed changes on the way (see [`crate::retime`]): a clip of
+    /// media that lasts, not a title, a colour or a still, reads its source along them. A
+    /// mapping of one speed is never kept here: it is the `speed` and `reverse` of the clip,
+    /// and this is none. While this is there, `speed` is 1/1 and `reverse` is not set, so that
+    /// nothing takes them for how the clip plays. It is written only where it is there, and
+    /// may be left out, as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retime: Option<Retime>,
     /// The group of linked clips that it is in, if any: the clips of a group, picture and sound
     /// of one source, are selected and moved together.
     #[serde(deserialize_with = "present")]
@@ -632,6 +647,32 @@ impl Clip {
         }
         if self.grade.has_keys() {
             self.grade = self.grade.with_key_frames(to);
+        }
+    }
+
+    /// How it plays its source, as a mapping, whichever way the clip keeps it: its speed points,
+    /// or the one speed point of its speed and its direction.
+    #[must_use]
+    pub fn mapping(&self) -> Retime {
+        self.retime
+            .clone()
+            .unwrap_or_else(|| Retime::constant(self.speed, self.reverse))
+    }
+
+    /// Make the clip play as `mapping` says, kept as a clip keeps it: a mapping of one speed as
+    /// its `speed` and `reverse`, with no speed points, and any other as its speed points, with
+    /// a `speed` of 1/1, forward. None is the speed of the source, forward.
+    pub fn set_mapping(&mut self, mapping: Option<Retime>) {
+        let constant = match &mapping {
+            Some(mapping) => mapping.as_constant(),
+            None => Some((Speed::ONE, false)),
+        };
+        if let Some((speed, reverse)) = constant {
+            (self.speed, self.reverse) = (speed, reverse);
+            self.retime = None;
+        } else {
+            (self.speed, self.reverse) = (Speed::ONE, false);
+            self.retime = mapping;
         }
     }
 }
@@ -1245,6 +1286,7 @@ impl Clip {
             enabled: true,
             speed: Speed::ONE,
             reverse: false,
+            retime: None,
             link: None,
             transform: Transform::NONE,
             crop: Crop::NONE,
@@ -1773,6 +1815,72 @@ mod tests {
         assert!(
             error.to_string().contains("a speed has a `den` of 0"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn the_speed_points_of_a_clip_are_written_where_it_has_them_and_read_back() {
+        use crate::retime::{SignedSpeed, SpeedPoint};
+        let point = |frame, num, den| SpeedPoint {
+            frame,
+            speed: SignedSpeed { num, den },
+        };
+        // c1 plays 40 frames, holds a picture for 20, and goes back at half the speed.
+        let mapping = Retime {
+            points: vec![point(0, 1, 1), point(40, 0, 1), point(60, -1, 2)],
+        };
+        let mut project = Project::sample();
+        project.timelines[0].tracks[0].clips[0].set_mapping(Some(mapping.clone()));
+        let value = serde_json::to_value(&project).unwrap();
+        let tracks = &value["timelines"][0]["tracks"];
+        assert_eq!(
+            tracks[0]["clips"][0]["retime"],
+            serde_json::json!({
+                "points": [
+                    { "frame": 0, "speed": { "num": 1, "den": 1 } },
+                    { "frame": 40, "speed": { "num": 0, "den": 1 } },
+                    { "frame": 60, "speed": { "num": -1, "den": 2 } },
+                ],
+            })
+        );
+        assert_eq!(
+            tracks[0]["clips"][0]["speed"],
+            serde_json::json!({ "num": 1, "den": 1 })
+        );
+        // A clip of one speed is written without them, as it was before there were any.
+        assert!(tracks[1]["clips"][0].get("retime").is_none());
+        let read = Project::from_value(value.clone()).unwrap();
+        assert_eq!(read, project);
+        assert_eq!(read.timelines[0].tracks[0].clips[0].retime, Some(mapping));
+        let text = serde_json::to_string_pretty(&project).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&text).unwrap(), project);
+        // Written as null, they are none.
+        let mut value = value;
+        value["timelines"][0]["tracks"][0]["clips"][0]["retime"] = serde_json::Value::Null;
+        assert_eq!(Project::from_value(value).unwrap(), Project::sample());
+    }
+
+    #[test]
+    fn a_mapping_of_one_speed_is_kept_as_the_speed_of_the_clip() {
+        let mut clip = Project::sample().timelines[0].tracks[0].clips[0].clone();
+        assert_eq!(clip.mapping(), Retime::default());
+        let fast = Speed { num: 5, den: 2 };
+        clip.set_mapping(Some(Retime::constant(fast, true)));
+        assert_eq!(
+            (clip.speed, clip.reverse, &clip.retime),
+            (fast, true, &None)
+        );
+        assert_eq!(clip.mapping(), Retime::constant(fast, true));
+        // Speed points say how the clip plays, and its speed is that of its source beside them.
+        let still = Retime::still();
+        clip.set_mapping(Some(still.clone()));
+        assert_eq!((clip.speed, clip.reverse), (Speed::ONE, false));
+        assert_eq!(clip.retime, Some(still.clone()));
+        assert_eq!(clip.mapping(), still);
+        clip.set_mapping(None);
+        assert_eq!(
+            (clip.speed, clip.reverse, &clip.retime),
+            (Speed::ONE, false, &None)
         );
     }
 }

@@ -88,6 +88,14 @@
 //! from the left or the right clip. A title and a colour go on as long as they are wanted. A clip
 //! that a transition is at is not moved, trimmed or taken away: the transition is taken away
 //! first, so that taking the operation back never loses it.
+//!
+//! A clip whose speed changes on the way has speed points ([`crate::retime`]), set whole by
+//! [`Op::SetRetime`]. Only a clip of media that lasts has them, not a title, a colour or a
+//! still; they are those of a clip of its length, and never of one speed, which is kept as the
+//! speed and the direction of the clip; and beside them its speed is 1/1, forward, and is not
+//! set. What such a clip shows of its media is the places of their path, from the lowest,
+//! where it begins in its media, to the highest, with the frames that a transition shows
+//! beyond its ends.
 //! Moving a set of clips together with `shift_clips` keeps the transitions whose two ends
 //! are in that set: their adjacency and media handles do not change.
 //!
@@ -129,6 +137,7 @@ use crate::project::{
     Alignment, AudioStream, Bin, Clip, Crop, Cue, Id, Media, Project, Proxy, Source, Timeline,
     Track, TrackKind, Transform, Transition, TransitionKind,
 };
+use crate::retime::Retime;
 use crate::span;
 use crate::time::{Rate, Speed, Time};
 
@@ -136,6 +145,7 @@ mod automation;
 mod clip_keys;
 mod color;
 mod grade;
+mod retiming;
 mod sound;
 
 pub(crate) use automation::owner_of;
@@ -701,6 +711,33 @@ pub enum Op {
         /// The keys that are put there.
         keys: Vec<Key>,
     },
+    /// Set how a clip plays its source, whole: its speed points ([`crate::retime`]), or none
+    /// for the speed of its source, forward; and with `length`, how many frames it then lasts,
+    /// for a change that makes it longer or shorter. It is the same whatever went before it, so
+    /// a drag may send it again and again. A mapping of one speed is kept as the speed and the
+    /// direction of the clip, and one that changes on the way as its speed points, beside a
+    /// speed of 1/1. Where the clip starts and where it begins in its media stay as they are:
+    /// [`Op::TrimClip`] moves them.
+    ///
+    /// It is refused for a clip that is not of media that lasts, a title, a colour or a still
+    /// (`out_of_range`, `retime_source`); where the speed
+    /// points are not those of a clip of that length (`out_of_range`: `retime`, `speed` or
+    /// `retime_unit`); where the clip would show what is not in its media (`out_of_source`);
+    /// and where it would cover frames that another clip of its track covers (`overlap`):
+    /// nothing is moved out of its way. Its inverse sets how the clip played before, and how
+    /// long it lasted.
+    SetRetime {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        id: Id,
+        /// Its speed points, or `null`, which must be written, for the speed of its source.
+        #[serde(deserialize_with = "nullable_required")]
+        retime: Option<Retime>,
+        /// How many frames it then lasts, where that changes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length: Option<i64>,
+    },
     /// Put a grade in place of a grade, whole, as copying a grade does.
     SetGrade {
         /// The grade that is replaced.
@@ -1106,6 +1143,15 @@ pub enum OpError {
     /// A setting is not one that it may be. `what` is `width`, `height`, `sample_rate`,
     /// `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a setting of
     /// a clip left with no key), `text`, `size`,
+    /// of the speed points of a clip ([`crate::retime`]): `retime` (they are not those of a
+    /// clip of its length: none, more than 1024, the first not at frame 0, not in the order of
+    /// their frames, or one at the end of the clip or after it), `retime_unit` (their speeds
+    /// have no unit of 32 bits), `frame` (the clip has no such frame), `hold` (a freeze of less
+    /// than a frame), `retime_constant` (they are of one speed, which a clip keeps as its
+    /// speed), `retime_speed` (the clip has another speed than 1/1, or plays backward, beside
+    /// them), `retime_source` (the clip is not of media that lasts: a title, a colour or a
+    /// still) and `retimed` (a change that only a clip of one speed takes is made to a clip
+    /// that has them: `set_retime` with no `retime` takes them away first);
     /// `position`, `language`, `still`, `digest` (of the identity of media: not 64 lowercase
     /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none); and of
     /// colour management, `custom_luminance`, `graphics_white`, `input_sat_rolloff`,
@@ -1663,6 +1709,31 @@ fn range_message(what: &str) -> String {
         "pan" => "the pan is not from -1 to 1".into(),
         "fade" => "the fades are not of frames that the clip has".into(),
         "keys" => "a setting keeps one key at least: set_clip_keys puts a number there".into(),
+        "retime" => format!(
+            "the speed points are not those of the clip: from 1 to {}, the first at frame 0, \
+             each after the one before it and before the end of the clip",
+            crate::retime::MOST_POINTS
+        ),
+        "retime_unit" => {
+            "the speeds of the speed points have no unit of 32 bits that each is a whole number of"
+                .into()
+        }
+        "frame" => "the clip has no such frame".into(),
+        "hold" => "a freeze lasts one frame at least".into(),
+        "retime_constant" => {
+            "speed points of one speed are kept as the speed of the clip, and not as speed points"
+                .into()
+        }
+        "retime_speed" => {
+            "a clip with speed points has a speed of 1/1, forward, beside them".into()
+        }
+        "retime_source" => {
+            "only a clip of media that lasts has speed points: not a title, a colour or a still"
+                .into()
+        }
+        "retimed" => "the clip has speed points, and this is done to a clip of one speed only: \
+                      set_retime with no retime takes them away first"
+            .into(),
         "crop" => "the crop is not of shares from 0 to 1".into(),
         "text" => format!("the text is empty or longer than {LONGEST_TEXT} characters"),
         "size" => "the size of the title is not from 1 to 4096".into(),
@@ -1988,6 +2059,12 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             remove,
             keys,
         } => clip_keys::splice_clip_keys(project, &timeline, &id, path, (at, remove), keys),
+        Op::SetRetime {
+            timeline,
+            id,
+            retime,
+            length,
+        } => retiming::set_retime(project, &timeline, &id, retime, length),
         Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
         Op::AddGroup { group, index } => grade::add_group(project, group, index),
         Op::RemoveGroup { id } => grade::remove_group(project, &id),
@@ -2885,6 +2962,10 @@ fn set_clip(
     let (r, at) = clip_at(timeline, id)?;
     let track = &timeline.tracks[r];
     let old = &track.clips[at];
+    // The speed points of a clip say how it plays: its one speed is not set beside them.
+    if old.retime.is_some() && (set.speed.is_some() || set.reverse.is_some()) {
+        return Err(range("retimed"));
+    }
     let mut new = old.clone();
     swap(&mut new.enabled, set.enabled);
     swap(&mut new.speed, set.speed);
@@ -3690,7 +3771,7 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
             None => range("length"),
         });
     }
-    check_settings_of(clip)?;
+    check_settings_of(clip, media)?;
     audio::check_clip(clip, rate)?;
     match (&clip.source, media) {
         (Source::Media { .. }, Some(media)) => {
@@ -3748,13 +3829,42 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
     }
 }
 
-/// Check how a clip that lasts at least a frame is played: its speed, transform, gain, pan,
-/// fades and group.
-fn check_settings_of(clip: &Clip) -> Result<(), OpError> {
+/// Whether media lasts: it is not a still, which shows one picture however it is played. Only
+/// a clip of such media has speed points.
+fn media_lasts(media: &Media) -> bool {
+    !media.facts.video.as_ref().is_some_and(|video| video.still)
+}
+
+/// Whether a clip is of media of the project that lasts: not a title or a colour, and not a
+/// still.
+pub(crate) fn lasts(project: &Project, clip: &Clip) -> bool {
+    clip.media()
+        .and_then(|id| project.media.iter().find(|m| m.id == *id))
+        .is_some_and(media_lasts)
+}
+
+/// Check how a clip that lasts at least a frame is played: its speed, its speed points, as
+/// those of a clip of `media` or of none, its transform, gain, pan, fades and group.
+fn check_settings_of(clip: &Clip, media: Option<&Media>) -> Result<(), OpError> {
     let speed = clip.speed;
     let (num, den) = (u64::from(speed.num), u64::from(speed.den));
     if num * 100 < den || num > den * 100 {
         return Err(range("speed"));
+    }
+    if let Some(retime) = &clip.retime {
+        // Only media that lasts is played along them: not a title, a colour or a still.
+        if !media.is_some_and(media_lasts) {
+            return Err(range("retime_source"));
+        }
+        // They say how the clip plays, and its speed says nothing beside them.
+        if speed != Speed::ONE || clip.reverse {
+            return Err(range("retime_speed"));
+        }
+        retime.check(clip.length)?;
+        // One speed is kept in one way only: as the speed of the clip.
+        if retime.as_constant().is_some() {
+            return Err(range("retime_constant"));
+        }
     }
     clip.transform.check()?;
     clip.crop.check()?;
@@ -3791,24 +3901,15 @@ pub(crate) fn in_source(
     let Some(source_in) = clip.source_in() else {
         return Ok(());
     };
-    let offset = |frames: i64| {
-        i128::from(span::ticks_of_scaled(
-            frames,
-            clip.speed,
-            rate,
-            source_in.scale,
-        ))
+    // What it shows at its speed, or along its speed points: those that are not of the clip
+    // show nothing that could lie inside its media.
+    let Some(shown) = span::shown(clip, before, after, rate, source_in.scale) else {
+        return Err("past_end");
     };
-    // A clip that plays backward shows what is before its start at its end.
-    let (before, after) = if clip.reverse {
-        (after, before)
-    } else {
-        (before, after)
-    };
-    let frames = clip.length.saturating_add(after);
-    let first = i128::from(source_in.ticks) + offset(-before);
-    let end = i128::from(source_in.ticks) + offset(frames);
-    let last = i128::from(source_in.ticks) + offset(frames - 1);
+    let begins = i128::from(source_in.ticks);
+    let first = begins + i128::from(shown.first);
+    let end = begins + i128::from(shown.end);
+    let last = begins + i128::from(shown.last);
     let duration = i128::from(media.facts.duration.ticks);
     if first < 0 {
         Err("before_start")

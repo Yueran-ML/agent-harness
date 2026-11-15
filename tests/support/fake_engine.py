@@ -1162,7 +1162,7 @@ class Fake:
             track.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
         elif name in (
             "remove_clip", "move_clip", "trim_clip", "set_clip", "set_clip_keys",
-            "splice_clip_keys",
+            "splice_clip_keys", "set_retime",
         ):  # fmt: skip
             self._clip_changed(op, index)
         elif name == "set_track_audio":
@@ -1213,6 +1213,15 @@ class Fake:
                         clip["source"]["in"] = op["source_in"]
                 elif op["op"] in ("set_clip_keys", "splice_clip_keys"):
                     self._clip_keys(clip, op, index)
+                elif op["op"] == "set_retime":
+                    # The speed points are put as they are sent: the engine's checks, and its
+                    # writing of one speed as the speed of the clip, are not copied here.
+                    if op["retime"] is None:
+                        clip.pop("retime", None)
+                    else:
+                        clip["retime"] = op["retime"]
+                    if op.get("length") is not None:
+                        clip["length"] = op["length"]
                 else:
                     clip.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
                 for one in timeline["tracks"]:

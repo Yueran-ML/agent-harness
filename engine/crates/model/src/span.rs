@@ -14,9 +14,21 @@
 //!
 //! Every count is made exactly, and one too large for an `i64` is `i64::MAX`, and one too far
 //! below nought `i64::MIN`.
+//!
+//! # A clip whose speed changes on the way
+//!
+//! A clip with speed points ([`Clip::retime`], see [`crate::retime`]) shows the places of their
+//! path: the place of each frame ([`source_tick`], [`Reading`]), what it shows from the lowest
+//! place to the highest ([`source_span`]), and how far that lies in its media ([`shown`]) are
+//! counted from its course here, so that whoever asks of a clip is answered for either kind.
+//! Its speed is 1/1 and it does not play backward, as far as those fields say: what is counted
+//! from a speed alone ([`ticks_of_scaled`], [`frames_for_span`]) is not of such a clip, and
+//! [`frames_for`] is asked of the clip instead. Its sound is not read through its speed points
+//! yet: [`source_sample`] reads a clip of one speed.
 
 use crate::ops::LARGEST;
 use crate::project::Clip;
+use crate::retime::Course;
 use crate::time::{Rate, Speed, Time};
 
 /// The ticks of `scale` that `frames` frames of `rate` show at `speed`, rounded down:
@@ -36,52 +48,96 @@ pub fn ticks_of_scaled(frames: i64, speed: Speed, rate: Rate, scale: u32) -> i64
 }
 
 /// The ticks of its media that a clip shows, at the rate of its timeline, in the scale of its
-/// media: [`ticks_of_scaled`] of its length at its speed.
+/// media: [`ticks_of_scaled`] of its length at its speed. With speed points it is what lies
+/// from the lowest place of their path to the highest ([`Course::span`]), and nothing where
+/// they are not those of the clip, which no operation leaves so.
 #[must_use]
 pub fn source_span(clip: &Clip, rate: Rate, scale: u32) -> i64 {
-    ticks_of_scaled(clip.length, clip.speed, rate, scale)
+    match &clip.retime {
+        Some(retime) => retime
+            .course(clip.length)
+            .map_or(0, |course| course.span(rate, scale)),
+        None => ticks_of_scaled(clip.length, clip.speed, rate, scale),
+    }
 }
 
 /// The place in its media, in ticks of `scale`, that frame `k` of a clip shows, counted from
 /// its first frame, at the rate of its timeline: forward, where it begins and
 /// [`ticks_of_scaled`] of `k` frames; backward, what frame `length - 1 - k` shows forward. A
-/// clip of a title or a colour begins at 0.
+/// clip of a title or a colour begins at 0. With speed points it is the place of their path at
+/// the frame ([`Course::tick`]): one picture all through a freeze, and lower places frame by
+/// frame where a segment plays backward.
 #[must_use]
 pub fn source_tick(clip: &Clip, k: i64, rate: Rate, scale: u32) -> i64 {
     Reading::of(clip).tick(k, rate, scale)
 }
 
 /// How a clip reads its source, as [`source_tick`] counts it: where it begins, how long it
-/// lasts, at what speed and which way. It is a copy of those fields of the clip, so that a
-/// reader may keep it without the clip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// lasts, at what speed and which way, or along which course. It is a copy of those fields of
+/// the clip, so that a reader may keep it without the clip.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reading {
     /// Where it begins in its source, in ticks; 0 for a title or a colour.
     pub begins: i64,
     /// How many frames it lasts.
     pub length: i64,
-    /// How fast it plays its source.
+    /// How fast it plays its source, where it has no speed points.
     pub speed: Speed,
-    /// Whether it plays its source backward.
+    /// Whether it plays its source backward, where it has no speed points.
     pub reverse: bool,
+    /// The course of a clip that has speed points, which it is read by, and not by its speed.
+    /// None too for speed points that are not those of the clip, which no operation leaves so:
+    /// such a clip is read at its speed.
+    course: Option<Course>,
 }
 
 impl Reading {
     /// How `clip` reads its source.
     #[must_use]
     pub fn of(clip: &Clip) -> Reading {
+        let course = clip
+            .retime
+            .as_ref()
+            .and_then(|retime| retime.course(clip.length).ok());
         Reading {
             begins: clip.source_in().map_or(0, |time| time.ticks),
             length: clip.length,
             speed: clip.speed,
             reverse: clip.reverse,
+            course,
         }
+    }
+
+    /// The course of the clip through its source, if it has speed points.
+    #[must_use]
+    pub fn course(&self) -> Option<&Course> {
+        self.course.as_ref()
+    }
+
+    /// The lowest place in its source that a frame of the clip shows, and the highest, in ticks
+    /// of `scale`, at the rate of its timeline: what its first frame and its last show,
+    /// whichever way it plays, or the ends of what its course shows ([`Course::shown`]).
+    #[must_use]
+    pub fn ends(&self, rate: Rate, scale: u32) -> (i64, i64) {
+        if let Some(course) = &self.course {
+            let (lowest, highest) = course.shown(0, 0, rate, scale);
+            return (
+                self.begins.saturating_add(lowest),
+                self.begins.saturating_add(highest),
+            );
+        }
+        let first = self.tick(0, rate, scale);
+        let last = self.tick(self.length.saturating_sub(1), rate, scale);
+        (first.min(last), first.max(last))
     }
 
     /// The place in its source, in ticks of `scale`, that frame `k` of the clip shows, counted
     /// from its first frame, at the rate of its timeline: [`source_tick`].
     #[must_use]
     pub fn tick(&self, k: i64, rate: Rate, scale: u32) -> i64 {
+        if let Some(course) = &self.course {
+            return course.tick(self.begins, k, rate, scale);
+        }
         let frame = if self.reverse {
             self.length.saturating_sub(1).saturating_sub(k)
         } else {
@@ -137,9 +193,72 @@ pub fn frames_for_span(span: i64, speed: Speed, rate: Rate, scale: u32) -> i64 {
     fits
 }
 
+/// What a clip shows of its media, with the frames that a transition shows of it beyond its
+/// ends: each a count of ticks after where the clip begins in its media.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown {
+    /// The lowest place that a frame shows.
+    pub first: i64,
+    /// The highest place that a frame shows.
+    pub last: i64,
+    /// Where what the frames show ends: the highest place that a frame lasts to.
+    pub end: i64,
+}
+
+/// What a clip shows of its media, in ticks of `scale` after where it begins in it, at the rate
+/// of its timeline, with `before` frames more before its first and `after` more after its last,
+/// as a transition shows them. It lies inside its media where the lowest place is not before
+/// the start of the media, the highest is before its end, and what is shown ends no later than
+/// the media does.
+///
+/// A clip of one speed shows from [`ticks_of_scaled`] of the frames before it, below nought, to
+/// that of the frames to its last, and ends at that of all its frames; one that plays backward
+/// shows what is before its start at its end. A clip with speed points shows the places of its
+/// course ([`Course::shown`], [`Course::reach`]): none where they are not those of the clip.
+#[must_use]
+pub fn shown(clip: &Clip, before: i64, after: i64, rate: Rate, scale: u32) -> Option<Shown> {
+    if let Some(retime) = &clip.retime {
+        let course = retime.course(clip.length).ok()?;
+        let (first, last) = course.shown(before, after, rate, scale);
+        return Some(Shown {
+            first,
+            last,
+            end: course.reach(before, after, rate, scale),
+        });
+    }
+    let offset = |frames: i64| ticks_of_scaled(frames, clip.speed, rate, scale);
+    // A clip that plays backward shows what is before its start at its end.
+    let (before, after) = if clip.reverse {
+        (after, before)
+    } else {
+        (before, after)
+    };
+    let frames = clip.length.saturating_add(after);
+    Some(Shown {
+        first: offset(-before),
+        last: offset(frames - 1),
+        end: offset(frames),
+    })
+}
+
+/// The most frames that `clip` may last, playing as it does, and show no more than `span` ticks
+/// of `scale` of its media, on a timeline of `rate`: [`frames_for_span`] at its speed, or, with
+/// speed points, as many as their path lets it ([`crate::retime::Retime::frames_for_span`]),
+/// and none where they are those of no clip.
+#[must_use]
+pub fn frames_for(clip: &Clip, span: i64, rate: Rate, scale: u32) -> i64 {
+    match &clip.retime {
+        Some(retime) => retime.frames_for_span(span, rate, scale).unwrap_or(0),
+        None => frames_for_span(span, clip.speed, rate, scale),
+    }
+}
+
 /// The sample of its media, at `media_rate` samples a second, that sample `timeline_sample` of
 /// a timeline of `rate` frames and `sample_rate` samples a second is read from for a clip of
 /// sound, rounded down.
+///
+/// It reads the clip at its speed, forward or backward: the speed points of a clip
+/// ([`Clip::retime`]) are not read here, and the sound of a clip that has them is not played.
 ///
 /// The clip lies on the samples from the one that its first frame starts at to the one that the
 /// frame after its last starts at, each rounded down. Forward, the sample of the timeline that
@@ -199,10 +318,31 @@ fn saturated(count: Option<i128>, below: bool) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retime::{Retime, SignedSpeed, SpeedPoint};
     use crate::time::Time;
 
     const SCALE: u32 = 15360;
     const PAL: Rate = Rate { num: 25, den: 1 };
+
+    /// A clip of 10 frames from 100 ticks of 1/25 of a second into its media, a tick a frame
+    /// of 25 a second, with speed points, each a frame and the `num` and `den` of its speed.
+    fn pointed(points: &[(i64, i64, u32)]) -> Clip {
+        let begins = Time {
+            ticks: 100,
+            scale: 25,
+        };
+        let mut clip = Clip::of_media("c1", "m1", begins, 0, 10);
+        clip.retime = Some(Retime {
+            points: points
+                .iter()
+                .map(|&(frame, num, den)| SpeedPoint {
+                    frame,
+                    speed: SignedSpeed { num, den },
+                })
+                .collect(),
+        });
+        clip
+    }
 
     fn clip(ticks: i64, length: i64, speed: Speed, reverse: bool) -> Clip {
         let mut clip = Clip::of_media(
@@ -355,5 +495,109 @@ mod tests {
         let twice = |clip: &Clip, sample| source_sample(clip, PAL, sample, 48000, 96000);
         assert_eq!(twice(&at(0, 0, Speed::ONE), i64::MIN), i64::MIN);
         assert_eq!(twice(&at(0, 0, Speed::ONE), i64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn a_clip_with_speed_points_reads_its_media_along_their_path() {
+        // 4 frames forward, a picture held for 3, and 3 frames back at half the speed.
+        let clip = pointed(&[(0, 1, 1), (4, 0, 1), (7, -1, 2)]);
+        let ticks: Vec<i64> = (0..10).map(|k| source_tick(&clip, k, PAL, 25)).collect();
+        assert_eq!(ticks, [100, 101, 102, 103, 104, 104, 104, 103, 103, 102]);
+        // The frames that a transition shows go on as the first segment and the last do.
+        assert_eq!(source_tick(&clip, -1, PAL, 25), 99);
+        assert_eq!(source_tick(&clip, 10, PAL, 25), 102);
+        // It shows 4 frames of its media, from where it begins in it.
+        assert_eq!(source_span(&clip, PAL, 25), 4);
+        let reading = Reading::of(&clip);
+        assert!(reading.course().is_some());
+        assert_eq!(reading.tick(8, PAL, 25), 103);
+        assert_eq!(reading.ends(PAL, 25), (100, 104));
+        let within = |first, last, end| Some(Shown { first, last, end });
+        assert_eq!(shown(&clip, 0, 0, PAL, 25), within(0, 4, 4));
+        assert_eq!(shown(&clip, 1, 1, PAL, 25), within(-1, 4, 4));
+        // It may last 16 frames and show no more: 9 frames back at half the speed are 4 frames
+        // and a half, down to where it began and half a frame below.
+        assert_eq!(frames_for(&clip, 4, PAL, 25), 16);
+        assert_eq!(frames_for(&clip, 3, PAL, 25), 0);
+        // A clip of one speed has no course, and is asked the same.
+        let plain = clip_of(100, 10);
+        let reading = Reading::of(&plain);
+        assert!(reading.course().is_none());
+        assert_eq!(reading.ends(PAL, 25), (100, 109));
+        assert_eq!(shown(&plain, 1, 1, PAL, 25), within(-1, 10, 11));
+        assert_eq!(frames_for(&plain, 4, PAL, 25), 4);
+    }
+
+    /// A clip of `length` frames from `ticks` of 1/25 of a second into its media.
+    fn clip_of(ticks: i64, length: i64) -> Clip {
+        Clip::of_media("c1", "m1", Time { ticks, scale: 25 }, 0, length)
+    }
+
+    #[test]
+    fn speed_points_of_one_speed_read_as_that_speed_of_a_clip_does() {
+        let ntsc = Rate {
+            num: 30000,
+            den: 1001,
+        };
+        let speeds = [
+            Speed::ONE,
+            Speed { num: 2, den: 1 },
+            Speed { num: 137, den: 250 },
+            Speed { num: 1, den: 100 },
+        ];
+        for speed in speeds {
+            for reverse in [false, true] {
+                let plain = clip(1000, 40, speed, reverse);
+                // A clip keeps one speed as its speed: here it is given as a speed point, which
+                // the operations never leave, to be counted the other way.
+                let mut point = clip(1000, 40, Speed::ONE, false);
+                point.retime = Some(Retime::constant(speed, reverse));
+                for (rate, scale) in [(PAL, SCALE), (PAL, 25), (ntsc, 1000)] {
+                    let what = format!("{speed:?}, backward {reverse}, {rate:?} in {scale}");
+                    for k in -3..43 {
+                        assert_eq!(
+                            source_tick(&point, k, rate, scale),
+                            source_tick(&plain, k, rate, scale),
+                            "frame {k} at {what}"
+                        );
+                    }
+                    assert_eq!(
+                        source_span(&point, rate, scale),
+                        source_span(&plain, rate, scale),
+                        "{what}"
+                    );
+                    for (before, after) in [(0, 0), (3, 0), (0, 4), (2, 5)] {
+                        assert_eq!(
+                            shown(&point, before, after, rate, scale),
+                            shown(&plain, before, after, rate, scale),
+                            "{before} before and {after} after at {what}"
+                        );
+                    }
+                    assert_eq!(
+                        frames_for(&point, 7777, rate, scale),
+                        frames_for(&plain, 7777, rate, scale),
+                        "{what}"
+                    );
+                    assert_eq!(
+                        Reading::of(&point).ends(rate, scale),
+                        Reading::of(&plain).ends(rate, scale),
+                        "{what}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn speed_points_that_are_not_those_of_the_clip_show_nothing() {
+        // One at frame 20 of a clip of 10 frames, which no operation leaves.
+        let clip = pointed(&[(0, 1, 1), (20, 2, 1)]);
+        assert_eq!(shown(&clip, 0, 0, PAL, 25), None);
+        assert_eq!(source_span(&clip, PAL, 25), 0);
+        // The clip is read at its speed.
+        assert!(Reading::of(&clip).course().is_none());
+        assert_eq!(source_tick(&clip, 3, PAL, 25), 103);
+        // And those of no clip let it last no frame.
+        assert_eq!(frames_for(&pointed(&[]), 100, PAL, 25), 0);
     }
 }

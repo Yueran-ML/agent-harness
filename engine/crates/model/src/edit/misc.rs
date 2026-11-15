@@ -355,6 +355,11 @@ pub(super) fn set_speed(
     for id in work.group(&[clip.into()], linked)? {
         let (track, c) = work.owned(&id)?;
         if c.source_in().is_some() {
+            // The speed points of a clip say how it plays: it is given no one speed beside
+            // them, nor is a clip linked to it while it keeps them.
+            if c.retime.is_some() {
+                return Err(EditError::Op(OpError::OutOfRange { what: "retimed" }));
+            }
             group.push((track, c));
         }
     }
@@ -1508,5 +1513,40 @@ mod tests {
             },
         );
         assert_eq!(error, EditError::Op(OpError::OutOfList { at: 4, len: 3 }));
+    }
+
+    #[test]
+    fn a_clip_with_speed_points_is_given_no_one_speed_beside_them() {
+        let retimed = EditError::Op(OpError::OutOfRange { what: "retimed" });
+        // c1, on V1, which c2 on A1 is linked to, slows to half its speed halfway through.
+        let mut project = project();
+        retime(&mut project, "c1", &[(0, 1, 1), (50, 1, 2)], 100);
+        assert_eq!(refused(project.clone(), speed("c1", 2, 1, false)), retimed);
+        // Nor is the clip linked to it, while the two go together.
+        assert_eq!(refused(project.clone(), speed("c2", 2, 1, false)), retimed);
+        let alone = Edit::SetSpeed {
+            timeline: "t1".into(),
+            clip: "c2".into(),
+            speed: Speed { num: 2, den: 1 },
+            reverse: None,
+            ripple: false,
+            linked: false,
+        };
+        edit(&mut project, alone);
+        assert_eq!(the(&project, "c2").speed, Speed { num: 2, den: 1 });
+        assert_eq!(
+            the(&project, "c1").retime,
+            Some(speed_points(&[(0, 1, 1), (50, 1, 2)]))
+        );
+        // Put back to one speed, it is given another.
+        let plain = Op::SetRetime {
+            timeline: "t1".into(),
+            id: "c1".into(),
+            retime: None,
+            length: None,
+        };
+        let mut project = with(project, vec![plain]);
+        edit(&mut project, speed("c1", 1, 2, false));
+        assert_eq!(the(&project, "c1").speed, Speed { num: 1, den: 2 });
     }
 }

@@ -139,6 +139,8 @@ _TIMELINE_OPERATIONS = frozenset(
         "set_lane", "splice_lane",
         # The keys of a clip's settings (phase 4).
         "set_clip_keys", "splice_clip_keys",
+        # The speed points of a clip (phase 4).
+        "set_retime",
     }
 )  # fmt: skip
 """The basic operations whose ``timeline`` the tool's fills where it is left out."""

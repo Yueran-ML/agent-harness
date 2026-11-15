@@ -11,6 +11,7 @@ use crate::grade::Target;
 use crate::keyframes::KeyClock;
 use crate::ops::{apply_done, in_source, Op, OpError, LARGEST};
 use crate::project::{Clip, Cue, Id, Project, Source, Timeline, Track, TrackKind, Transition};
+use crate::retime::Trimmed;
 use crate::span::ticks_of_scaled;
 use crate::time::{Rate, Time};
 
@@ -452,7 +453,9 @@ impl<'a> Work<'a> {
     }
 
     /// Make a clip as `new` is: where it starts, how long it lasts, where it begins in its
-    /// media, and its fades, which may only be shorter.
+    /// media, and its fades, which may only be shorter. A clip with speed points is made to
+    /// play as `new` does too, where an edit of its head or its tail left it other speed
+    /// points, or one speed.
     pub fn reshape(&mut self, new: &Clip) -> Result<(), EditError> {
         let (_, old) = self.owned(&new.id)?;
         self.detach(&new.id)?;
@@ -474,7 +477,11 @@ impl<'a> Work<'a> {
             }
             self.op(op)?;
         }
-        if (old.start, old.length, old.source_in()) != (new.start, new.length, new.source_in()) {
+        if old.retime.is_some() && old.retime != new.retime {
+            self.reshape_retimed(&old, new)?;
+        } else if (old.start, old.length, old.source_in())
+            != (new.start, new.length, new.source_in())
+        {
             self.op(Op::TrimClip {
                 timeline: self.timeline_id(),
                 id: new.id.clone(),
@@ -508,6 +515,39 @@ impl<'a> Work<'a> {
                 },
                 value: new.grade.clone(),
             })?;
+        }
+        Ok(())
+    }
+
+    /// Make a clip with speed points play as `new` does, start where it does, last as long and
+    /// begin where it does in its media: its speed points and its length are set together
+    /// ([`Op::SetRetime`]), and where it starts and begins apart from them ([`Op::TrimClip`]),
+    /// in the order that keeps what it shows between the two within what it showed before or
+    /// shows after. A clip that gets no longer is given its new speed points first, which show
+    /// no more than the old ones did from where it began; one that gets longer is moved first,
+    /// and shows there what it showed.
+    fn reshape_retimed(&mut self, old: &Clip, new: &Clip) -> Result<(), EditError> {
+        let moved = (old.start, old.source_in()) != (new.start, new.source_in());
+        let grows = new.length > old.length;
+        let timeline = self.timeline_id();
+        let place = |length: i64| Op::TrimClip {
+            timeline: timeline.clone(),
+            id: new.id.clone(),
+            source_in: new.source_in(),
+            start: new.start,
+            length,
+        };
+        if grows && moved {
+            self.op(place(old.length))?;
+        }
+        self.op(Op::SetRetime {
+            timeline: timeline.clone(),
+            id: new.id.clone(),
+            retime: Some(new.mapping()),
+            length: (new.length != old.length).then_some(new.length),
+        })?;
+        if !grows && moved {
+            self.op(place(new.length))?;
         }
         Ok(())
     }
@@ -855,6 +895,11 @@ pub(super) fn beyond(track: &Track, clip: &str) -> (i64, i64) {
 /// left at the cut. The second has no id. Where the keys of the clip count its `own` frames
 /// ([`Work::own_frames`]), those of the second half are moved back by the frames of the first,
 /// so that they stay at their frames of the timeline.
+///
+/// A clip with speed points is cut along them: the first half keeps those before the cut
+/// ([`crate::retime::Retime::with_length`]) and the second those from it on
+/// ([`crate::retime::Retime::from_frame`]), each beginning in the media where the lowest place
+/// of its own path is, and each kept as one speed where it has but one.
 pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate, own: bool) -> (Clip, Clip) {
     let a = at - clip.start;
     let b = clip.length - a;
@@ -876,16 +921,30 @@ pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate, own: bool) -> (Clip, C
     };
     fit_sound_fades(&mut first, Edge::In, rate);
     fit_sound_fades(&mut second, Edge::Out, rate);
-    if let Some(begins) = clip.source_in() {
-        let later = |frames| Time {
-            ticks: begins.ticks + ticks_of_scaled(frames, clip.speed, rate, begins.scale),
-            ..begins
-        };
-        if clip.reverse {
-            set_source_in(&mut first, later(b));
-        } else {
-            set_source_in(&mut second, later(a));
+    match (clip.source_in(), &clip.retime) {
+        (Some(begins), Some(retime)) => {
+            let head = retime.with_length(a, clip.length, rate, begins.scale);
+            let tail = retime.from_frame(a, clip.length, rate, begins.scale);
+            // A half that its speed points could not be made for keeps those of the clip, which
+            // are not those of a clip of its length: it is refused where it is put.
+            for (half, trimmed) in [(&mut first, head), (&mut second, tail)] {
+                if let Ok(trimmed) = trimmed {
+                    retime_as(half, trimmed, begins);
+                }
+            }
         }
+        (Some(begins), None) => {
+            let later = |frames| Time {
+                ticks: begins.ticks + ticks_of_scaled(frames, clip.speed, rate, begins.scale),
+                ..begins
+            };
+            if clip.reverse {
+                set_source_in(&mut first, later(b));
+            } else {
+                set_source_in(&mut second, later(a));
+            }
+        }
+        (None, _) => {}
     }
     if own {
         second.shift_keys(-a);
@@ -893,14 +952,56 @@ pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate, own: bool) -> (Clip, C
     (first, second)
 }
 
+/// Give a clip the speed points of `trimmed`, kept as one speed where they are of one, and have
+/// it begin as much later in its media as they say than `begins`, where it began with the ones
+/// that they were made of.
+fn retime_as(clip: &mut Clip, trimmed: Trimmed, begins: Time) {
+    clip.set_mapping(Some(trimmed.retime));
+    set_source_in(
+        clip,
+        Time {
+            ticks: begins.ticks.saturating_add(trimmed.later),
+            ..begins
+        },
+    );
+}
+
 /// A clip with one edge moved `delta` frames later: its start, so that it is `delta` frames
 /// shorter, or its end, so that it is `delta` frames longer. What it shows of its media stays
 /// where it was on the timeline, but for a tick at speeds whose frames do not last whole ticks.
 /// With `keep_start`, the clip still starts where it did, as in a ripple, and so does what it
 /// shows.
+///
+/// A clip with speed points keeps those of the frames that it keeps: moved at its start, those
+/// from the frame that it then starts at on ([`crate::retime::Retime::from_frame`]), and moved
+/// at its end, those before its new end, its last segment going on where it gets longer
+/// ([`crate::retime::Retime::with_length`]). It begins in its media where the lowest place of
+/// that path is.
 pub(super) fn edged(clip: &Clip, edge: Edge, delta: i64, keep_start: bool, rate: Rate) -> Clip {
     let mut new = clip.clone();
     let scale = clip.source_in().map_or(1, |t| t.scale);
+    if let (Some(retime), Some(begins)) = (&clip.retime, clip.source_in()) {
+        match edge {
+            Edge::In => {
+                new.length = clip.length - delta;
+                if !keep_start {
+                    new.start = clip.start + delta;
+                }
+            }
+            Edge::Out => new.length = clip.length + delta,
+        }
+        let trimmed = match edge {
+            Edge::In => retime.from_frame(delta, clip.length, rate, scale),
+            Edge::Out => retime.with_length(new.length, clip.length, rate, scale),
+        };
+        // A clip that its speed points could not be made for, one of no frame or of too many,
+        // keeps those that it had, and is refused where it is put.
+        if let Ok(trimmed) = trimmed {
+            retime_as(&mut new, trimmed, begins);
+        }
+        fit_fades(&mut new, edge, rate);
+        return new;
+    }
     let ticks = |frames| ticks_of_scaled(frames, clip.speed, rate, scale);
     // Forward, the start of a clip shows where it begins in its media; backward, its end does.
     let moves_begin = (edge == Edge::In) != clip.reverse;

@@ -32,6 +32,22 @@
 //! An insert through a subtitle cuts it into two with the same text, leaving the new frames
 //! between them. Locked subtitle tracks stay as they were.
 //!
+//! # Speed points
+//!
+//! A clip whose speed changes on the way has speed points ([`crate::retime`]), and the edits
+//! take it along them. Moved, copied and pasted it keeps them. Trimmed at its head, rolled or
+//! slid into, it keeps those from its new first frame on, and trimmed at its tail those before
+//! its new end, its last segment going on where it gets longer; cut in two by the blade, or by
+//! an edit that clears frames through it, each half has its own. A half or a trimmed clip that
+//! is left with one speed is a clip of that speed. Every frame that is kept shows what it
+//! showed, as nearly as a place of the media is a whole tick (see [`crate::retime`]). Slipped,
+//! it begins as many frames of its source later.
+//!
+//! What sets one speed is refused for a clip that has speed points, and for the clips linked
+//! to it, with `out_of_range` (`retimed`): `set_speed`, the volume of `paste_attributes` where
+//! it has keyframes, and a paste into a timeline of another rate. The operation `set_retime`
+//! with no `retime` puts the clip back to one speed first.
+//!
 //! # As far as it goes
 //!
 //! An edit that moves an edge or a clip by `delta` frames, and cannot go so far, for the end of

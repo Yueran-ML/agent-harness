@@ -2010,7 +2010,7 @@ impl Worker {
             let mut origin = Origin {
                 clip: clip.clone(),
                 timeline_frame: frame,
-                key_frame: clock.map_or(0, |clock| clock.at(frame)),
+                key_frame: clock.as_ref().map_or(0, |clock| clock.at(frame)),
                 media: None,
             };
             let mut editable = clock.is_some();

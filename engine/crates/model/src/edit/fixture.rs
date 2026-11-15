@@ -20,6 +20,8 @@ use crate::project::{
     AudioFacts, Clip, Cue, Facts, Identity, Media, Project, Timeline, Track, TrackKind, Transition,
     TransitionKind, VideoFacts,
 };
+use crate::retime::{Retime, SignedSpeed, SpeedPoint};
+use crate::span::source_tick;
 use crate::time::{Rate, Time};
 use crate::Alignment;
 
@@ -227,6 +229,45 @@ pub fn transitions(project: &Project, track: &str) -> Vec<(String, String, i64)>
         .iter()
         .map(|x| (x.left.clone(), x.right.clone(), x.length))
         .collect()
+}
+
+/// Speed points, each a frame and the `num` and `den` of its speed.
+pub fn speed_points(points: &[(i64, i64, u32)]) -> Retime {
+    Retime {
+        points: points
+            .iter()
+            .map(|&(frame, num, den)| SpeedPoint {
+                frame,
+                speed: SignedSpeed { num, den },
+            })
+            .collect(),
+    }
+}
+
+/// Give a clip of t1 speed points, and the length that it has with them.
+pub fn retime(project: &mut Project, id: &str, points: &[(i64, i64, u32)], length: i64) {
+    let set = Op::SetRetime {
+        timeline: "t1".into(),
+        id: id.into(),
+        retime: Some(speed_points(points)),
+        length: Some(length),
+    };
+    apply(project, set).unwrap();
+}
+
+/// The frame of its media that each frame of a clip of t1 shows.
+pub fn pictures(project: &Project, id: &str) -> Vec<i64> {
+    let clip = the(project, id);
+    (0..clip.length)
+        .map(|k| source_tick(&clip, k, RATE, 25))
+        .collect()
+}
+
+/// Take an edit back: the inverses of its operations, the last first.
+pub fn undo(project: &mut Project, expansion: &Expansion) {
+    for op in expansion.inverse.iter().rev() {
+        apply(project, op.clone()).unwrap();
+    }
 }
 
 /// m1 from `from` to `to`, in frames.

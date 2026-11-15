@@ -33,7 +33,10 @@
 //!   Transform and Cropping of the Edit page keep their place on the timeline or are stretched,
 //!   as the speed dialog chooses (p. 1073); a key of the Color page is not among them. Played
 //!   backward, the keys come in the other order, and the setting goes from key to key backward;
-//!   played slower than its media, a picture shown on several frames has one setting on them all.
+//!   played slower than its media, a picture shown on several frames has one setting on them all;
+//! - speed points ([`crate::retime`]): each frame of the clip has the setting of the picture
+//!   that its course shows there, so a freeze holds one setting, and a segment that plays
+//!   backward goes from key to key backward.
 //!
 //! A title, a colour and a still have no frames of their own (a still is one picture held), so
 //! the keys of their grades count the frames of the clip from its first, 0, as `DaVinci` aligns
@@ -75,7 +78,9 @@ use crate::time::{Rate, Time};
 /// How the frame of the keys of a clip's grades, and of its group's as they apply to it, is
 /// found from a frame of its timeline: the frame of its media whose picture is shown there, or
 /// the frame of the clip for a clip of no frames of its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// It keeps the course of a clip that has speed points, so it is cloned and not copied.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyClock {
     /// The first frame of the clip on its timeline.
     start: i64,
@@ -86,7 +91,7 @@ pub struct KeyClock {
 }
 
 /// How a clip reads the picture of its media.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Picture {
     reading: Reading,
     /// The rate of the frames of the media.
@@ -151,7 +156,21 @@ impl KeyClock {
     /// The rate of the frames that its keys count: that of the media, or of the timeline.
     #[must_use]
     pub fn rate(&self) -> Rate {
-        self.picture.map_or(self.timeline, |picture| picture.rate)
+        self.picture
+            .as_ref()
+            .map_or(self.timeline, |picture| picture.rate)
+    }
+
+    /// The first frame of its media that the clip shows and the last, in the order of the
+    /// media: those of its first frame and its last, whichever way it plays, or of the lowest
+    /// place and the highest that its course shows, which a clip with speed points may show
+    /// anywhere between its ends. None for a clip whose keys count its own frames.
+    #[must_use]
+    pub fn shown(&self) -> Option<(i64, i64)> {
+        let picture = self.picture.as_ref()?;
+        let (lowest, highest) = picture.reading.ends(self.timeline, picture.duration.scale);
+        let frame = |tick: i64| span::media_frame(tick, picture.rate, picture.duration);
+        Some((frame(lowest), frame(highest)))
     }
 }
 
@@ -211,18 +230,17 @@ impl KeyBase {
     #[must_use]
     pub fn of_clip(clip: &Clip, project: &Project, timeline: &Timeline) -> KeyBase {
         let clock = KeyClock::of(clip, project, timeline.rate);
-        if !clock.counts_source() {
-            return KeyBase {
+        match clock.shown() {
+            Some((first, last)) => KeyBase {
+                rate: clock.rate(),
+                first,
+                last: Some(last),
+            },
+            None => KeyBase {
                 rate: clock.rate(),
                 first: 0,
                 last: None,
-            };
-        }
-        let ends = [clock.at(clip.start), clock.at(clip.end().saturating_sub(1))];
-        KeyBase {
-            rate: clock.rate(),
-            first: ends[0].min(ends[1]),
-            last: Some(ends[0].max(ends[1])),
+            },
         }
     }
 }
@@ -383,5 +401,69 @@ mod tests {
             last: None,
         };
         assert!(!overlap(&frames, &base(PAL, 0, 10)));
+    }
+
+    #[test]
+    fn the_keys_of_a_clip_with_speed_points_are_at_the_pictures_that_its_course_shows() {
+        use crate::retime::{Retime, SignedSpeed, SpeedPoint};
+        // c1 of the sample, on frames [0, 100) of a timeline of 25 a second, from 2 seconds
+        // into m1, frame 50 of its 25 a second: 40 frames forward, a picture held for 20, and
+        // 40 frames back at half the speed.
+        let mut project = Project::sample();
+        let point = |frame, num, den| SpeedPoint {
+            frame,
+            speed: SignedSpeed { num, den },
+        };
+        let clip = &mut project.timelines[0].tracks[0].clips[0];
+        clip.source_in_mut().unwrap().ticks = 2 * 15360;
+        clip.set_mapping(Some(Retime {
+            points: vec![point(0, 1, 1), point(40, 0, 1), point(60, -1, 2)],
+        }));
+        project.validate().unwrap();
+        let timeline = &project.timelines[0];
+        let clip = &timeline.tracks[0].clips[0];
+        let clock = KeyClock::of(clip, &project, timeline.rate);
+        assert!(clock.counts_source());
+        // On the way up, a picture a frame; the frame before the clip goes on before it.
+        assert_eq!((clock.at(0), clock.at(39), clock.at(-1)), (50, 89, 49));
+        // The freeze holds picture 90, with one setting on all its frames.
+        for frame in 40..60 {
+            assert_eq!(clock.at(frame), 90, "frame {frame}");
+        }
+        // On the way back each picture is shown twice, the last first: so the keys come in
+        // the other order.
+        for back in 0..40 {
+            assert_eq!(
+                clock.at(60 + back),
+                50 + (79 - back) / 2,
+                "frame {}",
+                60 + back
+            );
+        }
+        // It shows the pictures from the first of the way up to the one that is held, though
+        // it ends between them.
+        assert_eq!(clock.shown(), Some((50, 90)));
+        let base = KeyBase::of_clip(clip, &project, timeline);
+        assert_eq!((base.first, base.last), (50, Some(90)));
+        // A clip of one speed shows those of its first frame and its last, whichever way it
+        // plays.
+        let mut plain = clip.clone();
+        plain.set_mapping(None);
+        let forward = KeyClock::of(&plain, &project, timeline.rate);
+        assert_eq!(forward.shown(), Some((50, 149)));
+        plain.reverse = true;
+        let backward = KeyClock::of(&plain, &project, timeline.rate);
+        assert_eq!((backward.at(0), backward.at(99)), (149, 50));
+        assert_eq!(backward.shown(), Some((50, 149)));
+        // A colour counts its own frames, and shows none of any media.
+        let colour = Clip::new(
+            "c9",
+            Source::Color {
+                color: crate::project::Rgba([0, 0, 0, 255]),
+            },
+            0,
+            10,
+        );
+        assert_eq!(KeyClock::of(&colour, &project, timeline.rate).shown(), None);
     }
 }

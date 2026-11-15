@@ -304,6 +304,11 @@ pub(super) fn paste(
             .into());
         }
         let mut clip = item.clip.clone();
+        // The speed points of a clip are at frames of the rate that it was copied at: they
+        // are not put on the frames of another rate.
+        if clip.retime.is_some() && clipboard.rate != work.rate() {
+            return Err(OpError::OutOfRange { what: "retimed" }.into());
+        }
         let start = at + frames(clip.start - clipboard.at, clipboard.rate, work.rate())?;
         let end = at + frames(clip.end() - clipboard.at, clipboard.rate, work.rate())?;
         if start < 0 {

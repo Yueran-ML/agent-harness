@@ -319,7 +319,9 @@ fn cuts(work: &Work, left: &str, right: &str, linked: bool) -> Result<Vec<(Id, I
     Ok(pairs)
 }
 
-/// A clip that shows `delta` frames later of its source.
+/// A clip that shows `delta` frames later of its source. One with speed points begins `delta`
+/// frames of its source later, at the speed of the source, so that every place of their path
+/// is as much later, and each of its frames shows what is so far from what it showed.
 fn slipped(clip: &Clip, delta: i64, work: &Work) -> Clip {
     let mut new = clip.clone();
     if let Some(begins) = clip.source_in() {
@@ -1113,5 +1115,190 @@ mod tests {
         let mut project = faded(5, 30);
         edit(&mut project, trim_alone("c5", Edge::In, 25, false));
         assert_eq!(lengths(&project), (25, 0, 25));
+    }
+
+    /// The fixture with speed points on c5, which is on V2 from frame 120 for 50 frames, from
+    /// frame 50 of m1: 10 frames forward, a picture held for 10, back over the 10, and on at
+    /// twice the speed.
+    fn retimed() -> crate::Project {
+        let mut project = project();
+        let points = [(0, 1, 1), (10, 0, 1), (20, -1, 1), (30, 2, 1)];
+        retime(&mut project, "c5", &points, 50);
+        project
+    }
+
+    #[test]
+    fn a_clip_with_speed_points_shows_the_places_of_their_path() {
+        let shown = pictures(&retimed(), "c5");
+        let path: Vec<i64> = (50..60)
+            .chain([60; 10])
+            .chain((50..60).rev())
+            .chain((0..20).map(|k| 50 + 2 * k))
+            .collect();
+        assert_eq!(shown, path);
+    }
+
+    #[test]
+    fn the_head_of_a_clip_with_speed_points_is_trimmed_along_them() {
+        let before = retimed();
+        let shown = pictures(&before, "c5");
+        // In by 5 frames: its speed points come 5 frames sooner, and it begins where it did in
+        // its media, at the lowest place that it shows.
+        let mut project = before.clone();
+        let done = edit(&mut project, trim("c5", Edge::In, 5, false));
+        assert!(!done.clamped);
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 125, 45, 50)]));
+        let points = [(0, 1, 1), (5, 0, 1), (15, -1, 1), (25, 2, 1)];
+        assert_eq!(the(&project, "c5").retime, Some(speed_points(&points)));
+        assert_eq!(pictures(&project, "c5"), shown[5..]);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // In past its last speed point: it is a clip of twice the speed, which begins where its
+        // first frame is.
+        let mut project = before.clone();
+        let done = edit(&mut project, trim("c5", Edge::In, 35, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 155, 15, 60)]));
+        let c5 = the(&project, "c5");
+        assert_eq!(
+            (c5.speed, c5.reverse, c5.retime),
+            (Speed { num: 2, den: 1 }, false, None)
+        );
+        assert_eq!(pictures(&project, "c5"), shown[35..]);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // Out by 5 frames: its first segment goes on before it, and it begins 5 frames earlier
+        // in its media.
+        let mut project = before.clone();
+        let done = edit(&mut project, trim("c5", Edge::In, -5, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 115, 55, 45)]));
+        let points = [(0, 1, 1), (15, 0, 1), (25, -1, 1), (35, 2, 1)];
+        assert_eq!(the(&project, "c5").retime, Some(speed_points(&points)));
+        let now = pictures(&project, "c5");
+        assert_eq!(now[..5], [45, 46, 47, 48, 49]);
+        assert_eq!(now[5..], shown[..]);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // With a ripple it starts where it did, and shows what it showed 5 frames later.
+        let mut project = with(before.clone(), vec![lock("V1"), lock("A1"), lock("S1")]);
+        edit(&mut project, trim("c5", Edge::In, 5, true));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 45, 50)]));
+        assert_eq!(pictures(&project, "c5"), shown[5..]);
+    }
+
+    #[test]
+    fn the_tail_of_a_clip_with_speed_points_is_trimmed_along_them() {
+        let before = retimed();
+        let shown = pictures(&before, "c5");
+        // In by 20 frames: the speed points at its new end and after it go.
+        let mut project = before.clone();
+        let done = edit(&mut project, trim("c5", Edge::Out, -20, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 30, 50)]));
+        let points = [(0, 1, 1), (10, 0, 1), (20, -1, 1)];
+        assert_eq!(the(&project, "c5").retime, Some(speed_points(&points)));
+        assert_eq!(pictures(&project, "c5"), shown[..30]);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // Out by 10 frames: its last segment goes on, at twice the speed.
+        let mut project = before.clone();
+        let done = edit(&mut project, trim("c5", Edge::Out, 10, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 60, 50)]));
+        assert_eq!(the(&project, "c5").retime, the(&before, "c5").retime);
+        let now = pictures(&project, "c5");
+        assert_eq!(now[..50], shown[..]);
+        assert_eq!(now[50..], [90, 92, 94, 96, 98, 100, 102, 104, 106, 108]);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // It goes as far as its media has: m1 lasts 250 frames, and the 200 from where the
+        // clip begins on are 100 frames at twice the speed, after its first 30.
+        let mut project = before.clone();
+        let done = edit(&mut project, trim("c5", Edge::Out, 100, false));
+        assert!(done.clamped);
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 130, 50)]));
+    }
+
+    #[test]
+    fn a_clip_that_ends_below_where_it_began_begins_in_its_media_where_it_ends() {
+        // c5 goes 10 frames forward and 20 back: its last frame shows where it begins in m1,
+        // frame 50, and its first frame 10 frames on.
+        let mut before = project();
+        retime(&mut before, "c5", &[(0, 1, 1), (10, -1, 1)], 30);
+        let shown = pictures(&before, "c5");
+        let path: Vec<i64> = (60..70).chain((50..70).rev()).collect();
+        assert_eq!(shown, path);
+        // Its tail trimmed in by 15 frames, it ends 10 frames higher, and begins there.
+        let mut project = before.clone();
+        let done = edit(&mut project, trim("c5", Edge::Out, -15, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 15, 60)]));
+        assert_eq!(pictures(&project, "c5"), shown[..15]);
+        // And out again by 10, it begins 5 frames lower.
+        edit(&mut project, trim("c5", Edge::Out, 10, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 25, 55)]));
+        assert_eq!(pictures(&project, "c5"), shown[..25]);
+        assert!(!done.clamped);
+        // Its head trimmed in past the way up, it plays backward at one speed.
+        let mut project = before.clone();
+        edit(&mut project, trim("c5", Edge::In, 12, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 132, 18, 50)]));
+        let c5 = the(&project, "c5");
+        assert_eq!((c5.speed, c5.reverse, c5.retime), (Speed::ONE, true, None));
+        assert_eq!(pictures(&project, "c5"), shown[12..]);
+    }
+
+    #[test]
+    fn a_clip_with_speed_points_slips_by_frames_of_its_source() {
+        let before = retimed();
+        let shown = pictures(&before, "c5");
+        let mut project = before.clone();
+        let done = edit(&mut project, slip("c5", 7));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 50, 57)]));
+        assert_eq!(the(&project, "c5").retime, the(&before, "c5").retime);
+        let later: Vec<i64> = shown.iter().map(|picture| picture + 7).collect();
+        assert_eq!(pictures(&project, "c5"), later);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // It goes as far as its media has: the lowest place that it shows, where it begins, is
+        // no earlier than the start.
+        let done = edit(&mut project, slip("c5", -100));
+        assert!(done.clamped);
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 50, 0)]));
+    }
+
+    #[test]
+    fn a_roll_trims_a_clip_with_speed_points_along_them() {
+        // c3, on V1 from frame 100 for 50 frames, from frame 150 of m1, slows to half its
+        // speed halfway through.
+        let mut before = project();
+        retime(&mut before, "c3", &[(0, 1, 1), (25, 1, 2)], 50);
+        let shown = pictures(&before, "c3");
+        // The cut 10 frames later: it keeps its frames from the tenth on.
+        let mut project = before.clone();
+        let done = edit(&mut project, roll("c1", "c3", 10));
+        assert_eq!(
+            clips(&project, "V1"),
+            rows(&[("c1", 0, 110, 0), ("c3", 110, 40, 160)])
+        );
+        assert_eq!(
+            the(&project, "c3").retime,
+            Some(speed_points(&[(0, 1, 1), (15, 1, 2)]))
+        );
+        assert_eq!(pictures(&project, "c3"), shown[10..]);
+        // The sound linked to it, which plays at one speed, rolls with it.
+        assert_eq!(clips(&project, "A1")[1], ("c4".into(), 110, 40, 160));
+        undo(&mut project, &done);
+        assert_eq!(project, before);
+        // The cut 10 frames earlier: its first segment goes on before it.
+        let mut project = before.clone();
+        let done = edit(&mut project, roll("c1", "c3", -10));
+        assert_eq!(
+            clips(&project, "V1"),
+            rows(&[("c1", 0, 90, 0), ("c3", 90, 60, 140)])
+        );
+        assert_eq!(
+            the(&project, "c3").retime,
+            Some(speed_points(&[(0, 1, 1), (35, 1, 2)]))
+        );
+        assert_eq!(pictures(&project, "c3")[10..], shown[..]);
+        undo(&mut project, &done);
+        assert_eq!(project, before);
     }
 }

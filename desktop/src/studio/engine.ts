@@ -104,6 +104,10 @@ export type TrackKind = 'video' | 'audio' | 'subtitle';
 export type Monitor = 'source' | 'timeline';
 export interface Bin { id: string; name: string; parent: string | null }
 export interface Speed { num: number; den: number }
+/** A speed point of a clip: the speed from frame `frame` of the clip on, to the next point or the end. Below 0 backward, 0/1 a freeze. */
+export interface SpeedPoint { frame: number; speed: Speed }
+/** The speed points of a clip whose speed changes on the way (`set_retime`). */
+export interface Retime { points: SpeedPoint[] }
 /**
  * Where the picture of a clip is put. Each setting is a number or keys, at the frames that the keys
  * of the clip's grade count (`keyClockOf`); the engine writes a setting with no keys as a number.
@@ -130,6 +134,8 @@ export interface Clip {
   enabled: boolean;
   speed: Speed;
   reverse: boolean;
+  /** Its speed points, where its speed changes on the way (schema 5): then `speed` is 1/1 and `reverse` false. A clip of one speed has none. */
+  retime?: Retime;
   link: string | null;
   transform: Transform;
   /** How much of its picture is cut away (schema 5). The engine always writes it; left out, none. */
@@ -700,6 +706,7 @@ export type Op =
   /** A setting of a clip that takes keys, by its path in the clip: `transform.x`. */
   | { op: 'set_clip_keys'; timeline: string; id: string; path: string; param: Param }
   | { op: 'splice_clip_keys'; timeline: string; id: string; path: string; at: number; remove: number; keys: Keyframe[] }
+  | { op: 'set_retime'; timeline: string; id: string; retime: Retime | null; length?: number }
   | { op: 'set_grade'; grade: Target; value: Grade }
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
@@ -1942,6 +1949,19 @@ export const CLIP_KEYED = [
 ] as const;
 export type ClipKeyed = (typeof CLIP_KEYED)[number];
 
+/**
+ * A clip made to play as `retime` says, as the engine keeps it (`set_retime`): one speed point at frame 0 that
+ * plays is the `speed` and `reverse` of the clip, with no speed points; any other is its speed points, beside a
+ * speed of 1/1, forward; none is the speed of the source, forward. The engine's checks are not copied.
+ */
+function retimed(clip: Clip, retime: Retime | null, length: number | undefined): Clip {
+  const { retime: _before, ...rest } = clip;
+  const lasting = length === undefined ? rest : { ...rest, length };
+  const only = retime?.points.length === 1 && retime.points[0].frame === 0 && retime.points[0].speed.num !== 0 ? retime.points[0].speed : null;
+  if (retime === null) return { ...lasting, speed: { num: 1, den: 1 }, reverse: false };
+  if (only) return { ...lasting, speed: { num: Math.abs(only.num), den: only.den }, reverse: only.num < 0 };
+  return { ...lasting, speed: { num: 1, den: 1 }, reverse: false, retime };
+}
 /** A clip with the setting at one of the paths of `CLIP_KEYED` changed (`set_clip_keys`, `splice_clip_keys`). */
 function withClipSetting(clip: Clip, path: string, change: (before: Param) => Param): Clip {
   if (!(CLIP_KEYED as readonly string[]).includes(path)) throw new CopyMismatch(`there is no setting ${path} of clip ${clip.id} in the copy`);
@@ -2092,6 +2112,10 @@ export function applyOp(project: Project, op: Op): Project {
     case 'splice_clip_keys': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);
       return inClips(timeline, track, clips => replaced(clips, at, withClipSetting(clips[at], op.path, before => splicedKeys(before, op))));
+    });
+    case 'set_retime': return inTimeline(project, op.timeline, timeline => {
+      const [track, at] = clipAt(timeline, op.id);
+      return inClips(timeline, track, clips => replaced(clips, at, retimed(clips[at], op.retime, op.length)));
     });
     case 'set_grade': return inGrade(project, op.grade, () => op.value);
     case 'add_group': return { ...project, groups: inserted(project.groups, { ...op.group, pre: kept(op.group.pre), post: kept(op.group.post) }, op.index) };

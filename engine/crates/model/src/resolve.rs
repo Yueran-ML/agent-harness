@@ -8,7 +8,8 @@
 //! track shows the clip that covers the frame, if it is on. A clip shows the place in its media
 //! that [`span::source_tick`] gives, at its transform, at its opacity times its fades: it fades in
 //! from nothing at its first frame over `fade_in` frames, and out to nothing at its last over
-//! `fade_out`.
+//! `fade_out`. A clip with speed points ([`crate::retime`]) shows the places of their path: one
+//! picture all through a freeze, and its pictures the other way where a segment plays backward.
 //!
 //! A transition lies over the frames that [`Transition::handles`] gives about its cut, and there
 //! both of its clips are shown, each going on beyond its end with frames of its media. Over a
@@ -34,6 +35,10 @@
 //! by the cosine and the right by the sine of how far through the crossfade a sample is, a
 //! quarter turn at the end (see [`CrossfadeLevel`]). The gain is drawn as straight lines between
 //! points, eight to a crossfade.
+//!
+//! A piece is read at one speed, one way. A clip with speed points ([`crate::retime`]) is not
+//! read so, and is not heard: it gives no piece, rather than one that plays what its frames do
+//! not show.
 //!
 //! The strips, buses and automation of the timeline are not here: they are the mixer's.
 
@@ -530,7 +535,12 @@ fn pieces_between(
         if !taken(track) {
             continue;
         }
-        for clip in track.clips.iter().filter(|c| c.enabled) {
+        // A clip with speed points is silent: a piece plays at one speed, which it has not.
+        for clip in track
+            .clips
+            .iter()
+            .filter(|c| c.enabled && c.retime.is_none())
+        {
             let Some(media) = clip.media() else {
                 continue;
             };
@@ -1179,5 +1189,89 @@ mod tests {
         assert_eq!(ids(10), ["q9"]);
         assert_eq!(ids(19), ["q9"]);
         assert_eq!(ids(20), Vec::<&str>::new());
+    }
+
+    /// Speed points, each a frame and the `num` and `den` of its speed.
+    fn speed_points(points: &[(i64, i64, u32)]) -> crate::retime::Retime {
+        crate::retime::Retime {
+            points: points
+                .iter()
+                .map(|&(frame, num, den)| crate::retime::SpeedPoint {
+                    frame,
+                    speed: crate::retime::SignedSpeed { num, den },
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_clip_with_speed_points_shows_the_places_of_their_path_and_its_keys_there() {
+        use crate::grade::{Interp, Key, Param};
+        // c3, on frames [100, 150), plays 10 frames of m1, holds a picture for 10, goes back
+        // over the 10, and then on at twice the speed.
+        let mut project = project();
+        let c3 = &mut project.timelines[0].tracks[0].clips[2];
+        (c3.fade_in, c3.fade_out) = (0, 0);
+        c3.set_mapping(Some(speed_points(&[
+            (0, 1, 1),
+            (10, 0, 1),
+            (20, -1, 1),
+            (30, 2, 1),
+        ])));
+        // The keys of how far it is moved right count the frames of m1: at frame n, n.
+        let key = |frame, value| Key {
+            frame,
+            value,
+            interp: Interp::Linear,
+        };
+        c3.transform.x = Param::Keys(vec![key(0, 0.0), key(40, 40.0)]);
+        project.validate().unwrap();
+        // The frame of m1 that each of its frames shows: one picture all through the freeze,
+        // and on the way back the pictures of the way up, the last first.
+        let pictures: Vec<i64> = (0..10)
+            .chain([10; 10])
+            .chain((0..10).rev())
+            .chain((0..20).map(|n| 2 * n))
+            .collect();
+        let timeline = &project.timelines[0];
+        for (frame, &picture) in (100..150).zip(&pictures) {
+            let layers = video_at(timeline, &project, frame);
+            let [layer] = layers.as_slice() else {
+                panic!("{layers:?}")
+            };
+            let Content::Media { tick, .. } = &layer.content else {
+                panic!("{layer:?}")
+            };
+            assert_eq!(&*layer.clip, "c3");
+            assert_eq!(
+                *tick,
+                timeline.rate.ticks_of(picture, 15360),
+                "frame {frame}"
+            );
+            // Its keys are read at the picture that the frame shows.
+            let moved = f64::from(i32::try_from(picture).unwrap());
+            assert!((layer.transform.x - moved).abs() < 1e-9, "frame {frame}");
+        }
+        assert_eq!(pictures.len(), 50);
+    }
+
+    #[test]
+    fn a_clip_of_sound_with_speed_points_is_not_heard() {
+        let mut project = project();
+        // c7, on A1 from frame 50, slows to half its speed halfway through.
+        let slowing = speed_points(&[(0, 1, 1), (25, 1, 2)]);
+        project.timelines[0].tracks[2].clips[1].set_mapping(Some(slowing));
+        project.validate().unwrap();
+        let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
+        let heard: Vec<&str> = pieces.iter().map(|p| &*p.clip).collect();
+        assert_eq!(heard, ["c6"]);
+        let pieces = sources_between(&project.timelines[0], &project, 0, 192_000);
+        let driving: Vec<&str> = pieces.iter().map(|p| &*p.clip).collect();
+        assert_eq!(driving, ["c6"]);
+        // Back at one speed it is heard as it was.
+        project.timelines[0].tracks[2].clips[1].set_mapping(None);
+        let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
+        let heard: Vec<&str> = pieces.iter().map(|p| &*p.clip).collect();
+        assert_eq!(heard, ["c6", "c7"]);
     }
 }

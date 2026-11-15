@@ -925,6 +925,7 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
         | Op::TrimClip { timeline, id, .. }
         | Op::SetClipKeys { timeline, id, .. }
         | Op::SpliceClipKeys { timeline, id, .. }
+        | Op::SetRetime { timeline, id, .. }
         | Op::RemoveTransition { timeline, id }
         | Op::SetTransition { timeline, id, .. }
         | Op::RemoveCue { timeline, id }

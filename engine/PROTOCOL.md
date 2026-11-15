@@ -683,6 +683,23 @@ clients; a client must not write `project.json` itself.
   `speed: {num, den}` is a positive rational from 1/100 to 100; direction is the separate `reverse`
   flag. `link` is a group id or `null`. Time conversion uses integer ticks, rounded down, so a
   cut need not be an exact sample boundary for arbitrary source time bases.
+- A clip whose speed changes on the way has `retime: {points: [{frame, speed: {num, den}}, ...]}`
+  as well, its speed points (Retime Controls, pp. 1070–1082); a clip of one speed has no `retime`
+  at all, and is written as it was. A speed point is at a frame of the clip, counted from its
+  first, and gives the speed of the segment that begins there and lasts to the next point or to
+  the end of the clip: above 0 forward, below 0 backward (`num` is signed), `0/1` a freeze; a
+  speed that plays is from 1/100 to 100 either way. The first point is at frame 0, the frames
+  rise strictly, each is before the end of the clip, and there are 1024 at the most
+  (`out_of_range`, `retime`); the denominators have a least common multiple of 32 bits
+  (`retime_unit`). The segments are one path through the source without a jump: each goes on
+  from where the one before it stopped. `source.in` is the lowest place of that path within the
+  clip. A frame of a segment that goes forward, or of a freeze, shows the place where the frame
+  begins, and one of a segment that goes backward the place where it ends, so a clip that plays
+  backward all the way shows what `reverse` shows. Beside speed points `speed` is `1/1` and
+  `reverse` is false (`retime_speed`), and speed points of one speed are not kept
+  (`retime_constant`): `set_retime` writes them as `speed` and `reverse`. Only a clip of media
+  that lasts has them, not a title, a colour or a still (`retime_source`). The picture reads its
+  source along the path. **The sound of a clip with speed points is silent in this version.**
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
   `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
   Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; `x`/`y`
@@ -2001,6 +2018,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `crop?` (whole), `composite?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
 | `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness` (listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`). Any other path is `missing` with `what` `setting`. Its inverse is the `set_clip_keys` of the setting as it was. |
 | `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`). |
+| `set_retime` | `timeline`, `id`, `retime` (the speed points `{points: [...]}`, or `null`, which must be written, for the speed of the source, forward), `length?` (the new length of the clip in frames, for a change that makes it longer or shorter): sets how the clip plays its source, whole, so a drag may send it again and again. Speed points of one speed are written as the `speed` and `reverse` of the clip. `start` and `source.in` stay: `trim_clip` moves them. Refused for a title, a colour or a still (`out_of_range`, `retime_source`), for speed points that are not those of a clip of that length (`out_of_range`: `retime`, `speed`, `retime_unit`), where the clip would show what is not in its media (`out_of_source`), and where it would cover frames of another clip of its track (`overlap`): nothing is moved out of its way. A clip with speed points refuses the `speed` and `reverse` of `set_clip` (`out_of_range`, `retimed`). Inverse: `set_retime` of how the clip played before, and of its length. |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |
@@ -4601,7 +4619,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
 | `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
-| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
+| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `retime`, `retime_unit`, `retime_constant`, `retime_speed` and `retime_source` (speed points that a clip cannot have), `retimed` (what is done to a clip of one speed only, asked of a clip with speed points), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | `remove_clip`, `move_clip` or `trim_clip` of a clip that has a transition (remove it first), a `set_clip` that its transition cannot follow, or a `shift_clips` that moves just one end of a transition |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |

@@ -33,7 +33,9 @@
 //! its Retime Process (`retime_process`, see [`crate::retime::RetimeProcess`]), what it shows
 //! where its place in its source lies between two pictures: it is written only on a clip that
 //! mixes the two, and a clip that is written without it shows the one picture that it always
-//! showed.
+//! showed. And so is the composition of a clip of a track of picture (`fusion`, see
+//! [`crate::fusion`]), the graph of nodes that makes its picture: it is written only on a clip
+//! that has one, and a clip that is written without it shows its source as it always did.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -44,6 +46,7 @@ use crate::audio::{
 };
 use crate::color::ColorFacts;
 use crate::color_management::{ColorOverride, ColorSettings};
+use crate::fusion::Composition;
 use crate::grade::{Composite, Grade, Group, Param};
 use crate::ops::Invalid;
 use crate::retime::{Retime, RetimeProcess};
@@ -640,13 +643,20 @@ pub struct Clip {
     /// The group that it is graded in, if any. It may be left out where a clip is read.
     #[serde(default)]
     pub group: Option<Id>,
+    /// Its composition, the graph of nodes that makes its picture (see [`crate::fusion`]), or
+    /// none, for its source as it is. What comes out of it is taken for the source of the
+    /// clip: before its grade, and before its transform, its crop and its composite mode.
+    /// Only a clip of a track of picture has one. It is written only where it is there, and
+    /// may be left out, as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion: Option<Composition>,
 }
 
 impl Clip {
-    /// Put every key of its transform, of its crop, of the style of its title and of its grade
-    /// `by` frames later (earlier where `by` is below 0): for a clip whose keys count its own
-    /// frames, as an edit that moves its head does, so that each key stays at its frame of the
-    /// timeline.
+    /// Put every key of its transform, of its crop, of the style of its title, of its grade
+    /// and of its composition `by` frames later (earlier where `by` is below 0): for a clip
+    /// whose keys count its own frames, as an edit that moves its head does, so that each key
+    /// stays at its frame of the timeline.
     pub(crate) fn shift_keys(&mut self, by: i64) {
         if by == 0 {
             return;
@@ -661,6 +671,11 @@ impl Clip {
         // A style with no keys comes back as it is.
         if let Source::Title { style, .. } = &mut self.source {
             *style = style.with_key_frames(&to);
+        }
+        if let Some(composition) = &mut self.fusion {
+            if composition.is_animated() {
+                *composition = composition.with_key_frames(&to);
+            }
         }
         if self.grade.has_keys() {
             self.grade = self.grade.with_key_frames(to);
@@ -1401,8 +1416,8 @@ impl Track {
 
 impl Clip {
     /// A clip of `source` at `start` for `length` frames, played as it is: seen and heard, at its
-    /// speed, forward, in no group, not moved, at its loudness, in the middle, not faded and not
-    /// graded.
+    /// speed, forward, in no group, not moved, at its loudness, in the middle, not faded, not
+    /// graded and with no composition.
     #[must_use]
     pub fn new(id: impl Into<Id>, source: Source, start: i64, length: i64) -> Self {
         Self {
@@ -1432,6 +1447,7 @@ impl Clip {
             channels: None,
             grade: Grade::default(),
             group: None,
+            fusion: None,
         }
     }
 

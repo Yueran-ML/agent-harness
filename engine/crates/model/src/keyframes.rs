@@ -69,6 +69,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::fusion::Composition;
 use crate::grade::{Grade, Target};
 use crate::ops::LARGEST;
 use crate::project::{Clip, Crop, Project, Source, Timeline, Transform};
@@ -286,6 +287,24 @@ pub fn aligned_crop(crop: &Crop, from: KeyBase, to: KeyBase, align: Align) -> Cr
     match Moved::of(from, to, align) {
         Some(moved) if crop.is_animated() => crop.with_key_frames(&|frame| moved.at(frame)),
         _ => crop.clone(),
+    }
+}
+
+/// `composition`, whose keys count the frames of `from`, with its keys put on the frames of
+/// `to` as `align` puts them, as [`aligned_transform`] puts those of the transform of the
+/// same clip.
+#[must_use]
+pub fn aligned_fusion(
+    composition: &Composition,
+    from: KeyBase,
+    to: KeyBase,
+    align: Align,
+) -> Composition {
+    match Moved::of(from, to, align) {
+        Some(moved) if composition.is_animated() => {
+            composition.with_key_frames(&|frame| moved.at(frame))
+        }
+        _ => composition.clone(),
     }
 }
 

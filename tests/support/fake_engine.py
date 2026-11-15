@@ -29,6 +29,9 @@ only its input is linked), a corrector that it adds has no settings but ``lut`` 
 ``collapse_group_grades`` only takes the clips out of their groups, and ``append_node_graph``
 changes nothing.
 
+Compositions (the Fusion page) are kept as simply: the operations on the composition of a clip
+do what they say, on a clip that has one, with none of the engine's checks of it.
+
 In a test, :func:`served` serves a project in the loop of the test. As a program, run it the way
 the engine is run, ``python fake_engine.py --project DIR --headless [--idle-seconds N]``, and with
 ``--mode`` it ends as an engine that cannot start ends instead:
@@ -140,6 +143,16 @@ _GRADE_OPS = {
     "remove_group",
     "set_group",
     "set_clip_group",
+}
+_FUSION_OPS = {
+    "set_fusion",
+    "add_fusion_node",
+    "remove_fusion_node",
+    "connect_fusion",
+    "disconnect_fusion",
+    "set_fusion_node",
+    "set_fusion_keys",
+    "splice_fusion_keys",
 }
 _GRADE_EDITS = {
     "append_node",
@@ -735,6 +748,9 @@ class Fake:
         if op["op"] in _GRADE_OPS:
             self._graded(op, names, index)
             return
+        if op["op"] in _FUSION_OPS:
+            self._fused(op, names, index)
+            return
         kind = _KINDS.get(op["op"], "clip" if op["op"] == "insert_clip" else None)
         for key in ("timeline", "track", "id"):
             if key in op and key != kind:
@@ -1212,6 +1228,94 @@ class Fake:
         }
         return [{"op": "add_node", "grade": target, "node": corrector, "links": links}]
 
+    def _fused(self, op: dict[str, Any], names: dict[str, str], index: int) -> None:
+        """Apply an operation on the composition of a clip; the engine's checks are not copied."""
+        name = op["op"]
+        for key in ("timeline", "clip"):
+            op[key] = self._named(op[key], names, index)
+        clip = self._found_clip(op["timeline"], op["clip"], index)
+        if name == "set_fusion":
+            # A clip that has no composition is written without one, as the engine writes it.
+            if op["value"] is None:
+                clip.pop("fusion", None)
+            else:
+                clip["fusion"] = copy.deepcopy(op["value"])
+                links: list[dict[str, Any]] = clip["fusion"]["links"]
+                links.sort(key=lambda one: (one["to"], one["input"]))
+            return
+        if "fusion" not in clip:
+            message = f"there is no fusion {clip['id']}"
+            raise self._refused(index, "missing", message, what="fusion", id=clip["id"])
+        composition = cast("dict[str, Any]", clip["fusion"])
+        nodes: list[dict[str, Any]] = composition["nodes"]
+        if name == "add_fusion_node":
+            node = op["node"]
+            given = str(node.get("id", ""))
+            if not given or given.startswith("$"):
+                node["id"] = f"n{self.project['next_id']}"
+                self.project["next_id"] += 1
+                if given:
+                    names[given] = node["id"]
+            op.setdefault("index", len(nodes))
+            nodes.insert(op["index"], node)
+            links = [
+                {**link, **{end: node["id"] for end in ("from", "to") if link[end] in ("", given)}}
+                for link in op.get("links", [])
+            ]
+            for link in links:
+                _fusion_linked(composition, link)
+            op["links"] = links
+            return
+        if name == "connect_fusion":
+            _fusion_linked(composition, op["link"])
+            return
+        if name == "disconnect_fusion":
+            op["to"] = self._named(op["to"], names, index)
+            end = (op["to"], op["input"])
+            links = composition["links"]
+            composition["links"] = [one for one in links if (one["to"], one["input"]) != end]
+            return
+        if name in ("set_fusion_keys", "splice_fusion_keys"):
+            # The id of the node, a dot, and the path of the setting in its params.
+            node_id, _, path = str(op["path"]).partition(".")
+            place: Any = self._fusion_node(nodes, node_id, index)["params"]
+            *heads, last = path.split(".")
+            for head in heads:
+                place = place[head]
+            if name == "set_fusion_keys":
+                place[last] = op["param"]
+                return
+            now = place[last]
+            keys: list[Any] = (
+                list(cast("dict[str, Any]", now)["keys"]) if isinstance(now, dict) else []
+            )
+            keys[op["at"] : op["at"] + op["remove"]] = op["keys"]
+            if not keys:
+                message = "a setting keeps one key at least"
+                raise self._refused(index, "params", message, node=node_id)
+            place[last] = {"keys": keys}
+            return
+        id = op["id"] = self._named(op["id"], names, index)
+        node = self._fusion_node(nodes, id, index)
+        if name == "set_fusion_node":
+            node.update({k: op[k] for k in ("label", "pass_through", "pos") if k in op})
+            if "params" in op:
+                node["params"] = _patched(node.get("params", {}), op["params"])
+            return
+        # remove_fusion_node: its links go, and those that are given are put in their place.
+        nodes.remove(node)
+        links = composition["links"]
+        composition["links"] = [one for one in links if id not in (one["from"], one["to"])]
+        op["links"] = list(op.get("links") or [])
+        for link in op["links"]:
+            _fusion_linked(composition, link)
+
+    def _fusion_node(self, nodes: list[dict[str, Any]], id: object, index: int) -> dict[str, Any]:
+        for node in nodes:
+            if node["id"] == id:
+                return node
+        raise self._refused(index, "missing", f"there is no node {id}", what="node", id=id)
+
     def _named(self, value: object, names: dict[str, str], index: int) -> object:
         if isinstance(value, str) and value.startswith("$"):
             if value not in names:
@@ -1474,6 +1578,15 @@ def _linked(grade: dict[str, Any], link: dict[str, Any]) -> None:
     """Put a link in place of the one into its input, keeping the links in the engine's order."""
     grade["links"] = [one for one in grade["links"] if not _into(one, link)] + [link]
     grade["links"].sort(key=lambda one: (one["to"], one["kind"] != "rgb", one["input"]))
+
+
+def _fusion_linked(composition: dict[str, Any], link: dict[str, Any]) -> None:
+    """Put a link of a composition in place of the one into its input, in the engine's order."""
+    end = (link["to"], link["input"])
+    links = [one for one in composition["links"] if (one["to"], one["input"]) != end]
+    links.append(link)
+    links.sort(key=lambda one: (one["to"], one["input"]))
+    composition["links"] = links
 
 
 def _patched(params: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:

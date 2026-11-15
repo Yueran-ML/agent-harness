@@ -21,6 +21,14 @@
 //! picture begins, a frame of a freeze, and a clip of a still give the layer that they always
 //! gave, with nothing to mix.
 //!
+//! A clip that has a composition ([`crate::fusion`]) gives it with its layer, as it is at the
+//! frame ([`Fused`]): the nodes that its picture is made of, each with its settings as numbers,
+//! at the frame of the keys of the clip. The content of the layer is then what a `media_in` of
+//! the composition shows, the source of the clip as a clip without a composition shows it, and
+//! the picture of the layer is what comes out of the composition, to which the transform, the
+//! crop, the composite mode and the opacity of the layer are done as they are to a source. A
+//! layer of a clip without a composition has none, and is as it always was.
+//!
 //! A transition lies over the frames that [`Transition::handles`] gives about its cut, and there
 //! both of its clips are shown, each going on beyond its end with frames of its media. Over a
 //! transition of `length` frames, frame `i` of it is `(i + 1) / (length + 1)` of the way through
@@ -60,6 +68,7 @@
 use std::sync::Arc;
 
 use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
+use crate::fusion::{Composition, Fused};
 use crate::grade::Composite;
 use crate::keyframes::KeyClock;
 use crate::project::{
@@ -116,6 +125,10 @@ pub struct Layer {
     /// The picture of its media that the one of its content is mixed with, where its clip
     /// mixes two (Frame Blend) and the frame lies between them; none of any other layer.
     pub blend: Option<Blend>,
+    /// The composition of its clip at the frame, where the clip has one: the picture of the
+    /// layer is then what comes out of it, made of its content. None of a clip that has none,
+    /// and of the colour of a transition.
+    pub fusion: Option<Fused>,
 }
 
 /// The second picture of a layer of media whose clip is retimed by Frame Blend
@@ -191,6 +204,7 @@ fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: 
             composite: Composite::Normal,
             opacity: unit(dipped),
             blend: None,
+            fusion: None,
         });
         return;
     }
@@ -218,11 +232,12 @@ fn layer(
     }
     let k = frame - clip.start;
     let mut blend = None;
-    // A transform, a crop and the style of a title with no keys are the same at every frame:
-    // the clock is not asked.
+    // A transform, a crop, the style of a title and a composition with no keys are the same
+    // at every frame: the clock is not asked.
     let keyed = clip.transform.is_animated()
         || clip.crop.is_animated()
-        || matches!(&clip.source, Source::Title { style, .. } if style.is_animated());
+        || matches!(&clip.source, Source::Title { style, .. } if style.is_animated())
+        || clip.fusion.as_ref().is_some_and(Composition::is_animated);
     let at = if keyed {
         KeyClock::of(clip, project, t.rate).at(frame)
     } else {
@@ -267,6 +282,7 @@ fn layer(
         composite: clip.composite,
         opacity: unit(placed.opacity * faded(clip, k) * share),
         blend,
+        fusion: clip.fusion.as_ref().map(|composition| composition.at(at)),
     })
 }
 

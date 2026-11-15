@@ -302,15 +302,15 @@ pub struct Bounds {
 }
 
 impl Bounds {
-    const fn new(default: f64, low: f64, high: f64) -> Self {
+    pub(crate) const fn new(default: f64, low: f64, high: f64) -> Self {
         Self { default, low, high }
     }
 
-    fn param(self) -> Param {
+    pub(crate) fn param(self) -> Param {
         Param::Fixed(self.default)
     }
 
-    fn check(self, what: &'static str, param: &Param) -> Result<(), OpError> {
+    pub(crate) fn check(self, what: &'static str, param: &Param) -> Result<(), OpError> {
         param.check(what, self.low, self.high)
     }
 }

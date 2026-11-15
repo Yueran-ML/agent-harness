@@ -512,8 +512,9 @@ impl<'a> Work<'a> {
             })?;
         }
         // The keys of a clip that counts its own frames, moved as its head was (see
-        // `own_frames`): those of its transform and of its crop, and those of the style of a
-        // title, which is set with its source. A clip of media begins elsewhere in its source
+        // `own_frames`): those of its transform and of its crop, those of the style of a
+        // title, which is set with its source, and below those of its grade and of its
+        // composition. A clip of media begins elsewhere in its source
         // by the trim above, and is not given its source here.
         let restyled = matches!(new.source, Source::Title { .. }) && old.source != new.source;
         if restyled || (&old.transform, &old.crop) != (&new.transform, &new.crop) {
@@ -541,6 +542,14 @@ impl<'a> Work<'a> {
                     clip: new.id.clone(),
                 },
                 value: new.grade.clone(),
+            })?;
+        }
+        // And those of its composition, moved with them.
+        if old.fusion != new.fusion {
+            self.op(Op::SetFusion {
+                timeline: self.timeline_id(),
+                clip: new.id.clone(),
+                value: new.fusion.clone(),
             })?;
         }
         Ok(())

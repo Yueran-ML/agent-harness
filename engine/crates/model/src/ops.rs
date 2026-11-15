@@ -102,6 +102,14 @@
 //! clip takes either, as any clip takes a speed: it is kept as it was set on a title, a
 //! colour, a still and a clip of sound, where it says nothing, and nothing is refused.
 //!
+//! A clip of a track of picture may have a composition ([`crate::fusion`]), the graph of nodes
+//! that makes its picture: set whole by [`Op::SetFusion`], and changed by the operations on its
+//! nodes, its links and the keys of its settings, each as the operation of a grade that it is
+//! like. A clip of sound has none. It has no more nodes than it may, each with an id of its
+//! own that has no dot in it, and exactly one `media_out`; its links each come from a node that
+//! has an output and go into an input that their node has, no two into one input, and make no
+//! loop; and each setting of its nodes is within its bounds.
+//!
 //! Moving a set of clips together with `shift_clips` keeps the transitions whose two ends
 //! are in that set: their adjacency and media handles do not change.
 //!
@@ -135,6 +143,7 @@ use crate::audio::{
     TrackGroup, Vca,
 };
 use crate::color_management::{Levels, LutPair};
+use crate::fusion::{Composition, MOST_NODES};
 use crate::grade::{
     Composite, Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL,
     LONGEST_PATH, MOST_INPUTS,
@@ -150,6 +159,7 @@ use crate::time::{Rate, Speed, Time};
 mod automation;
 mod clip_keys;
 mod color;
+mod fusion;
 mod grade;
 mod retiming;
 mod sound;
@@ -749,6 +759,135 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         length: Option<i64>,
     },
+    /// Put a composition in place of the one that a clip of a track of picture has
+    /// ([`crate::fusion`]), whole; or give it one where it has none; or take the one that it
+    /// has away, so that it shows its source as it did. Its inverse puts back what the clip
+    /// had. A clip of sound takes none (`wrong_track`, `fusion`).
+    SetFusion {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// What its composition becomes, its nodes with their ids; or `null`, which must be
+        /// written, for none.
+        #[serde(deserialize_with = "nullable_required")]
+        value: Option<Composition>,
+    },
+    /// Add a node to the composition of a clip, at `index` in its list of nodes or at the end,
+    /// with links that each come from it or go into it, as [`Op::AddNode`] adds one to a
+    /// grade. A link into an input that has one already takes its place.
+    AddFusionNode {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The node, with an empty id for the engine to give it one.
+        node: crate::fusion::Node,
+        /// Where it goes in the list of nodes.
+        #[serde(default)]
+        index: Option<usize>,
+        /// Its links, which name it by its id as it is given here: by an empty id where it has
+        /// none yet.
+        #[serde(default)]
+        links: Vec<crate::fusion::Link>,
+    },
+    /// Take a node away from the composition of a clip, with its links. Nothing is linked in
+    /// its place; or, where `links` is given, those links are put into the inputs that it
+    /// went into, as the inverse of [`Op::AddFusionNode`] puts back the links that the node
+    /// took the place of. Its inverse adds the node again with the links that it had.
+    RemoveFusionNode {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The node.
+        id: Id,
+        /// The links to put into the inputs that it went into, or none for none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        links: Option<Vec<crate::fusion::Link>>,
+    },
+    /// Link the output of a node to an input of another, in the composition of a clip, in
+    /// place of the link that the input had.
+    ConnectFusion {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The link.
+        link: crate::fusion::Link,
+    },
+    /// Take away the link into an input of a node of the composition of a clip.
+    DisconnectFusion {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The node whose input it goes into.
+        to: Id,
+        /// The input.
+        input: crate::fusion::Input,
+    },
+    /// Set the settings of a node of the composition of a clip that are given.
+    SetFusionNode {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The node.
+        id: Id,
+        /// Its label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Whether it is passed through.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pass_through: Option<bool>,
+        /// Where it lies in the node editor, or `null` for where the editor lays it out.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        pos: Option<Option<Pos>>,
+        /// Its settings that change, as an object of the fields of its `params` that change,
+        /// put in as [`Op::SetNode`] puts those of a node of a grade.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<serde_json::Value>,
+    },
+    /// Put a number, or keys, in place of a setting of a node of the composition of a clip
+    /// that takes keys ([`crate::catalog::fusion`]), named by the id of the node, a dot, and
+    /// the path of the setting in the `params` of the node: `n4.center.x`. Its inverse puts
+    /// back what the setting was. The keys are at the frames that the other keys of the clip
+    /// are at ([`crate::keyframes`]).
+    SetFusionKeys {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The node and the path of its setting.
+        path: String,
+        /// What the setting becomes.
+        param: Param,
+    },
+    /// Put `keys` in place of the `remove` keys of a setting of a node of the composition of
+    /// a clip from its key `at` on, as [`Op::SpliceKeys`] does with the keys of a setting of a
+    /// node of a grade: a setting that is a number becomes the keys that are put, and a
+    /// setting keeps one key at least. Its inverse puts back the keys that it took away in
+    /// place of those that it put, or the number: and where it put the first keys of a number,
+    /// it is given back as the [`Op::SetFusionKeys`] of those keys.
+    SpliceFusionKeys {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The node and the path of its setting.
+        path: String,
+        /// The place of the first key that is put in place of, from 0.
+        at: usize,
+        /// How many keys are taken away.
+        remove: usize,
+        /// The keys that are put there.
+        keys: Vec<Key>,
+    },
     /// Put a grade in place of a grade, whole, as copying a grade does.
     SetGrade {
         /// The grade that is replaced.
@@ -1033,8 +1172,9 @@ fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OpError {
     /// A thing that the operation names is not there. `what` is `bin`, `media`, `timeline`,
-    /// `track`, `clip`, `transition`, `cue`, `group`, `node`, `link`, or `setting` for a path
-    /// that is of no setting of the node that takes keys.
+    /// `track`, `clip`, `transition`, `cue`, `group`, `node`, `link`, `setting` for a path
+    /// that is of no setting of the node that takes keys, or `fusion` for the composition of a
+    /// clip that has none.
     #[error("there is no {what} {id}")]
     Missing {
         /// The kind of the thing.
@@ -1077,8 +1217,9 @@ pub enum OpError {
     /// A thing is to be on a track of a kind that does not hold it. `what` is `clip` (on a track
     /// of subtitles), `title` or `color` (on a track of sound), `cue` (on a track of picture or
     /// sound), `language` (of a track of picture or sound), `transition` (on a track of
-    /// subtitles), or the kind of a transition (`dissolve`, `dip_black` or `dip_white` on a
-    /// track of sound, `crossfade` on one of picture).
+    /// subtitles), the kind of a transition (`dissolve`, `dip_black` or `dip_white` on a
+    /// track of sound, `crossfade` on one of picture), or `fusion` (the composition of a clip,
+    /// on a track of sound).
     #[error("a {what} cannot be on a {} track", name_of(*.kind))]
     WrongTrack {
         /// What is to be on it.
@@ -1178,6 +1319,9 @@ pub enum OpError {
     /// `soft_clipper`, `stereo_width`, `de_esser`, `de_hummer`, `noise_reduction`, `pitch`) and
     /// `lane`; of a timeline, `buses`, `vcas` (too many), `audio` (its settings of sound),
     /// `label` (the name of a bus); and of a group of tracks, `members` and `linked` (one twice).
+    /// Of a composition ([`crate::fusion`]): `fusion_nodes` (more nodes than it may have),
+    /// `fusion_id` (the id of a node with a dot in it), and a setting of a node by its kind
+    /// and its path, such as `merge.blend`, `transform.center.x` or `background.color.a`.
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -1462,6 +1606,36 @@ pub enum OpError {
         /// What is wrong with them.
         why: String,
     },
+    /// A link of a composition ([`crate::fusion`]) goes into an input that its node does not
+    /// have: a node has the inputs of its kind only.
+    #[error("node {node} has no input {}", .input.name())]
+    NoInput {
+        /// The node.
+        node: Id,
+        /// The input.
+        input: crate::fusion::Input,
+    },
+    /// A link of a composition comes from a node that has no output: a `media_out`.
+    #[error("node {node} has no output")]
+    NoOutput {
+        /// The node.
+        node: Id,
+    },
+    /// Two links of a composition go into one input.
+    #[error("two links go into input {} of node {node}", .input.name())]
+    InputLinked {
+        /// The node.
+        node: Id,
+        /// The input.
+        input: crate::fusion::Input,
+    },
+    /// A composition has no `media_out`, or more than one: it has exactly one, whose picture
+    /// goes back to the timeline.
+    #[error("a composition has one media_out, and this would have {count}")]
+    OneMediaOut {
+        /// How many it would have.
+        count: usize,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -1670,6 +1844,20 @@ enum Fields {
     AudioSettings {
         why: String,
     },
+    NoInput {
+        node: Id,
+        input: crate::fusion::Input,
+    },
+    NoOutput {
+        node: Id,
+    },
+    InputLinked {
+        node: Id,
+        input: crate::fusion::Input,
+    },
+    OneMediaOut {
+        count: usize,
+    },
 }
 
 /// How [`OpError::NoPort`] names the input or the output.
@@ -1767,6 +1955,10 @@ fn range_message(what: &str) -> String {
             .into(),
         "lut" => "the path of the LUT is empty, too long or holds a NUL".into(),
         "param" => "the node has no such setting".into(),
+        "fusion_nodes" => format!("a composition has at most {MOST_NODES} nodes"),
+        "fusion_id" => "the id of a node of a composition has a dot in it, which ends the id \
+                        in the path of a setting"
+            .into(),
         "custom_luminance" | "graphics_white" => {
             format!("the {what} is not a number of nits from 1 to 10000")
         }
@@ -2084,6 +2276,69 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             retime,
             length,
         } => retiming::set_retime(project, &timeline, &id, retime, length),
+        Op::SetFusion {
+            timeline,
+            clip,
+            value,
+        } => fusion::set_fusion(project, &timeline, &clip, value),
+        Op::AddFusionNode {
+            timeline,
+            clip,
+            node,
+            index,
+            links,
+        } => fusion::add_node(project, &timeline, &clip, node, index, links),
+        Op::RemoveFusionNode {
+            timeline,
+            clip,
+            id,
+            links,
+        } => fusion::remove_node(project, &timeline, &clip, &id, links),
+        Op::ConnectFusion {
+            timeline,
+            clip,
+            link,
+        } => fusion::connect(project, &timeline, &clip, link),
+        Op::DisconnectFusion {
+            timeline,
+            clip,
+            to,
+            input,
+        } => fusion::disconnect(project, &timeline, &clip, &to, input),
+        Op::SetFusionNode {
+            timeline,
+            clip,
+            id,
+            label,
+            pass_through,
+            pos,
+            params,
+        } => fusion::set_node(
+            project,
+            &timeline,
+            &clip,
+            &id,
+            fusion::NodeChange {
+                label,
+                pass_through,
+                pos,
+                params: params.as_ref(),
+            },
+        ),
+        Op::SetFusionKeys {
+            timeline,
+            clip,
+            path,
+            param,
+        } => fusion::set_keys(project, &timeline, &clip, path, param),
+        Op::SpliceFusionKeys {
+            timeline,
+            clip,
+            path,
+            at,
+            remove,
+            keys,
+        } => fusion::splice_keys(project, &timeline, &clip, path, (at, remove), keys),
         Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
         Op::AddGroup { group, index } => grade::add_group(project, group, index),
         Op::RemoveGroup { id } => grade::remove_group(project, &id),
@@ -2229,6 +2484,13 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             | Op::SetNode { .. }
             | Op::SetGrade { .. }),
         ) => grade::done(project, op, &inverse),
+        // And so are those on the composition of a clip.
+        Some(
+            op @ (Op::SetFusion { .. }
+            | Op::AddFusionNode { .. }
+            | Op::RemoveFusionNode { .. }
+            | Op::SetFusionNode { .. }),
+        ) => fusion::done(project, op, &inverse),
         // The settings are given back as the engine writes them.
         Some(Op::SetColorSettings { settings }) => color::done(project, &settings),
         // So are those of sound, and an insert with the id that it was given.
@@ -2610,6 +2872,10 @@ fn insert_clip(
     link(&mut counter, &mut clip.link, &links_of(project))?;
     clip.grade.sort_links();
     grade::check_ids(&counter, &clip.grade)?;
+    if let Some(composition) = &mut clip.fusion {
+        composition.sort_links();
+        fusion::check_ids(&counter, composition)?;
+    }
     check_clip(project, timeline.rate, track.kind, &clip)?;
     audio::check_channels(track, &clip)?;
     check_room(&track.clips, &clip)?;
@@ -3086,6 +3352,18 @@ fn first_keys(op: Op, inverse: &Op) -> Op {
         } if matches!(inverse, Op::SetClipKeys { .. }) => Op::SetClipKeys {
             timeline,
             id,
+            path,
+            param: Param::Keys(keys),
+        },
+        Op::SpliceFusionKeys {
+            timeline,
+            clip,
+            path,
+            keys,
+            ..
+        } if matches!(inverse, Op::SetFusionKeys { .. }) => Op::SetFusionKeys {
+            timeline,
+            clip,
             path,
             param: Param::Keys(keys),
         },
@@ -3587,6 +3865,9 @@ fn claim(
                 claims.groups.insert(group.clone());
             }
             grade::check_ids(counter, &clip.grade)?;
+            if let Some(composition) = &clip.fusion {
+                fusion::check_ids(counter, composition)?;
+            }
         }
         for transition in &track.transitions {
             fresh("transition", &transition.id, &mut claims.transitions)?;
@@ -3689,12 +3970,15 @@ fn one_shown(tracks: &[Track]) -> Result<(), (&Track, OpError)> {
 }
 
 /// Put the clips of a track in the order of their start, its transitions in the order of their
-/// cuts, its subtitles in the order of their start, and the links of the grades of its clips in
-/// the order of the inputs that they go into.
+/// cuts, its subtitles in the order of their start, and the links of the grades and of the
+/// compositions of its clips in the order of the inputs that they go into.
 fn order(track: &mut Track) {
     track.clips.sort_by_key(|c| c.start);
     for clip in &mut track.clips {
         clip.grade.sort_links();
+        if let Some(composition) = &mut clip.fusion {
+            composition.sort_links();
+        }
     }
     let starts: HashMap<&str, i64> = track
         .clips
@@ -3840,6 +4124,7 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
         (Source::Media { .. }, None) => unreachable!("the media of a clip was found above"),
     }
     clip.grade.check()?;
+    fusion::check_of(kind, clip)?;
     match &clip.group {
         Some(group) if !project.groups.iter().any(|k| k.id == *group) => {
             Err(missing("group", group))
@@ -4428,6 +4713,14 @@ impl Project {
             .chain(tracks.flat_map(|r| &r.clips).map(|c| &c.grade))
             .chain(self.groups.iter().flat_map(|k| [&k.pre, &k.post]));
         let nodes = grades.flat_map(|g| &g.nodes).map(|n| &n.id);
+        let fused = self
+            .timelines
+            .iter()
+            .flat_map(|t| &t.tracks)
+            .flat_map(|r| &r.clips)
+            .filter_map(|c| c.fusion.as_ref())
+            .flat_map(|composition| &composition.nodes)
+            .map(|n| &n.id);
         let highest = bins
             .chain(media)
             .chain(timelines)
@@ -4438,6 +4731,7 @@ impl Project {
             .chain(cues)
             .chain(grade_groups)
             .chain(nodes)
+            .chain(fused)
             .filter_map(|id| engine_number(id))
             .max();
         if let Some(highest) = highest {

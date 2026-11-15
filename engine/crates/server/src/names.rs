@@ -790,6 +790,33 @@ fn visit_grade<E>(
     Ok(())
 }
 
+/// Call `f` on the ids of the timeline and the clip that a composition is of.
+fn visit_clip<E>(
+    timeline: &mut Id,
+    clip: &mut Id,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    f(timeline, Role::Names)?;
+    f(clip, Role::Names)
+}
+
+/// Call `f` on the node that the path of a setting of a composition begins with, before its
+/// first dot (`n4.center.x`), which may be a name; the path then names the id that `f` gave.
+fn visit_setting<E>(
+    path: &mut String,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    let Some((node, setting)) = path.split_once('.') else {
+        return Ok(());
+    };
+    let mut id = node.to_owned();
+    f(&mut id, Role::Names)?;
+    if id != node {
+        *path = format!("{id}.{setting}");
+    }
+    Ok(())
+}
+
 /// The id of the thing at `place` in an operation as it was done.
 fn id_at<'a>(op: &'a Op, place: &Place) -> Option<&'a str> {
     let track_at = |at: Option<usize>| match (op, at) {
@@ -845,6 +872,8 @@ fn id_at<'a>(op: &'a Op, place: &Place) -> Option<&'a str> {
         },
         Place::Node => match op {
             Op::AddNode { node, .. } => Some(&node.id),
+            // A node of the composition of a clip is named as a node of a grade is.
+            Op::AddFusionNode { node, .. } => Some(node.id.as_str()),
             _ => None,
         },
         Place::Group => match op {
@@ -1104,6 +1133,96 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
         Op::SetGrade { grade, value } => {
             visit_target(grade, f)?;
             visit_grade(value, f)
+        }
+        // The nodes of the composition of a clip are named as those of a grade are.
+        Op::SetFusion {
+            timeline,
+            clip,
+            value,
+        } => {
+            visit_clip(timeline, clip, f)?;
+            if let Some(composition) = value {
+                for node in &mut composition.nodes {
+                    f(&mut node.id, Role::Names)?;
+                }
+                for link in &mut composition.links {
+                    f(&mut link.from, Role::Names)?;
+                    f(&mut link.to, Role::Names)?;
+                }
+            }
+            Ok(())
+        }
+        Op::AddFusionNode {
+            timeline,
+            clip,
+            node,
+            links,
+            ..
+        } => {
+            visit_clip(timeline, clip, f)?;
+            // As in `add_node`: a link names the node that is added by the name that it is
+            // given, which is made empty with the id.
+            let own = node.id.clone();
+            for link in links {
+                for end in [&mut link.from, &mut link.to] {
+                    if *end == own && is_name(&own) {
+                        end.clear();
+                    } else {
+                        f(end, Role::Names)?;
+                    }
+                }
+            }
+            f(&mut node.id, Role::Gives(Place::Node))
+        }
+        Op::RemoveFusionNode {
+            timeline,
+            clip,
+            id,
+            links,
+        } => {
+            visit_clip(timeline, clip, f)?;
+            f(id, Role::Names)?;
+            for link in links.iter_mut().flatten() {
+                f(&mut link.from, Role::Names)?;
+                f(&mut link.to, Role::Names)?;
+            }
+            Ok(())
+        }
+        Op::ConnectFusion {
+            timeline,
+            clip,
+            link,
+        } => {
+            visit_clip(timeline, clip, f)?;
+            f(&mut link.from, Role::Names)?;
+            f(&mut link.to, Role::Names)
+        }
+        Op::DisconnectFusion {
+            timeline,
+            clip,
+            to: id,
+            ..
+        }
+        | Op::SetFusionNode {
+            timeline, clip, id, ..
+        } => {
+            visit_clip(timeline, clip, f)?;
+            f(id, Role::Names)
+        }
+        Op::SetFusionKeys {
+            timeline,
+            clip,
+            path,
+            ..
+        }
+        | Op::SpliceFusionKeys {
+            timeline,
+            clip,
+            path,
+            ..
+        } => {
+            visit_clip(timeline, clip, f)?;
+            visit_setting(path, f)
         }
         Op::AddGroup { group, .. } => {
             visit_grade(&mut group.pre, f)?;

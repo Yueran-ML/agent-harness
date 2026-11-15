@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  applyOp, CopyMismatch, defaultColorSettings, emptyGrade, fixedOf, keptColor, mergePatch, SOUND_FIELDS, sortLinks,
-  type Clip, type ClipTrack, type GradeNode, type Link, type Media, type Op, type Project, type Timeline,
+  applyOp, CopyMismatch, defaultColorSettings, emptyGrade, firstComposition, fixedOf, keptColor, mergePatch, SOUND_FIELDS,
+  sortFusionLinks, sortLinks,
+  type Clip, type ClipTrack, type FusionLink, type GradeNode, type Link, type Media, type Op, type Project, type Timeline,
 } from '../src/studio/engine';
 
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
@@ -102,6 +103,53 @@ describe('the grades of the copy, where the examples do not reach', () => {
       { op: 'remove_group', id: 'k1' },
       { op: 'set_clip_group', timeline: 't1', clip: 'c99', group: null },
     ] as Op[]) expect(() => applyOp(project, op)).toThrow(CopyMismatch);
+  });
+});
+
+describe('the compositions of the copy, where the examples do not reach', () => {
+  const at = (name: string) => structuredClone(examples.find(example => example.name === name)!);
+  const clipOf = (project: Project) => (project.timelines[0].tracks[0] as ClipTrack).clips[0];
+  /** The composition of c1 in the examples of a Merge over a Background. */
+  const merged = () => structuredClone(clipOf(at('set_fusion_node').before).fusion!);
+
+  it('orders links by the node that they go into, as Rust orders strings, and then by the name of the input', () => {
+    const links: FusionLink[] = [
+      { from: 'a', to: 'n9', input: 'foreground' }, { from: 'b', to: 'n9', input: 'background' },
+      { from: 'n9', to: 'MediaOut1', input: 'input' }, { from: 'c', to: 'n10', input: 'input' },
+    ];
+    expect(sortFusionLinks(links).map(link => `${link.to}.${link.input}`))
+      .toEqual(['MediaOut1.input', 'n10.input', 'n9.background', 'n9.foreground']);
+    // The engine keeps them so: every composition that it writes is in that order.
+    expect(sortFusionLinks([...merged().links].reverse())).toStrictEqual(merged().links);
+  });
+
+  it('has the composition that a clip has at first as the engine writes it, and writes none on a clip without one', () => {
+    const example = at('set_fusion of the composition that a clip has at first');
+    expect((example.done as Extract<Op, { op: 'set_fusion' }>).value).toStrictEqual(firstComposition());
+    expect('fusion' in clipOf(example.before)).toBe(false);
+    expect(clipOf(example.after).fusion).toStrictEqual(firstComposition());
+    // Links given out of their order are put in it, as the engine puts them.
+    const reversed = { ...merged(), links: [...merged().links].reverse() };
+    const set = applyOp(example.before, { op: 'set_fusion', timeline: 't1', clip: 'c1', value: reversed });
+    expect(clipOf(set).fusion).toStrictEqual(merged());
+    expect('fusion' in clipOf(applyOp(set, { op: 'set_fusion', timeline: 't1', clip: 'c1', value: null }))).toBe(false);
+  });
+
+  it('refuses what names a clip without a composition, or a node, a link or a setting that the copy does not hold', () => {
+    const plain = at('set_fusion of the composition that a clip has at first').before;
+    const project = at('set_fusion_node').before;
+    for (const [on, op] of [
+      [plain, { op: 'connect_fusion', timeline: 't1', clip: 'c1', link: { from: 'MediaIn1', to: 'MediaOut1', input: 'input' } }],
+      [plain, { op: 'set_fusion_keys', timeline: 't1', clip: 'c1', path: 'n9.blend', param: 1 }],
+      [project, { op: 'set_fusion_node', timeline: 't1', clip: 'c1', id: 'n99', label: 'x' }],
+      [project, { op: 'remove_fusion_node', timeline: 't1', clip: 'c1', id: 'n99' }],
+      [project, { op: 'disconnect_fusion', timeline: 't1', clip: 'c1', to: 'n9', input: 'input' }],
+      [project, { op: 'set_fusion_keys', timeline: 't1', clip: 'c1', path: 'n9.apply', param: 1 }],
+      [project, { op: 'set_fusion_keys', timeline: 't1', clip: 'c1', path: 'n99.blend', param: 1 }],
+      [project, { op: 'set_fusion_keys', timeline: 't1', clip: 'c1', path: 'blend', param: 1 }],
+      [project, { op: 'splice_fusion_keys', timeline: 't1', clip: 'c1', path: 'n9.blend', at: 0, remove: 1, keys: [] }],
+      [project, { op: 'set_fusion', timeline: 't1', clip: 'c99', value: null }],
+    ] as [Project, Op][]) expect(() => applyOp(on, op)).toThrow(CopyMismatch);
   });
 });
 

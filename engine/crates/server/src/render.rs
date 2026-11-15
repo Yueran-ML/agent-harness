@@ -996,6 +996,9 @@ pub(crate) fn scene_of(
                 (picture_source(read.picture, second, read.rotation), color)
             }
         };
+        // The composition of the clip at the frame (`layer.fusion`) is not drawn here yet:
+        // the compositor is given it in the next step, and until then the layer is drawn of
+        // its source, as that of a clip without a composition is.
         scene.layers.push(SceneLayer {
             source,
             transform: layer.transform.into(),

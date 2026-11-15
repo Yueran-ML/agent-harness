@@ -2171,14 +2171,20 @@ pub(crate) fn run_change(project: &mut Project, change: Change) -> Result<Expans
     match change {
         Change::Op(op) => {
             let (done, inverse) = apply_done(project, op).map_err(ChangeError::Op)?;
-            // Setting media, or the colour settings, to what they are already changes nothing,
-            // and makes no step.
+            // Setting media, the colour settings, or the composition of a clip, a link, a node
+            // or the keys of a setting of it, to what they are already changes nothing, and
+            // makes no step.
             if matches!(
                 done,
                 Op::SetMedia { .. }
                     | Op::SetMediaColor { .. }
                     | Op::SetMediaStreams { .. }
                     | Op::SetColorSettings { .. }
+                    | Op::SetFusion { .. }
+                    | Op::ConnectFusion { .. }
+                    | Op::SetFusionNode { .. }
+                    | Op::SetFusionKeys { .. }
+                    | Op::SpliceFusionKeys { .. }
             ) && done == inverse
             {
                 return Ok(Expansion {

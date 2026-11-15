@@ -183,6 +183,11 @@ export interface Clip {
   pitch?: ClipPitch;
   /** What each channel of its track plays, or null for its channels mixed as libav mixes them. */
   channels?: ChannelMap[] | null;
+  /**
+   * Its composition, the graph of nodes that makes its picture (PROTOCOL.md, "Compositions"). Only a clip of a
+   * track of picture has one, and the engine writes it only on a clip that has: left out, the clip shows its source.
+   */
+  fusion?: Composition;
 }
 export type TransitionKind = 'dissolve' | 'dip_black' | 'dip_white' | 'crossfade';
 export type Alignment = 'start' | 'center' | 'end';
@@ -677,6 +682,66 @@ export function sortLinks(links: readonly Link[]): Link[] {
   return [...links].sort((a, b) => compareIds(a.to, b.to) || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.input - b.input);
 }
 
+// Compositions (PROTOCOL.md, "Compositions"; engine/crates/model/src/fusion.rs), as the Fusion page
+// of DaVinci Resolve builds one for a clip (Reference Manual 20, pp. 1211–1274).
+
+/**
+ * A place in a picture as Fusion counts it: `x` the share of its width from its left edge and `y` the
+ * share of its height from its lower edge, so that the middle is 0.5 and 0.5.
+ */
+export interface FusionCenter { x: Param; y: Param }
+/** How a Merge combines its foreground and its background: Over alone. */
+export type FusionOperator = 'over';
+/**
+ * The settings of a Merge node (pp. 2162–2170): its Apply Mode, one of the composite modes of the timeline,
+ * its sliders, each from 0 to 1, and where its foreground lies over its background, how large and how far
+ * turned (degrees, counter-clockwise).
+ */
+export interface FusionMerge {
+  apply: Composite; operator: FusionOperator;
+  subtractive_additive: Param; alpha_gain: Param; burn_in: Param; blend: Param;
+  center: FusionCenter; size: Param; angle: Param;
+}
+/** The settings of a Transform node: its picture moved, made larger or smaller, turned (counter-clockwise) and flipped. */
+export interface FusionTransform { center: FusionCenter; size: Param; angle: Param; flip_horizontal: boolean; flip_vertical: boolean }
+/** The settings of a Background node: one colour, each channel from 0 to 1, not premultiplied by its alpha. */
+export interface FusionBackground { color: { r: Param; g: Param; b: Param; a: Param } }
+/** An input of a node of a composition, by its name: `input` of a `media_out` and a `transform`, the two of a `merge`. */
+export type FusionInput = 'input' | 'background' | 'foreground';
+/**
+ * A node of a composition. Its id is unique within its composition only, and has no dot in it; its
+ * `params` are those of its kind, and an object with no fields for `media_in` and `media_out`. The
+ * engine always writes `pass_through` (Fusion's Pass Through: the node hands on its first input) and
+ * `pos` (`null` where the editor lays it out), and reads them as `false` and `null` where they are left out.
+ */
+export type FusionNode = { id: string; label: string; pass_through?: boolean; pos?: NodePos | null } & (
+  | { kind: 'media_in'; params: Record<string, never> }
+  | { kind: 'media_out'; params: Record<string, never> }
+  | { kind: 'merge'; params: FusionMerge }
+  | { kind: 'transform'; params: FusionTransform }
+  | { kind: 'background'; params: FusionBackground });
+export type FusionKind = FusionNode['kind'];
+/** A link from the output of node `from` into the input `input` of node `to`. */
+export interface FusionLink { from: string; to: string; input: FusionInput }
+/** Nodes in the order they were added, links in the engine's order (see `sortFusionLinks`); exactly one `media_out`. */
+export interface Composition { nodes: FusionNode[]; links: FusionLink[] }
+
+/** The composition that a clip has when the Fusion page is first opened on it, as the engine writes it: a MediaIn linked to a MediaOut. */
+export function firstComposition(): Composition {
+  return {
+    nodes: [
+      { id: 'MediaIn1', kind: 'media_in', label: '', pass_through: false, pos: null, params: {} },
+      { id: 'MediaOut1', kind: 'media_out', label: '', pass_through: false, pos: null, params: {} },
+    ],
+    links: [{ from: 'MediaIn1', to: 'MediaOut1', input: 'input' }],
+  };
+}
+
+/** The links of a composition in the engine's one order: by `to`, as Rust orders strings, then by the name of the input. */
+export function sortFusionLinks(links: readonly FusionLink[]): FusionLink[] {
+  return [...links].sort((a, b) => compareIds(a.to, b.to) || compareIds(a.input, b.input));
+}
+
 type Settings<T, K extends keyof T> = { [P in K]?: T[P] | null };
 /** Basic operations broadcast in `done`. Editing commands are expanded by the engine alone. */
 export type Op =
@@ -724,6 +789,20 @@ export type Op =
   | { op: 'splice_clip_keys'; timeline: string; id: string; path: string; at: number; remove: number; keys: Keyframe[] }
   | { op: 'set_retime'; timeline: string; id: string; retime: Retime | null; length?: number }
   | { op: 'set_grade'; grade: Target; value: Grade }
+  // The composition of a clip (PROTOCOL.md, "Compositions"): the operations of a grade, on the clip `clip` of `timeline`.
+  /** `value: null` takes the composition of the clip away. */
+  | { op: 'set_fusion'; timeline: string; clip: string; value: Composition | null }
+  /** In `done`: the id the engine gave, the index, and the links naming that id. */
+  | { op: 'add_fusion_node'; timeline: string; clip: string; node: FusionNode; index?: number | null; links?: FusionLink[] }
+  /** In `done`: always with the `links` put in the node's place, none where nothing was. */
+  | { op: 'remove_fusion_node'; timeline: string; clip: string; id: string; links?: FusionLink[] | null }
+  | { op: 'connect_fusion'; timeline: string; clip: string; link: FusionLink }
+  | { op: 'disconnect_fusion'; timeline: string; clip: string; to: string; input: FusionInput }
+  /** `params` is a patch, merged as `set_node` merges its own. */
+  | { op: 'set_fusion_node'; timeline: string; clip: string; id: string; label?: string | null; pass_through?: boolean | null; pos?: NodePos | null; params?: Record<string, unknown> | null }
+  /** A setting of a node that takes keys, by the id of the node, a dot, and its path in the node's `params`: `n4.center.x`. */
+  | { op: 'set_fusion_keys'; timeline: string; clip: string; path: string; param: Param }
+  | { op: 'splice_fusion_keys'; timeline: string; clip: string; path: string; at: number; remove: number; keys: Keyframe[] }
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
   | { op: 'set_group'; id: string; name?: string | null }
@@ -1777,9 +1856,10 @@ function kept(grade: Grade | undefined): Grade {
   return grade === undefined ? emptyGrade() : { ...grade, links: sortLinks(grade.links) };
 }
 
-/** A clip as the engine keeps it, its grade and group read as `kept` reads them. */
+/** A clip as the engine keeps it, its grade and group read as `kept` reads them, and the links of its composition in their order. */
 function keptClip(clip: Clip): Clip {
-  return { ...clip, grade: kept(clip.grade), group: clip.group ?? null };
+  const read = { ...clip, grade: kept(clip.grade), group: clip.group ?? null };
+  return clip.fusion === undefined ? read : { ...read, fusion: { ...clip.fusion, links: sortFusionLinks(clip.fusion.links) } };
 }
 
 function keptTrack(track: Track): Track {
@@ -2025,6 +2105,44 @@ function withClipSetting(clip: Clip, path: string, change: (before: Param) => Pa
   return settingPut({ ...clip, crop: clip.crop ?? NO_CROP }, path, change, `clip ${clip.id}`) as Clip;
 }
 
+/**
+ * Change the composition of clip `at.clip` of timeline `at.timeline`; its links are put in order after.
+ * A clip that has none is not one whose composition the engine changed.
+ */
+function inFusion(project: Project, at: { timeline: string; clip: string }, change: (composition: Composition) => Composition): Project {
+  return inTimeline(project, at.timeline, timeline => inClip(timeline, at.clip, clip => {
+    if (clip.fusion === undefined) throw new CopyMismatch(`clip ${clip.id} has no composition in the copy`);
+    const changed = change(clip.fusion);
+    return { ...clip, fusion: { ...changed, links: sortFusionLinks(changed.links) } };
+  }));
+}
+
+/** Put links into a composition, each in place of the link its input had. */
+function fusionLinked(links: readonly FusionLink[], added: readonly FusionLink[]): FusionLink[] {
+  let all = [...links];
+  for (const link of added) all = [...all.filter(each => each.to !== link.to || each.input !== link.input), link];
+  return all;
+}
+
+function fusionNodeAt(composition: Composition, id: string): number {
+  const at = composition.nodes.findIndex(node => node.id === id);
+  if (at < 0) throw new CopyMismatch(`there is no node ${id} in the composition of the copy`);
+  return at;
+}
+
+/**
+ * A composition with the setting at `path` changed (`set_fusion_keys`, `splice_fusion_keys`): the id of a
+ * node, a dot, and the path of a number or of keys in the node's `params`.
+ */
+function withFusionSetting(composition: Composition, path: string, change: (before: Param) => Param): Composition {
+  const dot = path.indexOf('.');
+  if (dot < 0) throw new CopyMismatch(`there is no setting ${path} of the composition in the copy`);
+  const at = fusionNodeAt(composition, path.slice(0, dot));
+  const node = composition.nodes[at];
+  const params = settingPut(node.params, path.slice(dot + 1), change, `node ${node.id}`);
+  return { ...composition, nodes: replaced(composition.nodes, at, { ...node, params } as FusionNode) };
+}
+
 /** Mirror only accepted basic operations, preserving all objects outside the changed branch. */
 export function applyOp(project: Project, op: Op): Project {
   switch (op.op) {
@@ -2174,6 +2292,36 @@ export function applyOp(project: Project, op: Op): Project {
       return inClips(timeline, track, clips => replaced(clips, at, retimed(clips[at], op.retime, op.length)));
     });
     case 'set_grade': return inGrade(project, op.grade, () => op.value);
+    case 'set_fusion': return inTimeline(project, op.timeline, timeline => inClip(timeline, op.clip, clip => {
+      // A clip that has no composition is written without the field, as the engine writes it.
+      const { fusion: _before, ...rest } = clip;
+      return op.value === null ? rest : { ...rest, fusion: { ...op.value, links: sortFusionLinks(op.value.links) } };
+    }));
+    case 'add_fusion_node': return inFusion(project, op, composition => ({
+      nodes: inserted(composition.nodes, op.node, op.index),
+      links: fusionLinked(composition.links, op.links ?? []),
+    }));
+    case 'remove_fusion_node': return inFusion(project, op, composition => {
+      const at = fusionNodeAt(composition, op.id);
+      // Nothing is linked in the place of a node of a composition, but the links that the operation gives.
+      const others = composition.links.filter(link => link.from !== op.id && link.to !== op.id);
+      return { nodes: without(composition.nodes, at), links: [...others, ...(op.links ?? [])] };
+    });
+    case 'connect_fusion': return inFusion(project, op, composition => ({ ...composition, links: fusionLinked(composition.links, [op.link]) }));
+    case 'disconnect_fusion': return inFusion(project, op, composition => {
+      const at = composition.links.findIndex(link => link.to === op.to && link.input === op.input);
+      if (at < 0) throw new CopyMismatch(`there is no link into the input ${op.input} of ${op.to} in the copy`);
+      return { ...composition, links: without(composition.links, at) };
+    });
+    case 'set_fusion_node': return inFusion(project, op, composition => {
+      const at = fusionNodeAt(composition, op.id);
+      // `pos: null` puts a node back where the editor lays it out; left out, it stays.
+      const changed = patched(composition.nodes[at], op, ['label', 'pass_through', 'pos'], ['pos']);
+      const node = op.params == null ? changed : { ...changed, params: mergePatch(changed.params, op.params) } as FusionNode;
+      return { ...composition, nodes: replaced(composition.nodes, at, node) };
+    });
+    case 'set_fusion_keys': return inFusion(project, op, composition => withFusionSetting(composition, op.path, () => op.param));
+    case 'splice_fusion_keys': return inFusion(project, op, composition => withFusionSetting(composition, op.path, before => splicedKeys(before, op)));
     case 'add_group': return { ...project, groups: inserted(project.groups, { ...op.group, pre: kept(op.group.pre), post: kept(op.group.post) }, op.index) };
     case 'remove_group': return { ...project, groups: without(project.groups, placeOf(project.groups, op.id, 'group')) };
     case 'set_group': return inGroup(project, op.id, group => patched(group, op, ['name']));

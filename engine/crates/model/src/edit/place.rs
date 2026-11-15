@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use super::misc::new_track;
 use super::work::{beyond, missing, set_source_in, Work};
 use super::{Created, EditError, Material};
-use crate::keyframes::{aligned, aligned_crop, aligned_transform, Align, KeyBase};
+use crate::keyframes::{aligned, aligned_crop, aligned_fusion, aligned_transform, Align, KeyBase};
 use crate::ops::OpError;
 use crate::project::{Clip, Id, Source, TrackKind};
 use crate::span::{frames_for, frames_for_span, source_tick};
@@ -343,6 +343,11 @@ pub(super) fn replace(
         // And the keys of its transform go with those of its grade.
         new.transform = aligned_transform(&old.transform, from, to, Align::default());
         new.crop = aligned_crop(&old.crop, from, to, Align::default());
+        // So do those of its composition, which the clip keeps: it is made of the new source.
+        new.fusion = old
+            .fusion
+            .as_ref()
+            .map(|composition| aligned_fusion(composition, from, to, Align::default()));
         let (before, after) = beyond(work.track(track)?, &old.id);
         if !work.fits(&new, before, after) {
             let have = if new.source_in().is_some_and(|t| t.ticks >= 0) {

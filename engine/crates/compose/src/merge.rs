@@ -989,6 +989,72 @@ mod tests {
         );
     }
 
+    /// A setting of the model, which keeps doubles, as these settings take it.
+    #[allow(clippy::cast_possible_truncation, reason = "a slider from 0 to 1")]
+    fn single(value: f64) -> f32 {
+        value as f32
+    }
+
+    /// The slider at a place in the order of the Merge tab: Subtractive/Additive, Alpha
+    /// Gain, Burn In and Blend.
+    fn slider(settings: &mut Settings, at: usize) -> &mut f32 {
+        match at {
+            0 => &mut settings.subtractive_additive,
+            1 => &mut settings.alpha_gain,
+            2 => &mut settings.burn_in,
+            _ => &mut settings.blend,
+        }
+    }
+
+    #[test]
+    fn the_merge_of_the_model_has_these_settings_by_their_names_ranges_and_first_values() {
+        use columbina_model::fusion;
+        // What a Merge node of the model is at first, at any frame, is what these are at first.
+        let merged = fusion::Merge::default().at(12.0);
+        let first = Settings {
+            apply: merged.apply,
+            operator: match merged.operator {
+                fusion::Operator::Over => Operator::Over,
+            },
+            subtractive_additive: single(merged.subtractive_additive),
+            alpha_gain: single(merged.alpha_gain),
+            burn_in: single(merged.burn_in),
+            blend: single(merged.blend),
+        };
+        assert_eq!(first, Settings::default());
+        // Its foreground lies where it is: in the middle, as large as it is and not turned.
+        assert_eq!(
+            (merged.center, merged.size, merged.angle),
+            ([0.5, 0.5], 1.0, 0.0)
+        );
+        // Each slider of the model is the slider of that name here: as the model refuses it,
+        // so do these, within the same range and with the same value at first.
+        for (at, (what, bounds)) in fusion::Merge::SLIDERS.into_iter().enumerate() {
+            let set = |value: f64| {
+                let mut settings = Settings::default();
+                *slider(&mut settings, at) = single(value);
+                settings
+            };
+            assert_eq!(
+                *slider(&mut Settings::default(), at),
+                single(bounds.default),
+                "{what}"
+            );
+            assert_eq!(set(bounds.low).check(), Ok(()), "{what}");
+            assert_eq!(set(bounds.high).check(), Ok(()), "{what}");
+            for beyond in [bounds.low - 0.5, bounds.high + 0.5] {
+                assert_eq!(set(beyond).check(), Err(OutOfRange { what }), "{what}");
+            }
+        }
+        // And every Apply Mode of the model is one of these: both are the composite modes of
+        // the timeline, of one type.
+        let screen = fusion::Merge {
+            apply: Composite::Screen,
+            ..fusion::Merge::default()
+        };
+        assert_eq!(screen.at(0.0).apply, Composite::Screen);
+    }
+
     #[test]
     fn settings_that_are_refused_are_taken_as_the_nearest_within_their_ranges() {
         let wild = Settings {

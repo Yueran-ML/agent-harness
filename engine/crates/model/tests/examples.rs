@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use columbina_model::fusion::{self, Composition, Input};
 use columbina_model::grade::{Interp, Key, Kind, Link, Node, Param, Port, Pos, Target};
 use columbina_model::{
     apply, apply_done, Alignment, Bin, Clip, Cue, Grade, Group, Op, Placed, Project, Proxy, Rate,
@@ -804,6 +805,7 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
     ];
     all.extend(grade_examples());
     all.extend(sound_examples());
+    all.extend(fusion_examples());
     all
 }
 
@@ -1750,6 +1752,277 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
     ]
 }
 
+/// Give c1, the picture on V1, the composition that a clip has at first.
+fn first_composition() -> Op {
+    Op::SetFusion {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+        value: Some(Composition::default()),
+    }
+}
+
+/// Put a Merge, n9 in the base, before the `MediaOut` of c1, the picture of c1 its foreground.
+fn merge_node() -> Op {
+    Op::AddFusionNode {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+        node: fusion::Node::new("", fusion::Kind::Merge),
+        index: None,
+        links: vec![
+            fusion::Link::new(fusion::MEDIA_IN, "", Input::Foreground),
+            fusion::Link::new("", fusion::MEDIA_OUT, Input::Input),
+        ],
+    }
+}
+
+/// Add a Background, n10 after `merge_node`, as the background of the Merge n9.
+fn background_node() -> Op {
+    Op::AddFusionNode {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+        node: fusion::Node::new("", fusion::Kind::Background),
+        index: None,
+        links: vec![fusion::Link::new("", "n9", Input::Background)],
+    }
+}
+
+/// Keys of the Blend of the Merge n9: the foreground comes in over a second.
+fn blend_keys() -> Op {
+    Op::SetFusionKeys {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+        path: "n9.blend".into(),
+        param: Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 0.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 24,
+                value: 1.0,
+                interp: Interp::Hold,
+            },
+        ]),
+    }
+}
+
+/// The examples of the operations on the composition of a clip.
+#[allow(clippy::too_many_lines)]
+fn fusion_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
+    let merged = || vec![first_composition(), merge_node(), background_node()];
+    let mut moved = Composition {
+        nodes: vec![
+            fusion::Node::new("in", fusion::Kind::MediaIn),
+            fusion::Node::new("move", fusion::Kind::Transform),
+            fusion::Node::new("out", fusion::Kind::MediaOut),
+        ],
+        // Given out of their order: they are done in it.
+        links: vec![
+            fusion::Link::new("move", "out", Input::Input),
+            fusion::Link::new("in", "move", Input::Input),
+        ],
+    };
+    moved.nodes[1].label = "Slide".into();
+    moved.nodes[1].pos = Some(Pos { x: 150.0, y: 0.0 });
+    vec![
+        (
+            "set_fusion of the composition that a clip has at first",
+            vec![],
+            first_composition(),
+        ),
+        (
+            "set_fusion of a composition in place of another",
+            vec![first_composition()],
+            Op::SetFusion {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                value: Some(moved),
+            },
+        ),
+        (
+            "set_fusion on a title, whose composition is of the size of the timeline",
+            vec![],
+            Op::SetFusion {
+                timeline: "t1".into(),
+                clip: "c8".into(),
+                value: Some(Composition::default()),
+            },
+        ),
+        (
+            "set_fusion of none, which takes the composition away",
+            vec![first_composition()],
+            written_op(serde_json::json!({
+                "op": "set_fusion", "timeline": "t1", "clip": "c1", "value": null,
+            })),
+        ),
+        (
+            "add_fusion_node of a merge, in place of the link into the media_out",
+            vec![first_composition()],
+            merge_node(),
+        ),
+        (
+            "add_fusion_node of a background, linked to the merge",
+            vec![first_composition(), merge_node()],
+            background_node(),
+        ),
+        (
+            "add_fusion_node of a transform with an id of its own, unlinked, at the start",
+            vec![first_composition()],
+            written_op(serde_json::json!({
+                "op": "add_fusion_node", "timeline": "t1", "clip": "c1", "index": 0,
+                "node": {
+                    "id": "shake", "kind": "transform", "label": "Shake", "params": {
+                        "center": {"x": 0.5, "y": 0.5}, "size": 1.25, "angle": 0,
+                        "flip_horizontal": true, "flip_vertical": false,
+                    },
+                },
+            })),
+        ),
+        (
+            "remove_fusion_node, with its links",
+            merged(),
+            Op::RemoveFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n9".into(),
+                links: None,
+            },
+        ),
+        (
+            "remove_fusion_node with the links to put in its place",
+            merged(),
+            Op::RemoveFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n9".into(),
+                links: Some(vec![fusion::Link::new(
+                    fusion::MEDIA_IN,
+                    fusion::MEDIA_OUT,
+                    Input::Input,
+                )]),
+            },
+        ),
+        (
+            "connect_fusion in place of a link",
+            merged(),
+            Op::ConnectFusion {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                link: fusion::Link::new(fusion::MEDIA_IN, "n9", Input::Background),
+            },
+        ),
+        (
+            "connect_fusion into an input that had no link",
+            vec![first_composition(), merge_node()],
+            Op::ConnectFusion {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                link: fusion::Link::new(fusion::MEDIA_IN, "n9", Input::Background),
+            },
+        ),
+        (
+            "disconnect_fusion",
+            merged(),
+            Op::DisconnectFusion {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                to: fusion::MEDIA_OUT.into(),
+                input: Input::Input,
+            },
+        ),
+        (
+            "set_fusion_node",
+            merged(),
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n9".into(),
+                label: Some("Over the sky".into()),
+                pass_through: Some(true),
+                pos: Some(Some(Pos { x: 120.0, y: 30.0 })),
+                params: Some(serde_json::json!({
+                    "apply": "screen", "blend": 0.5, "center": {"x": 0.25}, "angle": 15,
+                })),
+            },
+        ),
+        (
+            "set_fusion_node of the colour of a background",
+            merged(),
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n10".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({"color": {"r": 0.1, "g": 0.2, "b": 0.6}})),
+            },
+        ),
+        ("set_fusion_keys", merged(), blend_keys()),
+        (
+            "set_fusion_keys of a number in place of keys",
+            {
+                let mut setup = merged();
+                setup.push(blend_keys());
+                setup
+            },
+            Op::SetFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n9.blend".into(),
+                param: Param::Fixed(0.75),
+            },
+        ),
+        (
+            "splice_fusion_keys",
+            {
+                let mut setup = merged();
+                setup.push(blend_keys());
+                setup
+            },
+            Op::SpliceFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n9.blend".into(),
+                at: 1,
+                remove: 1,
+                keys: vec![
+                    Key {
+                        frame: 12,
+                        value: 0.75,
+                        interp: Interp::Bezier {
+                            out: [0.33, 0.0],
+                            into: [0.33, 0.0],
+                        },
+                    },
+                    Key {
+                        frame: 36,
+                        value: 1.0,
+                        interp: Interp::Linear,
+                    },
+                ],
+            },
+        ),
+        (
+            "splice_fusion_keys of the first keys of a setting, done as set_fusion_keys",
+            merged(),
+            Op::SpliceFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n10.color.a".into(),
+                at: 0,
+                remove: 0,
+                keys: vec![Key {
+                    frame: -4,
+                    value: 0.5,
+                    interp: Interp::Linear,
+                }],
+            },
+        ),
+    ]
+}
+
 /// The examples as they are written: one object to a line, in a list.
 fn written() -> String {
     let base = base();
@@ -1850,6 +2123,14 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "set_timeline_audio",
         "set_lane",
         "splice_lane",
+        "set_fusion",
+        "add_fusion_node",
+        "remove_fusion_node",
+        "connect_fusion",
+        "disconnect_fusion",
+        "set_fusion_node",
+        "set_fusion_keys",
+        "splice_fusion_keys",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

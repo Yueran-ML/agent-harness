@@ -5,11 +5,13 @@
 //! The file `tests/data/catalog.json` is written anew when `COLUMBINA_WRITE_EXAMPLES=1` is set;
 //! otherwise it is checked to be as the catalog is now. It holds the entries of each kind of
 //! node that has any, under the name of the kind, and those of a clip under `clip`, one to a
-//! line, in the order of the catalog.
+//! line, in the order of the catalog; and those of each kind of node of a composition that has
+//! any, under `fusion_` and the name of the kind.
 
 use std::path::Path;
 
-use columbina_model::catalog::{clip, corrector, key_mixer, Entry};
+use columbina_model::catalog::{clip, corrector, fusion, key_mixer, Entry};
+use columbina_model::fusion::Kind;
 
 const FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/catalog.json");
 
@@ -21,13 +23,24 @@ fn listed(entries: &[Entry]) -> String {
     lines.join(",\n")
 }
 
+/// The entries of each kind, under the name that they are written by.
+fn kinds() -> [(&'static str, &'static [Entry]); 6] {
+    [
+        ("corrector", corrector()),
+        ("key_mixer", key_mixer()),
+        ("clip", clip()),
+        ("fusion_merge", fusion(Kind::Merge)),
+        ("fusion_transform", fusion(Kind::Transform)),
+        ("fusion_background", fusion(Kind::Background)),
+    ]
+}
+
 fn written() -> String {
-    format!(
-        "{{\"corrector\":[\n{}\n],\n\"key_mixer\":[\n{}\n],\n\"clip\":[\n{}\n]}}\n",
-        listed(corrector()),
-        listed(key_mixer()),
-        listed(clip())
-    )
+    let kinds: Vec<String> = kinds()
+        .iter()
+        .map(|(kind, entries)| format!("\"{kind}\":[\n{}\n]", listed(entries)))
+        .collect();
+    format!("{{{}}}\n", kinds.join(",\n"))
 }
 
 #[test]
@@ -49,11 +62,8 @@ fn the_catalog_is_written_as_it_is() {
 #[test]
 fn what_is_written_names_every_entry_once_and_in_plain_numbers() {
     let read: serde_json::Value = serde_json::from_str(&written()).unwrap();
-    for (kind, catalog) in [
-        ("corrector", corrector()),
-        ("key_mixer", key_mixer()),
-        ("clip", clip()),
-    ] {
+    assert_eq!(read.as_object().unwrap().len(), kinds().len());
+    for (kind, catalog) in kinds() {
         let entries = read[kind].as_array().unwrap();
         assert_eq!(entries.len(), catalog.len(), "{kind}");
         let mut paths: Vec<&str> = entries

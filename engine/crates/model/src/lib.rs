@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod color;
 pub mod color_management;
 pub mod edit;
+pub mod fusion;
 pub mod grade;
 pub mod history;
 pub mod keyframes;
@@ -37,6 +38,7 @@ pub use edit::{
     expand, Attribute, Change, CopyOf, CueItem, Edge, Edit, EditError, Expansion, Given, KeyAction,
     Keyed, Material, Straddling,
 };
+pub use fusion::{Composition, Fused, FusedKind, FusedNode};
 pub use grade::{
     Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,
     Qualifier, QualifierMode, ShotMatch, Target,

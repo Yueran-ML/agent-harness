@@ -28,6 +28,11 @@
 //! The anchor of a title may be anywhere too, and is given as far either way, so that a title
 //! may be keyed from beyond an edge of the picture to beyond the other. A title has no size
 //! that changes nothing: its entry gives the size that the clients give a new title, 72.
+//!
+//! And it lists what the nodes of the composition of a clip hold, of the Fusion page
+//! ([`fusion`]): the settings of a Merge, of a Transform and of a Background, in Fusion's own
+//! units ([`crate::fusion`]), each with the bounds that the model checks it against.
+//! [`crate::ops::Op::SetFusionKeys`] takes their paths, after the id of the node.
 
 use std::sync::OnceLock;
 
@@ -48,6 +53,8 @@ pub enum Unit {
     Percent,
     /// Degrees, clockwise.
     Degrees,
+    /// Degrees, counter-clockwise, as the Fusion page counts an angle.
+    DegreesCounterclockwise,
     /// Pixels of a frame 1080 high.
     Pixels1080,
     /// Heights of the picture.
@@ -66,6 +73,8 @@ pub enum Page {
     Color,
     /// The Edit page, and the Cut page with it.
     Edit,
+    /// The Fusion page.
+    Fusion,
 }
 
 /// The palette of the Color page, or the group of the Inspector of the Edit page, that shows a
@@ -101,6 +110,8 @@ pub enum Palette {
     Cropping,
     /// The Title of the Inspector, which a clip that is a title has.
     Title,
+    /// The Inspector of the Fusion page, which shows the settings of a node of a composition.
+    Fusion,
 }
 
 /// What the keys of a setting are counted in.
@@ -393,6 +404,70 @@ pub fn clip() -> &'static [Entry] {
             one("title.y", anchor, Unit::Heights, Palette::Title),
         ]
     })
+}
+
+/// The settings of a node of a composition of a kind that take keys
+/// ([`crate::fusion`]), each named by its path in the `params` of the node: `center.x`. A
+/// `media_in` and a `media_out` have none.
+#[must_use]
+pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
+    use crate::fusion::bounds as f;
+    use crate::fusion::Kind;
+    use Unit::{DegreesCounterclockwise, Heights, Number, Widths};
+    static MERGE: OnceLock<Vec<Entry>> = OnceLock::new();
+    static TRANSFORM: OnceLock<Vec<Entry>> = OnceLock::new();
+    static BACKGROUND: OnceLock<Vec<Entry>> = OnceLock::new();
+    let listed = |settings: &[(&str, Bounds, Unit)]| -> Vec<Entry> {
+        settings
+            .iter()
+            .map(|&(path, bounds, unit)| Entry {
+                path: path.to_owned(),
+                default: bounds.default,
+                low: bounds.low,
+                high: bounds.high,
+                unit,
+                page: Page::Fusion,
+                palette: Palette::Fusion,
+                clock: Clock::SourceFrame,
+            })
+            .collect()
+    };
+    // Where the middle of a picture is put, how large it is made and how far it is turned.
+    let placed = [
+        ("center.x", f::CENTER, Widths),
+        ("center.y", f::CENTER, Heights),
+        ("size", f::SIZE, Number),
+        ("angle", f::ANGLE, DegreesCounterclockwise),
+    ];
+    match kind {
+        Kind::MediaIn | Kind::MediaOut => &[],
+        Kind::Merge => MERGE.get_or_init(|| {
+            let mut all = listed(&[
+                ("subtractive_additive", f::SUBTRACTIVE_ADDITIVE, Number),
+                ("alpha_gain", f::ALPHA_GAIN, Number),
+                ("burn_in", f::BURN_IN, Number),
+                ("blend", f::BLEND, Number),
+            ]);
+            all.extend(listed(&placed));
+            all
+        }),
+        Kind::Transform => TRANSFORM.get_or_init(|| listed(&placed)),
+        Kind::Background => BACKGROUND.get_or_init(|| {
+            listed(&[
+                ("color.r", f::COLOR, Number),
+                ("color.g", f::COLOR, Number),
+                ("color.b", f::COLOR, Number),
+                ("color.a", f::ALPHA, Number),
+            ])
+        }),
+    }
+}
+
+/// The entry of a setting of a node of a composition of a kind, by its path in the `params`
+/// of the node, or none if it takes no keys.
+#[must_use]
+pub fn of_fusion(kind: crate::fusion::Kind, path: &str) -> Option<&'static Entry> {
+    fusion(kind).iter().find(|entry| entry.path == path)
 }
 
 /// The entry of a setting of a clip, by its path, or none if it takes no keys.
@@ -695,6 +770,117 @@ mod tests {
         assert_eq!(
             serde_json::to_value(morph.unit).unwrap(),
             json!("pixels1080")
+        );
+    }
+
+    /// The kinds of node of a composition.
+    const FUSION_KINDS: [crate::fusion::Kind; 5] = [
+        crate::fusion::Kind::MediaIn,
+        crate::fusion::Kind::MediaOut,
+        crate::fusion::Kind::Merge,
+        crate::fusion::Kind::Transform,
+        crate::fusion::Kind::Background,
+    ];
+
+    #[test]
+    fn every_setting_of_a_node_of_a_composition_that_takes_keys_is_listed_and_nothing_else() {
+        use crate::fusion::NodeKind;
+        for kind in FUSION_KINDS {
+            let whole = NodeKind::new(kind).params();
+            let mut found = Vec::new();
+            numbers(&whole, "", &mut found);
+            let mut keyed = BTreeSet::new();
+            for (path, value) in &found {
+                let keys = json!({"keys": [{"frame": 0, "value": value, "interp": "linear"}]});
+                let mut changed = whole.clone();
+                put(&mut changed, path, keys);
+                let takes_keys = NodeKind::from_params(kind, changed).is_ok();
+                assert_eq!(
+                    of_fusion(kind, path).is_some(),
+                    takes_keys,
+                    "{kind:?} {path}"
+                );
+                // What the catalog lists is what the operations on keys find, by that path.
+                assert_eq!(
+                    NodeKind::new(kind).setting_mut(path).is_some(),
+                    takes_keys,
+                    "{kind:?} {path}"
+                );
+                if takes_keys {
+                    keyed.insert(path.clone());
+                }
+            }
+            let listed: Vec<String> = fusion(kind).iter().map(|e| e.path.clone()).collect();
+            assert_eq!(listed.iter().cloned().collect::<BTreeSet<_>>(), keyed);
+            // Each is listed once, in the order of the settings of the node.
+            assert_eq!(listed, NodeKind::new(kind).settings(), "{kind:?}");
+        }
+        assert_eq!(fusion(crate::fusion::Kind::MediaIn), &[] as &[Entry]);
+        assert_eq!(fusion(crate::fusion::Kind::MediaOut), &[] as &[Entry]);
+        assert_eq!(fusion(crate::fusion::Kind::Merge).len(), 8);
+        assert_eq!(fusion(crate::fusion::Kind::Transform).len(), 4);
+        assert_eq!(fusion(crate::fusion::Kind::Background).len(), 4);
+        // A setting is listed for the kind of node that has it, and what is no number is not.
+        assert!(of_fusion(crate::fusion::Kind::Transform, "blend").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Merge, "apply").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Merge, "center").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Transform, "flip_vertical").is_none());
+    }
+
+    #[test]
+    fn a_setting_of_a_composition_is_at_first_and_within_what_its_entry_says() {
+        use crate::fusion::NodeKind;
+        for kind in FUSION_KINDS {
+            let whole = NodeKind::new(kind).params();
+            for entry in fusion(kind) {
+                assert_eq!(
+                    (entry.page, entry.palette, entry.clock),
+                    (Page::Fusion, Palette::Fusion, Clock::SourceFrame),
+                    "{}",
+                    entry.path
+                );
+                let first = crate::grade::at_path(&whole, &entry.path).unwrap();
+                assert_eq!(first, &json!(entry.default), "{kind:?} {}", entry.path);
+                let step = (entry.high - entry.low) * 1e-9;
+                for (value, taken) in [
+                    (entry.low, true),
+                    (entry.high, true),
+                    (entry.low - step, false),
+                    (entry.high + step, false),
+                ] {
+                    let mut changed = whole.clone();
+                    put(&mut changed, &entry.path, json!(value));
+                    let node = NodeKind::from_params(kind, changed).unwrap();
+                    assert_eq!(
+                        node.check().is_ok(),
+                        taken,
+                        "{kind:?} {} at {value}",
+                        entry.path
+                    );
+                }
+            }
+        }
+        // The units are Fusion's: a place in shares of the picture, an angle counter-clockwise.
+        let merge = crate::fusion::Kind::Merge;
+        let x = of_fusion(merge, "center.x").unwrap();
+        assert_eq!(
+            (x.default, x.low, x.high, x.unit),
+            (0.5, -15.5, 16.5, Unit::Widths)
+        );
+        assert_eq!(of_fusion(merge, "center.y").unwrap().unit, Unit::Heights);
+        let angle = of_fusion(merge, "angle").unwrap();
+        assert_eq!(
+            serde_json::to_value(angle).unwrap(),
+            json!({
+                "path": "angle",
+                "default": 0.0,
+                "low": -3600.0,
+                "high": 3600.0,
+                "unit": "degrees_counterclockwise",
+                "page": "fusion",
+                "palette": "fusion",
+                "clock": "source_frame",
+            })
         );
     }
 }

@@ -735,6 +735,11 @@ clients; a client must not write `project.json` itself.
   takes it, as any clip takes a `speed`: on a title, a colour, a still and a clip of sound it
   is kept as it was set and says nothing. Optical Flow is not there yet, and any other word
   is refused.
+- A clip of a track of picture may have `fusion` as well, its composition: the graph of
+  nodes that makes its picture, as the Fusion page builds one for a clip (see Compositions).
+  It is written only on a clip that has one, so a clip without it is written as it always
+  was; `set_fusion` gives a clip one or takes it away, and the operations of Compositions
+  change its nodes, its links and the keys of its settings. A clip of sound has none.
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
   `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
   Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; `x`/`y`
@@ -3728,6 +3733,191 @@ history; a headless engine has it too.
   (`path`, `media`), `write` (`path`, `message`). `-32002`, where the luma of the timeline space
   cannot be found. Nothing is written when it is refused.
 
+## Compositions
+
+A clip of a track of picture may have a composition, `fusion`: the graph of nodes that makes
+its picture, as the Fusion page of DaVinci Resolve builds one for a clip (Reference Manual 20,
+pp. 1211–1274; `crates/model/src/fusion.rs`). A clip of media, a title, a colour and a still
+take one; a clip of sound takes none (`wrong_track`, `what` `fusion`). The field is written
+only on a clip that has one: a clip without it is written as it always was, and a project
+without compositions is read and written to the byte as before. `set_fusion` gives a clip one,
+puts another in its place, or takes it away.
+
+What comes out of the composition is taken for the source of the clip: it is made before the
+clip's grade and before its `transform`, `crop`, `composite` and opacity, which are done to it
+as they are to a source ("MediaOut's alpha returns to the Edit page", p. 1266). The pictures
+of a composition are of the size of the source of its clip (p. 1265): of media, its picture as
+it is shown upright (a picture turned a quarter has its width for its height); of a title or a
+colour, the picture of the timeline.
+
+```json
+{"nodes": [
+  {"id": "MediaIn1", "kind": "media_in", "label": "", "pass_through": false, "pos": null, "params": {}},
+  {"id": "MediaOut1", "kind": "media_out", "label": "", "pass_through": false, "pos": null, "params": {}}],
+ "links": [{"from": "MediaIn1", "to": "MediaOut1", "input": "input"}]}
+```
+
+is the composition that DaVinci gives a clip when the Fusion page is first opened on it
+(p. 1265), which shows the clip as it is. The engine gives a clip none of its own accord: a
+client sends this one with `set_fusion` (the model's `Composition::default()`).
+
+**Nodes.** A node is `{id, kind, label, pass_through, pos, params}`. `id` is unique within its
+composition (not in the project: a clip that is cut in two or copied keeps the ids of its
+nodes), has no `.` in it (`out_of_range` `fusion_id`: a dot ends it in the path of a setting),
+and is `n` + `next_id` where the engine makes it. `label` is at most 100 characters; `pos` is
+`{x, y}` or `null`, where the node lies in the node editor, as a node of a grade has it (see
+Grades). `pass_through` is Fusion's Pass Through (Ctrl-P): a node that is passed through hands
+on the picture of its **first** input as it is, and one that has no input then gives no
+picture. The engine always writes `pass_through` and `pos`, and reads a node without them as
+`false` and `null`. A composition has at most 256 nodes (`out_of_range` `fusion_nodes`).
+
+| kind | inputs, the first first | output | `params` |
+|---|---|---|---|
+| `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, and mixed of two pictures where its `retime_process` is `frame_blend`). A composition may have several: they are the same picture; it need not have one |
+| `media_out` | `input` | — | `{}`: the picture that goes back to the timeline. A composition has **exactly one** (`one_media_out`). Where its input is not linked the clip is transparent |
+| `merge` | `background`, `foreground` | yes | the foreground laid over the background, below |
+| `transform` | `input` | yes | its picture moved, made larger or smaller, turned and flipped, below |
+| `background` | — | yes | `{"color": {"r", "g", "b", "a"}}`: one colour over the whole picture (the Solid type; no gradients), each channel from 0 to 1 and not premultiplied by `a`; opaque black at first |
+
+An input that is not linked gives no picture: a transparent one of the size of the
+composition. The effect mask of a node, and the other kinds (masks, Blur, the keyers, the
+Tracker, Text+), are not there yet: a `kind` or an `input` that is not listed cannot be read.
+
+**Links.** A link `{from, to, input}` goes from the output of node `from` into the input
+`input` of node `to`. An output may feed any number of inputs; an input takes at most one link
+(`input_linked`); a link into an input that its node has not is `no_input`, and one from a
+`media_out`, which has no output, `no_output`; a node that is not there is `missing` `node`.
+Links never make a loop (`loop`). **Links are kept in one order**, by `to` (compared as
+strings, byte by byte) and then by the name of `input` (so `background`, `foreground`,
+`input`); the engine sorts the links of every composition it is given and of every project it
+reads, and a client copy must keep them so to stay equal to the engine's.
+
+**Coordinates.** The settings of the nodes are in Fusion's own units, so that a number is what
+DaVinci shows for it and what a tracker gives: a place `center: {x, y}` is a share of the
+width and of the height of the picture from its **lower left** corner, `x` to the right and
+`y` **up**, so that the middle is `{0.5, 0.5}`; `size` is a factor, 1 as it is; `angle` is in
+degrees, **counter-clockwise**. (A clip's `transform` counts from the middle, `y` down and
+clockwise: the two are not the same.)
+
+`params` of a `merge` (pp. 2162–2170; the mathematics is `crates/compose/src/merge.rs`, whose
+settings these are, by the same names):
+
+| field | default | range |
+|---|---|---|
+| `apply` | `normal` | Apply Mode: one of the composite modes of a Layer Mixer (see Grades: `normal`, `add`, `multiply`, `screen`, `overlay`, ...); it takes no keys |
+| `operator` | `over` | Operator: `over` alone; it takes no keys |
+| `subtractive_additive` | 1 (Additive) | 0…1; read in the Normal mode alone |
+| `alpha_gain` | 1 | 0…1 |
+| `burn_in` | 0 | 0…1 |
+| `blend` | 1 | 0…1 |
+| `center.x`, `center.y` | 0.5 | −15.5…16.5: where the middle of the foreground is in the background (p. 2164) |
+| `size` | 1 | 0…16: how many times as large the foreground is made, about its middle; 0 leaves nothing of it |
+| `angle` | 0 | −3600…3600 |
+
+`params` of a `transform` (Fusion's Transform, its daily controls): `center.x`, `center.y`,
+`size` and `angle` as above, of its picture, and the flags `flip_horizontal` and
+`flip_vertical` (`false` at first), which take no keys. The picture that comes out of a
+`merge` is of the size of its background, and that of a `transform` of the size that came in.
+
+Each of these numbers is a number or `{"keys": [...]}`, as a setting of a grade is (see
+Grades), and is refused out of its range as `out_of_range` with `what` the kind and the path:
+`merge.blend`, `merge.center.x`, `transform.size`, `background.color.a`. The ranges are the
+engine's own (the manual gives none); they are listed with the defaults and the units under
+`fusion_merge`, `fusion_transform` and `fusion_background` in
+`crates/model/tests/data/catalog.json` (page and palette `fusion`; an angle is in
+`degrees_counterclockwise`).
+
+**Frames of keys.** The keys of a composition count the frames that the other keys of its clip
+count (Frames of keys, in Grades): of media, the frames of the media, so that a key stays on
+its picture where the clip is trimmed, slipped, cut or played at another speed; of a title, a
+colour or a still, the frames of the clip from its first, 0. The edits carry a composition as
+they carry the clip's transform: a trim of the head or a roll moves the keys of a clip that
+counts its own frames so that they stay at their frames of the timeline; `blade` leaves both
+halves the composition, each its keys where they were; a clip that is copied and pasted, or
+moved, takes it along; and `replace` leaves the clip its composition, its keys put on the
+frames of the new source as those of its grade are (see Grades). Where an edit changes the
+keys of a composition it is done as `set_fusion`.
+
+### Operations
+
+They name the clip by `timeline` and `clip`; each is refused on a clip that has no composition
+(`missing` with `what` `fusion`), but `set_fusion`.
+
+| op | fields | inverse |
+|---|---|---|
+| `set_fusion` | `timeline`, `clip`, `value` (a composition, its nodes with their ids; or `null`, which must be written, to take the clip's away) | `set_fusion` of what the clip had |
+| `add_fusion_node` | `timeline`, `clip`, `node` (empty `id` for the engine to make one), `index?`, `links?` | `remove_fusion_node` with `links` |
+| `remove_fusion_node` | `timeline`, `clip`, `id`, `links?` | `add_fusion_node` with its links |
+| `connect_fusion` | `timeline`, `clip`, `link` | `connect_fusion` of the link the input had, or `disconnect_fusion` |
+| `disconnect_fusion` | `timeline`, `clip`, `to`, `input` | `connect_fusion` |
+| `set_fusion_node` | `timeline`, `clip`, `id`, `label?`, `pass_through?`, `pos?` (`{x, y}` or `null`), `params?` | `set_fusion_node` with the values as they were |
+| `set_fusion_keys` | `timeline`, `clip`, `path`, `param` (a number, or `{"keys": [...]}`) | `set_fusion_keys` of the setting as it was |
+| `splice_fusion_keys` | `timeline`, `clip`, `path`, `at`, `remove`, `keys` | `splice_fusion_keys` of the keys taken away, or `set_fusion_keys` of the number |
+
+- They are the operations of a grade (see Grades, Operations), on the composition of a clip:
+  `add_fusion_node` as `add_node`, with links that each come from the node or go into it and
+  name it by its id as given (`""`, or its `$name`), a link into an input that has one taking
+  its place; `connect_fusion` and `disconnect_fusion` as `connect` and `disconnect`;
+  `set_fusion_node` as `set_node`, its `params` a patch of the node's `params` (`params` where
+  what it makes is not of the node's kind); `set_fusion` as `set_grade`. Their `done` carries
+  what the engine filled in, as theirs does. A node has no lock.
+- `remove_fusion_node` takes the node away with its links, and links nothing in its place:
+  what the node fed is left without a picture. With `links`, those are put instead: each must
+  go into an input that the node fed, and not touch the node (`out_of_range` `links`). Its
+  `done` always carries the `links` it put (`[]` for none), and its inverse adds the node
+  again with the links that it had.
+- Every one of them is checked on the composition as it would be, whole: so taking the
+  `media_out` away, or adding a second, is `one_media_out` (with `count`, how many there would
+  be), and a link that would close a loop is `loop`.
+- `set_fusion_keys` and `splice_fusion_keys` change one setting of a node that takes keys,
+  named by `path`: the id of the node, a dot, and the path of the setting in the node's
+  `params`: `n4.blend`, `n4.center.x`, `n7.color.a`. A node that is not there is `missing`
+  `node`; a path that names no setting of the node's kind that takes keys (`n4.apply`, `n4`)
+  is `missing` with `what` `setting` and the path. They are `set_keys` and `splice_keys`
+  otherwise: `at + remove` beyond the keys is `out_of_list`, a number becomes the keys that
+  are put (its `done` then the `set_fusion_keys` of those keys), a setting keeps one key at
+  least (`params`), and what either makes is checked as the node is. They are operations of
+  their own, and not `set_keys` with another target, because the `grade` target of `set_keys`
+  names a grade, and every operation and edit that takes one would have to refuse a
+  composition.
+- A `set_fusion`, `set_fusion_node` or `set_fusion_keys` that sets what is there already, a
+  `connect_fusion` of the link that the input has, and a `splice_fusion_keys` that takes no
+  key away and puts none, change nothing: alone in a transaction each is refused as `empty`
+  and makes no step.
+- Nodes of a composition put in whole (`set_fusion`, a clip of `insert_clip`, `add_track` or
+  `add_timeline`) have ids (`no_id`), unique in the composition (`taken` `node`), of which an
+  `n…` id must be below `next_id` (`reserved`).
+
+`$names` (see below) may be given to a node by `add_fusion_node`, whose links name it by the
+same `$name`; later operations name it where they name a node, and at the start of a `path`
+(`$over.blend`).
+
+### Refusals of compositions
+
+| reason | fields | meaning |
+|---|---|---|
+| `no_input` | `node`, `input` | a link into an input that the node's kind does not have |
+| `no_output` | `node` | a link from a node that has no output, a `media_out` |
+| `input_linked` | `node`, `input` | two links into one input |
+| `one_media_out` | `count` | the composition would have `count` `media_out` nodes, and it has exactly one |
+
+`missing` also names `fusion` (the composition of a clip that has none), and `node`, `link`
+and `setting` as for a grade; `wrong_track` `fusion` (a composition on a clip of sound);
+`loop`, `taken` `node`, `params`; and `out_of_range` `fusion_nodes`, `fusion_id`, `label`,
+`pos`, `links` and the settings of nodes by kind and path.
+
+### Compositions in the picture
+
+`resolve` gives the layer of a clip that has a composition the composition as it is at the
+frame (`crates/model/src/resolve.rs`, `Layer::fusion`): the nodes that the picture of its
+`media_out` is made of, each after the nodes whose pictures it reads, each with its settings
+as the numbers that they are at the frame of the clip's keys. A node that nothing reads is not
+among them, and a node that is passed through is left out for the node that it hands on. **The
+compositor does not draw compositions yet**: until it does, the monitor, an export, a still, the
+scopes and a thumbnail show a clip that has a composition as they show its source, as a clip
+without one. A project keeps its compositions meanwhile, and the operations above work on
+them.
+
 ## Scopes
 
 The video scopes of a monitor, as the Color page of DaVinci Resolve has them (pp. 3007–3022):
@@ -4666,7 +4856,7 @@ real ids. For example:
 → in a new project, `"names": {"$c": "c2", "$t": "t1", "$v": "V1"}`.
 
 - Names may bind media, bins, timelines, tracks, clips, transitions, cues, nodes and groups (see
-  Grades), including those
+  Grades), the nodes of a composition (see Compositions), including those
   inside an added timeline or track. A name can be referenced only by a **later input entry**,
   not elsewhere inside the same added object.
 - A clip's `link` (including `set_clip.link`) may declare a new `$group` on its first use. Later
@@ -4851,7 +5041,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `empty_range` | | zero-length range/delta or an edit that cannot move |
 | `nothing_at` | `track` (nullable), `frame` | no target clip at the requested frame |
 | `no_track` | `kind` | no track for the requested source, or, for a `move` with `to_track`, no track of `kind` for a clip that moves to go to |
-| `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
+| `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind (`what` `fusion`: a composition on a clip of sound) |
 | `cue_overlap` | `with` | subtitles overlap on one track |
 | `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
 | `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `retime`, `retime_unit`, `retime_constant`, `retime_speed` and `retime_source` (speed points that a clip cannot have), `frame`, `hold` and `speed_point` (an edit of the Retime Controls at a frame that the clip has not, a freeze of less than a frame, and the speed point of the first segment, which is not one to clear), `retimed` (what is done to a clip of one speed only, asked of a clip with speed points), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |

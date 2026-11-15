@@ -1204,8 +1204,9 @@ dip_white and audio crossfade; set_speed retimes a whole clip, the speed-point e
 of one. add_track/remove_track and
 add_cue/set_cue/remove_cue/cues_from manage tracks/subtitles. Basic add_timeline/add_bin and
 set_timeline/set_track/set_clip/set_media edit settings. set_clip includes transform, gain_db,
-pan and fade_in/out, crop {left,right,top,bottom,softness} (shares 0-1) and composite (a
-blend mode: normal, multiply, screen, overlay...). A transform or crop setting may be
+pan and fade_in/out, crop {left,right,top,bottom,softness} (shares 0-1), composite (a
+blend mode: normal, multiply, screen, overlay...) and retime_process (nearest|frame_blend:
+what a slowed clip shows between two source frames). A transform or crop setting may be
 {keys:[{frame,value,interp}]}, frames counted as grade keyframes are; set_clip_keys
 {id,path:"transform.x"|"crop.left",param} and splice_clip_keys {id,path,at,remove,keys}
 set one setting's keys. Existing ids come

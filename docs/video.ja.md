@@ -79,6 +79,9 @@ ffmpeg フィルターグラフによる別の動画生成は行いません。
   キーのある設定ごとの行があります。クリックでキーを選び（Ctrl と Shift で複数選択）、ドラッグで選んだキーを時間方向に動かし
   （取り消しは 1 回）、Delete で消し、Ctrl+C、Ctrl+X、Ctrl+V でコピー、カット、再生ヘッド位置へのペーストができます。
   コンポジットモードはクリップを下のトラックにどう重ねるかを決めます。下に何もなければ、クリップはそのまま表示されます。
+  「リタイムとスケーリング」の**リタイム処理**は、メディアのクリップのフレームがソースの 2 枚の画の間に来るとき
+  （スローモーションや、素材とタイムラインのフレームレートが違うとき）に何を表示するかを決めます。「ニアレスト」はその位置の
+  1 枚だけを表示し、「フレームブレンド」はその 1 枚と次の 1 枚を、間のどこにあるかに応じて混ぜます。
   オーディオトラックのクリップは
   ボリューム、パン、フェード、タイトルはテキスト、サイズ、色、位置、揃え、単色は色を変えられます。数値は入力するか
   左右にドラッグして変え（Shift で 10 倍速）、離した時に 1 回だけ送ります。Esc で元に戻し、ラベルをダブルクリックすると既定値に戻ります。
@@ -365,7 +368,7 @@ Rec.709 で書き出します。
 `close_gap`（隙間を閉じる。ショットを構図し直す Resolve の Close Up とは別物）、`blade`（ブレード）、`move`、
 `insert_move`（シャッフル挿入）、`trim`（トリム）、`roll`（ロール）、`slip`（スリップ）、`slide`（スライド）、`set_speed`（速度変更）、
 `add_transition`、`set_transition`、`remove_transition`、`add_track`、`remove_track`、`add_cue`、`set_cue`、`remove_cue`、`cues_from` があります。
-同じバッチにプロトコルの基本操作、たとえば `add_timeline`、`add_bin`、`set_clip`（変形、クロップ、コンポジットモード、ゲイン、パン、フェード）、`set_clip_keys` と `splice_clip_keys`（変形またはクロップの設定ひとつのキーフレーム）、`set_track`、
+同じバッチにプロトコルの基本操作、たとえば `add_timeline`、`add_bin`、`set_clip`（変形、クロップ、コンポジットモード、リタイム処理、ゲイン、パン、フェード）、`set_clip_keys` と `splice_clip_keys`（変形またはクロップの設定ひとつのキーフレーム）、`set_track`、
 `set_media`、`set_timeline` を混ぜられます。クリップの速度は途中で変えられます（DaVinci Resolve のリタイムコントロール）。
 `add_speed_point`（速度ポイントを追加）、`set_segment_speed`（区間の速度を変更）、`freeze_frame`（フリーズフレーム）、
 `reverse_segment`（区間を逆再生）、`clear_speed_point`（速度ポイントを消去）、`reset_speed`（100% にリセット）は、
@@ -560,7 +563,7 @@ columbina video migrate --workspace /path/to/workspace --json
 
 ## このバージョンにないもの
 
-スピードランプと巻き戻し（Rewind）、フレームブレンドとオプティカルフロー、マーカー、
+スピードランプと巻き戻し（Rewind）、リタイム処理のオプティカルフロー、マーカー、
 フィット・トゥ・フィル、Close Up、マルチカム、タイムコードによる素材の同期は、後の段階で加わります。
 デスクトップの書き出しはハードウェアエンコーダーだけを使い、ない場合は ProRes で書き出します。
 カラーページのスタビライザー、グレードのバージョン、3D クオリファイアー、Magic Mask、Color Warper、Sizing とほかの Motion Effects、

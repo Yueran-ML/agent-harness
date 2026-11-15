@@ -12,7 +12,9 @@
 // - the compositor's (`vs_layer`, `fs_layer`): the picture is a layer, a quad of the frame that it
 //   is fitted into on the canvas, put on the canvas by an affine map (`row0`, `row1`), with its
 //   edges smoothed over a pixel and its opacity, premultiplied; cut by its crop (`kept`), and
-//   blended with what is under it by its composite mode (`laid`).
+//   blended with what is under it by its composite mode (`laid`). A layer of a clip that is
+//   retimed by Frame Blend shows two pictures of its media mixed (`between.wgsl`), which is
+//   another shader made of this one: as it is written here, one picture is read.
 //
 // The planes are read texel by texel and blended here, two by two, rather than sampled: so that
 // planes of 16-bit integers, where a card has no 16-bit normalized formats, are read the same
@@ -46,6 +48,8 @@ struct Params {
     matrix: vec4<f32>,
     // Where a sample of chroma lies, in luma texels from the luma sample at its own place
     // (twice its place, where chroma is halved): x across, y down (0 and 0.5, "left" of 4:2:0).
+    // Then z, how much of a second picture is mixed into this one, from 0 to 1: read by the
+    // shader of a layer of two pictures alone (`between.wgsl`), and 0 of any other.
     siting: vec4<f32>,
     // What the picture is: x 0 of Y'CbCr, 1 of R'G'B'A of integers, 2 of R'G'B'A of floats; y
     // its alpha: 0 none, 1 straight, 2 premultiplied; z what a texel of R'G'B'A, or of the plane
@@ -77,6 +81,10 @@ struct Params {
 @group(0) @binding(2) var chroma_plane: texture_2d<Texel>;
 @group(0) @binding(3) var alpha_plane: texture_2d<Texel>;
 
+// The texels of the planes. The lines from "planes: begin" to "planes: end" are put in place by
+// those of `between.wgsl` for a layer that shows two pictures of one media mixed (`compose.rs`),
+// which reads the planes of either picture. As they are written, they read the one picture.
+// planes: begin
 fn luma_at(texel: vec2<i32>) -> f32 {
     return f32(textureLoad(luma_plane, texel, 0).r);
 }
@@ -95,6 +103,7 @@ fn rgba_at(texel: vec2<i32>) -> vec4<f32> {
 fn alpha_at(texel: vec2<i32>) -> f32 {
     return f32(textureLoad(alpha_plane, texel, 0).r);
 }
+// planes: end
 
 // The four texels around a place, in texels from the centre of the first, clamped to the edges.
 struct Around {

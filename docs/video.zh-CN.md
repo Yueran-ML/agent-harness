@@ -62,6 +62,8 @@ F2 重命名，Delete 从媒体池移除（有时间线在用时会被拒绝）�
   一行显示全部的键，有键的参数各占一行。单击选中一个键（Ctrl 和 Shift 多选），拖动把选中的键在时间上移动（一步撤销），
   Delete 删除，Ctrl+C、Ctrl+X、Ctrl+V 复制、剪切并在播放头处粘贴。
   合成模式决定片段如何叠在下方轨道上；下方没有画面时，片段按原样显示。
+  “变速与缩放”里的**变速处理**决定媒体片段的某一帧落在源素材两幅画面之间时显示什么（慢动作，或素材帧率与时间线不同）：
+  “最近的”只显示所在的那一幅，“帧混合”按这一帧在两幅之间的位置把它和下一幅混合。
   音频轨上的片段可调音量、声像和淡入淡出；
   标题可改文本、大小、颜色、位置和对齐；纯色可改颜色。数值可以直接输入，也可以左右拖动（按住 Shift 变化快十倍），
   松手时提交一次；Esc 撤回，双击标签恢复缺省值。选中多个片段时只显示它们共有的字段。
@@ -299,7 +301,7 @@ Rec.709、Rec.2020、P3 等显示空间配各种 gamma，Rec.2100 HLG 和 ST2084
 `ripple_delete_range`（波纹删除区间）、`close_gap`（合上空隙，不是达芬奇快编页里重新构图的 Close Up）、`blade`（刀片）、
 `move`、`insert_move`（洗牌插入）、`trim`（修剪）、`roll`（滚动）、`slip`（滑移）、`slide`（滑动）、`set_speed`（变速）、
 `add_transition`、`set_transition`、`remove_transition`、`add_track`、`remove_track`、`add_cue`、`set_cue`、`remove_cue` 和 `cues_from`。
-同一批里可以混用协议的基本操作，例如 `add_timeline`、`add_bin`、`set_clip`（变换、裁切、合成模式、增益、声像、淡入淡出）、`set_clip_keys` 和 `splice_clip_keys`（变换或裁切里某一个参数的关键帧）、`set_track`、
+同一批里可以混用协议的基本操作，例如 `add_timeline`、`add_bin`、`set_clip`（变换、裁切、合成模式、变速处理、增益、声像、淡入淡出）、`set_clip_keys` 和 `splice_clip_keys`（变换或裁切里某一个参数的关键帧）、`set_track`、
 `set_media` 和 `set_timeline`。片段的速度可以在中途变化，对应达芬奇的变速控制（Retime Controls）：`add_speed_point`（添加速度点）、
 `set_segment_speed`（改变一段的速度）、`freeze_frame`（冻结帧）、`reverse_segment`（倒放一段）、`clear_speed_point`（清除速度点）和
 `reset_speed`（重置为 100%）按片段内的帧号（从片段第一帧起算）修改速度点，基本操作 `set_retime` 一次写入全部速度点
@@ -472,7 +474,7 @@ Agent 的源文件读取和输出写入遵守会话文件权限，包括 `add_me
 
 ## 本版本还没有的
 
-速度斜坡和倒带（Rewind）、帧混合和光流、标记、适配填充（Fit to Fill）、
+速度斜坡和倒带（Rewind）、变速处理里的光流、标记、适配填充（Fit to Fill）、
 Close Up、多机位以及按时间码对齐素材，都在之后的阶段加入。桌面端导出只用硬件编码器，没有时改写 ProRes。
 调色页的稳定器、调色版本、3D 限定器、Magic Mask、Color Warper、Sizing 和其他 Motion Effects、DCTL、Dolby Vision 和 HDR10+，本版本都还没有。
 Fairlight 页的 Range 选区模式、浮动检视器和 Loop Jog 本版本也还没有。

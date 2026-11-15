@@ -451,6 +451,18 @@ pub fn set_unclamped(params: &mut [f32], unclamped: bool) {
     params[UNCLAMPED_PARAM] = if unclamped { 1.0 } else { 0.0 };
 }
 
+/// Where [`picture_params`] says how much of a second picture is mixed into the picture
+/// (`siting.z`): 0, of a picture that is drawn alone.
+pub const BETWEEN_PARAM: usize = 22;
+
+/// Say in the parameters of a picture how much of a second picture of the same layout is mixed
+/// into it, from 0 to 1: read by the shader of a layer of two pictures alone (`between.wgsl`,
+/// which the compositor makes of `yuv.wgsl` for a clip that is retimed by Frame Blend), and
+/// left at 0 for every other.
+pub fn set_between(params: &mut [f32], weight: f32) {
+    params[BETWEEN_PARAM] = weight;
+}
+
 /// The black and the range from black to white of R'G'B' of `bits` bits at full scale, from 0
 /// to 1: 0 and 1 of full range; of limited range, `16 · 2^(bits − 8)` and `219 · 2^(bits − 8)`
 /// of the most, `2^bits − 1` (16/255 and 219/255 of 8 bits). Of floats, always 0 and 1.
@@ -608,6 +620,19 @@ mod tests {
         let values = picture_params([0.0; 4], centred, Texel::Float, YuvCoding::default(), 0);
         assert_eq!(values[20..24], [0.5, 0.5, 0.0, 0.0]);
         assert_eq!(values[24..28], [0.0, 0.0, 1.0, 0.0], "Y'CbCr without alpha");
+    }
+
+    #[test]
+    fn how_much_of_a_second_picture_is_mixed_in_is_said_after_its_siting_and_is_nothing_at_first() {
+        let alone = layout(8, 8, PictureFormat::Nv12, 8);
+        let plain = picture_params([0.0; 4], alone, Texel::Float, YuvCoding::default(), 0);
+        assert_eq!(plain[BETWEEN_PARAM], 0.0);
+        let mut mixed = plain;
+        set_between(&mut mixed, 0.25);
+        assert_eq!(mixed[20..24], [0.0, 0.5, 0.25, 0.0]);
+        // Nothing else of it is changed.
+        assert_eq!(mixed[..BETWEEN_PARAM], plain[..BETWEEN_PARAM]);
+        assert_eq!(mixed[BETWEEN_PARAM + 1..], plain[BETWEEN_PARAM + 1..]);
     }
 
     #[test]

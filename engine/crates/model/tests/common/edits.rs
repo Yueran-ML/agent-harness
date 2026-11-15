@@ -544,6 +544,7 @@ fn fades(
         transform: None,
         crop: None,
         composite: None,
+        retime_process: None,
         gain_db: None,
         pan: None,
         fade_in: Some(fade_in),

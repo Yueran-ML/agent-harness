@@ -97,6 +97,15 @@
 //! no sample, and a mapping of one speed reads the samples that [`crate::span::source_sample`]
 //! reads, to the sample: counted from where the clip begins where it plays forward, and from
 //! where it ends where it plays backward.
+//!
+//! # Between two pictures
+//!
+//! The place of a frame need not be where a picture of the media begins: a clip at half its
+//! speed is halfway between two pictures at every second frame, and so is a clip whose media
+//! has another rate of frames than its timeline. What such a frame shows is the Retime Process
+//! of the clip ([`RetimeProcess`], pp. 1081–1082): the picture that the place is in, alone, or
+//! that picture and the one after it, mixed by how far between them the place lies
+//! ([`crate::span::Reading::between`]). A frame of a freeze shows one picture either way.
 
 use std::cmp::Ordering;
 
@@ -285,6 +294,37 @@ pub struct Trimmed {
     pub later: i64,
 }
 
+/// How a clip shows a frame whose place in its source lies between two pictures of its media:
+/// its Retime Process (pp. 1081–1082). It is written `"nearest"` or `"frame_blend"`.
+///
+/// A clip of one speed and a clip with speed points take it alike, forward and backward, and so
+/// does a clip that plays as its source is where its media has another rate of frames than its
+/// timeline. Optical Flow, the third process of the manual, is not one of these yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetimeProcess {
+    /// The picture that the place is in, alone: a picture of the media is shown again where the
+    /// clip plays slower than its media, and passed over where it plays faster.
+    #[default]
+    Nearest,
+    /// The picture that the place is in and the one after it, mixed by how far between the two
+    /// the place lies. A frame whose place is where a picture begins shows that picture alone,
+    /// as [`RetimeProcess::Nearest`] does, and so does every frame of a freeze.
+    FrameBlend,
+}
+
+impl RetimeProcess {
+    /// Whether it is [`RetimeProcess::Nearest`], which a clip is written without.
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde passes a reference"
+    )]
+    #[must_use]
+    pub fn is_nearest(&self) -> bool {
+        *self == Self::Nearest
+    }
+}
+
 /// The greatest number that divides both.
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
@@ -294,7 +334,7 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 }
 
 /// The greatest number that divides both, of numbers that may be more than a `u64` holds.
-fn gcd_wide(mut a: u128, mut b: u128) -> u128 {
+pub(crate) fn gcd_wide(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
         (a, b) = (b, a % b);
     }

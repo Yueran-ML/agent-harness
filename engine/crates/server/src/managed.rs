@@ -450,7 +450,7 @@ impl Colour {
         for (index, layer) in scene.layers.iter_mut().enumerate() {
             layer.color.unclamped = self.managed;
             match &layer.source {
-                Source::Picture(..) => {
+                Source::Picture(..) | Source::Between { .. } => {
                     let own = media
                         .get(index)
                         .and_then(Option::as_ref)

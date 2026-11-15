@@ -307,6 +307,122 @@ async fn a_clip_with_speed_points_shows_the_pictures_of_its_path_frame_by_frame(
     }
 }
 
+/// Two frames of a decoder, `frame` and the one after it, as the layer of a clip that mixes the
+/// two (Frame Blend): `weight` of the second, mixed as the engine composes them.
+fn mixed_layer(decoder: &mut VideoDecoder, frame: i64, weight: f32) -> SceneLayer {
+    let [first, second] = [frame, frame + 1].map(|frame| {
+        let picture = Converter::new()
+            .native(&decoder.decoded_at(frame).unwrap())
+            .unwrap();
+        Arc::new(picture)
+    });
+    SceneLayer {
+        color: LayerColor {
+            coding: YuvCoding::of_native(&first),
+            ..LayerColor::default()
+        },
+        source: Source::Between {
+            first,
+            second,
+            weight,
+            rotation: 0,
+        },
+        transform: Transform::NONE,
+        opacity: 1.0,
+        crop: columbina_compose::Crop::NONE,
+        composite: columbina_compose::Composite::Normal,
+    }
+}
+
+/// A clip at half its speed, which lies halfway between two pictures of its media at every
+/// second frame. With Nearest the timeline monitor shows one picture at each frame; once its
+/// Retime Process is Frame Blend, it shows at each frame on a picture that picture, as Nearest
+/// does, and at each frame between two the two mixed by halves.
+#[tokio::test]
+async fn a_clip_that_mixes_two_pictures_shows_them_mixed_at_the_frames_between_them() {
+    let Some(gpu) = columbina_compose::gpu_for_tests() else {
+        return;
+    };
+    let dir = project_dir();
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "null", "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let got = project(&mut client).await;
+    let media: columbina_model::Media =
+        serde_json::from_value(got["project"]["media"][0].clone()).unwrap();
+    let scale = i64::from(media.facts.duration.scale);
+    // From picture 10 of the media, 12 frames at half the speed: the places 10, 10.5, 11 and
+    // so on to 15.5.
+    let mut slow = clip("$slow", "m1", 0, 12);
+    slow["source"]["in"] = json!({"ticks":10*scale/25,"scale":scale});
+    slow["speed"] = json!({"num":1,"den":2});
+    let names = add_timeline(&mut client, vec![slow], vec![]).await;
+    let (timeline, id) = (names["$timeline"].clone(), names["$slow"].clone());
+    load(&mut client, &names).await;
+    let mut decoder =
+        VideoDecoder::open(std::path::Path::new(&media.path), Hardware::Auto).unwrap();
+    let mut compose = Compositor::new(Arc::clone(&gpu));
+    let target = Target::preview(&gpu, 64, 36).unwrap();
+    let mut hash = |layer: SceneLayer| {
+        let scene = Scene {
+            width: 64,
+            height: 36,
+            layers: vec![layer],
+            ..Scene::default()
+        };
+        compose.render(&scene, &target).unwrap();
+        format!("{:x}", Sha256::digest(target.read_rgba().unwrap()))
+    };
+    // From the last frame, so that the first seek is to another frame than the one shown.
+    let mut alone = vec![String::new(); 12];
+    for frame in std::iter::once(11).chain(0..12) {
+        let picture = 10 + frame / 2;
+        let expected = hash(decoded_layer(&mut decoder, picture, 1.0));
+        let drawn = sought(&mut client, frame).await;
+        assert_eq!(
+            drawn["hash"], expected,
+            "with Nearest, frame {frame} shows picture {picture}: {drawn}"
+        );
+        alone[usize::try_from(frame).unwrap()] = expected;
+    }
+    client
+        .apply(json!([{"op":"set_clip","timeline":timeline,"id":id,
+            "retime_process":"frame_blend"}]))
+        .await;
+    let got = project(&mut client).await;
+    let made = got["project"]["timelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["id"] == timeline)
+        .unwrap()["tracks"][0]["clips"][0]
+        .clone();
+    assert_eq!(made["retime_process"], "frame_blend", "{made}");
+    // From the first frame: the monitor shows the last one, mixed now that the clip is set so.
+    for (frame, alone) in (0..12).zip(&alone) {
+        let picture = 10 + frame / 2;
+        let between = frame % 2 == 1;
+        let expected = if between {
+            hash(mixed_layer(&mut decoder, picture, 0.5))
+        } else {
+            hash(decoded_layer(&mut decoder, picture, 1.0))
+        };
+        // A frame between two pictures is neither of them; one on a picture is as it was.
+        assert_eq!(&expected != alone, between, "frame {frame}");
+        let drawn = sought(&mut client, frame).await;
+        assert_eq!(
+            drawn["hash"], expected,
+            "with Frame Blend, frame {frame} shows picture {picture}: {drawn}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn timeline_plays_three_seconds_without_late_reads_and_switches_monitors() {
     if columbina_compose::gpu_for_tests().is_none() {

@@ -430,6 +430,7 @@ pub(super) fn set_speed(
             transform: None,
             crop: None,
             composite: None,
+            retime_process: None,
             gain_db: None,
             pan: None,
             fade_in: None,

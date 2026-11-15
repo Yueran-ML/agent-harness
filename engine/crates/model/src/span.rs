@@ -25,10 +25,33 @@
 //! from a speed alone ([`ticks_of_scaled`], [`frames_for_span`]) is not of such a clip, and
 //! [`frames_for`] is asked of the clip instead. Its sound is read along the path too, segment by
 //! segment ([`crate::retime::Sounding`]): [`source_sample`] reads a clip of one speed.
+//!
+//! # Between two pictures
+//!
+//! The place of a frame is counted in ticks, rounded down, and the picture read for it is the
+//! one that the tick is in ([`media_frame`]). The place itself may lie between two pictures of
+//! the media: [`Reading::between`] gives the picture after the one that is read, and how far
+//! from the one to the other the place lies, as an exact fraction ([`Share`]), for a clip whose
+//! Retime Process mixes the two ([`crate::retime::RetimeProcess::FrameBlend`]).
+//!
+//! The place is counted in frames of the media from the picture that the clip begins in: a
+//! clip begins at a tick, which is where a picture begins as nearly as ticks say it
+//! ([`Rate::ticks_of`], rounded down), and is taken to begin where that picture does, and as
+//! many ticks further as it begins after that tick. So the place of a clip that plays as its
+//! media is, on a timeline of the rate of its media, is where a picture begins at every frame,
+//! in whatever scale its media counts its ticks; and a clip at half that speed lies on a
+//! picture at every second frame, and halfway to the next at the others.
+//!
+//! The picture that is read is that of the tick, and a tick is rounded down twice: where the
+//! clip begins, and how far the frame is from there. Where the two together lose a tick, the
+//! tick is of the picture before the one that the place has come to (a clip that begins at
+//! tick 1843 of 15360, where the fourth picture of 25 a second begins, reads its third frame
+//! at tick 3071, one before the sixth picture begins). The place is then a whole picture past
+//! the one that is read, and the share is the whole of the picture after.
 
 use crate::ops::LARGEST;
 use crate::project::Clip;
-use crate::retime::Course;
+use crate::retime::{gcd_wide, Course};
 use crate::time::{Rate, Speed, Time};
 
 /// The ticks of `scale` that `frames` frames of `rate` show at `speed`, rounded down:
@@ -149,6 +172,152 @@ impl Reading {
             offset < 0,
         )
     }
+
+    /// The exact place that frame `k` of the clip shows, above where the clip begins in its
+    /// source: a count of a unit, and how many of that unit make a frame of the timeline at
+    /// the speed of the source. Along a course it is the place of the path ([`Course::place`]);
+    /// at one speed, `k` frames at that speed, or, backward, `length - 1 - k` of them, as
+    /// [`Reading::tick`] counts them. None in a freeze, which holds one picture.
+    fn place(&self, k: i64) -> Option<(i128, u32)> {
+        if let Some(course) = &self.course {
+            if course.speed_at(k).is_freeze() {
+                return None;
+            }
+            return Some((course.place(k), course.unit()));
+        }
+        let frame = if self.reverse {
+            self.length.saturating_sub(1).saturating_sub(k)
+        } else {
+            k
+        };
+        // Below 2^95 in size, since |frame| <= 2^63 and the speed is below 2^32.
+        Some((
+            i128::from(frame) * i128::from(self.speed.num),
+            self.speed.den,
+        ))
+    }
+
+    /// The picture after the one that frame `k` of the clip shows, and how far from the one to
+    /// the other the place of the frame lies (see the module), on a timeline of `rate`, for
+    /// media whose picture is of `pictures` frames a second and lasts `duration`: what a clip
+    /// that mixes the two shows ([`crate::retime::RetimeProcess::FrameBlend`]).
+    ///
+    /// The first of the two is always the picture that the frame shows alone, the one that the
+    /// tick of [`Reading::tick`] is in ([`media_frame`]), so that a frame which lies between no
+    /// two pictures is given none here and is shown as it always was. None too in a freeze,
+    /// which holds one picture; where the picture shown is the last of the media, which has
+    /// none after it; and where the place cannot be counted exactly in 128 bits. The picture
+    /// after may be one that the clip does not come to: it is of the media all the same, as
+    /// the pictures that a transition shows beyond the ends of a clip are.
+    ///
+    /// The ticks of a place are rounded down, and so are those at which a picture begins, so a
+    /// tick may be of the picture before the one that the place itself has come to: the share
+    /// is then the whole of the picture after, 1/1, and never more.
+    #[must_use]
+    pub fn between(&self, k: i64, rate: Rate, pictures: Rate, duration: Time) -> Option<Between> {
+        let place = self.place(k)?;
+        let scale = duration.scale;
+        let first = media_frame(self.tick(k, rate, scale), pictures, duration);
+        let last = media_frame(i64::MAX, pictures, duration);
+        let second = first.checked_add(1).filter(|second| *second <= last)?;
+        // The tick at which the picture after begins, which is read as that picture: not so
+        // where ticks are too few to tell the pictures of the media apart.
+        let tick = pictures.ticks_of(second, scale);
+        if media_frame(tick, pictures, duration) != second {
+            return None;
+        }
+        let share = share_past(first, self.begins, place, rate, pictures, scale)?;
+        Some(Between {
+            first,
+            second,
+            tick,
+            share,
+        })
+    }
+}
+
+/// How far a place lies from one picture of the media to the next, as a fraction in its lowest
+/// terms: above 0, and 1/1 at the most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Share {
+    /// How many parts of `den` the place is past the first picture.
+    pub num: u64,
+    /// How many such parts lie from the first picture to the second.
+    pub den: u64,
+}
+
+impl Share {
+    /// The whole of the way: the second picture alone.
+    pub const WHOLE: Share = Share { num: 1, den: 1 };
+}
+
+/// The two pictures of its media that a frame of a clip lies between ([`Reading::between`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Between {
+    /// The frame of the media that the frame of the clip shows alone: the first of the two.
+    pub first: i64,
+    /// The frame of the media after it: the second.
+    pub second: i64,
+    /// The tick at which the second begins, in the scale of the duration of the media: the
+    /// place that it is read at.
+    pub tick: i64,
+    /// How far from the first to the second the place of the frame lies.
+    pub share: Share,
+}
+
+/// How far past the beginning of picture `first` of its media a place lies, in frames of the
+/// media, where it is past it: a fraction in its lowest terms, and 1/1 where it is a whole
+/// frame past it or more. None where it is not past it, and where it cannot be counted in 128
+/// bits.
+///
+/// The place is `place.0` units above the tick `begins` of `scale`, `place.1` of them to a
+/// frame of the timeline of `rate` at the speed of the source; the media has `pictures` frames
+/// a second. It is counted from the picture that `begins` is in (see the module): that
+/// picture, the ticks from where it begins to `begins`, and the units, each brought to frames
+/// of the media exactly.
+fn share_past(
+    first: i64,
+    begins: i64,
+    place: (i128, u32),
+    rate: Rate,
+    pictures: Rate,
+    scale: u32,
+) -> Option<Share> {
+    let (place, unit) = place;
+    // The ticks that `pictures.num` frames of the media last: below 2^64.
+    let ticks = i128::from(scale) * i128::from(pictures.den);
+    let frames = i128::from(pictures.num);
+    if ticks == 0 || frames == 0 {
+        return None;
+    }
+    // The picture that the clip begins in, the most `n` whose beginning, the tick
+    // `floor(n * ticks / frames)`, is no later than `begins`; and how many ticks into it the
+    // clip begins. Neither product is more than 2^96 in size.
+    let begun = ((i128::from(begins) + 1) * frames - 1).div_euclid(ticks);
+    let into = i128::from(begins) - (begun * ticks).div_euclid(frames);
+    // A tick is `per` parts, of which a unit is `rate.den * scale`: `whole` of them make
+    // `pictures.num` frames of the media, so the place is `past * frames / whole` frames past
+    // the picture that the clip begins in.
+    let per = i128::from(unit) * i128::from(rate.num);
+    let whole = ticks.checked_mul(per)?;
+    let along = place
+        .checked_mul(i128::from(rate.den))?
+        .checked_mul(i128::from(scale))?;
+    let past = into.checked_mul(per)?.checked_add(along)?;
+    // And `first` is `first - begun` frames past that picture.
+    let before = i128::from(first).checked_sub(begun)?.checked_mul(whole)?;
+    let num = past.checked_mul(frames)?.checked_sub(before)?;
+    if num <= 0 || whole <= 0 {
+        return None;
+    }
+    if num >= whole {
+        return Some(Share::WHOLE);
+    }
+    let shared = i128::try_from(gcd_wide(num.unsigned_abs(), whole.unsigned_abs())).ok()?;
+    Some(Share {
+        num: u64::try_from(num / shared).ok()?,
+        den: u64::try_from(whole / shared).ok()?,
+    })
 }
 
 /// The frame of a picture of `rate` frames a second and `duration` long that the place `tick`,
@@ -600,5 +769,283 @@ mod tests {
         assert_eq!(source_tick(&clip, 3, PAL, 25), 103);
         // And those of no clip let it last no frame.
         assert_eq!(frames_for(&pointed(&[]), 100, PAL, 25), 0);
+    }
+
+    const NTSC: Rate = Rate {
+        num: 30000,
+        den: 1001,
+    };
+
+    /// Ten seconds of media in ticks of `scale`.
+    fn ten_seconds(scale: u32) -> Time {
+        Time {
+            ticks: 10 * i64::from(scale),
+            scale,
+        }
+    }
+
+    /// What the frames `0..frames` of a clip lie between, on a timeline of `rate`, in ten
+    /// seconds of media of `pictures` frames a second.
+    fn between_of(
+        clip: &Clip,
+        frames: i64,
+        rate: Rate,
+        pictures: Rate,
+        scale: u32,
+    ) -> Vec<Option<Between>> {
+        let reading = Reading::of(clip);
+        (0..frames)
+            .map(|k| reading.between(k, rate, pictures, ten_seconds(scale)))
+            .collect()
+    }
+
+    /// The picture `first` of the media and the one after it, which begins at `tick`, with the
+    /// place `num / den` of the way from the one to the other.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "set beside the frames that lie between no two pictures"
+    )]
+    fn halfway(first: i64, tick: i64, num: u64, den: u64) -> Option<Between> {
+        Some(Between {
+            first,
+            second: first + 1,
+            tick,
+            share: Share { num, den },
+        })
+    }
+
+    #[test]
+    fn a_clip_at_half_its_speed_lies_halfway_between_two_pictures_at_every_second_frame() {
+        // From the start of media of 25 pictures a second, in ticks of 15360, of which a
+        // picture lasts 614.4: the places 0, 0.5, 1, 1.5, 2 and 2.5, in frames of the media.
+        let slow = clip(0, 6, Speed { num: 1, den: 2 }, false);
+        assert_eq!(
+            between_of(&slow, 6, PAL, PAL, SCALE),
+            [
+                None,
+                halfway(0, 614, 1, 2),
+                None,
+                halfway(1, 1228, 1, 2),
+                None,
+                halfway(2, 1843, 1, 2),
+            ]
+        );
+        // The first of the two is the picture that the frame shows alone.
+        for k in 0..6 {
+            let tick = source_tick(&slow, k, PAL, SCALE);
+            assert_eq!(media_frame(tick, PAL, ten_seconds(SCALE)), k / 2, "{k}");
+        }
+        // From the fourth picture, which begins at tick 1843 (1843.2, rounded down), the
+        // places are 3, 3.5 and so on. The tick of the fifth frame, 3071, is rounded down
+        // twice and is one before the sixth picture begins: it is read as the fifth, and the
+        // place is the whole of the sixth.
+        let later = clip(1843, 6, Speed { num: 1, den: 2 }, false);
+        assert_eq!(source_tick(&later, 4, PAL, SCALE), 3071);
+        assert_eq!(
+            between_of(&later, 6, PAL, PAL, SCALE),
+            [
+                None,
+                halfway(3, 2457, 1, 2),
+                None,
+                halfway(4, 3072, 1, 2),
+                halfway(4, 3072, 1, 1),
+                halfway(5, 3686, 1, 2),
+            ]
+        );
+        // Three frames of the timeline to two of the media: a third and two thirds of the way.
+        let slower = clip(0, 4, Speed { num: 2, den: 3 }, false);
+        assert_eq!(
+            between_of(&slower, 4, PAL, PAL, SCALE),
+            [None, halfway(0, 614, 2, 3), halfway(1, 1228, 1, 3), None]
+        );
+    }
+
+    #[test]
+    fn media_of_another_rate_than_its_timeline_lies_between_its_pictures_at_its_own_speed() {
+        // 30 pictures a second on a timeline of 25: a frame of the timeline is 1.2 pictures.
+        let thirty = Rate { num: 30, den: 1 };
+        let plain = clip(0, 6, Speed::ONE, false);
+        assert_eq!(
+            between_of(&plain, 6, PAL, thirty, SCALE),
+            [
+                None,
+                halfway(1, 1024, 1, 5),
+                halfway(2, 1536, 2, 5),
+                halfway(3, 2048, 3, 5),
+                halfway(4, 2560, 4, 5),
+                None,
+            ]
+        );
+        // On a timeline of its own rate it lies on a picture at every frame, in a scale whose
+        // ticks a picture lasts a whole number of and in one that it does not.
+        for (rate, scale, begins) in [(thirty, SCALE, 1024), (PAL, 25, 100), (NTSC, 90000, 6006)] {
+            let begins = Time {
+                ticks: begins,
+                scale,
+            };
+            let plain = Clip::of_media("c1", "m1", begins, 0, 8);
+            assert_eq!(
+                between_of(&plain, 8, rate, rate, scale),
+                [None; 8],
+                "{rate:?} in {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clip_that_plays_backward_lies_between_the_pictures_that_it_shows_forward() {
+        // Four frames at half the speed from tick 100 of 25, a tick a picture: forward the
+        // places 0, 0.5, 1 and 1.5 above it, and backward the same, the last first.
+        let ten = ten_seconds(25);
+        let forward = {
+            let mut clip = clip_of(100, 4);
+            clip.speed = Speed { num: 1, den: 2 };
+            clip
+        };
+        let mut backward = forward.clone();
+        backward.reverse = true;
+        let shown = between_of(&forward, 4, PAL, PAL, 25);
+        assert_eq!(
+            shown,
+            [None, halfway(100, 101, 1, 2), None, halfway(101, 102, 1, 2)]
+        );
+        let reversed: Vec<_> = shown.into_iter().rev().collect();
+        assert_eq!(between_of(&backward, 4, PAL, PAL, 25), reversed);
+        // A segment that goes backward shows where its frames end: after four frames up at the
+        // speed of the media, to 4, the places 3.5, 3, 2.5, 2, 1.5 and 1.
+        let there_and_back = pointed(&[(0, 1, 1), (4, -1, 2)]);
+        let ticks: Vec<i64> = (0..10)
+            .map(|k| source_tick(&there_and_back, k, PAL, 25))
+            .collect();
+        assert_eq!(ticks, [100, 101, 102, 103, 103, 103, 102, 102, 101, 101]);
+        assert_eq!(
+            between_of(&there_and_back, 10, PAL, PAL, 25),
+            [
+                None,
+                None,
+                None,
+                None,
+                halfway(103, 104, 1, 2),
+                None,
+                halfway(102, 103, 1, 2),
+                None,
+                halfway(101, 102, 1, 2),
+                None,
+            ]
+        );
+        // A frame that a transition shows beyond the clip goes on as its segment does.
+        let reading = Reading::of(&there_and_back);
+        assert_eq!(reading.between(10, PAL, PAL, ten), halfway(100, 101, 1, 2));
+    }
+
+    #[test]
+    fn a_freeze_lies_between_no_two_pictures_wherever_it_holds() {
+        // Three frames at half the speed, a picture held for three where the path is halfway
+        // between two, and three frames more at half the speed.
+        let held = {
+            let mut clip = pointed(&[(0, 1, 2), (3, 0, 1), (6, 1, 2)]);
+            clip.length = 9;
+            clip
+        };
+        let ticks: Vec<i64> = (0..9).map(|k| source_tick(&held, k, PAL, 25)).collect();
+        assert_eq!(ticks, [100, 100, 101, 101, 101, 101, 101, 102, 102]);
+        assert_eq!(
+            between_of(&held, 9, PAL, PAL, 25),
+            [
+                None,
+                halfway(100, 101, 1, 2),
+                None,
+                None,
+                None,
+                None,
+                halfway(101, 102, 1, 2),
+                None,
+                halfway(102, 103, 1, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn pictures_of_29_97_a_second_in_milliseconds_are_counted_exactly() {
+        // A picture lasts 33.3666… ticks: at half the speed the places are 0, 0.5, 1 and so on,
+        // and the pictures begin at the ticks 33, 66 and 100.
+        let slow = {
+            let begins = Time {
+                ticks: 0,
+                scale: 1000,
+            };
+            let mut clip = Clip::of_media("c1", "m1", begins, 0, 7);
+            clip.speed = Speed { num: 1, den: 2 };
+            clip
+        };
+        assert_eq!(
+            between_of(&slow, 7, NTSC, NTSC, 1000),
+            [
+                None,
+                halfway(0, 33, 1, 2),
+                None,
+                halfway(1, 66, 1, 2),
+                None,
+                halfway(2, 100, 1, 2),
+                None,
+            ]
+        );
+        // From the third picture, at tick 66, at the speed of the media: the ticks of its
+        // second frame and its third, 99 and 132, are each one before the picture that the
+        // place has come to begins (100 and 133), and are read as the picture before. The
+        // place is a whole picture past that one, and no more is said of it than the whole.
+        let begins = Time {
+            ticks: 66,
+            scale: 1000,
+        };
+        let plain = Clip::of_media("c1", "m1", begins, 0, 4);
+        let ticks: Vec<i64> = (0..4).map(|k| source_tick(&plain, k, NTSC, 1000)).collect();
+        assert_eq!(ticks, [66, 99, 132, 166]);
+        assert_eq!(
+            between_of(&plain, 4, NTSC, NTSC, 1000),
+            [None, halfway(2, 100, 1, 1), halfway(3, 133, 1, 1), None]
+        );
+    }
+
+    #[test]
+    fn the_last_picture_of_the_media_has_none_after_it() {
+        // Ten seconds of 25 a second are 250 pictures: from the last but one, at half the
+        // speed, the places 248, 248.5, 249 and 249.5.
+        let begins = PAL.ticks_of(248, SCALE);
+        assert_eq!(begins, 152_371);
+        let slow = clip(begins, 4, Speed { num: 1, den: 2 }, false);
+        assert_eq!(
+            between_of(&slow, 4, PAL, PAL, SCALE),
+            [None, halfway(248, 152_985, 1, 2), None, None]
+        );
+        // A frame beyond the media is read as its last picture, which has none after it.
+        let reading = Reading::of(&slow);
+        assert_eq!(reading.between(9, PAL, PAL, ten_seconds(SCALE)), None);
+    }
+
+    #[test]
+    fn a_place_too_fine_to_count_is_between_no_two_pictures() {
+        // A picture a second in ticks of a 4294967295th of a second, on a timeline of
+        // 4294967295 frames a second, at a 4294967295th of the speed: the parts that a picture
+        // is made of are more than 128 bits count.
+        let most = u32::MAX;
+        let duration = Time {
+            ticks: i64::MAX,
+            scale: most,
+        };
+        let begins = Time {
+            ticks: 0,
+            scale: most,
+        };
+        let mut fine = Clip::of_media("c1", "m1", begins, 0, 4);
+        fine.speed = Speed { num: 1, den: most };
+        let rate = Rate { num: most, den: 1 };
+        let pictures = Rate {
+            num: most,
+            den: most,
+        };
+        let reading = Reading::of(&fine);
+        assert_eq!(reading.tick(1, rate, most), 0);
+        assert_eq!(reading.between(1, rate, pictures, duration), None);
     }
 }

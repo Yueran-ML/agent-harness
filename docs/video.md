@@ -97,7 +97,11 @@ size and frame rate, by default those of the first video in the pool) and opens 
   and Shift choose more), a drag moves the chosen keys in time as one step to undo, Delete
   takes them away, and Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste them at the playhead.
   A composite mode lays the clip over the
-  tracks below it; with nothing below, the clip is shown as it is. On an
+  tracks below it; with nothing below, the clip is shown as it is. Under Retime and Scaling,
+  the **Retime Process** of a clip of media says what a frame shows that falls between two
+  pictures of the source, as in slow motion or where the media has another frame rate than
+  the timeline: Nearest shows the one picture that it falls in, and Frame Blend mixes that
+  picture with the next by how far between them the frame falls. On an
   audio track: volume, pan and fades; for a title: text, size, colour, position and alignment;
   for a solid colour: its colour. A number is typed, or dragged sideways (with Shift ten times
   as fast), and is sent once when it is let go; Escape takes it back and a double-click on its
@@ -442,8 +446,8 @@ The edit commands of `video_edit` are DaVinci Resolve's: `insert`, `overwrite`, 
 shot), `blade`, `move`, `insert_move`, `trim`, `roll`, `slip`, `slide`, `set_speed`,
 `add_transition`, `set_transition`, `remove_transition`, `add_track`, `remove_track`, `add_cue`,
 `set_cue`, `remove_cue` and `cues_from`. A batch may mix them with the basic operations of the
-protocol, such as `add_timeline`, `add_bin`, `set_clip` (transform, crop, composite mode, gain,
-pan, fades), `set_clip_keys` and `splice_clip_keys` (the keyframes of one setting of a clip's
+protocol, such as `add_timeline`, `add_bin`, `set_clip` (transform, crop, composite mode,
+retime process, gain, pan, fades), `set_clip_keys` and `splice_clip_keys` (the keyframes of one setting of a clip's
 transform or crop),
 `set_track`, `set_media` and `set_timeline`. The speed of a clip may change on the way, as with
 Resolve's Retime Controls: `add_speed_point`, `set_segment_speed`, `freeze_frame`,
@@ -679,8 +683,7 @@ client has been absent for a while.
 
 ## Not in this version
 
-Speed ramps and Rewind, Frame Blend and
-Optical Flow, markers, Fit
+Speed ramps and Rewind, the Optical Flow retime process, markers, Fit
 to Fill, Close Up, multicam and lining clips up by timecode come in later phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
 Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,
 Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version, nor,

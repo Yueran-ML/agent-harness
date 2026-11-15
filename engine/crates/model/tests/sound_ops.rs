@@ -708,6 +708,7 @@ fn set_clip_sets_the_sound_of_schema_4_of_a_clip() {
             transform: None,
             crop: None,
             composite: None,
+            retime_process: None,
             gain_db: None,
             pan: None,
             fade_in: None,

@@ -366,6 +366,7 @@ fn set_sound_of_clip(project: &Project, timeline: &str, clip: &str, n: [usize; 3
         transform: None,
         crop: None,
         composite: None,
+        retime_process: None,
         gain_db: None,
         pan: None,
         fade_in: None,

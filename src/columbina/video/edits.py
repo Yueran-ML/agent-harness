@@ -371,6 +371,12 @@ Composite = Literal[
 ]  # fmt: skip
 """How the picture of a clip is laid over the tracks below it: DaVinci's composite modes."""
 
+RetimeProcess = Literal["nearest", "frame_blend"]
+"""What a clip shows at a frame whose place in its source lies between two pictures of its media:
+DaVinci's Retime Process. ``nearest`` is the one picture that the place is in, which a clip
+shows where it says nothing; ``frame_blend`` mixes that picture with the one after it by how far
+between them the place lies."""
+
 
 class MediaSource(Data):
     """Media that an edit puts on a timeline.
@@ -1181,6 +1187,7 @@ def set_clip(
     transform: Transform | None = None,
     crop: Crop | None = None,
     composite: Composite | None = None,
+    retime_process: RetimeProcess | None = None,
     gain_db: float | None = None,
     pan: float | None = None,
     fade_in: int | None = None,
@@ -1201,6 +1208,8 @@ def set_clip(
     ``source`` of its kind; its length is the clip's, and that of the source is not used. Its
     speed is set with :func:`set_speed`, which keeps the stretch of its source. Its
     ``transform`` and its ``crop`` are each given whole; ``composite`` is its composite mode.
+    ``retime_process`` is what it shows between two pictures of its media, as where it plays
+    slower than its media: ``"nearest"``, the one picture, or ``"frame_blend"``, the two mixed.
 
     Of its sound (schema 4): ``audio_fade_in`` and ``audio_fade_out`` (an ``AudioFade``
     ``{"length", "curve", "skew"}``, or ``None`` for a straight fade over the frames), ``eq``
@@ -1214,6 +1223,7 @@ def set_clip(
         transform=transform,
         crop=crop,
         composite=composite,
+        retime_process=retime_process,
         gain_db=gain_db,
         pan=pan,
         fade_in=fade_in,

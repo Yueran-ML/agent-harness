@@ -1342,6 +1342,10 @@ class Fake:
                         clip["length"] = op["length"]
                 else:
                     clip.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
+                    # A clip that shows the nearest picture is written without its Retime
+                    # Process, as the engine writes it.
+                    if clip.get("retime_process") == "nearest":
+                        del clip["retime_process"]
                 for one in timeline["tracks"]:
                     one.get("clips", []).sort(key=_start)
                 return

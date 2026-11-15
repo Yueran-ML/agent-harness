@@ -49,6 +49,7 @@ fn set_clip(id: &str) -> Op {
         transform: None,
         crop: None,
         composite: None,
+        retime_process: None,
         gain_db: None,
         pan: None,
         fade_in: None,
@@ -788,6 +789,18 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 "op": "set_retime", "timeline": "t1", "id": "c2", "retime": null,
             })),
         ),
+        (
+            "set_clip of a retime process that mixes two pictures, at half the speed",
+            vec![],
+            blended(),
+        ),
+        (
+            "set_clip of the retime process of one picture, which a clip is written without",
+            vec![blended()],
+            written_op(serde_json::json!({
+                "op": "set_clip", "timeline": "t1", "id": "c1", "retime_process": "nearest",
+            })),
+        ),
     ];
     all.extend(grade_examples());
     all.extend(sound_examples());
@@ -797,6 +810,15 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
 /// An operation written as a client writes it.
 fn written_op(value: serde_json::Value) -> Op {
     serde_json::from_value(value).unwrap()
+}
+
+/// `set_clip` of c1, the picture on V1, to half its speed with Frame Blend: every second frame
+/// of it then lies halfway between two pictures of m1.
+fn blended() -> Op {
+    written_op(serde_json::json!({
+        "op": "set_clip", "timeline": "t1", "id": "c1",
+        "speed": { "num": 1, "den": 2 }, "retime_process": "frame_blend",
+    }))
 }
 
 /// The examples of the operations on sound (T2), over a second track of sound A2 and, where they

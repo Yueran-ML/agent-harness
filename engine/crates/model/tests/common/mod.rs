@@ -470,6 +470,7 @@ fn set_clip_of(
         transform: bit(spec, 6).then_some(transform),
         crop: None,
         composite: None,
+        retime_process: None,
         gain_db: bit(spec, 7).then(|| keyed(spec, gain_db)),
         pan: bit(spec, 8).then_some(pan.into()),
         fade_in: bit(spec, 9).then_some(spec.length % 12),

@@ -11,6 +11,16 @@
 //! `fade_out`. A clip with speed points ([`crate::retime`]) shows the places of their path: one
 //! picture all through a freeze, and its pictures the other way where a segment plays backward.
 //!
+//! The place of a frame may lie between two pictures of the media: of a clip that plays slower
+//! than its media, or whose media has another rate of frames than the timeline. A clip shows
+//! there what its Retime Process says ([`crate::retime::RetimeProcess`]): the picture that the
+//! place is in, alone, or, with Frame Blend, that picture mixed with the one after it by how
+//! far between them the place lies ([`Blend`], counted by [`span::Reading::between`]). The two
+//! are mixed as the media has them, before the transform, the crop and the grade of the clip,
+//! which are done to the mixed picture as they are to one. A frame whose place is where a
+//! picture begins, a frame of a freeze, and a clip of a still give the layer that they always
+//! gave, with nothing to mix.
+//!
 //! A transition lies over the frames that [`Transition::handles`] gives about its cut, and there
 //! both of its clips are shown, each going on beyond its end with frames of its media. Over a
 //! transition of `length` frames, frame `i` of it is `(i + 1) / (length + 1)` of the way through
@@ -53,11 +63,11 @@ use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
 use crate::grade::Composite;
 use crate::keyframes::KeyClock;
 use crate::project::{
-    Clip, Cropped, Cue, Id, Placed, Project, Rgba, Source, Timeline, TitleStyle, Track, TrackKind,
-    Transition, TransitionKind,
+    Clip, Cropped, Cue, Id, Media, Placed, Project, Rgba, Source, Timeline, TitleStyle, Track,
+    TrackKind, Transition, TransitionKind,
 };
-use crate::retime::Sounding;
-use crate::span;
+use crate::retime::{RetimeProcess, Sounding};
+use crate::span::{self, Reading, Share};
 use crate::time::Rate;
 
 /// What a layer shows.
@@ -102,6 +112,22 @@ pub struct Layer {
     /// How opaque it is, from 0 to 1: the opacity of the clip times its fades and the
     /// transition that it is in.
     pub opacity: f32,
+    /// The picture of its media that the one of its content is mixed with, where its clip
+    /// mixes two (Frame Blend) and the frame lies between them; none of any other layer.
+    pub blend: Option<Blend>,
+}
+
+/// The second picture of a layer of media whose clip is retimed by Frame Blend
+/// ([`RetimeProcess::FrameBlend`]), at a frame whose place lies between two pictures: the layer
+/// shows `(1 - weight)` of the picture of its content and `weight` of this one, mixed as the
+/// media has them, before anything else is done to the layer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blend {
+    /// The place of the second picture in the media, in ticks of the scale of its duration:
+    /// where the picture after that of the content begins.
+    pub tick: i64,
+    /// How much of the second picture is shown: above 0 and below 1.
+    pub weight: f32,
 }
 
 /// What is seen at frame `frame` of a timeline of `project`: the layers of its tracks of picture
@@ -163,6 +189,7 @@ fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: 
             crop: Cropped::NONE,
             composite: Composite::Normal,
             opacity: unit(dipped),
+            blend: None,
         });
         return;
     }
@@ -189,12 +216,23 @@ fn layer(
         return None;
     }
     let k = frame - clip.start;
+    let mut blend = None;
     let content = match &clip.source {
         Source::Media { media, source_in } => {
-            project.media.iter().find(|m| m.id == *media)?;
+            let found = project.media.iter().find(|m| m.id == *media)?;
+            // The place that the frame shows, as `span::source_tick` counts it.
+            let reading = Reading::of(clip);
+            let mut tick = reading.tick(k, t.rate, source_in.scale);
+            if clip.retime_process == RetimeProcess::FrameBlend {
+                match second_picture(&reading, found, k, t.rate, source_in.scale) {
+                    // The place is where the picture after begins: that one is shown, alone.
+                    Some(second) if second.weight >= 1.0 => tick = second.tick,
+                    second => blend = second,
+                }
+            }
             Content::Media {
                 media: media.clone(),
-                tick: span::source_tick(clip, k, t.rate, source_in.scale),
+                tick,
             }
         }
         Source::Title { text, style } => Content::Title {
@@ -222,6 +260,32 @@ fn layer(
         crop: cropped,
         composite: clip.composite,
         opacity: unit(placed.opacity * faded(clip, k) * share),
+        blend,
+    })
+}
+
+/// The picture of `media` after the one that frame `k` of a clip shows, and how much of it a
+/// clip that mixes two pictures shows there ([`RetimeProcess::FrameBlend`]), on a timeline of
+/// `rate`: none where the place of the frame lies between no two pictures of the media
+/// ([`Reading::between`]), and none of media whose picture is a still, or whose places are not
+/// counted in `scale`, that of where the clip begins. A weight of 1 is the picture after alone.
+fn second_picture(
+    reading: &Reading,
+    media: &Media,
+    k: i64,
+    rate: Rate,
+    scale: u32,
+) -> Option<Blend> {
+    let video = media.facts.video.as_ref().filter(|video| !video.still)?;
+    let duration = media.facts.duration;
+    if duration.scale != scale {
+        return None;
+    }
+    let between = reading.between(k, rate, video.rate, duration)?;
+    let Share { num, den } = between.share;
+    Some(Blend {
+        tick: between.tick,
+        weight: single(ratio(num.into(), den.into())),
     })
 }
 
@@ -1564,5 +1628,150 @@ mod tests {
         assert!((up.pan + 1.0).abs() < 1e-4);
         assert!((down.pan - 1.0).abs() < 1e-4);
         assert_eq!(up.gain.points[0], (96_000, 1.0));
+    }
+
+    /// The rate of t1, and of the picture of m1.
+    const PAL: Rate = Rate { num: 25, den: 1 };
+
+    /// The one layer of t1 at a frame.
+    fn one_layer(project: &Project, frame: i64) -> Layer {
+        let mut layers = video_at(&project.timelines[0], project, frame);
+        assert_eq!(layers.len(), 1, "{layers:?}");
+        layers.remove(0)
+    }
+
+    /// The sample of [`project`] with c3 changed by `change`, without its fades; and the same
+    /// with the Retime Process of c3 Frame Blend.
+    fn nearest_and_mixed(change: impl FnOnce(&mut Clip)) -> (Project, Project) {
+        let mut nearest = project();
+        let c3 = &mut nearest.timelines[0].tracks[0].clips[2];
+        (c3.fade_in, c3.fade_out) = (0, 0);
+        change(c3);
+        nearest.validate().unwrap();
+        let mut mixed = nearest.clone();
+        mixed.timelines[0].tracks[0].clips[2].retime_process = RetimeProcess::FrameBlend;
+        mixed.validate().unwrap();
+        (nearest, mixed)
+    }
+
+    /// The second picture of a layer: the one that begins `picture` frames into m1, of which
+    /// half is shown.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "held to what a layer has, which may be none"
+    )]
+    fn half_of(picture: i64) -> Option<Blend> {
+        Some(Blend {
+            tick: PAL.ticks_of(picture, 15360),
+            weight: 0.5,
+        })
+    }
+
+    #[test]
+    fn a_clip_that_mixes_two_pictures_gives_the_second_and_its_weight_where_it_lies_between() {
+        use crate::time::Speed;
+        // c3, on frames [100, 150) from the start of m1, at half its speed: every second frame
+        // lies halfway between two pictures of m1.
+        let (nearest, mixed) = nearest_and_mixed(|c3| c3.speed = Speed { num: 1, den: 2 });
+        for frame in 100..150 {
+            let (was, now) = (one_layer(&nearest, frame), one_layer(&mixed, frame));
+            let k = frame - 100;
+            // Nearest shows one picture at every frame, as it always did.
+            assert_eq!(was.blend, None, "frame {frame}");
+            let tick = span::source_tick(&nearest.timelines[0].tracks[0].clips[2], k, PAL, 15360);
+            let content = Content::Media {
+                media: "m1".into(),
+                tick,
+            };
+            assert_eq!(was.content, content, "frame {frame}");
+            if k % 2 == 0 {
+                // On a picture: the layer that Nearest gives, with nothing more.
+                assert_eq!(now, was, "frame {frame}");
+            } else {
+                // Between two: the picture of Nearest, and half of the one after it.
+                assert_eq!(now.blend, half_of(k / 2 + 1), "frame {frame}");
+                let alone = Layer { blend: None, ..now };
+                assert_eq!(alone, was, "frame {frame}");
+            }
+        }
+        // One track alone gives the same layers.
+        let timeline = &mixed.timelines[0];
+        let track = &timeline.tracks[0];
+        assert_eq!(
+            video_of_track_at(timeline, &mixed, track, 101),
+            video_at(timeline, &mixed, 101)
+        );
+        // A still shows one picture however it is played: nothing is mixed.
+        let mut still = mixed.clone();
+        still.media[0].facts.video.as_mut().unwrap().still = true;
+        for frame in 100..150 {
+            assert_eq!(one_layer(&still, frame).blend, None, "frame {frame}");
+        }
+        // A clip that is not seen gives no layer either way.
+        let mut off = mixed;
+        off.timelines[0].tracks[0].clips[2].enabled = false;
+        assert_eq!(video_at(&off.timelines[0], &off, 101), [] as [Layer; 0]);
+    }
+
+    #[test]
+    fn a_freeze_mixes_nothing_and_a_segment_that_goes_backward_mixes_as_it_goes() {
+        // c3 lasts 30 frames: 11 at half the speed, up to 5.5 pictures into m1; that place held
+        // for 9; and 10 back at half the speed, down to half a picture.
+        let (nearest, mixed) = nearest_and_mixed(|c3| {
+            c3.length = 30;
+            c3.set_mapping(Some(speed_points(&[(0, 1, 2), (11, 0, 1), (20, -1, 2)])));
+        });
+        for k in 0..30 {
+            let frame = 100 + k;
+            let (was, now) = (one_layer(&nearest, frame), one_layer(&mixed, frame));
+            // The place of the frame, in halves of a picture; a frame of the way back shows
+            // where it ends.
+            let (halves, held) = match k {
+                0..=10 => (k, false),
+                11..=19 => (11, true),
+                _ => (30 - k, false),
+            };
+            // A half of a picture lasts 307.2 ticks, and the tick of a place is rounded down.
+            let content = Content::Media {
+                media: "m1".into(),
+                tick: halves * 15360 / 50,
+            };
+            assert_eq!(was.content, content, "frame {frame}");
+            assert_eq!(was.blend, None, "frame {frame}");
+            let blend = if halves % 2 == 1 && !held {
+                half_of(halves / 2 + 1)
+            } else {
+                None
+            };
+            assert_eq!(now, Layer { blend, ..was }, "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn a_place_that_has_come_to_the_next_picture_shows_that_picture_alone() {
+        // c3 from the fourth picture of m1, which begins at tick 1843 (1843.2, rounded down),
+        // at the speed of m1. At every fifth frame from its third, the tick is rounded down
+        // twice and is one before the picture that the place has come to begins: Nearest reads
+        // the picture before, and a clip that mixes two shows the one that the place is at.
+        let (nearest, mixed) = nearest_and_mixed(|c3| *c3.source_in_mut().unwrap() = at(1843));
+        for k in 0..50 {
+            let frame = 100 + k;
+            let (was, now) = (one_layer(&nearest, frame), one_layer(&mixed, frame));
+            let begins = PAL.ticks_of(3 + k, 15360);
+            if k % 5 == 2 {
+                let before = Content::Media {
+                    media: "m1".into(),
+                    tick: begins - 1,
+                };
+                assert_eq!(was.content, before, "frame {frame}");
+                let content = Content::Media {
+                    media: "m1".into(),
+                    tick: begins,
+                };
+                assert_eq!(now, Layer { content, ..was }, "frame {frame}");
+            } else {
+                assert_eq!(now, was, "frame {frame}");
+            }
+        }
     }
 }

@@ -1,5 +1,10 @@
 //! One read-ahead worker per video track. Requests replace older requests; stale work is
 //! never published into a newer project generation.
+//!
+//! A clip that mixes two pictures of its media (Frame Blend) reads a second place at each frame
+//! that lies between two: it is planned, read ahead and kept as the first is, a want of its
+//! own for the same frame, so that the frames to come have both pictures ready. A second
+//! picture is as a rule the first of a frame soon after, and is read once for both.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -96,8 +101,16 @@ fn plan(request: &Request) -> Vec<Want> {
                     tick,
                     frame,
                 };
-                if !wanted.iter().any(|old| old.same_source(&want)) {
-                    wanted.push(want);
+                // The picture that a clip which mixes two shows with the first: not while
+                // scrubbing, which shows the nearest picture that is quick to read.
+                let second = layer
+                    .blend
+                    .filter(|_| !request.scrubbing)
+                    .map(|blend| want.second(blend.tick));
+                for want in std::iter::once(want).chain(second) {
+                    if !wanted.iter().any(|old| old.same_source(&want)) {
+                        wanted.push(want);
+                    }
                 }
             }
         }
@@ -106,6 +119,15 @@ fn plan(request: &Request) -> Vec<Want> {
 }
 
 impl Want {
+    /// The second picture of the same clip at the same frame, at `tick` of its media: what a
+    /// clip that mixes two pictures shows with the first.
+    pub fn second(&self, tick: i64) -> Want {
+        Want {
+            tick,
+            ..self.clone()
+        }
+    }
+
     fn same_source(&self, other: &Self) -> bool {
         self.clip == other.clip && self.media == other.media && self.tick == other.tick
     }
@@ -358,7 +380,15 @@ fn trim(state: &mut State, budget: usize) {
     let mut total: usize = state.ready.iter().map(bytes).sum();
     // Keep at least the two layers of the current dissolve, even when one frame alone is
     // larger than the per-track budget. Extra future frames are discarded furthest first.
-    while (total > budget && state.ready.len() > 2) || state.ready.len() > 32 {
+    // Layers that mix two pictures each (Frame Blend) need up to four at the current frame:
+    // all that are read for it are kept.
+    let current = state
+        .ready
+        .iter()
+        .filter(|cached| cached.want.frame == frame)
+        .count();
+    let kept = current.max(2);
+    while (total > budget && state.ready.len() > kept) || state.ready.len() > 32 {
         let Some((furthest, _)) = state
             .ready
             .iter()
@@ -651,6 +681,96 @@ mod tests {
             ),
             Some(10)
         );
+    }
+
+    /// The project with c1 at half its speed, and mixing two pictures where `blend`.
+    fn slowed(blend: bool) -> Option<Arc<Project>> {
+        let mut project = project()?;
+        let clip = &mut Arc::make_mut(&mut project).timelines[0].tracks[0].clips[0];
+        clip.speed = columbina_model::Speed { num: 1, den: 2 };
+        if blend {
+            clip.retime_process = columbina_model::retime::RetimeProcess::FrameBlend;
+        }
+        Some(project)
+    }
+
+    /// The frames of the media that the wants of `clip` at `frame` of the timeline read.
+    fn pictures(project: &Project, wanted: &[Want], clip: &str, frame: i64) -> Vec<i64> {
+        let media = &project.media[0];
+        let rate = media.facts.video.as_ref().unwrap().rate;
+        wanted
+            .iter()
+            .filter(|want| want.clip == clip && want.frame == frame)
+            .map(|want| columbina_model::span::media_frame(want.tick, rate, media.facts.duration))
+            .collect()
+    }
+
+    #[test]
+    fn a_clip_that_mixes_two_pictures_has_both_read_ahead_and_one_that_does_not_has_one() {
+        let (Some(nearest), Some(mixed)) = (slowed(false), slowed(true)) else {
+            return;
+        };
+        // The pictures read for each of the frames 4 to 7 of c1, which show the places 2, 2.5,
+        // 3 and 3.5 of its media.
+        let read = |project: &Arc<Project>, wanted: &[Want]| -> Vec<Vec<i64>> {
+            (4..8)
+                .map(|frame| pictures(project, wanted, "c1", frame))
+                .collect()
+        };
+        let plain = plan(&request(Arc::clone(&nearest), 4));
+        assert_eq!(read(&nearest, &plain), [vec![2], vec![2], vec![3], vec![3]]);
+        // Mixing two, a frame between two reads the picture that it shows alone and the one
+        // after it; and that one is not read again for the frame after, which shows it alone.
+        let both = plan(&request(Arc::clone(&mixed), 4));
+        assert_eq!(
+            read(&mixed, &both),
+            [vec![2], vec![2, 3], vec![], vec![3, 4]]
+        );
+        // What the clip reads where it mixes nothing is what it reads with Nearest.
+        for want in both.iter().filter(|want| want.frame == 4) {
+            assert!(plain.contains(want), "{want:?}");
+        }
+        // Scrubbing reads the one picture, as it does with Nearest.
+        let scrubbing = |project: Arc<Project>| {
+            let mut request = request(project, 5);
+            request.scrubbing = true;
+            plan(&request)
+        };
+        let quick = scrubbing(mixed);
+        assert_eq!(quick.len(), 1, "{quick:?}");
+        assert_eq!(quick, scrubbing(nearest));
+    }
+
+    #[test]
+    fn both_pictures_of_a_frame_between_two_are_read_and_kept_within_a_small_budget() {
+        let Some(project) = slowed(true) else { return };
+        let sources = Sources::new(Hardware::Off, Arc::new(|_, _| {}));
+        let reader = TrackReader::new(sources, 1).unwrap();
+        let request = request(Arc::clone(&project), 5);
+        let wanted = plan(&request);
+        let current: Vec<_> = wanted.iter().filter(|want| want.frame == 5).collect();
+        assert_eq!(current.len(), 2);
+        reader.request(request);
+        for (want, picture) in current.iter().zip([2, 3]) {
+            let read = reader
+                .wait(1, want, true, Duration::from_secs(5))
+                .expect("read ahead")
+                .unwrap();
+            assert_eq!(
+                number_in(
+                    &read.picture.luma,
+                    read.picture.luma_stride,
+                    read.picture.bits
+                ),
+                Some(picture)
+            );
+        }
+        // Let the worker read and discard the frames to come, then check the current pair.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(reader.shared.lock().ready.len(), 2);
+        assert!(current
+            .iter()
+            .all(|want| reader.ready(1, want, true).is_some()));
     }
 
     #[test]

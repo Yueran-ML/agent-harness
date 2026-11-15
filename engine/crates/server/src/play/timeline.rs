@@ -1930,12 +1930,16 @@ impl Worker {
                     tick: *tick,
                     frame,
                 };
-                let _ = reader.wait(
-                    self.generation,
-                    &want,
-                    true,
-                    until.saturating_duration_since(Instant::now()),
-                );
+                // And the second picture of a clip that mixes two, which is read after it.
+                let second = layer.blend.map(|blend| want.second(blend.tick));
+                for want in std::iter::once(want).chain(second) {
+                    let _ = reader.wait(
+                        self.generation,
+                        &want,
+                        true,
+                        until.saturating_duration_since(Instant::now()),
+                    );
+                }
             }
         }
     }
@@ -2029,18 +2033,40 @@ impl Worker {
                         tick,
                         frame,
                     };
-                    let read = self.readers.get(&layer.track).and_then(|reader| {
-                        if blocking {
-                            reader.wait(
-                                self.generation,
-                                &want,
-                                !scrubbing,
-                                until.saturating_duration_since(Instant::now()),
-                            )
-                        } else {
-                            reader.ready(self.generation, &want, true)
+                    let fetch = |want: &Want| {
+                        self.readers.get(&layer.track).and_then(|reader| {
+                            if blocking {
+                                reader.wait(
+                                    self.generation,
+                                    want,
+                                    !scrubbing,
+                                    until.saturating_duration_since(Instant::now()),
+                                )
+                            } else {
+                                reader.ready(self.generation, want, true)
+                            }
+                        })
+                    };
+                    let read = fetch(&want);
+                    // The second picture of a clip that mixes two (Frame Blend), where the
+                    // first is the one of this frame: read as the first is, and mixed with it
+                    // where it is the very picture asked for. While scrubbing, which shows
+                    // what is quick to read, the first is shown alone; and so it is until the
+                    // second is read, the frame then being late and not exact.
+                    let mut second = None;
+                    if let (Some(blend), Some(Ok(_)), false) = (layer.blend, &read, scrubbing) {
+                        match fetch(&want.second(blend.tick)) {
+                            Some(Ok(read)) if read.exact => second = Some((read, blend.weight)),
+                            // A picture that cannot be read, as where the media says that it
+                            // lasts longer than its picture does, is not mixed in: the first
+                            // is what there is to show, as Nearest shows it.
+                            Some(Err(_)) => {}
+                            _ => {
+                                late = true;
+                                exact = false;
+                            }
                         }
-                    });
+                    }
                     let read = match read {
                         Some(Ok(read)) => {
                             origin.clip.clone_from(&read.provenance.clip);
@@ -2087,7 +2113,13 @@ impl Worker {
                     proxy |= read.source == Source::Proxy;
                     previous.insert((layer.track, layer.clip), previous_read);
                     let color = crate::render::layer_color(&read.picture);
-                    (LayerSource::Picture(read.picture, read.rotation), color)
+                    let second = second.map(|(second, weight)| {
+                        original |= second.source == Source::Original;
+                        proxy |= second.source == Source::Proxy;
+                        (second.picture, weight)
+                    });
+                    let source = crate::render::picture_source(read.picture, second, read.rotation);
+                    (source, color)
                 }
             };
             scene.layers.push(SceneLayer {

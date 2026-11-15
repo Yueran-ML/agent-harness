@@ -8,7 +8,9 @@
 //! transform and its grade, is fitted to the canvas, put on it by its transform, and laid over
 //! what is there by its opacity, premultiplied: `out = layer + (1 - alpha of layer) * under`. Its
 //! crop cuts it in its own frame, before its transform, and a composite mode other than Normal
-//! blends it with what is under it (see [`SceneLayer`], and `Compositor::draw_calls`). A
+//! blends it with what is under it (see [`SceneLayer`], and `Compositor::draw_calls`). A layer
+//! of a clip that is retimed by Frame Blend is of two pictures of its media, mixed as they are
+//! stored, before they are made R'G'B' ([`Source::Between`], `between.wgsl`). A
 //! layer whose operations read the pixels about each one is drawn first into textures of its
 //! own, one for each such neighbourhood, at the size of its picture, and those are filtered
 //! (`color.rs`); the others are drawn in their one pass. The canvas is black at first, and of
@@ -48,6 +50,17 @@ const LAYER_SHADER: &str = include_str!("layer.wgsl");
 const BLEND_BEGIN: &str = "// blend: begin";
 const BLEND_END: &str = "// blend: end";
 const BLEND_SHADER: &str = include_str!("blend.wgsl");
+
+/// What the shader of pictures reads the texels of its planes by, as it is, between these
+/// lines; and what is put in their place for a layer of two pictures of one media, mixed.
+const PLANES_BEGIN: &str = "// planes: begin";
+const PLANES_END: &str = "// planes: end";
+const BETWEEN_SHADER: &str = include_str!("between.wgsl");
+
+/// The function of the shader of pictures that reads one picture, and what it is named in the
+/// shader of a layer of two, whose own function of that name mixes the two.
+const SAMPLE_ONE: &str = "fn sample_at(";
+const SAMPLE_ONE_OF_TWO: &str = "fn picture_at(";
 
 /// The shader that makes a canvas opaque, once layers that are blended are on it.
 const OPAQUE_SHADER: &str = include_str!("opaque.wgsl");
@@ -152,6 +165,27 @@ pub enum Source {
     /// layer's [`LayerColor::coding`] says, which is to be the picture's own
     /// ([`crate::YuvCoding::of_native`]).
     Picture(Arc<NativePicture>, i16),
+    /// A picture between two of one media, which a clip that is retimed by Frame Blend shows at
+    /// a frame whose place in its source lies between them: `1 - weight` of `first` and `weight`
+    /// of `second`, from 0 to 1, turned `rotation` degrees and coded as a [`Source::Picture`]
+    /// is. The two are of one size, sampling, depth and alpha.
+    ///
+    /// They are mixed as they are stored, in the codes of their file with their gamma, before
+    /// they are made R'G'B' (premultiplied, where they have alpha): so before the input
+    /// transform and the grade of the layer, its crop and its transform, which are done to the
+    /// mixed picture as they are to one, once. The two are pictures of one source, coded
+    /// alike and graded alike, and what is mixed is what the pipeline takes for the picture of
+    /// the source. (A dissolve mixes on the canvas, after the grades: its two pictures are of
+    /// two clips, each with a grade of its own.)
+    ///
+    /// At a weight of 0 or less the first alone is drawn, as a [`Source::Picture`] of it is, to
+    /// the bit, and at 1 or more the second.
+    Between {
+        first: Arc<NativePicture>,
+        second: Arc<NativePicture>,
+        weight: f32,
+        rotation: i16,
+    },
     /// A title: its text, placed on the canvas as its style says.
     Title(Text),
     /// A colour over the canvas: R', G', B' and how opaque it is, from 0 to 1, not
@@ -742,6 +776,12 @@ enum Pipe {
     YuvBlended(Texel),
     /// A title or a colour blended with what is under it.
     RgbaBlended,
+    /// Two pictures of one media mixed (`between.wgsl`): another shader, which reads the planes
+    /// of the second picture too. A layer of one picture is drawn by the kind it always was,
+    /// and binds nothing more.
+    YuvBetween(Texel),
+    /// Two pictures mixed, and blended with what is under them on the canvas.
+    YuvBetweenBlended(Texel),
 }
 
 impl Pipe {
@@ -752,13 +792,17 @@ impl Pipe {
         match self {
             Pipe::Yuv(texel) => Pipe::YuvBlended(texel),
             Pipe::Rgba => Pipe::RgbaBlended,
+            Pipe::YuvBetween(texel) => Pipe::YuvBetweenBlended(texel),
             other => other,
         }
     }
 
     /// Whether it draws a layer blended with what is under it.
     fn is_blended(self) -> bool {
-        matches!(self, Pipe::YuvBlended(_) | Pipe::RgbaBlended)
+        matches!(
+            self,
+            Pipe::YuvBlended(_) | Pipe::RgbaBlended | Pipe::YuvBetweenBlended(_)
+        )
     }
 }
 
@@ -794,6 +838,11 @@ impl Waiting {
 /// neighbourhoods, and onto the canvas where it is not blended.
 fn pipe_of(draw: &Draw) -> Pipe {
     match draw {
+        Draw::Picture {
+            shape,
+            second: Some(_),
+            ..
+        } => Pipe::YuvBetween(shape.texel),
         Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
         Draw::Texture(..) => Pipe::Rgba,
     }
@@ -1045,13 +1094,63 @@ type Fitted = ([f64; 4], wgpu::TextureView, (u32, u32));
 
 /// What is drawn for a layer; and whether it is blended with what is under it on the canvas
 /// (its composite mode is not Normal, and a layer is drawn before it).
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a frame has a few of them, made and dropped within it: a box would be an allocation for each layer of pictures"
+)]
 enum Draw {
     Picture {
         shape: Shape,
         planes: Planes,
+        /// The planes of the second picture, of the same shape, of a layer that mixes two
+        /// ([`Source::Between`]).
+        second: Option<Planes>,
         blended: bool,
     },
     Texture(wgpu::TextureView, bool),
+}
+
+/// The pictures that a layer of pictures draws.
+struct Pictures<'a> {
+    /// The picture, or the first of two.
+    first: &'a Arc<NativePicture>,
+    /// The second of two, and how much of it is mixed into the first: above 0 and below 1.
+    second: Option<(&'a Arc<NativePicture>, f32)>,
+    /// How many degrees clockwise they are turned to be shown.
+    rotation: i16,
+}
+
+/// The pictures that a layer of `source` draws, if it is one of pictures: one, or two mixed. Of
+/// two of which all of one is shown, that one alone, as a [`Source::Picture`] of it is drawn:
+/// the first at a weight of 0 or less, or one that is no number, and the second at 1 or more.
+fn pictures_of(source: &Source) -> Option<Pictures<'_>> {
+    match source {
+        Source::Picture(picture, rotation) => Some(Pictures {
+            first: picture,
+            second: None,
+            rotation: *rotation,
+        }),
+        Source::Between {
+            first,
+            second,
+            weight,
+            rotation,
+        } => {
+            let (first, second) = if weight.is_nan() || *weight <= 0.0 {
+                (first, None)
+            } else if *weight >= 1.0 {
+                (second, None)
+            } else {
+                (first, Some((second, *weight)))
+            };
+            Some(Pictures {
+                first,
+                second,
+                rotation: *rotation,
+            })
+        }
+        Source::Title(_) | Source::Color(_) => None,
+    }
 }
 
 /// Puts the layers of scenes together on a card. It keeps what it made from frame to frame: the
@@ -1059,6 +1158,9 @@ enum Draw {
 pub struct Compositor {
     gpu: Arc<Gpu>,
     yuv_layouts: HashMap<Texel, wgpu::BindGroupLayout>,
+    /// What binds the planes of two pictures that are mixed (`between.wgsl`), by how their
+    /// texels are read: made as they are first needed, by a frame with such a layer.
+    between_layouts: HashMap<Texel, wgpu::BindGroupLayout>,
     rgba_layout: wgpu::BindGroupLayout,
     stage_layout: wgpu::BindGroupLayout,
     convert_layout: wgpu::BindGroupLayout,
@@ -1292,6 +1394,7 @@ impl Compositor {
             spares: Spares::default(),
             opaque: HashMap::new(),
             yuv_layouts,
+            between_layouts: HashMap::new(),
             rgba_layout,
             stage_layout: stage_layout(device),
             convert_layout,
@@ -1333,7 +1436,9 @@ impl Compositor {
     /// layer at the same place in the scene, by that program and with what it read then, where
     /// that layer had the same input transform (the same media, as a rule): a grade being
     /// changed is shown as it was, and then as it is. Else the layer is drawn with no colour of
-    /// its own, its input transform too. A stage over the canvas (the timeline grade, the output
+    /// its own, its input transform too. A layer of two pictures mixed ([`Source::Between`]) is
+    /// drawn first as its first picture alone, where a layer of one picture is drawn with its
+    /// colour already. A stage over the canvas (the timeline grade, the output
     /// transform) is done as the last frame did it, or not at such a frame. Such a frame is
     /// [`Compositor::is_provisional`]: a preview draws it, and again once `wake` is called; an
     /// export is to wait ([`Compositor::finish_compiling`]), or use a compositor of its own,
@@ -1487,7 +1592,7 @@ impl Compositor {
 
         let format = target.texture.format();
         let made = self.pipelines_of(&draws, &colours, &taps, [&grade, &output], format);
-        let waiting = match made {
+        let mut waiting = match made {
             Ok(waiting) => waiting,
             Err(error) => {
                 self.give_back(draws);
@@ -1496,6 +1601,7 @@ impl Compositor {
         };
         self.provisional = !waiting.is_empty();
         if self.background {
+            self.first_pictures_alone(&mut draws, &colours, &taps, &mut waiting.draws, format);
             let stood = self.stand_in_for_layers(
                 scene,
                 &draws,
@@ -1515,6 +1621,15 @@ impl Compositor {
         for (draw, offset) in draws.iter_mut().zip(offsets) {
             let blended = is_blended(draw);
             let (pipe, bind) = match draw {
+                Draw::Picture {
+                    shape,
+                    planes,
+                    second: Some(second),
+                    ..
+                } => (
+                    Pipe::YuvBetween(shape.texel),
+                    self.pictures_bind(shape.texel, planes, second),
+                ),
                 Draw::Picture { shape, planes, .. } => {
                     let bind = match &planes.bind {
                         Some((generation, bind)) if *generation == self.generation => bind.clone(),
@@ -2157,6 +2272,53 @@ impl Compositor {
         self.keep(made);
     }
 
+    /// Draw the layers of two pictures whose pipelines are not made yet as their first pictures
+    /// alone, where the pipelines that draw one picture with the same colour are made: so a
+    /// clip that mixes two pictures at every other frame is shown, until the pipeline that
+    /// mixes them is made, as it is shown without mixing, and not without its colour. Such a
+    /// draw is taken out of `waiting`, the draws whose pipelines are not made: it waits for
+    /// nothing more, and its second planes are kept for the next frame.
+    fn first_pictures_alone(
+        &mut self,
+        draws: &mut [Draw],
+        colours: &[Option<Graded>],
+        taps: &[LayerTaps],
+        waiting: &mut Vec<usize>,
+        format: wgpu::TextureFormat,
+    ) {
+        waiting.retain(|&number| {
+            let Draw::Picture {
+                shape,
+                second,
+                blended,
+                ..
+            } = &mut draws[number]
+            else {
+                return true;
+            };
+            if second.is_none() {
+                return true;
+            }
+            let one = Pipe::Yuv(shape.texel);
+            let on_canvas = if *blended { one.blended() } else { one };
+            let program = colours[number].as_ref().map(|colour| colour.program);
+            let made = self.pipelines.contains_key(&(on_canvas, format, program))
+                && taps
+                    .iter()
+                    .filter(|layer| layer.draw == number)
+                    .flat_map(|layer| &layer.taps)
+                    .all(|tap| {
+                        let key = (one, NEIGHBOURHOOD_FORMAT, Some(tap.program));
+                        self.pipelines.contains_key(&key)
+                    });
+            if !made {
+                return true;
+            }
+            self.planes.entry(*shape).or_default().extend(second.take());
+            false
+        });
+    }
+
     /// Draw the layers whose pipelines are not made yet otherwise, and remember what the layers
     /// of this frame are drawn with, for the frames to come (see
     /// [`Compositor::compile_in_background`]).
@@ -2423,7 +2585,15 @@ impl Compositor {
                 });
             };
             match &layer.source {
-                Source::Picture(picture, rotation) => {
+                Source::Picture(..) | Source::Between { .. } => {
+                    let Some(Pictures {
+                        first: picture,
+                        second,
+                        rotation,
+                    }) = pictures_of(&layer.source)
+                    else {
+                        continue;
+                    };
                     let layout = yuv::check(picture).map_err(failed)?;
                     let most = self.gpu.device().limits().max_texture_dimension_2d;
                     if picture.width > most || picture.height > most {
@@ -2433,7 +2603,7 @@ impl Compositor {
                             picture.width, picture.height
                         )));
                     }
-                    let shown = shown_size((picture.width, picture.height), *rotation);
+                    let shown = shown_size((picture.width, picture.height), rotation);
                     let frame = fit(canvas, (f64::from(shown.0), f64::from(shown.1)));
                     if frame.0 <= 0.0 || frame.1 <= 0.0 {
                         continue;
@@ -2452,21 +2622,53 @@ impl Compositor {
                     };
                     let planes = self.take_planes(shape);
                     let uploaded = yuv::upload(self.gpu.queue(), &planes.textures, picture);
+                    // The second picture of two that are mixed, into planes of its own, of the
+                    // shape of the first: the one uniform says how either is read.
+                    let (other, mixed) = match second {
+                        Some((second, weight)) => {
+                            let other = self.take_planes(shape);
+                            let uploaded = yuv::check(second).and_then(|second_layout| {
+                                if second_layout == layout {
+                                    yuv::upload(self.gpu.queue(), &other.textures, second)
+                                } else {
+                                    Err(format!(
+                                        "a picture of {}×{} of {:?} in {} bits is mixed with one \
+                                         of {}×{} of {:?} in {} bits",
+                                        picture.width,
+                                        picture.height,
+                                        picture.format,
+                                        picture.bits,
+                                        second.width,
+                                        second.height,
+                                        second.format,
+                                        second.bits
+                                    ))
+                                }
+                            });
+                            (Some(other), uploaded.map(|()| Some(weight)))
+                        }
+                        None => (None, Ok(None)),
+                    };
                     let draw = laid.draws.len();
                     laid.draws.push(Draw::Picture {
                         shape,
                         planes,
+                        second: other,
                         blended,
                     });
                     uploaded.map_err(failed)?;
+                    let weight = mixed.map_err(failed)?;
                     let mut decoded = yuv::picture_params(
                         [0.0; 4],
                         layout,
                         shape.texel,
                         layer.color.coding,
-                        *rotation,
+                        rotation,
                     );
                     yuv::set_unclamped(&mut decoded, layer.color.unclamped);
+                    if let Some(weight) = weight {
+                        yuv::set_between(&mut decoded, weight);
+                    }
                     // Alone, at its own size.
                     let own = (f64::from(shown.0), f64::from(shown.1));
                     let mut alone = decoded.to_vec();
@@ -2615,8 +2817,16 @@ impl Compositor {
     /// Keep the planes of the draws of a frame, for the next.
     fn give_back(&mut self, draws: Vec<Draw>) {
         for draw in draws {
-            if let Draw::Picture { shape, planes, .. } = draw {
-                self.planes.entry(shape).or_default().push(planes);
+            if let Draw::Picture {
+                shape,
+                planes,
+                second,
+                ..
+            } = draw
+            {
+                let kept = self.planes.entry(shape).or_default();
+                kept.push(planes);
+                kept.extend(second);
             }
         }
         self.spares.settle(self.frame);
@@ -2792,11 +3002,22 @@ impl Compositor {
                 self.colour_layouts.insert(kinds.clone(), layout);
             }
         }
+        if let Pipe::YuvBetween(texel) | Pipe::YuvBetweenBlended(texel) = pipe {
+            self.between_layout(texel);
+        }
         let (shader, layout) = match pipe {
             Pipe::Yuv(texel) => (texel.shader(), &self.yuv_layouts[&texel]),
             Pipe::Rgba => (LAYER_SHADER.to_owned(), &self.rgba_layout),
             Pipe::YuvBlended(texel) => (blended_shader(&texel.shader()), &self.yuv_layouts[&texel]),
             Pipe::RgbaBlended => (blended_shader(LAYER_SHADER), &self.rgba_layout),
+            Pipe::YuvBetween(texel) => (
+                between_shader(&texel.shader()),
+                &self.between_layouts[&texel],
+            ),
+            Pipe::YuvBetweenBlended(texel) => (
+                blended_shader(&between_shader(&texel.shader())),
+                &self.between_layouts[&texel],
+            ),
             Pipe::Stage => (STAGE_SHADER.to_owned(), &self.stage_layout),
         };
         // What binds the canvas under a layer that is blended: a texture, as a stage reads one.
@@ -2858,6 +3079,47 @@ impl Compositor {
                         resource: wgpu::BindingResource::TextureView(&alpha),
                     },
                 ],
+            })
+    }
+
+    /// What binds the planes of two pictures that are mixed, read as `texel`s
+    /// (`between.wgsl`): made the first time it is asked for, so that a compositor that draws
+    /// no such layer has none.
+    fn between_layout(&mut self, texel: Texel) -> wgpu::BindGroupLayout {
+        let device = self.gpu.device();
+        self.between_layouts
+            .entry(texel)
+            .or_insert_with(|| pictures_layout(device, texel))
+            .clone()
+    }
+
+    /// What binds the planes of two pictures that are mixed, those of `first` and then those
+    /// of `second`, and the uniform. It is made for each frame: the planes that two pictures
+    /// are given are not the same two from one frame to the next.
+    fn pictures_bind(&mut self, texel: Texel, first: &Planes, second: &Planes) -> wgpu::BindGroup {
+        let layout = self.between_layout(texel);
+        let views: Vec<wgpu::TextureView> = first
+            .textures
+            .views()
+            .into_iter()
+            .chain(second.textures.views())
+            .collect();
+        let mut entries = vec![self.uniform_entry(yuv::PARAMS_SIZE)];
+        entries.extend(
+            views
+                .iter()
+                .zip(1..)
+                .map(|(view, binding)| wgpu::BindGroupEntry {
+                    binding,
+                    resource: wgpu::BindingResource::TextureView(view),
+                }),
+        );
+        self.gpu
+            .device()
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("columbina pictures"),
+                layout: &layout,
+                entries: &entries,
             })
     }
 
@@ -3110,6 +3372,58 @@ fn blended_shader(shader: &str) -> String {
         crate::grade::composite_library(),
         &shader[end..]
     )
+}
+
+/// The shader of pictures (`yuv.wgsl`) for a layer of two pictures of one media, mixed: the
+/// functions that read the texels of its planes, between "planes: begin" and "planes: end",
+/// put in place by those of `between.wgsl`, which read the planes of either picture and mix the
+/// two; and its own function that reads one picture named as `between.wgsl` calls it. The
+/// shader of a layer of one picture has none of this in it. What blends a layer with what is
+/// under it is put into the shader that this gives as it is into the other
+/// ([`blended_shader`]).
+fn between_shader(shader: &str) -> String {
+    let begin = shader
+        .find(PLANES_BEGIN)
+        .expect("a shader of pictures has functions that read its planes");
+    let end = shader[begin..]
+        .find(PLANES_END)
+        .map(|at| begin + at + PLANES_END.len())
+        .expect("a shader of pictures has functions that read its planes");
+    format!(
+        "{}{BETWEEN_SHADER}{}",
+        &shader[..begin],
+        shader[end..].replacen(SAMPLE_ONE, SAMPLE_ONE_OF_TWO, 1)
+    )
+}
+
+/// What binds the uniform of `yuv.wgsl` and the planes of two pictures of one media read as
+/// `texel`s: those of the first as a layer of one picture binds them (1 to 3), and then those
+/// of the second (4 to 6), as `between.wgsl` reads them.
+fn pictures_layout(device: &wgpu::Device, texel: Texel) -> wgpu::BindGroupLayout {
+    let mut entries = vec![wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: wgpu::BufferSize::new(yuv::PARAMS_SIZE),
+        },
+        count: None,
+    }];
+    entries.extend((1..=6).map(|binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: texel.sample_type(),
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }));
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("columbina pictures"),
+        entries: &entries,
+    })
 }
 
 /// A pipeline of a stage over the canvas (`stage.wgsl`, with its program of colour put in, or as
@@ -3514,6 +3828,91 @@ mod tests {
             assert!(blended.starts_with(&shader[..begin]));
             assert!(blended.ends_with(&shader[end..]));
         }
+    }
+
+    #[test]
+    fn the_shader_of_two_pictures_reads_the_planes_of_both_and_that_of_one_does_not() {
+        for texel in [Texel::Float, Texel::Uint] {
+            let shader = texel.shader();
+            // As it is written: one picture is read, and no second one is bound.
+            assert_eq!(shader.matches(PLANES_BEGIN).count(), 1);
+            assert_eq!(shader.matches(PLANES_END).count(), 1);
+            assert_eq!(shader.matches(SAMPLE_ONE).count(), 1);
+            assert!(!shader.contains("picture_at"));
+            assert!(!shader.contains("second_"));
+            assert!(!shader.contains("@binding(4)"));
+            let between = between_shader(&shader);
+            assert!(!between.contains(PLANES_BEGIN));
+            assert!(!between.contains(PLANES_END));
+            // The function that read the one picture reads either, and a new one mixes them.
+            assert_eq!(between.matches(SAMPLE_ONE).count(), 1);
+            assert_eq!(between.matches(SAMPLE_ONE_OF_TWO).count(), 1);
+            assert!(between.contains("mix(first, second, params.siting.z)"));
+            for function in ["luma_at", "chroma_at", "rgba_at", "alpha_at"] {
+                assert_eq!(
+                    between.matches(&format!("fn {function}(")).count(),
+                    1,
+                    "{function}"
+                );
+            }
+            for (binding, plane) in [(4, "luma"), (5, "chroma"), (6, "alpha")] {
+                let bound = format!("@group(0) @binding({binding}) var second_{plane}_plane");
+                assert!(between.contains(&bound), "{bound}");
+            }
+            // Its texels are read as those of the first are.
+            let alias = if texel == Texel::Uint { "u32" } else { "f32" };
+            assert!(between.contains(&format!("\nalias Texel = {alias};")));
+            // Nothing else of the shader is changed, but the name of the one function.
+            let begin = shader.find(PLANES_BEGIN).unwrap();
+            let end = shader.find(PLANES_END).unwrap() + PLANES_END.len();
+            assert!(between.starts_with(&shader[..begin]));
+            let rest = shader[end..].replacen(SAMPLE_ONE, SAMPLE_ONE_OF_TWO, 1);
+            assert!(between.ends_with(&rest));
+            // Its colour and its composite mode are put in as they are into the other.
+            assert_eq!(between.matches(color::IDENTITY_BEGIN).count(), 1);
+            assert_eq!(between.matches(color::IDENTITY_END).count(), 1);
+            let blended = blended_shader(&between);
+            assert!(blended.contains("@group(2) @binding(0) var backdrop"));
+            assert!(blended.contains("var second_luma_plane"));
+        }
+    }
+
+    #[test]
+    fn a_layer_of_two_pictures_of_which_all_of_one_is_shown_is_a_layer_of_that_one() {
+        let picture = |frame: i64| {
+            Arc::new(NativePicture {
+                frame,
+                ..NativePicture::default()
+            })
+        };
+        let between = |weight: f32| Source::Between {
+            first: picture(1),
+            second: picture(2),
+            weight,
+            rotation: 90,
+        };
+        // The number of the first, of the second where two are mixed, and its weight.
+        let drawn = |source: &Source| {
+            let pictures = pictures_of(source).expect("a layer of pictures");
+            assert_eq!(pictures.rotation, 90);
+            let second = pictures
+                .second
+                .map(|(second, weight)| (second.frame, weight));
+            (pictures.first.frame, second)
+        };
+        assert_eq!(drawn(&between(0.25)), (1, Some((2, 0.25))));
+        assert_eq!(drawn(&between(0.0)), (1, None));
+        assert_eq!(drawn(&between(-1.0)), (1, None));
+        assert_eq!(drawn(&between(f32::NAN)), (1, None));
+        assert_eq!(drawn(&between(1.0)), (2, None));
+        assert_eq!(drawn(&between(2.0)), (2, None));
+        assert_eq!(drawn(&Source::Picture(picture(7), 90)), (7, None));
+        assert!(pictures_of(&Source::Color([0.0; 4])).is_none());
+        // The kinds of pipelines of two pictures are blended as those of one are.
+        let two = Pipe::YuvBetween(Texel::Float);
+        assert_eq!(two.blended(), Pipe::YuvBetweenBlended(Texel::Float));
+        assert!(two.blended().is_blended() && !two.is_blended());
+        assert_eq!(two.blended().blended(), two.blended());
     }
 
     #[test]

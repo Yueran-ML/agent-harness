@@ -973,12 +973,27 @@ pub(crate) fn scene_of(
                     .iter()
                     .find(|item| item.id == media)
                     .ok_or("export media is missing")?;
+                let busy = "the export decoder pool is busy";
                 let read = sources
                     .picture(media, &layer.clip, tick, false, false)
                     .map_err(|error| error.to_string())?
-                    .ok_or("the export decoder pool is busy")?;
+                    .ok_or(busy)?;
+                // The second picture of a clip that mixes two (Frame Blend), read after the
+                // first by the same decoder, which goes on from it. One that cannot be read,
+                // as where the media says that it lasts longer than its picture does, is not
+                // mixed in: the first is shown alone, as Nearest shows it.
+                let second = match layer.blend {
+                    Some(blend) => {
+                        match sources.picture(media, &layer.clip, blend.tick, false, false) {
+                            Ok(Some(second)) => Some((second.picture, blend.weight)),
+                            Ok(None) => return Err(busy.into()),
+                            Err(_) => None,
+                        }
+                    }
+                    None => None,
+                };
                 let color = layer_color(&read.picture);
-                (Source::Picture(read.picture, read.rotation), color)
+                (picture_source(read.picture, second, read.rotation), color)
             }
         };
         scene.layers.push(SceneLayer {
@@ -991,6 +1006,28 @@ pub(crate) fn scene_of(
         });
     }
     Ok((scene, clips))
+}
+
+/// What a layer of media shows, for the preview and the export alike: its picture, turned
+/// `rotation` degrees; or, of a clip that mixes two pictures of its media (Frame Blend) at a
+/// frame that lies between them, that picture and the `second` one, by the weight beside it.
+/// Two pictures that are not laid out alike are not mixed, and the first is shown alone: a
+/// proxy that fails on the way is read on from its original, which is of another size.
+pub(crate) fn picture_source(
+    first: Arc<NativePicture>,
+    second: Option<(Arc<NativePicture>, f32)>,
+    rotation: i16,
+) -> Source {
+    use columbina_compose::yuv::Layout;
+    match second {
+        Some((second, weight)) if Layout::of(&second) == Layout::of(&first) => Source::Between {
+            first,
+            second,
+            weight,
+            rotation,
+        },
+        _ => Source::Picture(first, rotation),
+    }
 }
 
 /// The colour of a layer of a picture, for the preview and the export alike: how its codes are
@@ -1489,6 +1526,68 @@ mod tests {
             assert_eq!(number, *wanted, "frame {frame}");
         }
         assert_eq!(frames.len(), path.len());
+    }
+
+    /// A clip at half its speed whose Retime Process is Frame Blend is exported so: a frame
+    /// whose place is where a picture of the media begins shows that picture, to the bit as
+    /// Nearest shows it, and a frame between two shows the two mixed by halves. With Nearest
+    /// every frame shows one picture, as it always did.
+    #[test]
+    fn an_export_mixes_the_two_pictures_that_a_frame_of_a_clip_lies_between() {
+        use columbina_model::retime::RetimeProcess;
+        use columbina_model::{Clip, Speed, Time};
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let Some(made) = test_media::media(Sample::Fhd) else {
+            return;
+        };
+        let facts = columbina_media::probe(&made.path).unwrap();
+        let (width, height) = (1920, 1080);
+        let mut project = Project::sample();
+        project.media[0].path = made.path.to_string_lossy().into_owned();
+        project.media[0].facts = facts.clone();
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (width, height);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        // The numbered media from picture 4, 12 frames at half the speed: the places 4, 4.5,
+        // 5 and so on to 9.5, each picture numbered by one digit.
+        let rate = facts.video.as_ref().unwrap().rate;
+        let from = Time {
+            ticks: rate.ticks_of(4, facts.duration.scale),
+            scale: facts.duration.scale,
+        };
+        let mut clip = Clip::of_media("c1", "m1", from, 0, 12);
+        clip.speed = Speed { num: 1, den: 2 };
+        timeline.tracks[0].clips = vec![clip];
+        let nearest = exported(&project, 12, width, height);
+        project.timelines[0].tracks[0].clips[0].retime_process = RetimeProcess::FrameBlend;
+        let mixed = exported(&project, 12, width, height);
+        // The digit of a block of the number of a picture, from its luma 16 + 14·d: not a
+        // whole one, of two pictures mixed.
+        let digit = |rgba: &[u8], block: u32| {
+            let [r, ..] = rgba.as_chunks::<4>().0[(32 * width + 64 * block + 32) as usize];
+            f64::from(r) * 219.0 / 255.0 / 14.0
+        };
+        let near = |digit: f64, wanted: f64| (digit - wanted).abs() < 0.2;
+        for (k, (was, now)) in (0_u32..).zip(nearest.iter().zip(&mixed)) {
+            let picture = f64::from(4 + k / 2);
+            assert!(near(digit(was, 0), picture), "frame {k} of Nearest");
+            if k % 2 == 0 {
+                assert!(now == was, "frame {k} is not as Nearest shows it");
+            } else {
+                let between = digit(now, 0);
+                assert!(
+                    near(between, picture + 0.5),
+                    "frame {k} shows {between}, not halfway from {picture} to the next"
+                );
+            }
+            // The digits above the first are 0 in every picture shown, mixed or not.
+            assert!(near(digit(now, 1), 0.0) && near(digit(now, 2), 0.0));
+        }
+        assert_eq!((nearest.len(), mixed.len()), (12, 12));
     }
 
     fn no_hardware(

@@ -109,6 +109,14 @@ export interface SpeedPoint { frame: number; speed: Speed }
 /** The speed points of a clip whose speed changes on the way (`set_retime`). */
 export interface Retime { points: SpeedPoint[] }
 /**
+ * What a clip shows at a frame whose place in its source lies between two pictures of its media, its
+ * Retime Process: the one picture that the place is in (`nearest`), or that picture mixed with the one
+ * after it by how far between them the place lies (`frame_blend`).
+ */
+export type RetimeProcess = 'nearest' | 'frame_blend';
+/** The Retime Processes, in the order of DaVinci's menu. */
+export const RETIME_PROCESSES: readonly RetimeProcess[] = ['nearest', 'frame_blend'];
+/**
  * Where the picture of a clip is put. Each setting is a number or keys, at the frames that the keys
  * of the clip's grade count (`keyClockOf`); the engine writes a setting with no keys as a number.
  */
@@ -136,6 +144,8 @@ export interface Clip {
   reverse: boolean;
   /** Its speed points, where its speed changes on the way (schema 5): then `speed` is 1/1 and `reverse` false. A clip of one speed has none. */
   retime?: Retime;
+  /** Its Retime Process (schema 5). The engine writes it only where it is not `nearest`; left out, nearest. */
+  retime_process?: RetimeProcess;
   link: string | null;
   transform: Transform;
   /** How much of its picture is cut away (schema 5). The engine always writes it; left out, none. */
@@ -686,7 +696,7 @@ export type Op =
   | { op: 'shift_clips'; timeline: string; track: string; clips: string[]; by: number }
   | { op: 'shift_cues'; timeline: string; track: string; cues: string[]; by: number }
   | { op: 'trim_clip'; timeline: string; id: string; source_in?: Time | null; start: number; length: number }
-  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'crop' | 'composite' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'audio_fade_in' | 'audio_fade_out' | 'eq' | 'effects' | 'pitch_correction' | 'pitch' | 'channels' | 'source'>)
+  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'crop' | 'composite' | 'retime_process' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'audio_fade_in' | 'audio_fade_out' | 'eq' | 'effects' | 'pitch_correction' | 'pitch' | 'channels' | 'source'>)
   | { op: 'add_transition'; timeline: string; track: string; transition: Transition }
   | { op: 'remove_transition'; timeline: string; id: string }
   | ({ op: 'set_transition'; timeline: string; id: string } & Settings<Transition, 'kind' | 'length' | 'align' | 'fade_in_level_db' | 'fade_out_level_db'>)
@@ -1949,6 +1959,13 @@ export const CLIP_KEYED = [
 ] as const;
 export type ClipKeyed = (typeof CLIP_KEYED)[number];
 
+/** A clip as the engine keeps its Retime Process: written only where it mixes two pictures, so that a clip set to `nearest` has none. */
+function processKept(clip: Clip): Clip {
+  if (clip.retime_process !== 'nearest') return clip;
+  const { retime_process: _nearest, ...rest } = clip;
+  return rest;
+}
+
 /**
  * A clip made to play as `retime` says, as the engine keeps it (`set_retime`): one speed point at frame 0 that
  * plays is the `speed` and `reverse` of the clip, with no speed points; any other is its speed points, beside a
@@ -2055,9 +2072,9 @@ export function applyOp(project: Project, op: Op): Project {
     });
     case 'set_clip': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);
-      return inClips(timeline, track, clips => replaced(clips, at, patched(clips[at], op,
-        ['enabled', 'speed', 'reverse', 'link', 'transform', 'crop', 'composite', 'gain_db', 'pan', 'fade_in', 'fade_out', 'audio_fade_in', 'audio_fade_out', 'eq', 'effects', 'pitch_correction', 'pitch', 'channels', 'source'],
-        ['link', 'audio_fade_in', 'audio_fade_out', 'channels'])));
+      return inClips(timeline, track, clips => replaced(clips, at, processKept(patched(clips[at], op,
+        ['enabled', 'speed', 'reverse', 'link', 'transform', 'crop', 'composite', 'retime_process', 'gain_db', 'pan', 'fade_in', 'fade_out', 'audio_fade_in', 'audio_fade_out', 'eq', 'effects', 'pitch_correction', 'pitch', 'channels', 'source'],
+        ['link', 'audio_fade_in', 'audio_fade_out', 'channels']))));
     });
     case 'add_transition': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
       const to = clipTrack(track);

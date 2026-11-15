@@ -96,6 +96,12 @@
 //! set. What such a clip shows of its media is the places of their path, from the lowest,
 //! where it begins in its media, to the highest, with the frames that a transition shows
 //! beyond its ends.
+//!
+//! A clip has a Retime Process ([`crate::retime::RetimeProcess`]), set by [`Op::SetClip`]: what
+//! it shows at a frame whose place in its source lies between two pictures of its media. Any
+//! clip takes either, as any clip takes a speed: it is kept as it was set on a title, a
+//! colour, a still and a clip of sound, where it says nothing, and nothing is refused.
+//!
 //! Moving a set of clips together with `shift_clips` keeps the transitions whose two ends
 //! are in that set: their adjacency and media handles do not change.
 //!
@@ -137,7 +143,7 @@ use crate::project::{
     Alignment, AudioStream, Bin, Clip, Crop, Cue, Id, Media, Project, Proxy, Source, Timeline,
     Track, TrackKind, Transform, Transition, TransitionKind,
 };
-use crate::retime::Retime;
+use crate::retime::{Retime, RetimeProcess};
 use crate::span;
 use crate::time::{Rate, Speed, Time};
 
@@ -387,6 +393,9 @@ pub enum Op {
         /// Its composite mode: how its picture is laid over those below it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         composite: Option<Composite>,
+        /// Its Retime Process: what it shows between two pictures of its media (pp. 1081–1082).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retime_process: Option<RetimeProcess>,
         /// Its gain: one number, or keyframes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gain_db: Option<AudioParam>,
@@ -1913,6 +1922,7 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             transform,
             crop,
             composite,
+            retime_process,
             gain_db,
             pan,
             fade_in,
@@ -1937,6 +1947,7 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
                 transform,
                 crop,
                 composite,
+                retime_process,
                 gain_db,
                 pan,
                 fade_in,
@@ -2238,6 +2249,7 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             transform,
             crop,
             composite,
+            retime_process,
             gain_db,
             pan,
             fade_in,
@@ -2265,6 +2277,7 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
                 transform,
                 crop,
                 composite,
+                retime_process,
                 gain_db,
                 pan,
                 fade_in,
@@ -2941,6 +2954,7 @@ struct ClipSettings {
     transform: Option<Transform>,
     crop: Option<Crop>,
     composite: Option<Composite>,
+    retime_process: Option<RetimeProcess>,
     gain_db: Option<AudioParam>,
     pan: Option<AudioParam>,
     fade_in: Option<i64>,
@@ -2977,6 +2991,7 @@ fn set_clip(
     swap(&mut new.transform, set.transform.clone());
     swap(&mut new.crop, set.crop.clone());
     swap(&mut new.composite, set.composite);
+    swap(&mut new.retime_process, set.retime_process);
     swap(&mut new.gain_db, set.gain_db.clone());
     swap(&mut new.pan, set.pan.clone());
     swap(&mut new.fade_in, set.fade_in);
@@ -3021,6 +3036,7 @@ fn set_clip(
         transform: set.transform.map(|_| old.transform.clone()),
         crop: set.crop.map(|_| old.crop.clone()),
         composite: set.composite.map(|_| old.composite),
+        retime_process: set.retime_process.map(|_| old.retime_process),
         gain_db: set.gain_db.map(|_| old.gain_db.clone()),
         pan: set.pan.map(|_| old.pan.clone()),
         fade_in: set.fade_in.map(|_| old.fade_in),
@@ -7030,6 +7046,7 @@ mod tests {
             transform: None,
             crop: None,
             composite: None,
+            retime_process: None,
             gain_db: None,
             pan: None,
             fade_in: None,
@@ -7265,6 +7282,60 @@ mod tests {
         });
         assert_eq!(refused(opaque), range("transform"));
         assert_eq!(refused(set_clip("c9")), missing("clip", "c9"));
+    }
+
+    #[test]
+    fn the_retime_process_of_a_clip_is_set_and_set_back_by_its_inverse() {
+        let process = |id: &str, to: RetimeProcess| {
+            setting(id, move |op| {
+                if let Op::SetClip { retime_process, .. } = op {
+                    *retime_process = Some(to);
+                }
+            })
+        };
+        let blend = process("c1", RetimeProcess::FrameBlend);
+        // It is written as a word, and an operation that does not set it is written without it.
+        let written = serde_json::to_value(&blend).unwrap();
+        assert_eq!(written["retime_process"], "frame_blend");
+        assert_eq!(serde_json::from_value::<Op>(written).unwrap(), blend);
+        let plain = serde_json::to_value(set_clip("c1")).unwrap();
+        assert!(plain.get("retime_process").is_none());
+        // Its inverse sets what the clip had, and nothing else.
+        let mut project = Project::sample();
+        let inverse = apply(&mut project, blend.clone()).unwrap();
+        assert_eq!(inverse, process("c1", RetimeProcess::Nearest));
+        let done = round_trip(&Project::sample(), blend);
+        assert_eq!(done, project);
+        let clip = &done.timelines[0].tracks[0].clips[0];
+        assert_eq!(clip.retime_process, RetimeProcess::FrameBlend);
+        // Nothing else of the clip is another.
+        let mut back = clip.clone();
+        back.retime_process = RetimeProcess::Nearest;
+        assert_eq!(back, Project::sample().timelines[0].tracks[0].clips[0]);
+        // A clip of sound keeps it as it is set, as it keeps a transform: it says nothing there.
+        let sound = round_trip(&done, process("c2", RetimeProcess::FrameBlend));
+        assert_eq!(
+            sound.timelines[0].tracks[1].clips[0].retime_process,
+            RetimeProcess::FrameBlend
+        );
+        // And it is set beside the speed of the clip, in one operation.
+        let slow = setting("c1", |op| {
+            if let Op::SetClip {
+                speed,
+                retime_process,
+                ..
+            } = op
+            {
+                *speed = Some(Speed { num: 1, den: 2 });
+                *retime_process = Some(RetimeProcess::FrameBlend);
+            }
+        });
+        let slowed = round_trip(&Project::sample(), slow);
+        let clip = &slowed.timelines[0].tracks[0].clips[0];
+        assert_eq!(
+            (clip.speed, clip.retime_process),
+            (Speed { num: 1, den: 2 }, RetimeProcess::FrameBlend)
+        );
     }
 
     #[test]

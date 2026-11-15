@@ -29,7 +29,11 @@
 //!
 //! Within schema 5 a clip may have speed points (`retime`, see [`crate::retime`]): where its
 //! speed changes on the way. They are written only on a clip that has them, so a clip of one
-//! speed is written as it was before them, and a project without them is read as it was.
+//! speed is written as it was before them, and a project without them is read as it was. So is
+//! its Retime Process (`retime_process`, see [`crate::retime::RetimeProcess`]), what it shows
+//! where its place in its source lies between two pictures: it is written only on a clip that
+//! mixes the two, and a clip that is written without it shows the one picture that it always
+//! showed.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -42,7 +46,7 @@ use crate::color::ColorFacts;
 use crate::color_management::{ColorOverride, ColorSettings};
 use crate::grade::{Composite, Grade, Group, Param};
 use crate::ops::Invalid;
-use crate::retime::Retime;
+use crate::retime::{Retime, RetimeProcess};
 use crate::time::{Rate, Speed, Time};
 
 /// The schema of a project that this engine reads and writes.
@@ -569,6 +573,14 @@ pub struct Clip {
     /// may be left out, as none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retime: Option<Retime>,
+    /// What it shows at a frame whose place in its source lies between two pictures of its
+    /// media, its Retime Process (see [`crate::retime`]): the one picture that the place is in,
+    /// or that one and the next, mixed. It is of a clip of media whose picture lasts, at one
+    /// speed or along speed points, and is kept on any other clip as it was set, where it says
+    /// nothing: a title, a colour and a still show one picture, and sound has none. It is
+    /// written only where it is not the one picture, and may be left out, as that.
+    #[serde(default, skip_serializing_if = "RetimeProcess::is_nearest")]
+    pub retime_process: RetimeProcess,
     /// The group of linked clips that it is in, if any: the clips of a group, picture and sound
     /// of one source, are selected and moved together.
     #[serde(deserialize_with = "present")]
@@ -1287,6 +1299,7 @@ impl Clip {
             speed: Speed::ONE,
             reverse: false,
             retime: None,
+            retime_process: RetimeProcess::Nearest,
             link: None,
             transform: Transform::NONE,
             crop: Crop::NONE,
@@ -1882,5 +1895,33 @@ mod tests {
             (clip.speed, clip.reverse, &clip.retime),
             (Speed::ONE, false, &None)
         );
+    }
+
+    #[test]
+    fn the_retime_process_of_a_clip_is_written_where_it_mixes_two_pictures_and_read_back() {
+        let plain = Project::sample();
+        let before = serde_json::to_string_pretty(&plain).unwrap();
+        let mut project = plain.clone();
+        project.timelines[0].tracks[0].clips[0].retime_process = RetimeProcess::FrameBlend;
+        let value = serde_json::to_value(&project).unwrap();
+        let tracks = &value["timelines"][0]["tracks"];
+        assert_eq!(tracks[0]["clips"][0]["retime_process"], "frame_blend");
+        // A clip that shows one picture is written without it, as it was before there was any.
+        assert!(tracks[1]["clips"][0].get("retime_process").is_none());
+        let read = Project::from_value(value.clone()).unwrap();
+        assert_eq!(read, project);
+        let text = serde_json::to_string_pretty(&project).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&text).unwrap(), project);
+        // Written as the one picture, it is read as left out, and is then written without it:
+        // a project that never had it is written to the byte as it was.
+        let mut value = value;
+        value["timelines"][0]["tracks"][0]["clips"][0]["retime_process"] = "nearest".into();
+        let read = Project::from_value(value.clone()).unwrap();
+        assert_eq!(read, plain);
+        assert_eq!(serde_json::to_string_pretty(&read).unwrap(), before);
+        assert!(!before.contains("retime_process"));
+        // Any other word is refused, Optical Flow among them, which is not done yet.
+        value["timelines"][0]["tracks"][0]["clips"][0]["retime_process"] = "optical_flow".into();
+        assert!(Project::from_value(value).is_err());
     }
 }

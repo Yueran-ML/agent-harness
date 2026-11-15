@@ -1062,6 +1062,7 @@ export const en = {
         video: 'Video', audio: 'Audio', title: 'Title', generator: 'Generator', transition: 'Transition', settings: 'Timeline settings',
         transform: 'Transform', composite: 'Composite', fades: 'Fades', compositeMode: 'Composite mode',
         cropping: 'Cropping', cropLeft: 'Crop left', cropRight: 'Crop right', cropTop: 'Crop top', cropBottom: 'Crop bottom', softness: 'Softness',
+        retimeAndScaling: 'Retime and Scaling', retimeProcess: 'Retime process', retimeProcesses: { nearest: 'Nearest', frame_blend: 'Frame Blend' },
         zoom: 'Zoom', positionX: 'Position X', positionY: 'Position Y', rotation: 'Rotation angle', opacity: 'Opacity',
         fadeIn: 'Fade in (frames)', fadeOut: 'Fade out (frames)', volume: 'Volume', pan: 'Pan',
         text: 'Text', size: 'Size', color: 'Color', align: 'Alignment', alignLeft: 'Align left', alignCenter: 'Align center', alignRight: 'Align right',

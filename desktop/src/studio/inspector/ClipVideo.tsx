@@ -2,7 +2,7 @@ import { useWords } from '../../app/locale';
 import { useContext } from 'react';
 import { Spline } from 'lucide-react';
 import { COMPOSITES } from '../color/nodeEdits';
-import type { Clip, ClipKeyed, Media, Op, Timeline } from '../engine';
+import { RETIME_PROCESSES, type Clip, type ClipKeyed, type Media, type Op, type Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { clipLocations } from '../timeline/selection';
 import { addKey, keyAt, keyFrameOf, keyTimes, paramOf, putValue, removeKey, settingAt } from './clipKeys';
@@ -37,8 +37,13 @@ export function Fades({ clips, timeline, commit, fineModifiers = false }: { clip
 /**
  * The picture of clips on video tracks, as DaVinci Resolve's Video tab: zoom, position (in pixels
  * of the timeline, kept as a share of its size), rotation, the composite mode and opacity (in
- * percent, kept from 0 to 1), the cropping (in percent of the picture, kept as shares of it) and the
- * fades. Each change sets every clip chosen, in one transaction.
+ * percent, kept from 0 to 1), the cropping (in percent of the picture, kept as shares of it), the
+ * Retime Process and the fades. Each change sets every clip chosen, in one transaction.
+ *
+ * The Retime Process (Retime and Scaling, Reference Manual 20, pp. 1081–1082) is what a clip shows at
+ * a frame whose place in its source lies between two pictures: the nearest one, or the two blended.
+ * It is of the clips of media whose picture lasts, which alone it is shown for and set on: a title,
+ * a colour and a still show one picture however they are played.
  *
  * Each setting of the transform and of the crop takes keys (Reference Manual 20, Ch. 53). A field
  * shows what its setting is at the playhead; the diamond beside it puts a key there, or takes away
@@ -91,6 +96,13 @@ export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSe
     {keys(path, label)}
   </>;
   const mode = common(clips, clip => clip.composite ?? 'normal');
+  const lasts = (clip: Clip) => {
+    if (clip.source.kind !== 'media') return false;
+    const id = clip.source.media;
+    return !media.find(item => item.id === id)?.facts.video?.still;
+  };
+  const retimed = clips.filter(lasts);
+  const process = common(retimed, clip => clip.retime_process ?? 'nearest');
   return <div className="inspector-panel" data-panel="video">
     {onCurves && <button type="button" className="btn btn-quiet inspector-curves" onClick={onCurves} data-test="open-curves">
       <Spline size={14} aria-hidden="true" />{words.curves.title}
@@ -120,6 +132,12 @@ export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSe
     {cropped('crop-top', 'crop.top', labels.cropTop)}
     {cropped('crop-bottom', 'crop.bottom', labels.cropBottom)}
     {cropped('crop-softness', 'crop.softness', labels.softness)}
+    {retimed.length > 0 && <>
+      <h3 className="inspector-section">{labels.retimeAndScaling}</h3>
+      <ChoiceField name="retime-process" label={labels.retimeProcess} value={process}
+        options={RETIME_PROCESSES.map(each => ({ value: each, label: labels.retimeProcesses[each] }))}
+        onCommit={chosen => void commit(setClips(retimed.map(clip => clip.id), clip => (clip.retime_process ?? 'nearest') === chosen ? null : { retime_process: chosen }))} />
+    </>}
     <h3 className="inspector-section">{labels.fades}</h3>
     <Fades clips={clips} timeline={timeline} commit={commit} />
   </div>;

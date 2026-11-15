@@ -526,6 +526,46 @@ def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> N
     assert edits.set_clip_keys("t1", "c2", "crop.softness", 0.25)["path"] == "crop.softness"
 
 
+def test_a_retime_process_is_written_as_the_engine_reads_it() -> None:
+    blend = edits.set_clip("t1", "c2", retime_process="frame_blend")
+
+    assert blend == {
+        "op": "set_clip",
+        "timeline": "t1",
+        "id": "c2",
+        "retime_process": "frame_blend",
+    }
+    # Nearest is set by its name, and a clip that is not asked about it is told nothing of it.
+    assert edits.set_clip("t1", "c2", retime_process="nearest")["retime_process"] == "nearest"
+    assert "retime_process" not in edits.set_clip("t1", "c2", composite="screen")
+
+
+async def test_the_retime_process_of_a_clip_is_kept_where_it_mixes_two_pictures(
+    tmp_path: Path,
+) -> None:
+    def clip(fake: fake_engine.Fake) -> Any:
+        return fake.project["timelines"][0]["tracks"][0]["clips"][0]
+
+    async with served(tmp_path / "film") as fake:
+        async with await Engine.attach(tmp_path / "film", program=fake_engine.__file__) as one:
+            await one.apply(
+                [edits.add_timeline("Cut", Rate(num=25, den=1), tracks=[edits.track("video")])]
+            )
+            await one.apply([edits.insert("t1", of_color("#000000ff", 50), 0)])
+            id = clip(fake)["id"]
+            assert "retime_process" not in clip(fake)
+
+            await one.apply([edits.set_clip("t1", id, retime_process="frame_blend")])
+            assert clip(fake)["retime_process"] == "frame_blend"
+            # Another setting leaves it as it is.
+            await one.apply([edits.set_clip("t1", id, fade_in=5)])
+            assert clip(fake)["retime_process"] == "frame_blend"
+            # A clip that shows the nearest picture is written without it, as it always was.
+            await one.apply([edits.set_clip("t1", id, retime_process="nearest")])
+
+        assert "retime_process" not in clip(fake)
+
+
 def test_the_edits_of_speed_points_are_written_with_the_frame_of_the_clip() -> None:
     assert edits.add_speed_point("t1", "c2", 12) == {
         "edit": "add_speed_point", "timeline": "t1", "clip": "c2", "at": 12, "linked": True,

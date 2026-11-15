@@ -93,9 +93,13 @@ pub fn layers(
         .filter_map(|(layer, clip)| {
             let (_, origin, exact) = origins.iter().find(|(id, _, _)| id == clip)?;
             let shown = match &layer.source {
-                Source::Picture(picture, rotation) => {
-                    geometry::shown_size((picture.width, picture.height), *rotation)
-                }
+                // Two pictures that are mixed are of one size: that of the first.
+                Source::Picture(picture, rotation)
+                | Source::Between {
+                    first: picture,
+                    rotation,
+                    ..
+                } => geometry::shown_size((picture.width, picture.height), *rotation),
                 Source::Color(_) | Source::Title(_) => (scene.width, scene.height),
             };
             let fitted = geometry::fit(canvas, (f64::from(shown.0), f64::from(shown.1)));

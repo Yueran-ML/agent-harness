@@ -912,6 +912,7 @@ export const zhCN: Messages = {
         video: '视频', audio: '音频', title: '标题', generator: '生成器', transition: '转场', settings: '时间线设置',
         transform: '变换', composite: '合成', fades: '淡入淡出', compositeMode: '合成模式',
         cropping: '裁切', cropLeft: '左侧裁切', cropRight: '右侧裁切', cropTop: '顶部裁切', cropBottom: '底部裁切', softness: '柔化',
+        retimeAndScaling: '变速与缩放', retimeProcess: '变速处理', retimeProcesses: { nearest: '最近的', frame_blend: '帧混合' },
         zoom: '缩放', positionX: '位置 X', positionY: '位置 Y', rotation: '旋转角度', opacity: '不透明度',
         fadeIn: '淡入（帧）', fadeOut: '淡出（帧）', volume: '音量', pan: '声像',
         text: '文本', size: '大小', color: '颜色', align: '对齐', alignLeft: '左对齐', alignCenter: '居中对齐', alignRight: '右对齐',

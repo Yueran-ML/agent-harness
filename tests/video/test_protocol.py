@@ -281,3 +281,13 @@ def test_every_field_that_a_builder_of_sound_writes_is_one_that_the_engine_takes
     assert wrong == []
     fields = _fields_of(r"`clips: [id, ...]`, `index?`, `action: add\|remove`")
     assert fields == {"clips", "index", "action"}
+
+
+def test_the_retime_process_that_a_builder_writes_is_one_that_the_engine_takes() -> None:
+    written = edits.set_clip("t1", "c1", retime_process="frame_blend")
+
+    taken = _fields_of(OPERATIONS["set_clip"]) | {"op", "timeline"}
+    assert [key for key in written if key not in taken] == []
+    # And the protocol names both processes where it says what a clip is.
+    assert '`retime_process: "frame_blend"`' in PROTOCOL
+    assert '`"nearest"`' in PROTOCOL

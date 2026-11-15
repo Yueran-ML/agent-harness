@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- A clip has a Retime Process (studio, phase 4), chosen in the Inspector's Video tab under
+  Retime and Scaling: Nearest, as before, or Frame Blend, which shows a frame that falls
+  between two pictures of the source as the two mixed by how far between them it falls, so
+  that slow motion, and media of another frame rate than the timeline, move evenly. The
+  pictures are mixed before the grade, in the viewer, in an export and in stills alike; a
+  frame that falls on a picture, and a freeze frame, show that picture as Nearest does. The
+  agent sets it with `set_clip` (`retime_process`: `nearest` or `frame_blend`). Optical Flow
+  is not there yet.
 - The Curve Editor of the Edit page lists the Retime Frame and Retime Speed curves of a clip
   of media (studio, phase 4), drawn over the frames of the clip. On the Retime Frame curve a
   point dragged up or down makes that frame of the clip show another frame of the source, a

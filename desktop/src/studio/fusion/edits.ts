@@ -16,7 +16,7 @@ import {
   type NodePos, type Op,
 } from '../engine';
 import { valueAt } from '../keyframes/value';
-import { handedOn, hasMaskInput, hasOutput, isMaskKind, MASK_KINDS, pictureInputs, type MaskKind } from './graph';
+import { handedOn, hasMaskInput, hasOutput, isMaskKind, layoutComposition, MASK_KINDS, pictureInputs, placesOf, type MaskKind } from './graph';
 
 /** The clip whose composition the operations change, as they name it. */
 export interface FusionAt { timeline: string; clip: string }
@@ -134,10 +134,129 @@ export function addNode(at: FusionAt, composition: Composition, kind: FusionKind
   return [{ op: 'add_fusion_node', ...at, node, links }];
 }
 
+/** The ids of the nodes that a transaction added, in the order they were added: those pasted, which become the ones chosen. */
+export function addedNodes(done: readonly Op[] | null | undefined): string[] {
+  return (done ?? []).filter((op): op is Extract<Op, { op: 'add_fusion_node' }> => op.op === 'add_fusion_node').map(op => op.node.id);
+}
+
 /** The id of the node that a transaction added, which becomes the one chosen. */
 export function addedNode(done: readonly Op[] | null | undefined): string | null {
-  const added = (done ?? []).filter((op): op is Extract<Op, { op: 'add_fusion_node' }> => op.op === 'add_fusion_node');
-  return added.at(-1)?.node.id ?? null;
+  return addedNodes(done).at(-1) ?? null;
+}
+
+/** The most nodes that a composition may have (PROTOCOL.md, "Compositions"). */
+export const MOST_NODES = 256;
+/** Whether a composition has room for `count` nodes more. */
+export const roomFor = (composition: Composition, count: number): boolean => composition.nodes.length + count <= MOST_NODES;
+
+/** How far down and right of where they were nodes are pasted, so that a copy does not hide what it was copied from. */
+export const PASTE_OFFSET: NodePos = { x: 24, y: 24 };
+
+/**
+ * Nodes that were copied (Ctrl+C), as they are kept for Paste: each whole, with its settings, its
+ * keys, its label and whether it is passed through, at the place where the editor drew it (its
+ * `pos`, or where it was laid out), and the links among them. They are named by the ids that they
+ * had where they were copied, which tell only which link joins which two of them.
+ */
+export interface CopiedNodes { nodes: FusionNode[]; links: FusionLink[] }
+
+/**
+ * Copy nodes: those of `ids` that the composition has, in the order of the composition, but never
+ * the MediaOut, of which a composition has exactly one; and the links that both begin and end
+ * among them. Null where there is nothing to copy.
+ */
+export function copyNodes(composition: Composition, ids: readonly string[]): CopiedNodes | null {
+  const nodes = layoutComposition(composition, placesOf(composition)).nodes
+    .filter(each => ids.includes(each.node.id) && each.node.kind !== 'media_out')
+    .map((each): FusionNode => ({ ...structuredClone(each.node), pos: placeAt({ x: each.x, y: each.y }) }));
+  if (nodes.length === 0) return null;
+  const taken = new Set(nodes.map(node => node.id));
+  const links = sortFusionLinks(composition.links).filter(link => taken.has(link.from) && taken.has(link.to)).map(link => ({ ...link }));
+  return { nodes, links };
+}
+
+/** The name of a transaction (`$name`, PROTOCOL.md) that the node pasted at a place of the copy is given, for the links of the nodes after it. */
+export const pastedName = (index: number): string => `$p${index}`;
+
+/** How far nodes that lay at `places` are moved where they are pasted: to the point `to`, or down and right, clear of the nodes that are there (see `pasteNodes`). */
+function pasteOffset(composition: Composition, places: readonly NodePos[], to: NodePos | null): NodePos {
+  if (to !== null) return { x: to.x - Math.min(...places.map(place => place.x)), y: to.y - Math.min(...places.map(place => place.y)) };
+  const spot = (x: number, y: number) => `${Math.round(x)},${Math.round(y)}`;
+  const there = new Set(layoutComposition(composition, placesOf(composition)).nodes.map(each => spot(each.x, each.y)));
+  // Each step tries places that no step before tried, and the nodes that are there are few: one of them is clear.
+  for (let step = 1; ; step++) {
+    const by = { x: PASTE_OFFSET.x * step, y: PASTE_OFFSET.y * step };
+    if (!places.some(place => there.has(spot(place.x + by.x, place.y + by.y)))) return by;
+  }
+}
+
+/**
+ * Paste nodes that were copied: one `add_fusion_node` for each, in the order they were copied in,
+ * each with the settings, keys, label and Pass Through that it had, and with the links among them;
+ * nothing is linked to the rest of the composition. The engine gives each a new id. So that the
+ * links can name nodes that have no id yet, each node is given a name of the transaction
+ * (`$p0`, `$p1`, …), and a link is sent with the later of the two nodes that it joins, as
+ * `add_fusion_node` takes links: each touches the node added, which it names by the name given,
+ * and its other end names a node added before.
+ *
+ * With `to`, a point of the graph (Paste from the menu, where it was opened), the nodes lie there:
+ * the corner of the box about them, the others as they lay about it. Without, they lie down and
+ * right of where they were (`PASTE_OFFSET`), and further again while one would lie exactly on a
+ * node that is there, so that the same nodes pasted twice do not hide each other.
+ *
+ * The keys are kept as they are: they count the frames of the clip that they were copied from.
+ * Nothing where nothing was copied, and where the composition has no room (`roomFor`).
+ */
+export function pasteNodes(at: FusionAt, composition: Composition, copied: CopiedNodes | null, to: NodePos | null = null): Op[] {
+  if (copied === null || copied.nodes.length === 0 || !roomFor(composition, copied.nodes.length)) return [];
+  const places: NodePos[] = copied.nodes.map(node => node.pos ?? { x: 0, y: 0 });
+  const by = pasteOffset(composition, places, to);
+  const placeOf = new Map<string, number>(copied.nodes.map((node, index) => [node.id, index]));
+  return copied.nodes.map((node, index): Op => {
+    const links = copied.links.flatMap((link): FusionLink[] => {
+      const from = placeOf.get(link.from);
+      const into = placeOf.get(link.to);
+      return from !== undefined && into !== undefined && from !== into && Math.max(from, into) === index
+        ? [{ from: pastedName(from), to: pastedName(into), input: link.input }] : [];
+    });
+    const pos = placeAt({ x: Math.max(0, places[index].x + by.x), y: Math.max(0, places[index].y + by.y) });
+    const made: FusionNode = { ...structuredClone(node), id: pastedName(index), pos };
+    return links.length > 0 ? { op: 'add_fusion_node', ...at, node: made, links } : { op: 'add_fusion_node', ...at, node: made };
+  });
+}
+
+/**
+ * Cut nodes (Ctrl+X): what Copy keeps of them, and the operations that take them away as Delete
+ * does (`removeNodes`), joining what fed each to what it fed where that is a single chain. The
+ * MediaOut is neither copied nor taken away.
+ */
+export function cutNodes(at: FusionAt, composition: Composition, ids: readonly string[]): { copied: CopiedNodes | null; ops: Op[] } {
+  const copied = copyNodes(composition, ids);
+  return { copied, ops: copied === null ? [] : removeNodes(at, composition, copied.nodes.map(node => node.id)) };
+}
+
+/** Duplicate nodes (Ctrl+D): Copy and Paste in one, which leaves what was copied before as it is. */
+export function duplicateNodes(at: FusionAt, composition: Composition, ids: readonly string[]): Op[] {
+  return pasteNodes(at, composition, copyNodes(composition, ids));
+}
+
+/**
+ * Put a node into a link, as Fusion does where a node is dragged onto one: the link `A → B.input`
+ * becomes `A → node.first` and `node → B.input`, the second in the place of the link that was
+ * there. Only a node that has an input of a picture and an output and no link at all goes in so
+ * (a mask, a Background and a MediaIn have no such input, the MediaOut no output), and only into a
+ * link of a picture: a link into a `mask` is left as it is. Nothing otherwise.
+ */
+export function insertOnLink(at: FusionAt, composition: Composition, id: string, link: FusionLink): Op[] {
+  const node = composition.nodes.find(each => each.id === id);
+  if (!node || !hasOutput(node.kind) || link.input === 'mask' || link.from === id || link.to === id) return [];
+  const first = pictureInputs(node.kind)[0];
+  if (first === undefined || composition.links.some(each => each.from === id || each.to === id)) return [];
+  if (!composition.links.some(each => each.from === link.from && each.to === link.to && each.input === link.input)) return [];
+  return [
+    { op: 'connect_fusion', ...at, link: { from: link.from, to: id, input: first } },
+    { op: 'connect_fusion', ...at, link: { from: id, to: link.to, input: link.input } },
+  ];
 }
 
 /**
@@ -276,23 +395,33 @@ export function removeComposition(at: FusionAt, clip: Pick<Clip, 'fusion'>): Op[
 }
 
 /** What a key asks of the node editor. */
-export type FusionCommand = { kind: 'delete'; key: 'Delete' | 'Backspace' } | { kind: 'passThrough' | 'rename' | 'cancel' | 'selectAll' };
+export type FusionCommand = { kind: 'delete'; key: 'Delete' | 'Backspace' }
+  | { kind: 'passThrough' | 'rename' | 'cancel' | 'selectAll' | 'copy' | 'cut' | 'paste' | 'duplicate' | 'selectTool' };
 
 /**
  * The keys of the node editor, as Fusion has them: Delete deletes the nodes chosen or the link
  * chosen (Backspace only a link, as in the Color page's editor), Ctrl+P passes the nodes chosen
  * through, F2 renames the node chosen, Ctrl+A chooses every node, and Escape takes a drag back.
- * None of them is a key of the transport, which takes no key with Ctrl. A letter is known by where
- * it lies on the keyboard.
+ * Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D copy, cut, paste and duplicate nodes, with Cmd in the place of
+ * Ctrl too, as a Mac has them. Shift+Space opens Select Tool: Space alone is the transport's, which
+ * would take it with Shift as well, so the editor takes this one key before the transport does. A
+ * letter is known by where it lies on the keyboard.
  */
 export function fusionKey(key: Key): FusionCommand | null {
-  if (key.composing || key.meta || key.repeat || key.alt || key.shift) return null;
+  if (key.composing || key.repeat || key.alt) return null;
+  if (key.shift) return !key.ctrl && !key.meta && (key.code === 'Space' || key.key === ' ') ? { kind: 'selectTool' } : null;
   const letter = /^Key([A-Z])$/.exec(key.code ?? '')?.[1]?.toLowerCase() ?? (key.key.length === 1 ? key.key.toLowerCase() : '');
-  if (key.ctrl) {
+  if (key.ctrl !== key.meta) {
+    if (letter === 'c') return { kind: 'copy' };
+    if (letter === 'x') return { kind: 'cut' };
+    if (letter === 'v') return { kind: 'paste' };
+    if (letter === 'd') return { kind: 'duplicate' };
+    if (key.meta) return null;
     if (letter === 'p') return { kind: 'passThrough' };
     if (letter === 'a') return { kind: 'selectAll' };
     return null;
   }
+  if (key.ctrl) return null;
   if (key.key === 'Delete' || key.key === 'Backspace') return { kind: 'delete', key: key.key };
   if (key.key === 'F2') return { kind: 'rename' };
   if (key.key === 'Escape') return { kind: 'cancel' };

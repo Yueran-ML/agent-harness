@@ -12,13 +12,14 @@ import {
   applyOp, firstComposition, type Composition, type FusionLink, type FusionNode, type FusionPoint, type Keyframe, type Op, type Project,
 } from '../src/studio/engine';
 import {
-  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, insertPoint, isFirst, LEAST_POINTS, MOST_POINTS, moveNodes,
-  newBackground, newMerge, newNode, newPolygon, newTransform, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes,
-  shownComposition, startPoints, togglePass, withFirst,
+  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addedNodes, addNode, connect, copyNodes, cutNodes, disconnect, duplicateNodes, fusionKey, insertOnLink,
+  insertPoint, isFirst, LEAST_POINTS, MOST_NODES, MOST_POINTS, moveNodes, newBackground, newMerge, newNode, newPolygon, newTransform, PASTE_OFFSET, pastedName,
+  pasteNodes, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes, roomFor, shownComposition, startPoints, togglePass,
+  withFirst,
 } from '../src/studio/fusion/edits';
 import {
-  fusionLinkHalves, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf,
-  nodesIn, outputPoint, pictureInputs, placesOf, portAt, portsOf,
+  fusionLinkHalves, fusionLinkNear, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, layoutComposition, linkEnds, linkName,
+  MASK_INSET, namesOf, nodesIn, outputPoint, pictureInputs, placesOf, portAt, portsOf,
 } from '../src/studio/fusion/graph';
 import {
   addKey, FUSION_SETTINGS, hasKeys, isPointSetting, keyOps, keyTimesOf, numbered, paramOf, pathOf, pointPath, putValue, removeKey, settingOf, settingsOf,
@@ -667,5 +668,203 @@ describe('a Blur and a Mosaic', () => {
     expect(putValue(AT, after, of(after, 'size.x'), 8, 12)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'b1.size.x', at: 0, remove: 1, keys: [keyAt(12, 8)] }]);
     expect(removeKey(AT, after, of(after, 'size.x'), 12)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'b1.size.x', param: 5 }]);
     expect(keyOps(AT, after, of(after, 'size.x'), 9)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'b1.size.x', param: 9 }]);
+  });
+});
+
+// Copy, Cut, Paste and Duplicate, and a node dropped onto a link: done with the operations that the node editor has already.
+type Added = Extract<Op, { op: 'add_fusion_node' }>;
+/**
+ * Operations as the engine does them (PROTOCOL.md, "Names of a transaction"): a node added by a name of the transaction is given
+ * the next id, and the links that name it, its own and those of the nodes added after it, name that id.
+ */
+const done = (ops: Op[], next = 20): Op[] => {
+  const ids = new Map<string, string>();
+  const real = (end: string) => ids.get(end) ?? end;
+  return ops.map((op): Op => {
+    if (op.op !== 'add_fusion_node') return op;
+    const id = `n${next + ids.size}`;
+    ids.set(op.node.id, id);
+    return { ...op, node: { ...op.node, id } as FusionNode, ...(op.links ? { links: op.links.map(each => ({ ...each, from: real(each.from), to: real(each.to) })) } : {}) };
+  });
+};
+const blendKeys = { keys: [keyAt(10, 0.25), keyAt(30, 0.75)] };
+/** `comp` with the Transform passed through, the Merge labelled and its Blend keyed, and the Background dragged to 300,200. */
+const rich = (): Composition => {
+  const made = comp();
+  return {
+    ...made,
+    nodes: made.nodes.map((node): FusionNode => {
+      if (node.id === 'n3') return { ...node, pass_through: true };
+      if (node.id === 'n4') return { ...node, label: 'Over the sky', params: { ...newMerge(), blend: blendKeys } } as FusionNode;
+      if (node.id === 'n5') return { ...node, pos: { x: 300, y: 200 } };
+      return node;
+    }),
+  };
+};
+
+describe('copying, cutting, pasting and duplicating nodes', () => {
+  it('copy the nodes chosen whole, where the editor draws them, with the links among them, and never the MediaOut', () => {
+    const from = rich();
+    const copied = copyNodes(from, ['n5', 'MediaOut1', 'n4', 'gone', 'n3'])!;
+    // In the order of the composition, each at the place where it is drawn: where the editor lays it out, or where it was dragged to.
+    expect(copied.nodes.map(node => [node.id, node.pos])).toEqual([['n3', { x: 176, y: 28 }], ['n4', { x: 324, y: 28 }], ['n5', { x: 300, y: 200 }]]);
+    // Whole: Pass Through, the label, the settings and their keys.
+    expect(copied.nodes[0]).toEqual({ ...from.nodes[2], pos: { x: 176, y: 28 } });
+    expect(copied.nodes[1]).toEqual({ ...from.nodes[3], pos: { x: 324, y: 28 } });
+    expect([copied.nodes[0].pass_through, copied.nodes[1].label, (copied.nodes[1].params as unknown as { blend: unknown }).blend]).toEqual([true, 'Over the sky', blendKeys]);
+    // A copy of its own: what is done to the composition afterwards is not done to it.
+    expect(copied.nodes[1].params).not.toBe(from.nodes[3].params);
+    // The links that both begin and end among them, in the order of the engine; those to the MediaIn and the MediaOut are left.
+    expect(copied.links).toEqual([link('n3', 'n4', 'background'), link('n5', 'n4', 'foreground')]);
+    expect(copyNodes(from, ['n4'])!.links).toEqual([]);
+    // A MediaIn may be copied; the MediaOut never is, alone or among others; and nothing chosen is nothing to copy.
+    expect(copyNodes(from, ['MediaIn1', 'MediaOut1'])!.nodes.map(node => node.kind)).toEqual(['media_in']);
+    expect([copyNodes(from, ['MediaOut1']), copyNodes(from, []), copyNodes(from, ['gone'])]).toEqual([null, null, null]);
+  });
+
+  it('paste them as new nodes down and right of where they were, linked among themselves and to nothing else', () => {
+    const from = rich();
+    const copied = copyNodes(from, ['n3', 'n4', 'n5'])!;
+    const ops = pasteNodes(AT, from, copied);
+    expect([PASTE_OFFSET, pastedName(2)]).toEqual([{ x: 24, y: 24 }, '$p2']);
+    // Each is named by the transaction, and a link goes with the later of the two nodes that it joins.
+    expect(ops).toEqual([
+      { op: 'add_fusion_node', ...AT, node: { ...copied.nodes[0], id: '$p0', pos: { x: 200, y: 52 } } },
+      { op: 'add_fusion_node', ...AT, node: { ...copied.nodes[1], id: '$p1', pos: { x: 348, y: 52 } }, links: [link('$p0', '$p1', 'background')] },
+      { op: 'add_fusion_node', ...AT, node: { ...copied.nodes[2], id: '$p2', pos: { x: 324, y: 224 } }, links: [link('$p2', '$p1', 'foreground')] },
+    ]);
+    expect(ops[0]).not.toHaveProperty('links');
+    // What was copied is as it was, to be pasted again.
+    expect(copied.nodes.map(node => [node.id, node.pos])).toEqual([['n3', { x: 176, y: 28 }], ['n4', { x: 324, y: 28 }], ['n5', { x: 300, y: 200 }]]);
+    // As the engine does them: three nodes more, the two links among them, and no link to what was there.
+    const made = done(ops);
+    expect(addedNodes(made)).toEqual(['n20', 'n21', 'n22']);
+    expect([addedNodes(null), addedNodes([{ op: 'set_fusion', ...AT, value: null }])]).toEqual([[], []]);
+    const after = applied(from, made);
+    expect(after.nodes.map(node => node.id)).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n20', 'n21', 'n22']);
+    expect(after.links.map(linkName).sort()).toEqual([...from.links.map(linkName), 'n20>n21:background', 'n22>n21:foreground'].sort());
+    // Pass Through, the label, the settings and the keys are kept: the keys as they are, at the frames that they counted.
+    expect([after.nodes[5].pass_through, after.nodes[6].label, after.nodes[6].params, after.nodes[7].params])
+      .toEqual([true, 'Over the sky', from.nodes[3].params, from.nodes[4].params]);
+    // Pasted again into what that left, they lie further down and right, clear of the ones pasted before.
+    expect(pasteNodes(AT, after, copied).map(op => (op as Added).node.pos)).toEqual([{ x: 224, y: 76 }, { x: 372, y: 76 }, { x: 348, y: 248 }]);
+    // At a point, from the menu: the corner of the box about them lies there, the others as they lay about it.
+    expect(pasteNodes(AT, from, copied, { x: 500.4, y: 300.6 }).map(op => (op as Added).node.pos)).toEqual([{ x: 500, y: 301 }, { x: 648, y: 301 }, { x: 624, y: 473 }]);
+    // Into the composition of another clip, which has none yet: the same nodes, after the first composition.
+    const other = { timeline: 't1', clip: 'c2' };
+    const into = pasteNodes(other, firstComposition(), copied);
+    expect(into.map(op => [(op as Added).clip, (op as Added).node.id, (op as Added).node.pos]))
+      .toEqual([['c2', '$p0', { x: 200, y: 52 }], ['c2', '$p1', { x: 348, y: 52 }], ['c2', '$p2', { x: 324, y: 224 }]]);
+    expect((into[1] as Added).node.params).toEqual(from.nodes[3].params);
+    expect(withFirst(other, false, into)[0]).toEqual({ op: 'set_fusion', ...other, value: firstComposition() });
+    // Nothing copied is nothing to paste.
+    expect(pasteNodes(AT, from, null)).toEqual([]);
+  });
+
+  it('paste nothing into a composition that has no room for it: 256 nodes at the most', () => {
+    expect(MOST_NODES).toBe(256);
+    const full: Composition = {
+      nodes: [mediaIn(), mediaOut(), ...Array.from({ length: MOST_NODES - 3 }, (_, index) => transform(`t${index}`))], links: [link('MediaIn1', 'MediaOut1')],
+    };
+    expect(full.nodes).toHaveLength(255);
+    expect([roomFor(full, 1), roomFor(full, 2), roomFor(comp(), 251), roomFor(comp(), 252)]).toEqual([true, false, true, false]);
+    expect(pasteNodes(AT, full, copyNodes(full, ['t0']))).toHaveLength(1);
+    expect(pasteNodes(AT, full, copyNodes(full, ['t0', 't1']))).toEqual([]);
+    expect(duplicateNodes(AT, full, ['t0', 't1'])).toEqual([]);
+    expect(duplicateNodes(AT, full, ['t1'])).toHaveLength(1);
+  });
+
+  it('cut as Delete takes nodes away, keeping what Copy keeps, and duplicate as Copy and Paste in one', () => {
+    const cut = cutNodes(AT, comp(), ['n3', 'MediaOut1']);
+    expect(cut.copied!.nodes.map(node => node.id)).toEqual(['n3']);
+    expect(cut.ops).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n3', links: [link('MediaIn1', 'n4', 'background')] }]);
+    // Two of a chain: kept with the link between them, and taken away in the order of the composition.
+    const two = cutNodes(AT, comp(), ['n4', 'n3']);
+    expect([two.copied!.links, two.ops]).toEqual([[link('n3', 'n4', 'background')], removeNodes(AT, comp(), ['n3', 'n4'])]);
+    // The MediaOut is neither kept nor taken away.
+    expect(cutNodes(AT, comp(), ['MediaOut1'])).toEqual({ copied: null, ops: [] });
+    const twice = duplicateNodes(AT, comp(), ['n3', 'n4']);
+    expect(twice).toEqual(pasteNodes(AT, comp(), copyNodes(comp(), ['n3', 'n4'])));
+    expect(twice.map(op => [(op as Added).node.id, (op as Added).node.kind, (op as Added).node.pos, (op as Added).links])).toEqual([
+      ['$p0', 'transform', { x: 200, y: 52 }, undefined], ['$p1', 'merge', { x: 348, y: 52 }, [link('$p0', '$p1', 'background')]],
+    ]);
+    expect([duplicateNodes(AT, comp(), ['MediaOut1']), duplicateNodes(AT, comp(), [])]).toEqual([[], []]);
+  });
+
+  it('are asked for by Ctrl or Cmd with C, X, V and D, and Select Tool by Shift+Space', () => {
+    for (const [letter, kind] of [['c', 'copy'], ['x', 'cut'], ['v', 'paste'], ['d', 'duplicate']] as const) {
+      const code = `Key${letter.toUpperCase()}`;
+      expect(fusionKey(key({ key: letter, code, ctrl: true })), letter).toEqual({ kind });
+      expect(fusionKey(key({ key: letter, code, meta: true })), letter).toEqual({ kind });
+      // Not with both, with Shift or Alt more, held down, or alone.
+      for (const more of [{ ctrl: true, meta: true }, { ctrl: true, shift: true }, { ctrl: true, alt: true }, { ctrl: true, repeat: true }, {}]) {
+        expect(fusionKey(key({ key: letter, code, ...more })), `${letter} ${JSON.stringify(more)}`).toBeNull();
+      }
+    }
+    // Pass Through and Select All stay with Ctrl alone.
+    expect([fusionKey(key({ key: 'p', code: 'KeyP', meta: true })), fusionKey(key({ key: 'a', code: 'KeyA', meta: true }))]).toEqual([null, null]);
+    expect(fusionKey(key({ key: ' ', code: 'Space', shift: true }))).toEqual({ kind: 'selectTool' });
+    // Space alone is the transport's; and Shift+Space is taken once, with nothing else held.
+    expect(fusionKey(key({ key: ' ', code: 'Space' }))).toBeNull();
+    for (const more of [{ ctrl: true }, { meta: true }, { alt: true }, { repeat: true }, { composing: true }]) {
+      expect(fusionKey(key({ key: ' ', code: 'Space', shift: true, ...more })), JSON.stringify(more)).toBeNull();
+    }
+  });
+});
+
+describe('a node dropped onto a link', () => {
+  /**
+   * `comp`, and nodes that nothing is linked to or from: the Blur n6, the Merge n7, the Rectangle n8 and the Background n10; and
+   * the Rectangle n9, into the mask of the Merge n4.
+   */
+  const loose = (): Composition => ({
+    nodes: [...comp().nodes, newNode('blur', null, 'n6'), merge('n7'), rectangle('n8'), rectangle('n9'), background('n10')],
+    links: [...comp().links, link('n9', 'n4', 'mask')],
+  });
+
+  it('goes into the link: what fed the link feeds its first picture, and it feeds what the link fed', () => {
+    const ops = insertOnLink(AT, loose(), 'n6', link('n3', 'n4', 'background'));
+    expect(ops).toEqual([{ op: 'connect_fusion', ...AT, link: link('n3', 'n6', 'input') }, { op: 'connect_fusion', ...AT, link: link('n6', 'n4', 'background') }]);
+    // In the copy: the second link takes the place of the one that the node was dropped on.
+    expect(applied(loose(), ops).links.map(linkName).sort())
+      .toEqual(['MediaIn1>n3:input', 'n3>n6:input', 'n6>n4:background', 'n5>n4:foreground', 'n4>MediaOut1:input', 'n9>n4:mask'].sort());
+    // A Merge takes what fed the link as its background.
+    expect(insertOnLink(AT, loose(), 'n7', link('n4', 'MediaOut1'))).toEqual([
+      { op: 'connect_fusion', ...AT, link: link('n4', 'n7', 'background') }, { op: 'connect_fusion', ...AT, link: link('n7', 'MediaOut1') },
+    ]);
+  });
+
+  it('does not go into a link into a mask, nor where it has a link itself, no input of a picture or no output', () => {
+    expect(insertOnLink(AT, loose(), 'n6', link('n9', 'n4', 'mask'))).toEqual([]);
+    // A mask, a Background and a MediaIn have no input of a picture, and the MediaOut has no output.
+    for (const id of ['n8', 'n10', 'MediaIn1', 'MediaOut1']) expect(insertOnLink(AT, loose(), id, link('n3', 'n4', 'background')), id).toEqual([]);
+    // A node that has a link, be it one into its effect mask alone.
+    expect(insertOnLink(AT, loose(), 'n3', link('n5', 'n4', 'foreground'))).toEqual([]);
+    const maskedBlur: Composition = { ...loose(), links: [...loose().links, link('n8', 'n6', 'mask')] };
+    expect(insertOnLink(AT, maskedBlur, 'n6', link('n3', 'n4', 'background'))).toEqual([]);
+    // A link that the composition has not, and a node that it has not.
+    expect(insertOnLink(AT, loose(), 'n6', link('n5', 'n4', 'background'))).toEqual([]);
+    expect(insertOnLink(AT, loose(), 'gone', link('n3', 'n4', 'background'))).toEqual([]);
+  });
+
+  it('is over a link where the pointer is near the curve of the link, as in the Color page\'s editor', () => {
+    const layout = layoutComposition(loose());
+    /** The middle of the curve of a link, where its two halves meet. */
+    const middleOf = (of: FusionLink) => {
+      const ends = linkEnds(layout, of)!;
+      const [x, y] = fusionLinkHalves(ends.from, ends.to, of.input)[0].split(', ').at(-1)!.split(' ').map(Number);
+      return { x, y };
+    };
+    const picture = link('n3', 'n4', 'background');
+    const mask = link('n9', 'n4', 'mask');
+    expect(fusionLinkNear(layout, middleOf(picture))).toEqual(picture);
+    expect(fusionLinkNear(layout, { x: middleOf(picture).x + 2, y: middleOf(picture).y - 2 })).toEqual(picture);
+    // Out of reach of every link: none.
+    expect(fusionLinkNear(layout, { x: middleOf(picture).x, y: middleOf(picture).y - 20 })).toBeNull();
+    expect(fusionLinkNear(layout, { x: 600, y: 400 })).toBeNull();
+    // A link into a mask is found on its own curve, which comes into the input from below; the editor asks for the links of pictures alone.
+    expect(fusionLinkNear(layout, middleOf(mask))).toEqual(mask);
+    expect(fusionLinkNear(layout, middleOf(mask), each => each.input !== 'mask')).toBeNull();
+    expect(fusionLinkNear(layout, middleOf(picture), each => each.input !== 'background')).toBeNull();
   });
 });

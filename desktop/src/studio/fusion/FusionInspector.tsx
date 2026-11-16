@@ -9,7 +9,7 @@ import {
 } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { keyAt, keyFrameOf } from '../inspector/clipKeys';
-import { ChoiceField, ColorField, KeyDiamond, NumberField, TextField } from '../inspector/fields';
+import { ChoiceField, ColorField, FieldsLocked, KeyDiamond, NumberField, TextField } from '../inspector/fields';
 import { refusalOf } from '../inspector/refusal';
 import { useCommit, type Build } from '../inspector/useCommit';
 import { valueAt } from '../keyframes/value';
@@ -105,8 +105,13 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * one transaction, worked out from the clip as the engine has it when it is sent, with the first
  * composition before it where the clip has none yet (`withFirst`). What the engine refuses is said
  * at the top; but not a change that changes nothing (`empty`), which is no failure.
+ *
+ * Where the clip lies on a locked track (`locked`), the settings are shown and none is changed, as
+ * in the Inspector of the Edit page (Reference Manual 20, p. 762): every field, switch and button
+ * that changes something is off, and the Inspector says why. The buttons that go to the key before
+ * and after stay, since they move the playhead alone.
  */
-export function FusionInspector({ bridge, session, revision, timeline, clip, media, node, name, frame, onSeek }: {
+export function FusionInspector({ bridge, session, revision, timeline, clip, media, node, name, frame, onSeek, locked = false }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline;
   /** The clip whose composition the node is of. */
   clip: Clip;
@@ -118,6 +123,8 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   /** The playhead, in frames of the timeline. */
   frame: number;
   onSeek: (frame: number, scrubbing: boolean) => void;
+  /** Whether the clip lies on a locked track: its settings are shown, and none is changed. */
+  locked?: boolean;
 }) {
   const words = useWords();
   const t = useFairlightText();
@@ -128,7 +135,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   const has = clip.fusion !== undefined;
   const { commit, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
   const failed = (error: unknown) => { if (!isEmpty(error)) setRefusal(refusalOf(error, words.hint.studio)); };
-  const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/${clip.id}/fusion/${node?.id ?? ''}`, locked: false, onFailure: failed });
+  const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/${clip.id}/fusion/${node?.id ?? ''}`, locked, onFailure: failed });
   /** The setting that is dragged, as it was when the drag began, and the frame of its keys that the drag is at. */
   const dragged = useRef<{ path: string; initial: Param; keyFrame: number } | null>(null);
   const now = useRef({ has });
@@ -150,7 +157,8 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   const build = (ops: (found: FusionNode, keyFrameNow: number, where: FusionAt) => Op[]): Build => (current) => {
     const located = clipLocations(current).get(clip.id);
     const found = located ? shownComposition(located.clip).nodes.find(each => each.id === id) : undefined;
-    if (!located || !found) return [];
+    // A track that is locked when the change goes keeps its clips as they are, whatever asked for the change.
+    if (!located || !found || located.track.locked) return [];
     const where = { timeline: current.id, clip: clip.id };
     return withFirst(where, located.clip.fusion !== undefined, ops(found, keyFrameOf(located.clip, current, media, frame), where));
   };
@@ -167,7 +175,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       <button type="button" className="icon-btn" aria-label={`${label}: ${t('Previous keyframe')}`} title={t('Previous keyframe')}
         disabled={!times.some(time => time < frame)} onClick={() => go(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
       <button type="button" className="icon-btn" aria-label={`${label}: ${t(hit ? 'Remove keyframe' : 'Add keyframe')}`} title={t(hit ? 'Remove keyframe' : 'Add keyframe')}
-        aria-pressed={hit} data-keyed={typeof param === 'object' || undefined} data-hit={hit || undefined}
+        aria-pressed={hit} data-keyed={typeof param === 'object' || undefined} data-hit={hit || undefined} disabled={locked}
         onClick={() => void commit(build((found, keyFrameNow, where) => {
           const there = settingOf(found, setting.path);
           if (!there) return [];
@@ -217,7 +225,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   const flag = (field: Flag, label: string, checked: boolean, title?: string) => <div className="inspector-row" data-field={field} title={title}>
     <label htmlFor={`${flipId}-${field}`} className="inspector-label fusion-flag-label">{label}</label>
     <span className="inspector-value">
-      <input id={`${flipId}-${field}`} type="checkbox" checked={checked}
+      <input id={`${flipId}-${field}`} type="checkbox" checked={checked} disabled={locked}
         onChange={event => { const on = event.target.checked; void commit(build((found, _keyFrame, where) => [{ op: 'set_fusion_node', ...where, id: found.id, params: { [field]: on } }])); }} />
     </span>
   </div>;
@@ -319,7 +327,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       <h3 className="inspector-section">{settings.points}</h3>
       <div className="fusion-points-tools" role="group" aria-label={settings.points}>
         {/* After the point chosen, or after the last: the new point is the one chosen then, so that points are added one after the other. */}
-        <button type="button" className="color-tool" disabled={count >= MOST_POINTS} data-test="add-point"
+        <button type="button" className="color-tool" disabled={locked || count >= MOST_POINTS} data-test="add-point"
           onClick={() => {
             const after = chosen;
             void commit(build((found, keyFrameNow, where) => insertPoint(where, found, after, keyFrameNow))).then((sent) => {
@@ -327,7 +335,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
             });
           }}><Plus size={14} aria-hidden="true" />{settings.addPoint}</button>
         {/* The point chosen, or the last. The points that are left keep their numbers and their keys. */}
-        <button type="button" className="color-tool" disabled={count <= LEAST_POINTS} data-test="remove-point"
+        <button type="button" className="color-tool" disabled={locked || count <= LEAST_POINTS} data-test="remove-point"
           onClick={() => {
             const index = chosen ?? count - 1;
             setChosenPoint(null);
@@ -375,10 +383,14 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       <span className="inspector-name" data-test="fusion-node-name">{name}</span>
       <span className="caption">{labels.kinds[node.kind]}</span>
     </div>
-    <div className="inspector-panel" data-panel="fusion">
-      <TextField name="label" label={labels.nodeName} value={node.label} allowEmpty
-        onCommit={label => void commit(build((found, _keyFrame, where) => relabel(where, { nodes: [found], links: [] }, found.id, label.trim())))} />
-      {body}
-    </div>
+    {/* Why the settings are off, in the words of the Inspector of the Edit page. */}
+    {locked && <p className="caption" data-test="fusion-inspector-locked">{words.hint.studio.inspector.locked}</p>}
+    <FieldsLocked.Provider value={locked}>
+      <div className="inspector-panel" data-panel="fusion">
+        <TextField name="label" label={labels.nodeName} value={node.label} allowEmpty
+          onCommit={label => void commit(build((found, _keyFrame, where) => relabel(where, { nodes: [found], links: [] }, found.id, label.trim())))} />
+        {body}
+      </div>
+    </FieldsLocked.Provider>
   </div>;
 }

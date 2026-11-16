@@ -99,7 +99,9 @@
   flex-direction: column;
 }
 
+/* The node editor is what Select Tool is laid over. */
 .fusion-page .fusion-nodes-body {
+  position: relative;
   flex: 1 1 0;
   min-height: 140px;
 }
@@ -130,9 +132,95 @@
   padding: 2px var(--s3);
 }
 
+/* Why nothing can be changed: the clip lies on a locked track. */
+.fusion-page .fusion-locked {
+  flex: none;
+  margin: 0;
+  padding: 2px var(--s3);
+  color: var(--warn);
+}
+
 .fusion-page .fusion-empty {
   margin: 0;
   padding: var(--s3);
+}
+
+/*
+ * Select Tool: a small dialog over the top of the graph, in the middle, with its field above its list. It lies within the node
+ * editor, under its tool bar, so it never reaches the viewer above; where the editor is low, its list scrolls.
+ */
+.fusion-page .fusion-select-tool {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  z-index: 6;
+  width: min(280px, calc(100% - 2 * var(--s3)));
+  max-height: calc(100% - 52px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2);
+  transform: translateX(-50%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r2);
+  background: var(--ink-2);
+  box-shadow: var(--shadow);
+}
+
+.fusion-page .fusion-select-tool-filter {
+  flex: none;
+  min-height: 28px;
+  padding: 0 var(--s2);
+  font-size: var(--text-ui);
+}
+
+.fusion-page .fusion-select-tool-none {
+  margin: 0;
+  padding: 2px var(--s1);
+}
+
+.fusion-page .fusion-select-tool-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: auto;
+}
+
+.fusion-page .fusion-select-tool-option {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 4px var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-ui);
+  text-align: left;
+  color: var(--moon-1);
+  cursor: default;
+}
+
+.fusion-page .fusion-select-tool-option:hover {
+  background: var(--ink-3);
+}
+
+/* The kind that Enter takes. */
+.fusion-page .fusion-select-tool-option[aria-selected='true'] {
+  color: var(--moon-0);
+  background: var(--accent-wash);
+}
+
+.fusion-select-tool-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fusion-select-tool-group {
+  font-size: var(--text-caption);
+  color: var(--moon-3);
 }
 
 .fusion-page .fusion-curves {

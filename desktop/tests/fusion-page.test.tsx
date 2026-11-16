@@ -11,13 +11,16 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import { en } from '../src/messages/en';
+import { zhCN } from '../src/messages/zh-CN';
 import { numberedClips, shownClips } from '../src/studio/color/clips';
 import { Studio } from '../src/studio/Studio';
 import {
   applyOp, emptyGrade, firstComposition, ProjectCopy, type Composition, type EngineEvent, type FusionLink, type FusionNode, type FusionPoint, type Media, type Op,
   type Project, type Timeline, type TransportState,
 } from '../src/studio/engine';
+import { copiedNodes, keepCopied } from '../src/studio/fusion/copied';
 import { newMerge, newNode, newPolygon, startPoints } from '../src/studio/fusion/edits';
+import { matchingTools, TOOLS } from '../src/studio/fusion/SelectTool';
 import { chosenPicture, fusionClip } from '../src/studio/pages/FusionPage';
 import { likeABrowser } from './mounted';
 import { blockOf } from './stylesheet';
@@ -29,6 +32,8 @@ const draw = () => act(() => { const pending = frames; frames = []; pending.forE
 const rect = (left: number, top: number, w: number, h: number) => ({ left, top, width: w, height: h, right: left + w, bottom: top + h, x: left, y: top, toJSON() {} });
 beforeEach(() => {
   likeABrowser(); frames = [];
+  // What a test before copied is kept for the window, and so from one test to the next: each begins with nothing copied.
+  keepCopied(null);
   vi.stubGlobal('PointerEvent', MouseEvent);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
   vi.stubGlobal('cancelAnimationFrame', () => {});
@@ -103,7 +108,9 @@ const projectOf = (timelines: Timeline[] = [timelineOf()]): Project => ({ schema
 
 /**
  * An engine that keeps a project, applies the operations a transaction sends as the copy does, gives a node added without an id
- * the next one as the real engine does, and refuses what a test tells it to, as the real one refuses.
+ * the next one as the real engine does, and refuses what a test tells it to, as the real one refuses. A node added by a name of
+ * the transaction (`$name`, PROTOCOL.md) is given an id as one added without, and the links of the operations after it that
+ * name it are made to name that id, as the real engine makes them before it applies them: what is done carries real ids alone.
  */
 function fakeEngine(given: Project) {
   let project = given;
@@ -112,12 +119,21 @@ function fakeEngine(given: Project) {
   const listeners = new Set<(event: EngineEvent) => void>();
   const tell = (method: string, params: unknown) => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));
   let state: TransportState = { monitor: 'timeline', timeline: null, frame: null, shown: null, last: null, speed: 1, playing: false, proxies: true, exact: true, sound: 'off', source: null, late: 0 };
-  const named = (op: Op): Op => {
-    if (op.op !== 'add_fusion_node' || op.node.id !== '') return op;
-    const id = `n${project.next_id}`;
-    project = { ...project, next_id: project.next_id + 1 };
-    const own = (end: string) => (end === '' ? id : end);
-    return { ...op, node: { ...op.node, id } as FusionNode, ...(op.links ? { links: op.links.map(each => ({ ...each, from: own(each.from), to: own(each.to) })) } : {}) };
+  /** What gives the operations of one transaction their ids: the names that the transaction gave are kept from one operation to the next. */
+  const naming = () => {
+    const names = new Map<string, string>();
+    const real = (end: string) => names.get(end) ?? end;
+    return (op: Op): Op => {
+      if (op.op === 'connect_fusion') return { ...op, link: { ...op.link, from: real(op.link.from), to: real(op.link.to) } };
+      if (op.op !== 'add_fusion_node') return op;
+      const given = op.node.id;
+      if (given !== '' && !given.startsWith('$')) return op;
+      const id = `n${project.next_id}`;
+      project = { ...project, next_id: project.next_id + 1 };
+      if (given !== '') names.set(given, id);
+      const own = (end: string) => (end === '' || end === given ? id : real(end));
+      return { ...op, node: { ...op.node, id } as FusionNode, ...(op.links ? { links: op.links.map(each => ({ ...each, from: own(each.from), to: own(each.to) })) } : {}) };
+    };
   };
   const bridge = {
     open: vi.fn(async () => { const opened = { session: 1, project: 'F:/film/.columbina/studio', owned: true, pid: 9, revision }; listeners.forEach(listener => listener({ kind: 'opened', ...opened })); return opened; }),
@@ -135,7 +151,7 @@ function fakeEngine(given: Project) {
       }
       if (method === 'transaction.apply') {
         if (refusal) return { ok: false, error: { code: -32001, message: 'refused', data: refusal } };
-        const done = (params!.ops as Op[]).map(named);
+        const done = (params!.ops as Op[]).map(naming());
         for (const op of done) project = applyOp(project, op);
         revision++;
         tell('project.changed', { revision, made_by: 'desktop', by: 'desktop', next_id: project.next_id, done });
@@ -1425,6 +1441,416 @@ describe('a Blur and a Mosaic in the Spline Editor of the Fusion page', () => {
     press(canvas(), { x: 590, y: 290 });
     expect(listed()).toEqual(['n6.size.y']);
     expect(named('n6.size.y')).toContain('Blur 1 · Y Blur Size');
+  });
+});
+
+describe('copying, cutting, pasting and duplicating nodes on the Fusion page', () => {
+  /** A letter with Ctrl, or with what is given in its place. */
+  const chord = (letter: string, fields: Record<string, unknown> = { ctrlKey: true }) => key(letter, { code: `Key${letter.toUpperCase()}`, ...fields });
+  /** A node as it is pasted: one of its kind with every setting at its default, at its place, named by the transaction. */
+  const pasted = (kind: Parameters<typeof newNode>[0], at: At, index = 0) => ({ ...newNode(kind, at), id: `$p${index}` });
+  const off = (name: string) => (screen.getByRole('menuitem', { name }) as HTMLButtonElement).disabled;
+
+  it('copies the nodes chosen with Ctrl+C and pastes them with Ctrl+V: new nodes down and right, linked among themselves alone, and chosen', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    // Nothing was copied yet: Ctrl+V sends nothing.
+    chord('v'); await settle();
+    expect(sent(bridge)).toEqual([]);
+    choose('n3');
+    press(card('n4'), P.n4, { ctrlKey: true });
+    // Copying changes nothing of the project.
+    chord('c'); await settle();
+    expect(sent(bridge)).toEqual([]);
+    expect(copiedNodes()!.nodes.map(node => [node.id, node.pos])).toEqual([['n3', { x: 176, y: 28 }], ['n4', { x: 324, y: 28 }]]);
+    chord('v'); await settle();
+    // One transaction, which is one step to undo: the link from the Transform into the Merge goes with the later of the two.
+    expect(sent(bridge)).toEqual([[
+      { op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 200, y: 52 }, 0) },
+      { op: 'add_fusion_node', ...AT, node: pasted('merge', { x: 348, y: 52 }, 1), links: [link('$p0', '$p1', 'background')] },
+    ]]);
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n10', 'n11']);
+    expect([placeOf('n10'), placeOf('n11')]).toEqual([[200, 52], [348, 52]]);
+    // Nothing is linked to the rest of the graph, and the nodes pasted are the ones chosen.
+    expect(linksDrawn().filter(name => /n1[01]/.test(name!))).toEqual(['n10>n11:background']);
+    expect(linksDrawn()).toHaveLength(5);
+    expect([currentNode(), chosenNodes()]).toEqual(['n11', ['n10']]);
+    // Pasted again, the same nodes lie further down and right, clear of the ones pasted before.
+    bridge.call.mockClear();
+    chord('v'); await settle();
+    expect(sent(bridge)).toEqual([[
+      { op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 224, y: 76 }, 0) },
+      { op: 'add_fusion_node', ...AT, node: pasted('merge', { x: 372, y: 76 }, 1), links: [link('$p0', '$p1', 'background')] },
+    ]]);
+    expect([currentNode(), chosenNodes()]).toEqual(['n13', ['n12']]);
+    expect(problem()).toBeNull();
+  });
+
+  it('cuts with Ctrl+X as Delete takes nodes away, pastes with Cmd+V too, and duplicates with Ctrl+D without touching what was copied', async () => {
+    const { bridge } = await mount();
+    choose('n3');
+    bridge.call.mockClear();
+    chord('x'); await settle();
+    // The Transform is taken away, and what fed it is joined to what it fed, in one transaction.
+    expect(sent(bridge)).toEqual([[{ op: 'remove_fusion_node', ...AT, id: 'n3', links: [link('MediaIn1', 'n4', 'background')] }]]);
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n4', 'n5']);
+    // It is kept: pasted, it is a new node down and right of where it lay, with no links.
+    bridge.call.mockClear();
+    chord('v', { metaKey: true }); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 200, y: 52 }) }]]);
+    expect([currentNode(), placeOf('n10')]).toEqual(['n10', [200, 52]]);
+    // Duplicate: the node chosen once more, down and right of itself.
+    bridge.call.mockClear();
+    chord('d'); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 224, y: 76 }) }]]);
+    expect(currentNode()).toBe('n11');
+    // What was cut is still what Paste pastes: from where it lay, clear of the two that lie there now.
+    expect(copiedNodes()!.nodes.map(node => node.id)).toEqual(['n3']);
+    bridge.call.mockClear();
+    chord('v'); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 248, y: 100 }) }]]);
+    // The MediaOut is neither cut nor duplicated.
+    choose('out1');
+    bridge.call.mockClear();
+    chord('x'); chord('d'); await settle();
+    expect(sent(bridge)).toEqual([]);
+    expect(copiedNodes()!.nodes.map(node => node.id)).toEqual(['n3']);
+  });
+
+  it('has Cut, Copy, Paste and Duplicate in the menus: of the nodes chosen, and pasted where the menu was opened', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    fireEvent.contextMenu(card('n3'), { clientX: P.n3.x, clientY: P.n3.y });
+    // Nothing was copied yet, so there is nothing to paste.
+    expect([off('Cut'), off('Copy'), off('Paste'), off('Duplicate')]).toEqual([false, false, true, false]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }));
+    await settle();
+    expect(sent(bridge)).toEqual([]);
+    // From the menu of the background: where the menu was opened.
+    fireEvent.contextMenu(canvas(), { clientX: 300, clientY: 250 });
+    expect(off('Paste')).toBe(false);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Paste' }));
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 300, y: 250 }) }]]);
+    expect([currentNode(), placeOf('n10')]).toEqual(['n10', [300, 250]]);
+    // Duplicate and Cut, from the menu of a node.
+    bridge.call.mockClear();
+    fireEvent.contextMenu(card('n5'), { clientX: P.n5.x, clientY: P.n5.y });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate' }));
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: pasted('background', { x: 52, y: 144 }) }]]);
+    bridge.call.mockClear();
+    fireEvent.contextMenu(card('n5'), { clientX: P.n5.x, clientY: P.n5.y });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Cut' }));
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'remove_fusion_node', ...AT, id: 'n5' }]]);
+    expect(copiedNodes()!.nodes.map(node => node.kind)).toEqual(['background']);
+    // The MediaOut is not copied: a composition has exactly one.
+    fireEvent.contextMenu(card('MediaOut1'), { clientX: P.out1.x, clientY: P.out1.y });
+    expect([off('Cut'), off('Copy'), off('Paste'), off('Duplicate')]).toEqual([true, true, false, true]);
+    // A node right-clicked that is one of several chosen leaves them chosen, and the menu is about them all. (The press puts the menu away.)
+    choose('n3');
+    press(card('n4'), P.n4, { ctrlKey: true });
+    fireEvent.contextMenu(card('n4'), { clientX: P.n4.x, clientY: P.n4.y });
+    expect([currentNode(), chosenNodes()]).toEqual(['n4', ['n3']]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }));
+    expect([copiedNodes()!.nodes.map(node => node.id), copiedNodes()!.links]).toEqual([['n3', 'n4'], [link('n3', 'n4', 'background')]]);
+  });
+
+  it('pastes into the composition of another clip what was copied in one, the first composition before it where the clip has none', async () => {
+    const { bridge, notify } = await mount();
+    choose('n3');
+    press(card('n4'), P.n4, { ctrlKey: true });
+    chord('c');
+    await notify({ frame: 160, shown: 160 });
+    expect(clipShown().dataset.clip).toBe('c2');
+    bridge.call.mockClear();
+    chord('v'); await settle();
+    const at = { timeline: 't1', clip: 'c2' };
+    expect(sent(bridge)).toEqual([[
+      { op: 'set_fusion', ...at, value: firstComposition() },
+      { op: 'add_fusion_node', ...at, node: pasted('transform', { x: 200, y: 52 }, 0) },
+      { op: 'add_fusion_node', ...at, node: pasted('merge', { x: 348, y: 52 }, 1), links: [link('$p0', '$p1', 'background')] },
+    ]]);
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n10', 'n11']);
+    expect(linksDrawn()).toEqual(['MediaIn1>MediaOut1:input', 'n10>n11:background']);
+    expect([currentNode(), chosenNodes()]).toEqual(['n11', ['n10']]);
+    // Back on the first clip, the same nodes are pasted there too.
+    await notify({ frame: 0, shown: 0 });
+    expect(clipShown().dataset.clip).toBe('c1');
+    bridge.call.mockClear();
+    chord('v'); await settle();
+    expect(sent(bridge)).toEqual([[
+      { op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 200, y: 52 }, 0) },
+      { op: 'add_fusion_node', ...AT, node: pasted('merge', { x: 348, y: 52 }, 1), links: [link('$p0', '$p1', 'background')] },
+    ]]);
+  });
+
+  it('pastes nothing into a composition that has no room for it, and says why', async () => {
+    // 255 nodes of the 256 that a composition may have.
+    const made = comp();
+    const many: Composition = { ...made, nodes: [...made.nodes, ...Array.from({ length: 250 }, (_, index) => newNode('transform', null, `t${index}`))] };
+    const { bridge } = await mount(projectOf([timelineOf(many)]));
+    expect(nodesDrawn()).toHaveLength(255);
+    choose('n3');
+    press(card('n4'), P.n4, { ctrlKey: true });
+    bridge.call.mockClear();
+    chord('c'); chord('v'); await settle();
+    expect(sent(bridge)).toEqual([]);
+    expect(problem()).toBe(en.hint.studio.fusionPage.tooManyNodes);
+    // Duplicate of the two is refused in the same way; one node more has room.
+    chord('d'); await settle();
+    expect(sent(bridge)).toEqual([]);
+    choose('n3');
+    chord('d'); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: pasted('transform', { x: 200, y: 52 }) }]]);
+    expect(problem()).toBeNull();
+    expect(nodesDrawn()).toHaveLength(256);
+  });
+});
+
+describe('a node dropped onto a link on the Fusion page', () => {
+  const replacing = () => [...graph().querySelectorAll<SVGElement>('[data-replacing]')].map(each => each.dataset.link);
+  /** Press an element at a point and drag to another by way of the point between them, without letting go. */
+  const dragTo = (element: Element, from: At, to: At) => {
+    fireEvent.pointerDown(element, { button: 0, clientX: from.x, clientY: from.y });
+    fireEvent.pointerMove(canvas(), { clientX: (from.x + to.x) / 2, clientY: (from.y + to.y) / 2 });
+    fireEvent.pointerMove(canvas(), { clientX: to.x, clientY: to.y });
+  };
+  const letGo = (at: At) => fireEvent.pointerUp(canvas(), { clientX: at.x, clientY: at.y });
+
+  it('goes into the link: what fed the link feeds its first picture and it feeds what the link fed, in the gesture of the move', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(effectComp())]));
+    bridge.call.mockClear();
+    // The link from the Transform into the background of the Merge runs from 268,57 to 324,47.3: its middle lies at 296,52.2.
+    const over = { x: 296, y: 53 };
+    dragTo(card('n6'), M.n6, over);
+    // While the Blur is over it, the link is drawn as one about to be replaced.
+    expect(replacing()).toEqual(['n3>n4:background']);
+    letGo(over);
+    expect(replacing()).toEqual([]);
+    await settle();
+    const moves = applied(bridge);
+    expect(moves.map(each => each.ops)).toEqual([
+      [{ op: 'set_fusion_node', ...AT, id: 'n6', pos: { x: 139, y: 118 } }],
+      [
+        { op: 'set_fusion_node', ...AT, id: 'n6', pos: { x: 250, y: 24 } },
+        { op: 'connect_fusion', ...AT, link: link('n3', 'n6') }, { op: 'connect_fusion', ...AT, link: link('n6', 'n4', 'background') },
+      ],
+    ]);
+    // One gesture, ended by the transaction that has the links: one step to undo.
+    expect(new Set(moves.map(each => each.gesture?.id)).size).toBe(1);
+    expect(moves.map(each => each.gesture!.end)).toEqual([undefined, true]);
+    expect(linksDrawn()).toEqual(expect.arrayContaining(['n3>n6:input', 'n6>n4:background']));
+    expect(linksDrawn()).not.toContain('n3>n4:background');
+    expect(linksDrawn()).toHaveLength(5);
+    expect(placeOf('n6')).toEqual([250, 24]);
+    expect(problem()).toBeNull();
+  });
+
+  it('does not go into a link into a mask input', async () => {
+    // `comp`, the Blur n6 that nothing is linked to, at 28,212, and the Rectangle n7, at 28,304, into the mask of the Merge.
+    const made = comp();
+    const withMask: Composition = { nodes: [...made.nodes, newNode('blur', null, 'n6'), newNode('rectangle', null, 'n7')], links: [...made.links, link('n7', 'n4', 'mask')] };
+    const { bridge } = await mount(projectOf([timelineOf(withMask)]));
+    expect([placeOf('n6'), placeOf('n7')]).toEqual([[28, 212], [28, 304]]);
+    bridge.call.mockClear();
+    // The link into the mask runs from 120,333 up into 347,86: its middle lies at 276.1,255.8.
+    const over = { x: 276, y: 255 };
+    dragTo(card('n6'), M.n6, over);
+    expect(replacing()).toEqual([]);
+    letGo(over);
+    await settle();
+    // The Blur is moved, and nothing is linked.
+    expect(sent(bridge)).toEqual([
+      [{ op: 'set_fusion_node', ...AT, id: 'n6', pos: { x: 129, y: 219 } }], [{ op: 'set_fusion_node', ...AT, id: 'n6', pos: { x: 230, y: 226 } }],
+    ]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground', 'n7>n4:mask']);
+  });
+
+  it('does not go into a link where it has links itself', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(comp(false))]));
+    bridge.call.mockClear();
+    // The Transform, which is linked, over the link from the Merge into the MediaOut, from 416,57 to 472,57.
+    const over = { x: 444, y: 57 };
+    dragTo(card('n3'), P.n3, over);
+    expect(replacing()).toEqual([]);
+    letGo(over);
+    await settle();
+    expect(sent(bridge)).toEqual([
+      [{ op: 'set_fusion_node', ...AT, id: 'n3', pos: { x: 287, y: 28 } }], [{ op: 'set_fusion_node', ...AT, id: 'n3', pos: { x: 398, y: 28 } }],
+    ]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background']);
+  });
+});
+
+describe('Select Tool on the Fusion page', () => {
+  const dialog = () => screen.queryByRole('dialog', { name: 'Select Tool' });
+  const field = () => screen.getByRole('combobox', { name: 'Search tools' }) as HTMLInputElement;
+  const options = () => [...document.querySelectorAll<HTMLElement>('[data-test="select-tool-option"]')];
+  const kinds = () => options().map(each => each.dataset.kind);
+  const markedKind = () => options().find(each => each.getAttribute('aria-selected') === 'true')?.dataset.kind ?? null;
+  const shiftSpace = () => key(' ', { code: 'Space', shiftKey: true });
+
+  it('opens on Shift+Space while the node editor has the focus, narrows as it is typed in, and adds the kind marked on Enter', async () => {
+    const { bridge } = await mount();
+    choose('n3');
+    bridge.call.mockClear();
+    shiftSpace(); await settle();
+    // A labelled dialog, the keyboard in its field, which owns the list and says which kind is marked.
+    expect(dialog()).not.toBeNull();
+    expect(document.activeElement).toBe(field());
+    expect(screen.getByRole('listbox', { name: 'Select Tool' }).id).toBe(field().getAttribute('aria-controls'));
+    expect(kinds()).toEqual(['merge', 'transform', 'background', 'media_in', 'blur', 'mosaic', 'rectangle', 'ellipse', 'polygon']);
+    expect(options().map(each => each.querySelector('.fusion-select-tool-name')!.textContent))
+      .toEqual(['Merge', 'Transform', 'Background', 'MediaIn', 'Blur', 'Mosaic', 'Rectangle', 'Ellipse', 'Polygon']);
+    expect(options().every(each => each.getAttribute('role') === 'option')).toBe(true);
+    expect([markedKind(), field().getAttribute('aria-activedescendant')]).toEqual(['merge', options()[0].id]);
+    // Shift+Space was the editor's: the transport, which plays on Space, was not asked to.
+    expect(calls(bridge, 'transport.play')).toHaveLength(0);
+    // What is typed narrows the list: the kinds whose name begins with it, then those that have it further on.
+    fireEvent.change(field(), { target: { value: 'm' } });
+    expect(kinds()).toEqual(['merge', 'media_in', 'mosaic', 'transform']);
+    // The arrows move through the list, and round its ends.
+    fireEvent.keyDown(field(), { key: 'ArrowDown' });
+    expect([markedKind(), field().getAttribute('aria-activedescendant')]).toEqual(['media_in', options()[1].id]);
+    fireEvent.keyDown(field(), { key: 'ArrowUp' });
+    fireEvent.keyDown(field(), { key: 'ArrowUp' });
+    expect(markedKind()).toBe('transform');
+    fireEvent.change(field(), { target: { value: 'mos' } });
+    expect([kinds(), markedKind()]).toEqual([['mosaic'], 'mosaic']);
+    // Enter adds the kind marked as its button of the tool bar does: after the Transform chosen, before the Merge that it fed.
+    fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('mosaic'), links: [link('n3', '', 'input'), link('', 'n4', 'background')] }]]);
+    expect(dialog()).toBeNull();
+    expect([currentNode(), nodeOf('n10').dataset.kind]).toEqual(['n10', 'mosaic']);
+    // A mask taken is linked into the mask of the node chosen, the Mosaic.
+    bridge.call.mockClear();
+    shiftSpace();
+    fireEvent.change(field(), { target: { value: 'e' } });
+    expect(kinds()).toEqual(['ellipse', 'merge', 'media_in', 'rectangle']);
+    fireEvent.keyDown(field(), { key: 'ArrowUp' });
+    expect(markedKind()).toBe('rectangle');
+    fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('rectangle'), links: [link('', 'n10', 'mask')] }]]);
+    expect(linksDrawn()).toContain('n11>n10:mask');
+  });
+
+  it('closes on Escape and adds nothing, says so where nothing is named as what was typed, and is not opened from another part of the page', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    shiftSpace();
+    fireEvent.change(field(), { target: { value: 'zz' } });
+    expect(kinds()).toEqual([]);
+    expect(marked('select-tool-none')!.textContent).toBe(en.hint.studio.fusionPage.noTool);
+    expect(field().getAttribute('aria-activedescendant')).toBeNull();
+    // Enter with nothing marked adds nothing, and the dialog stays.
+    fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+    expect(dialog()).not.toBeNull();
+    fireEvent.keyDown(field(), { key: 'Escape' }); await settle();
+    expect(dialog()).toBeNull();
+    expect(sent(bridge)).toEqual([]);
+    // A press elsewhere closes it too.
+    shiftSpace();
+    expect(dialog()).not.toBeNull();
+    fireEvent.pointerDown(marked('fusion-inspector')!);
+    expect(dialog()).toBeNull();
+    // The Inspector has the focus now: Shift+Space is the transport's Space, and opens nothing.
+    shiftSpace(); await settle();
+    expect(dialog()).toBeNull();
+    expect(calls(bridge, 'transport.play')).toHaveLength(1);
+    expect(sent(bridge)).toEqual([]);
+  });
+
+  it('opens from the menus, and puts the node taken where the menu was opened', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    fireEvent.contextMenu(canvas(), { clientX: 300, clientY: 250 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Select Tool…' }));
+    expect(dialog()).not.toBeNull();
+    expect(document.activeElement).toBe(field());
+    fireEvent.change(field(), { target: { value: 'back' } });
+    fireEvent.click(options()[0]);
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('background', { x: 300, y: 250 }) }]]);
+    expect(dialog()).toBeNull();
+    // From the menu of a node, the kind taken goes in after that node.
+    bridge.call.mockClear();
+    fireEvent.contextMenu(card('n4'), { clientX: 380, clientY: 60 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Select Tool…' }));
+    fireEvent.change(field(), { target: { value: 'blur' } });
+    fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('blur', { x: 380, y: 60 }), links: [link('n4', '', 'input'), link('', 'MediaOut1', 'input')] }]]);
+  });
+
+  it('finds a kind by the name that the page shows it by and by the name that the engine gives it', () => {
+    const names = en.label.studio.fusionPage.kinds;
+    expect(matchingTools('', names)).toEqual([...TOOLS]);
+    expect(matchingTools('  ', names)).toEqual([...TOOLS]);
+    expect(matchingTools('BL', names)).toEqual(['blur']);
+    expect(matchingTools('media in', names)).toEqual(['media_in']);
+    expect(matchingTools('media_in', names)).toEqual(['media_in']);
+    expect(matchingTools('gon', names)).toEqual(['polygon']);
+    expect(matchingTools('zz', names)).toEqual([]);
+    // In another language, by its name there, and by the name of the engine all the same.
+    const chinese = zhCN.label.studio.fusionPage.kinds;
+    expect(matchingTools(chinese.blur, chinese)).toEqual(['blur']);
+    expect(matchingTools('blur', chinese)).toEqual(['blur']);
+  });
+});
+
+describe('a clip on a locked track on the Fusion page', () => {
+  const lock = (locked: boolean): Op[] => [{ op: 'set_track', timeline: 't1', id: 'v1', locked }];
+
+  it('is shown, and nothing of its composition is changed: the node editor and the Inspector are off, and say why', async () => {
+    const { bridge, outside } = await mount();
+    choose('n4');
+    key('c', { code: 'KeyC', ctrlKey: true });
+    expect(marked('fusion-locked')).toBeNull();
+    await outside(lock(true));
+    bridge.call.mockClear();
+    // The page says why, in the node editor and in the Inspector, in the words of the Inspector of the Edit page.
+    expect(marked('fusion-locked')!.textContent).toBe(en.hint.studio.inspector.locked);
+    expect(marked('fusion-inspector-locked')!.textContent).toBe(en.hint.studio.inspector.locked);
+    // The composition is shown as it is, and its settings too.
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5']);
+    expect([inspector().dataset.node, box('blend').value]).toEqual(['n4', '1.000']);
+    // The buttons of the tool bar are off, and so is every field, switch and button of the Inspector that changes something.
+    expect([...document.querySelectorAll<HTMLButtonElement>('.fusion-add button')].map(each => each.disabled)).toEqual(Array.from({ length: 9 }, () => true));
+    expect([box('blend').disabled, slider('blend').disabled, row('apply').querySelector('select')!.disabled, row('label').querySelector('input')!.disabled])
+      .toEqual([true, true, true, true]);
+    expect(keysOf('blend')[1].disabled).toBe(true);
+    // The keys that change something do nothing, and open neither the field of a name nor Select Tool.
+    key('Delete'); key('p', { code: 'KeyP', ctrlKey: true }); key('x', { code: 'KeyX', ctrlKey: true }); key('v', { code: 'KeyV', ctrlKey: true });
+    key('d', { code: 'KeyD', ctrlKey: true }); key('F2'); key(' ', { code: 'Space', shiftKey: true });
+    await settle();
+    expect(sent(bridge)).toEqual([]);
+    expect(screen.queryByRole('textbox', { name: 'Node label' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Select Tool' })).toBeNull();
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5']);
+    // A drag moves no node, draws no link and takes up the end of none; a press still chooses.
+    dragFrom(card('n3'), P.n3, { x: P.n3.x + 40, y: P.n3.y + 40 });
+    expect([currentNode(), placeOf('n3')]).toEqual(['n3', [176, 28]]);
+    dragFrom(port('n5', 'out'), P.n5Out, P.out1In);
+    expect([currentNode(), marked('wire')]).toEqual(['n5', null]);
+    dragFrom(half('n4>MediaOut1:input', 'end'), { x: 450, y: 57 }, { x: 450, y: 250 });
+    await settle();
+    expect(sent(bridge)).toEqual([]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground']);
+    // Ctrl+A chooses every node still; and of the commands of a menu, Copy alone is left.
+    key('a', { code: 'KeyA', ctrlKey: true });
+    expect(chosenNodes()).toHaveLength(4);
+    fireEvent.contextMenu(card('n4'), { clientX: P.n4.x, clientY: P.n4.y });
+    const off = (name: string) => (screen.getByRole('menuitem', { name }) as HTMLButtonElement).disabled;
+    expect(['Add Node', 'Select Tool…', 'Cut', 'Paste', 'Duplicate', 'Rename', 'Pass Through', 'Delete Node'].map(off)).toEqual(Array.from({ length: 8 }, () => true));
+    expect(off('Copy')).toBe(false);
+    // Unlocked again, the page changes the composition as before. (The press puts the menu away.)
+    await outside(lock(false));
+    expect([marked('fusion-locked'), marked('fusion-inspector-locked')]).toEqual([null, null]);
+    choose('n4');
+    expect([(marked('add-merge') as HTMLButtonElement).disabled, box('blend').disabled]).toEqual([false, false]);
+    key('p', { code: 'KeyP', ctrlKey: true }); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_fusion_node', ...AT, id: 'n4', pass_through: true }]]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Blend, Circle, Droplet, Ellipsis, Grid3x3, ImagePlus, Move, Pentagon, RectangleHorizontal, Square, X } from 'lucide-react';
+import { Ellipsis, X } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
@@ -12,14 +12,17 @@ import { KeyedMark, ZOOM_LEAST, ZOOM_MOST } from '../color/NodeEditor';
 import type { GradeEditing } from '../color/useGradeEditing';
 import { refusalText } from '../inspector/refusal';
 import { useAudioGesture } from '../timeline/useAudioGesture';
+import { copiedNodes, keepCopied } from './copied';
 import {
-  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, isFirst, moveNodes, reconnect, relabel, removeComposition,
-  removeNodes, resetComposition, restoreNodes, togglePass, withFirst, type FusionAt, type FusionCommand,
+  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addedNodes, addNode, connect, copyNodes, cutNodes, disconnect, fusionKey, insertOnLink, isFirst, moveNodes,
+  pasteNodes, reconnect, relabel, removeComposition, removeNodes, resetComposition, restoreNodes, roomFor, togglePass, withFirst, type CopiedNodes, type FusionAt,
+  type FusionCommand,
 } from './edits';
 import {
-  fusionLinkHalves, fusionLinkPath, hasMaskInput, hasOutput, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf, nodesIn, pictureInputs, placesOf, portAt,
-  portName, portPoint, type FusionLayout, type FusionPort, type PlacedFusion,
+  fusionLinkHalves, fusionLinkNear, fusionLinkPath, hasMaskInput, hasOutput, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf, nodesIn, pictureInputs,
+  placesOf, portAt, portName, portPoint, type FusionLayout, type FusionPort, type PlacedFusion,
 } from './graph';
+import { ADD_ICONS, SelectTool, TOOLS, type AddableKind } from './SelectTool';
 import { hasKeys } from './settings';
 import '../color/color.css';
 import '../color/nodes.css';
@@ -31,12 +34,6 @@ const DRAG_PX = 3;
 const HOLD_MS = 1500;
 const ZOOM_STEP = 1.25;
 const NO_PLACES: Placed = {};
-/** The face of the button that adds a node of each kind. */
-const ADD_ICONS = {
-  merge: Blend, transform: Move, background: Square, media_in: ImagePlus,
-  rectangle: RectangleHorizontal, ellipse: Circle, polygon: Pentagon,
-  blur: Droplet, mosaic: Grid3x3,
-} as const;
 
 /** The nodes that are chosen: the one chosen last, whose settings the Inspector shows where it is the only one, and the others. */
 export interface FusionSelection { current: string | null; others: readonly string[] }
@@ -113,8 +110,8 @@ const LinkLine = memo(function LinkLine({ name, input, fromX, fromY, toX, toY, c
 
 /** A press in the graph, and what it becomes as the pointer moves. */
 type Drag =
-  /** Nodes dragged: `live` once the gesture that sends their places has begun. */
-  | { kind: 'node'; id: string; ids: string[]; start: Point; moved: boolean; live: boolean; ctrl: boolean; shift: boolean; base: FusionLayout; last: Placed }
+  /** Nodes dragged: `live` once the gesture that sends their places has begun; `still` where they may be chosen and not moved (a locked track). */
+  | { kind: 'node'; id: string; ids: string[]; start: Point; moved: boolean; live: boolean; ctrl: boolean; shift: boolean; base: FusionLayout; last: Placed; still: boolean }
   /** A link drawn from a port; `detached` is the link whose end was taken up, which goes with it. */
   | { kind: 'wire'; from: FusionPort; start: Point; moved: boolean; detached: FusionLink | null; base: FusionLayout }
   | { kind: 'half'; link: FusionLink; half: 'start' | 'end'; start: Point; moved: boolean; base: FusionLayout }
@@ -127,12 +124,23 @@ interface Preview {
   /** The link that is drawn, and the input that it would go into, where it is over one or was begun at one: into a `mask` it is drawn as a link of a mask. */
   wire?: { from: Point; to: Point; input: FusionInput | null } | null;
   port?: FusionPort | null;
+  /** The link that a link drawn would take the place of, or that the one node dragged would go into, where it is over one. */
   replacing?: string | null;
   detached?: string | null;
   marquee?: { a: Point; b: Point } | null;
 }
 
 const linkInto = (layout: FusionLayout, port: FusionPort) => layout.links.find(link => link.to === port.node && link.input === port.input) ?? null;
+
+/**
+ * The link that the one node dragged would go into where it is let go at `point`: the link of a picture nearest the pointer,
+ * as in the Color page's editor, where the node is one that goes into a link (`insertOnLink`); null otherwise.
+ */
+function linkUnder(at: FusionAt, composition: Composition, layout: FusionLayout, ids: readonly string[], point: Point): FusionLink | null {
+  if (ids.length !== 1) return null;
+  const link = fusionLinkNear(layout, point, each => each.input !== 'mask' && each.from !== ids[0] && each.to !== ids[0]);
+  return link !== null && insertOnLink(at, composition, ids[0], link).length > 0 ? link : null;
+}
 
 /**
  * The node editor of the Fusion page (DaVinci Resolve Reference Manual 20, Ch. 67, pp. 1316–1365):
@@ -157,7 +165,23 @@ const linkInto = (layout: FusionLayout, port: FusionPort) => layout.links.find(l
  *   chain (`removeNodes`); the MediaOut stays; Ctrl+P passes the nodes chosen through; F2, a double
  *   click on its name, or its menu renames a node;
  * - Reset Fusion Composition (p. 1272) and Remove Composition, from the menu of the background and
- *   of the button at the right of the tool bar.
+ *   of the button at the right of the tool bar;
+ * - Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D (Cmd on a Mac), and the same in the menus, copy, cut, paste
+ *   and duplicate the nodes chosen, with the links among them (`copyNodes`, `pasteNodes`): what
+ *   was copied is kept for the window (`copied.ts`), so it is pasted into the composition of
+ *   another clip too; pasted, the nodes lie down and right of where they were, or where the menu
+ *   was opened, linked to nothing else, and are the ones chosen; a paste that would give the
+ *   composition more nodes than it may have is not sent, and the editor says why;
+ * - one node that has no links, dragged and let go over a link of a picture, goes into that link
+ *   (`insertOnLink`), in the gesture of the move; the link is drawn as one about to be replaced
+ *   while the node is over it;
+ * - Select Tool (Shift+Space, and in the menus): a dialog that lists the kinds that the editor
+ *   adds, narrowed by what is typed, and adds the one taken as its button of the tool bar does.
+ *
+ * Where the clip lies on a locked track (`locked`), nothing of it is changed, as on the Edit page:
+ * the buttons and the commands that change something are off, a drag moves no node and draws no
+ * link, the keys that change something do nothing, and the editor says why. Nodes are still
+ * chosen, copied and looked at, and the graph is zoomed and scrolled.
  *
  * A clip without a composition is shown with the first one (`shownComposition`), and says so: the
  * first change sends it before itself (`withFirst`). Where a node lies is the project's (`pos`).
@@ -165,7 +189,7 @@ const linkInto = (layout: FusionLayout, port: FusionPort) => layout.links.find(l
  * above the graph, as the Color page says it; a change that changes nothing (`empty`, a node
  * dragged back to where it was) is no refusal and is not said.
  */
-export function FusionNodeEditor({ bridge, session, revision, clip, composition, at, selection, onSelection, focused, editing }: {
+export function FusionNodeEditor({ bridge, session, revision, clip, composition, at, selection, onSelection, focused, editing, locked = false }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number;
   /** The clip whose composition is shown: it has none yet where `fusion` is not there. */
   clip: Clip;
@@ -177,6 +201,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
   /** Whether the node editor has the focus of the page: Delete, Ctrl+P, F2 and Ctrl+A are its then. */
   focused: boolean;
   editing: GradeEditing;
+  /** Whether the clip lies on a locked track: its composition is shown, and nothing of it is changed. */
+  locked?: boolean;
 }) {
   const words = useWords();
   const labels = words.label.studio.fusionPage;
@@ -190,6 +216,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
   const [preview, setPreview] = useState<Preview | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [labelling, setLabelling] = useState<{ id: string; value: string } | null>(null);
+  // Select Tool, while it is open: where the node taken is put (where the menu was opened, or where the editor lays it out), and the node that it goes in after, where a menu of a node opened it.
+  const [tool, setTool] = useState<{ pos: Point | null; after?: string } | null>(null);
   // Nodes dropped where the engine has not yet told of them stand where they were dropped, until it does or a while has passed.
   const [held, setHeld] = useState<Placed | null>(null);
   const drag = useRef<Drag | null>(null);
@@ -205,12 +233,12 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
   const pickedLink = picked !== null && composition.links.some(link => linkName(link) === picked) ? picked : null;
 
   // What the handlers of keys and of the pointer read, as it is now.
-  const now = useRef({ composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, base, words });
-  now.current = { composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, base, words };
+  const now = useRef({ composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, tool, base, words, locked });
+  now.current = { composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, tool, base, words, locked };
 
   // The places of nodes dragged are sent as one gesture, so that a drag is one step to undo.
   const gesture = useAudioGesture({
-    bridge, session, revision, identity: `${at.timeline}/${at.clip}/fusion-nodes`, locked: false,
+    bridge, session, revision, identity: `${at.timeline}/${at.clip}/fusion-nodes`, locked,
     onFailure: (error) => {
       setHeld(null);
       if (!isEmpty(error)) now.current.editing.setProblem(refusalText(error, now.current.words.hint.studio));
@@ -231,6 +259,9 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
     return () => clearTimeout(timer);
   }, [held, composition]);
 
+  // A track locked while Select Tool is open closes it: it could add nothing.
+  useEffect(() => { if (locked) setTool(null); }, [locked]);
+
   const setZoom = useCallback((next: number, around?: { client: Point; graph: Point }) => {
     const value = Math.min(ZOOM_MOST, Math.max(ZOOM_LEAST, next));
     setZoomState(value);
@@ -244,22 +275,69 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
 
   /** Send a change as one transaction, the first composition before it where the clip has none; `then` is told what the engine did. */
   const run = useCallback((ops: Op[], then?: (done: readonly Op[]) => void) => {
-    const { editing: sending, at: where, has: there } = now.current;
+    const { editing: sending, at: where, has: there, locked: off } = now.current;
+    // Nothing of a clip on a locked track is changed, whatever asks for it.
+    if (off) return;
     const sent = withFirst(where, there, ops);
     if (sent.length > 0) sending.run(sent, applied => then?.(applied.done));
   }, []);
 
-  /** Add a node of a kind, after the one node chosen where it can go there, at `pos` or where the editor lays it out: it is the one chosen then. */
-  const add = useCallback((kind: FusionKind, pos: Point | null) => {
+  /**
+   * Add a node of a kind, after the one node chosen where it can go there (or after `into`, the node whose menu asks for it), at
+   * `pos` or where the editor lays it out: it is the one chosen then.
+   */
+  const add = useCallback((kind: FusionKind, pos: Point | null, into?: string) => {
     const { composition: of, at: where, selection: chosen } = now.current;
-    const after = chosen.current !== null && chosen.others.length === 0 ? chosen.current : null;
+    const after = into ?? (chosen.current !== null && chosen.others.length === 0 ? chosen.current : null);
     run(addNode(where, of, kind, after, pos), (done) => {
       const made = addedNode(done);
       if (made !== null) now.current.onSelection({ current: made, others: [] });
     });
   }, [run]);
 
+  /** Keep nodes for Paste (Ctrl+C); whether there were any to keep. Nothing of the project is changed, so a locked track does not hinder it. */
+  const copy = useCallback((ids: readonly string[]): boolean => {
+    const copied = copyNodes(now.current.composition, ids);
+    if (copied === null) return false;
+    keepCopied(copied);
+    return true;
+  }, []);
+
+  /**
+   * Add nodes that were copied, at a point of the graph or down and right of where they were: they are the ones chosen then, the
+   * last of them the one chosen last. A composition without room for them is left as it is, and the editor says why. Whether
+   * there was anything to paste.
+   */
+  const paste = useCallback((copied: CopiedNodes | null, pos: Point | null): boolean => {
+    const { composition: of, at: where, locked: off, editing: sending, words: said } = now.current;
+    if (off || copied === null) return false;
+    if (!roomFor(of, copied.nodes.length)) {
+      sending.setProblem(said.hint.studio.fusionPage.tooManyNodes);
+      return true;
+    }
+    run(pasteNodes(where, of, copied, pos), (done) => {
+      const made = addedNodes(done);
+      if (made.length > 0) now.current.onSelection({ current: made[made.length - 1], others: made.slice(0, -1) });
+    });
+    return true;
+  }, [run]);
+
+  /** Cut nodes (Ctrl+X): they are kept for Paste and taken away as Delete takes them, in one transaction. Whether there were any to cut. */
+  const cut = useCallback((ids: readonly string[]): boolean => {
+    const { composition: of, at: where, locked: off } = now.current;
+    if (off) return false;
+    const { copied, ops } = cutNodes(where, of, ids);
+    if (copied === null) return false;
+    keepCopied(copied);
+    run(ops);
+    return true;
+  }, [run]);
+
+  /** Duplicate nodes (Ctrl+D): a copy of them is pasted, and what was copied before stays kept. */
+  const duplicate = useCallback((ids: readonly string[]): boolean => paste(copyNodes(now.current.composition, ids), null), [paste]);
+
   const startLabel = useCallback((id: string) => {
+    if (now.current.locked) return;
     const node = now.current.composition.nodes.find(each => each.id === id);
     if (node) setLabelling({ id, value: node.label });
   }, []);
@@ -290,6 +368,14 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
       return false;
     }
     if (!state.focused) return false;
+    // Choosing and copying change nothing of the project: they are done on a locked track too.
+    if (command.kind === 'selectAll') {
+      const ids = state.composition.nodes.map(node => node.id);
+      state.onSelection({ current: state.selection.current ?? ids[0] ?? null, others: ids.filter(id => id !== (state.selection.current ?? ids[0])) });
+      return true;
+    }
+    if (command.kind === 'copy') return copy(state.selected);
+    if (state.locked) return false;
     switch (command.kind) {
       case 'delete': {
         const link = state.pickedLink === null ? undefined : state.composition.links.find(each => linkName(each) === state.pickedLink);
@@ -309,26 +395,37 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
         if (state.selection.current === null) return false;
         startLabel(state.selection.current);
         return true;
-      case 'selectAll': {
-        const ids = state.composition.nodes.map(node => node.id);
-        state.onSelection({ current: state.selection.current ?? ids[0] ?? null, others: ids.filter(id => id !== (state.selection.current ?? ids[0])) });
+      case 'cut': return cut(state.selected);
+      case 'paste': return paste(copiedNodes(), null);
+      case 'duplicate': return duplicate(state.selected);
+      case 'selectTool':
+        setTool({ pos: null });
         return true;
-      }
       default: return false;
     }
-  }, [cancelDrag, run, startLabel]);
+  }, [cancelDrag, copy, cut, duplicate, paste, run, startLabel]);
 
-  // The keys of the node editor, while nothing is written in, no menu is open and no dialog is. The Spline Editor keeps its own keys to itself.
+  // The keys of the node editor, while nothing is written in, no menu is open and no dialog is. The Spline Editor keeps its own keys
+  // to itself: it takes them on their way up, before they come here. Shift+Space alone is taken on the way down, before the keys of
+  // the transport, which would play on it whichever of the two was asked first; and not from within the Spline Editor.
   useEffect(() => {
-    const down = (event: KeyboardEvent) => {
+    const take = (event: KeyboardEvent, early: boolean) => {
       if (event.defaultPrevented || !inStudio(event.target)) return;
       const key = keyOf(event);
-      if (!editingAllowed(event.target, key) || now.current.menu || now.current.labelling) return;
+      if (!editingAllowed(event.target, key) || now.current.menu || now.current.labelling || now.current.tool) return;
       const command = fusionKey(key);
-      if (command && perform(command)) event.preventDefault();
+      if (!command || (command.kind === 'selectTool') !== early) return;
+      if (early && event.target instanceof Element && event.target.closest('.curve-editor')) return;
+      if (perform(command)) event.preventDefault();
     };
+    const down = (event: KeyboardEvent) => take(event, false);
+    const first = (event: KeyboardEvent) => take(event, true);
     window.addEventListener('keydown', down);
-    return () => window.removeEventListener('keydown', down);
+    window.addEventListener('keydown', first, true);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keydown', first, true);
+    };
   }, [perform]);
 
   // The wheel zooms about the pointer, as in the Color page's editor.
@@ -379,7 +476,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
     if (event.button !== 0) return;
     const point = pointOf(event);
     const ctrl = event.ctrlKey || event.metaKey;
-    const port = portUnder(element, point, base);
+    // On a locked track no link is drawn or taken up: a press on a port is a press on its node.
+    const port = locked ? null : portUnder(element, point, base);
     const hit = element.closest<SVGElement>('[data-link-hit]');
     const nodeElement = element.closest<SVGElement>('[data-node]');
     if (port) {
@@ -398,7 +496,7 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
         onSelection({ current: id, others: inSelection ? selected.filter(each => each !== id) : [] });
       }
       const ids = inSelection && !ctrl ? selected : [id];
-      drag.current = { kind: 'node', id, ids, start: point, moved: false, live: false, ctrl, shift: event.shiftKey, base, last: NO_PLACES };
+      drag.current = { kind: 'node', id, ids, start: point, moved: false, live: false, ctrl, shift: event.shiftKey, base, last: NO_PLACES, still: locked };
     } else {
       drag.current = { kind: 'marquee', start: point, moved: false, additive: ctrl || event.shiftKey, base };
     }
@@ -418,13 +516,15 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
       canvas.current!.scrollTop = press.top - (event.clientY - press.y);
       return;
     }
+    // On a locked track a node is chosen and not moved: its press stays a press, however far the pointer goes.
+    if (press.kind === 'node' && press.still) return;
     const point = pointOf(event);
     const far = Math.hypot(point.x - press.start.x, point.y - press.start.y) * zoom >= DRAG_PX;
     if (!press.moved && !far) return;
     press.moved = true;
     if (press.kind === 'half') {
-      // The second half of a link takes its end along; the first does nothing as it is dragged.
-      if (press.half === 'start') return;
+      // The second half of a link takes its end along; the first does nothing as it is dragged, and neither does on a locked track.
+      if (press.half === 'start' || locked) return;
       drag.current = { kind: 'wire', from: { node: press.link.from, side: 'out', input: null }, start: press.start, moved: true, detached: press.link, base: press.base };
     }
     const going = drag.current!;
@@ -437,9 +537,11 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
         if (was) moved[id] = { x: Math.max(0, Math.round(was.x + dx)), y: Math.max(0, Math.round(was.y + dy)) };
       }
       going.last = moved;
-      setPreview({ moved });
-      // The gesture begins with the first move that it can be sent with; what it puts back is where the nodes were, or no composition where the clip had none.
       const { composition: of, at: where, has: there } = now.current;
+      // One node that has no links, over a link of a picture, would go into it: the link is drawn as one about to be replaced.
+      const over = linkUnder(where, of, going.base, going.ids, point);
+      setPreview({ moved, replacing: over ? linkName(over) : null });
+      // The gesture begins with the first move that it can be sent with; what it puts back is where the nodes were, or no composition where the clip had none.
       if (!going.live) going.live = gesture.start(there ? restoreNodes(where, of, going.ids) : [{ op: 'set_fusion', ...where, value: null }]);
       if (going.live) gesture.preview(withFirst(where, there, moveNodes(where, of, moved, true)));
     } else if (going.kind === 'wire') {
@@ -481,9 +583,15 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
         return;
       }
       setHeld(press.last);
+      // One node that has no links, let go over a link of a picture, goes into it: its two links are sent with its place.
+      const into = linkUnder(at, composition, press.base, press.ids, point);
+      const joined = into === null ? [] : insertOnLink(at, composition, press.id, into);
       // The release ends the gesture; where none could begin, the places are sent as one transaction, which is one step too.
-      if (press.live) gesture.end();
-      else run(moveNodes(at, composition, press.last));
+      if (press.live) {
+        // The links go in the last transaction of the gesture, after the place of the node, so that the whole is one step to undo.
+        if (joined.length > 0) gesture.preview(withFirst(at, has, [...moveNodes(at, composition, press.last, true), ...joined]));
+        gesture.end();
+      } else run([...moveNodes(at, composition, press.last), ...joined]);
       return;
     }
     if (press.kind === 'half') {
@@ -517,19 +625,24 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
   };
 
   /** The items that add a node of each kind, the effects and then the masks after the others, at a point of the graph or where the editor lays it out. */
-  const addItems = (pos: Point | null): MenuItem[] => [...ADDABLE, ...ADDABLE_EFFECTS, ...ADDABLE_MASKS]
-    .map(kind => ({ id: `add-${kind}`, label: labels.kinds[kind], run: () => add(kind, pos) }));
+  const addItems = (pos: Point | null, into?: string): MenuItem[] => TOOLS
+    .map(kind => ({ id: `add-${kind}`, label: labels.kinds[kind], run: () => add(kind, pos, into) }));
   /** The buttons of the tool bar that add a node of each of these kinds, where the editor lays it out. */
-  const addButtons = (kinds: readonly (keyof typeof ADD_ICONS)[]) => kinds.map((kind) => {
+  const addButtons = (kinds: readonly AddableKind[]) => kinds.map((kind) => {
     const Icon = ADD_ICONS[kind];
-    return <button key={kind} type="button" className="color-tool" title={`${menuWords.addNode}: ${labels.kinds[kind]}`} onClick={() => add(kind, null)}
+    return <button key={kind} type="button" className="color-tool" title={`${menuWords.addNode}: ${labels.kinds[kind]}`} disabled={locked} onClick={() => add(kind, null)}
       data-test={`add-${kind}`}><Icon size={14} aria-hidden="true" />{labels.kinds[kind]}</button>;
   });
-  /** The menu of the background: Add Node ▸, the two commands of the whole composition, and the zoom. */
+  /**
+   * The menu of the background: Add Node ▸, Select Tool, Paste (where the menu was opened), the two commands of the whole
+   * composition, and the zoom. On a locked track only the zoom is left.
+   */
   const graphItems = (pos: Point | null): MenuItem[] => [
-    { id: 'add-node', label: menuWords.addNode, items: addItems(pos) },
-    { id: 'reset-composition', label: labels.resetComposition, disabled: !has || isFirst(composition), run: () => run(resetComposition(at, clip)) },
-    { id: 'remove-composition', label: labels.removeComposition, disabled: !has, run: () => run(removeComposition(at, clip)) },
+    { id: 'add-node', label: menuWords.addNode, disabled: locked, items: addItems(pos) },
+    { id: 'select-tool', label: labels.selectToolMenu, keys: 'Shift+Space', disabled: locked, run: () => setTool({ pos }) },
+    { id: 'paste', label: labels.paste, keys: 'Ctrl+V', disabled: locked || copiedNodes() === null, run: () => { paste(copiedNodes(), pos); } },
+    { id: 'reset-composition', label: labels.resetComposition, disabled: locked || !has || isFirst(composition), run: () => run(resetComposition(at, clip)) },
+    { id: 'remove-composition', label: labels.removeComposition, disabled: locked || !has, run: () => run(removeComposition(at, clip)) },
     { id: 'zoom-in', label: menuWords.zoomIn, run: () => setZoom(zoom * ZOOM_STEP) },
     { id: 'zoom-out', label: menuWords.zoomOut, run: () => setZoom(zoom / ZOOM_STEP) },
     { id: 'zoom-original', label: menuWords.originalSize, run: () => setZoom(1) },
@@ -545,21 +658,36 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
     if (hit && !nodeElement) {
       const name = hit.dataset.linkHit ?? hit.dataset.link;
       const link = composition.links.find(each => linkName(each) === name);
-      if (link) setMenu({ ...place, label: menuWords.link, items: [{ id: 'delete-link', label: menuWords.deleteLink, keys: 'Delete', run: () => run(disconnect(at, link)) }] });
+      if (link) {
+        setMenu({ ...place, label: menuWords.link, items: [
+          { id: 'delete-link', label: menuWords.deleteLink, keys: 'Delete', disabled: locked, run: () => run(disconnect(at, link)) },
+        ] });
+      }
       return;
     }
     if (nodeElement) {
       const id = nodeElement.dataset.node!;
       const node = composition.nodes.find(each => each.id === id);
       if (!node) return;
-      // The node right-clicked is the one chosen: a node added from its menu goes in after it.
-      if (id !== selection.current || selection.others.length > 0) onSelection({ current: id, others: [] });
-      now.current.selection = { current: id, others: [] };
+      // The node right-clicked is the one chosen last: a node added from its menu goes in after it. Where it is one of several
+      // that are chosen, they stay chosen, and the commands of the menu are about them all, as the keys are; else it alone is chosen.
+      const acted = selected.length > 1 && selected.includes(id) ? selected : [id];
+      const chosenNow: FusionSelection = { current: id, others: acted.filter(each => each !== id) };
+      if (id !== selection.current || chosenNow.others.length !== selection.others.length) onSelection(chosenNow);
+      now.current.selection = chosenNow;
+      const copyable = copyNodes(composition, acted) !== null;
       setMenu({ ...place, label: menuWords.nodeMenu, items: [
-        { id: 'add-node', label: menuWords.addNode, items: addItems(point) },
-        { id: 'rename', label: labels.rename, keys: 'F2', run: () => startLabel(id) },
-        { id: 'pass-through', label: labels.passThrough, keys: 'Ctrl+P', checked: node.pass_through === true, run: () => run(togglePass(at, composition, [id])) },
-        { id: 'delete', label: menuWords.deleteNode, keys: 'Delete', disabled: node.kind === 'media_out', run: () => run(removeNodes(at, composition, [id])) },
+        { id: 'add-node', label: menuWords.addNode, disabled: locked, items: addItems(point, id) },
+        { id: 'select-tool', label: labels.selectToolMenu, keys: 'Shift+Space', disabled: locked, run: () => setTool({ pos: point, after: id }) },
+        { id: 'cut', label: labels.cut, keys: 'Ctrl+X', disabled: locked || !copyable, run: () => { cut(acted); } },
+        { id: 'copy', label: labels.copy, keys: 'Ctrl+C', disabled: !copyable, run: () => { copy(acted); } },
+        { id: 'paste', label: labels.paste, keys: 'Ctrl+V', disabled: locked || copiedNodes() === null, run: () => { paste(copiedNodes(), point); } },
+        { id: 'duplicate', label: labels.duplicate, keys: 'Ctrl+D', disabled: locked || !copyable, run: () => { duplicate(acted); } },
+        { id: 'rename', label: labels.rename, keys: 'F2', disabled: locked, run: () => startLabel(id) },
+        { id: 'pass-through', label: labels.passThrough, keys: 'Ctrl+P', checked: node.pass_through === true, disabled: locked,
+          run: () => run(togglePass(at, composition, acted)) },
+        { id: 'delete', label: menuWords.deleteNode, keys: 'Delete', disabled: locked || removeNodes(at, composition, acted).length === 0,
+          run: () => run(removeNodes(at, composition, acted)) },
       ] });
       return;
     }
@@ -567,6 +695,7 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
   };
 
   const closeMenu = useCallback(() => setMenu(null), []);
+  const closeTool = useCallback(() => setTool(null), []);
   const labelNode: PlacedFusion | null = labelling ? layout.nodes.find(each => each.node.id === labelling.id) ?? null : null;
   const litOf = (id: string) => (preview?.port?.node === id ? portName(preview.port) : null);
 
@@ -585,6 +714,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
         onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); setMenu({ x: box.left, y: box.bottom, label: menuWords.graphMenu, items: graphItems(null) }); }}
         data-test="fusion-graph-menu"><Ellipsis size={14} /></button>
     </div>
+    {/* Why nothing can be changed, in the words of the Inspector of the Edit page. */}
+    {locked && <p className="caption fusion-locked" role="status" data-test="fusion-locked">{words.hint.studio.inspector.locked}</p>}
     {!has && <p className="caption fusion-first" role="status" data-test="fusion-first">{words.hint.studio.fusionPage.first}</p>}
     {editing.problem && <div className="color-nodes-problem" role="alert" data-test="node-problem"><span>{editing.problem}</span>
       <button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={13} /></button></div>}
@@ -623,6 +754,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
           onBlur={commitLabel} data-test="node-label-field" />}
       </div>
     </div>
+    {/* Select Tool: the kind taken is added as its button of the tool bar adds it, where the menu that opened the dialog was opened. */}
+    {tool && !locked && <SelectTool onAdd={kind => add(kind, tool.pos, tool.after)} onClose={closeTool} />}
     {menu && <CoveringMenu menu={menu} onClose={closeMenu} />}
   </div>;
 }

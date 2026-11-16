@@ -800,6 +800,8 @@ export const ja: Messages = {
         resetComposition: 'Fusion コンポジションをリセット', removeComposition: 'コンポジションを削除', nodeName: '名前',
         masks: 'マスク',
         effects: 'エフェクト',
+        copy: 'コピー', cut: 'カット', paste: 'ペースト', duplicate: '複製',
+        selectTool: 'ツールを選択', selectToolMenu: 'ツールを選択…', searchTools: 'ツールを検索',
         settings: {
           apply: '適用モード', operator: 'オペレーター', over: 'オーバー', subtractiveAdditive: '減算 - 加算', alphaGain: 'アルファゲイン', burnIn: 'バーンイン',
           blend: 'ブレンド', centerX: '中心 X', centerY: '中心 Y', size: 'サイズ', angle: '角度', flipHorizontal: '左右反転',
@@ -1647,6 +1649,8 @@ export const ja: Messages = {
         noCurves: 'キーフレームのある設定はまだありません。ノードを選択すると、その設定のカーブが表示されます。',
         fewPoints: 'ポリゴンは、ポイントが 3 つ以上ないとマスクになりません。',
         wholeCells: 'エフェクトマスクが全体を覆っているセルだけがモザイクになります。エフェクトマスクが接続されていないときは、何も変わりません。',
+        tooManyNodes: 'コンポジションに置けるノードは 256 個までのため、何もペーストしませんでした。',
+        noTool: '入力した内容に一致するツールはありません。',
       },
       colorPage: {
         noClip: '再生ヘッドの位置にクリップがありません。',

@@ -85,7 +85,7 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * the last key of a setting is taken away (`keyOps`). A press on the ruler moves the playhead to
  * the frame of the timeline at which the clip shows that picture.
  */
-export function FusionCurves({ bridge, session, revision, timeline, clip, media, composition, node, names, frame, onSeek, onClose }: {
+export function FusionCurves({ bridge, session, revision, timeline, clip, media, composition, node, names, frame, onSeek, onClose, locked = false }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline;
   clip: Clip; media: readonly Media[];
   /** The composition as the page shows it. */
@@ -98,13 +98,15 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
   frame: number;
   onSeek: (frame: number, scrubbing: boolean) => void;
   onClose: () => void;
+  /** Whether the clip lies on a locked track: its curves are shown, and none is changed, as those of a clip of the Edit page. */
+  locked?: boolean;
 }) {
   const words = useWords();
   const labels = words.label.studio.fusionPage;
   const [selection, setSelection] = useState<CurveSelection>(NO_SELECTION);
   const { commit, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
   const gesture = useAudioGesture({
-    bridge, session, revision, identity: `${timeline.id}/${clip.id}/fusion-curves`, locked: false,
+    bridge, session, revision, identity: `${timeline.id}/${clip.id}/fusion-curves`, locked,
     onFailure: (error) => { if (!isEmpty(error)) setRefusal(refusalOf(error, words.hint.studio)); },
   });
   /** Whether a drag has begun a gesture that is still to be ended or taken back. */
@@ -144,7 +146,7 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
   const known = (changes: CurveChange[]) => changes.flatMap((change) => { const found = byId.get(change.id); return found ? [{ ...found, param: change.param }] : []; });
   const preview = (changes: CurveChange[]) => {
     const wanted = known(changes);
-    if (wanted.length === 0) return;
+    if (locked || wanted.length === 0) return;
     if (!dragging.current) {
       // What the gesture puts back where it is taken back: the settings as they are before its first move.
       if (!gesture.start(wanted.map(each => wholeParam(at, each.node, each.setting, each.curve.param)))) return;
@@ -156,10 +158,10 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
     // The end of a drag: its last move is what stays.
     if (dragging.current) { dragging.current = false; gesture.end(); return; }
     const wanted = known(changes);
-    if (wanted.length === 0) return;
+    if (locked || wanted.length === 0) return;
     void commit((current) => {
       const located = clipLocations(current).get(clip.id);
-      if (!located) return [];
+      if (!located || located.track.locked) return [];
       const where = { timeline: current.id, clip: clip.id };
       return wanted.flatMap((each) => {
         // The node and the setting as the clip has them when the transaction goes.
@@ -178,8 +180,9 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
   const clock = keyClockOf(clip, timeline.rate, mediaOf(clip, media));
   return <section className="curve-panel fusion-curves" aria-label={labels.splineEditor} data-test="fusion-curves" data-clip={clip.id}>
     {problem}
+    {locked && <p className="caption" data-test="fusion-curves-locked">{words.hint.studio.inspector.locked}</p>}
     <CurveEditor curves={drawn.map(each => each.curve)} playhead={keyFrameOf(clip, timeline, media, frame)} range={shownKeyRange(clip, clock)}
-      selection={selection} onSelect={setSelection} title={labels.splineEditor} tools={close}
+      selection={selection} onSelect={setSelection} disabled={locked} title={labels.splineEditor} tools={close}
       onPreview={preview} onCommit={commitChanges} onCancel={cancel} onSeek={keyFrame => onSeek(frameOfKey(clip, timeline, media, keyFrame), false)} />
   </section>;
 }

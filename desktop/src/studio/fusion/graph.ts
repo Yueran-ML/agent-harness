@@ -12,7 +12,9 @@
  * that the two editors are drawn alike.
  */
 import { sortFusionLinks, type Composition, type FusionInput, type FusionKind, type FusionLink, type FusionNode } from '../engine';
-import { COLUMN_GAP, linkHalves, linkPath, MARGIN, NODE_HEIGHT, NODE_WIDTH, PORT_REACH, ROW_GAP, type Placed, type Point } from '../color/graph';
+import {
+  COLUMN_GAP, LINK_REACH, linkHalves, linkPath, MARGIN, NODE_HEIGHT, NODE_WIDTH, pointOnLink, PORT_REACH, ROW_GAP, type Placed, type Point,
+} from '../color/graph';
 
 /**
  * The inputs of each kind of node, the first first, as the engine names them (PROTOCOL.md,
@@ -174,6 +176,35 @@ export function fusionLinkHalves(from: Point, to: Point, input: FusionInput | nu
     `M ${written(p0)} C ${written(p01)}, ${written(p012)}, ${written(middle)}`,
     `M ${written(middle)} C ${written(p123)}, ${written(p23)}, ${written(p3)}`,
   ];
+}
+
+/** The point of the curve of a link into an input at `t`, from 0 at its output to 1 at its input: the curve that `fusionLinkPath` draws. */
+function pointOnFusionLink(from: Point, to: Point, input: FusionInput, t: number): Point {
+  if (input !== 'mask') return pointOnLink(from, to, t);
+  const [p0, p1, p2, p3] = maskCurve(from, to);
+  const u = 1 - t;
+  const along = (a: number, b: number, c: number, d: number) => u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
+  return { x: along(p0.x, p1.x, p2.x, p3.x), y: along(p0.y, p1.y, p2.y, p3.y) };
+}
+
+/**
+ * The link that `accepts` whose curve passes nearest `point` within reach, or null: where a node
+ * that is dragged over a link would go into it, as in the Color page's editor (`linkNear`, with its
+ * reach).
+ */
+export function fusionLinkNear(layout: FusionLayout, point: Point, accepts: (link: FusionLink) => boolean = () => true): FusionLink | null {
+  let best: { link: FusionLink; away: number } | null = null;
+  for (const link of layout.links) {
+    if (!accepts(link)) continue;
+    const ends = linkEnds(layout, link);
+    if (!ends) continue;
+    for (let step = 0; step <= 32; step++) {
+      const on = pointOnFusionLink(ends.from, ends.to, link.input, step / 32);
+      const away = Math.hypot(on.x - point.x, on.y - point.y);
+      if (away <= LINK_REACH && (best === null || away < best.away)) best = { link, away };
+    }
+  }
+  return best?.link ?? null;
 }
 
 /** A link as one string, to name it in the page: `from>to:input`. */

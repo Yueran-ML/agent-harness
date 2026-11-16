@@ -880,6 +880,10 @@ export const en = {
         masks: 'Masks',
         /** The group of the effects on a picture in the tool bar of the node editor: a Blur and a Mosaic. */
         effects: 'Effects',
+        /** The commands of the menus of the node editor on the nodes that are chosen. */
+        copy: 'Copy', cut: 'Cut', paste: 'Paste', duplicate: 'Duplicate',
+        /** Select Tool (Shift+Space): the name of its dialog and of its list, its item in a menu, and its field. */
+        selectTool: 'Select Tool', selectToolMenu: 'Select Tool…', searchTools: 'Search tools',
         settings: {
           apply: 'Apply Mode', operator: 'Operator', over: 'Over', subtractiveAdditive: 'Subtractive - Additive', alphaGain: 'Alpha Gain', burnIn: 'Burn In',
           blend: 'Blend', centerX: 'Center X', centerY: 'Center Y', size: 'Size', angle: 'Angle', flipHorizontal: 'Flip Horizontal',
@@ -1813,6 +1817,10 @@ export const en = {
         fewPoints: 'A polygon needs three points at least to be a mask.',
         /** What Whole Cells Only of a Mosaic does, said where the pointer rests on it. */
         wholeCells: 'Only the cells that the effect mask covers whole are shown as cells. With no effect mask linked, this changes nothing.',
+        /** Paste or Duplicate that would give a composition more nodes than it may have. */
+        tooManyNodes: 'A composition holds 256 nodes at most, so nothing was pasted.',
+        /** Select Tool, where nothing that the editor adds is named as what was typed. */
+        noTool: 'No tool matches what you typed.',
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

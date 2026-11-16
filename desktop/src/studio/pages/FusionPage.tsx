@@ -79,7 +79,8 @@ interface Props {
  * The clip is the one at the playhead on the topmost enabled video track, or the one clip of
  * picture chosen on the Edit page (`fusionClip`); the bar names it, and goes to the clip before and
  * after it. Where there is none, the page says so. Another timeline, or another engine, begins
- * anew: nothing chosen of the one before is kept.
+ * anew: nothing chosen of the one before is kept. A clip on a locked track is shown, and nothing of
+ * its composition is changed: the node editor, the Inspector and the Spline Editor are told so.
  */
 export function FusionPage(props: Props) {
   return <FusionSession key={`${props.session}/${props.selected?.id ?? ''}`} {...props} />;
@@ -114,6 +115,8 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
   const current = fusionClip(shown, frame, pin, pinnedAt.current);
   const clip: Clip | null = current?.clip ?? null;
   const composition = clip === null ? null : shownComposition(clip);
+  // A clip on a locked track is shown and not changed, as on the Edit page: the node editor, the Inspector and the Spline Editor are told.
+  const locked = current?.track.locked ?? false;
   const at = useMemo<FusionAt | null>(() => (selected === null || clip === null ? null : { timeline: selected.id, clip: clip.id }), [selected?.id, clip?.id]);
 
   const editing = useGradeEditing({ bridge, revision, session });
@@ -200,16 +203,16 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
       {selected !== null && clip !== null && composition !== null && at !== null ? <>
         {/* Made anew for another clip, so that nothing dragged, picked or written of the clip before is carried over. */}
         <FusionNodeEditor key={clip.id} bridge={bridge} session={session} revision={revision} clip={clip} composition={composition} at={at} selection={selection}
-          onSelection={onSelection} focused={area === 'nodes'} editing={editing} />
+          onSelection={onSelection} focused={area === 'nodes'} editing={editing} locked={locked} />
         {curvesOpen && <FusionCurves key={`${clip.id}/${node?.id ?? ''}`} bridge={bridge} session={session} revision={revision} timeline={selected} clip={clip}
-          media={media} composition={composition} node={node} names={names} frame={frame ?? 0} onSeek={seek} onClose={closeCurves} />}
+          media={media} composition={composition} node={node} names={names} frame={frame ?? 0} onSeek={seek} onClose={closeCurves} locked={locked} />}
       </> : <p className="caption fusion-empty" data-test="fusion-empty">{empty}</p>}
     </section>
     <aside className="fusion-inspector" aria-label={words.label.studio.editPage.inspector} data-test="fusion-inspector" {...focusOf('inspector')}>
       <h2 className="overline">{words.label.studio.editPage.inspector}</h2>
       {selected !== null && clip !== null
         ? <FusionInspector key={`${clip.id}/${node?.id ?? ''}`} bridge={bridge} session={session} revision={revision} timeline={selected} clip={clip} media={media}
-          node={node} name={node ? names.get(node.id) ?? node.id : ''} frame={frame ?? 0} onSeek={seek} />
+          node={node} name={node ? names.get(node.id) ?? node.id : ''} frame={frame ?? 0} onSeek={seek} locked={locked} />
         : <p className="caption" data-test="fusion-inspector-empty">{empty}</p>}
     </aside>
   </div>;

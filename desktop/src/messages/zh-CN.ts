@@ -751,6 +751,8 @@ export const zhCN: Messages = {
         resetComposition: '重置 Fusion 合成', removeComposition: '移除合成', nodeName: '名称',
         masks: '遮罩',
         effects: '特效',
+        copy: '复制', cut: '剪切', paste: '粘贴', duplicate: '创建副本',
+        selectTool: '选择工具', selectToolMenu: '选择工具…', searchTools: '搜索工具',
         settings: {
           apply: '应用模式', operator: '运算符', over: '覆盖', subtractiveAdditive: '减法 - 加法', alphaGain: 'Alpha 增益', burnIn: '加深',
           blend: '混合', centerX: '中心 X', centerY: '中心 Y', size: '大小', angle: '角度', flipHorizontal: '水平翻转',
@@ -1568,6 +1570,8 @@ export const zhCN: Messages = {
         noCurves: '还没有设置带关键帧。选中一个节点，查看它各项设置的曲线。',
         fewPoints: '多边形至少要有三个点，才能成为遮罩。',
         wholeCells: '只有被效果遮罩完全覆盖的单元格才显示为马赛克。没有连接效果遮罩时，这个开关不起作用。',
+        tooManyNodes: '一个合成最多有 256 个节点，所以没有粘贴。',
+        noTool: '没有工具与输入的内容匹配。',
       },
       colorPage: {
         noClip: '播放头处没有片段。',

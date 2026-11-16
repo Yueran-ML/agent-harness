@@ -43,6 +43,7 @@ __all__ = [
     "CrossfadeLevel",
     "CueItem",
     "Edge",
+    "FusionKind",
     "Key",
     "KeyInterp",
     "Keys",
@@ -62,6 +63,7 @@ __all__ = [
     "add_bin",
     "add_bus",
     "add_cue",
+    "add_fusion_node",
     "add_insert",
     "add_speed_point",
     "add_timeline",
@@ -76,10 +78,15 @@ __all__ = [
     "clip_gain_keys",
     "clip_gain_range",
     "close_gap",
+    "connect_fusion",
     "copy_effects",
     "cues_from",
+    "disconnect_fusion",
     "fade_to_playhead",
+    "first_composition",
     "freeze_frame",
+    "fusion_link",
+    "fusion_node",
     "insert",
     "insert_move",
     "lane_draw",
@@ -100,6 +107,7 @@ __all__ = [
     "remove_bin",
     "remove_bus",
     "remove_cue",
+    "remove_fusion_node",
     "remove_media",
     "remove_timeline",
     "remove_track",
@@ -118,6 +126,9 @@ __all__ = [
     "set_clip",
     "set_clip_keys",
     "set_cue",
+    "set_fusion",
+    "set_fusion_keys",
+    "set_fusion_node",
     "set_insert",
     "set_lane",
     "set_media",
@@ -136,6 +147,7 @@ __all__ = [
     "slip",
     "smart_insert",
     "splice_clip_keys",
+    "splice_fusion_keys",
     "track",
     "trim",
     "untangled",
@@ -172,6 +184,12 @@ Alignment = Literal["start", "center", "end"]
 
 Edge = Literal["in", "out"]
 """An edge of a clip: its start or its end."""
+
+FusionKind = Literal[
+    "media_in", "media_out", "merge", "transform", "background", "rectangle", "ellipse",
+    "polygon", "blur", "mosaic", "delta_keyer",
+]  # fmt: skip
+"""A kind of node of a composition, the graph of the Fusion page that makes a clip's picture."""
 
 
 class _LeftOut(enum.Enum):
@@ -1323,6 +1341,210 @@ def set_retime(
     if length is not None:
         written["length"] = length
     return written
+
+
+# The composition of a clip (the Fusion page)
+#
+# A composition is ``{"nodes": [...], "links": [...]}``: the graph of nodes that makes the picture
+# of a clip of a track of picture (``engine/PROTOCOL.md``, Compositions). Its operations name the
+# clip by its timeline and its id; each but ``set_fusion`` is refused on a clip that has none.
+
+
+def fusion_link(source: str, to: str, input: str) -> dict[str, str]:
+    """A link of a composition: from the output of node ``source`` into ``input`` of node ``to``.
+
+    The inputs are ``input``, ``background``, ``foreground``, ``mask``, ``garbage_matte`` and
+    ``solid_matte``, as the kind of ``to`` has them. Among the links of :func:`add_fusion_node`
+    the node that is added is named by the id that it is given: ``""``, or its ``$name``.
+    """
+    return {"from": source, "to": to, "input": input}
+
+
+def fusion_node(
+    kind: FusionKind,
+    params: Mapping[str, Any],
+    *,
+    id: str = "",
+    label: str = "",
+    pass_through: bool = False,
+    pos: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """A node of a composition, whole, as ``add_fusion_node`` and ``set_fusion`` take one.
+
+    ``params`` holds every setting of its kind (``{}`` for a ``media_in`` and a ``media_out``):
+    the engine fills none in. An empty ``id`` is for the engine to make one, in
+    ``add_fusion_node``; it may be a ``$name`` there. ``pos`` is where it lies in the node
+    editor, ``{"x", "y"}``, or ``None`` for the editor to lay it out.
+    """
+    return {
+        "id": id,
+        "kind": kind,
+        "label": label,
+        "pass_through": pass_through,
+        "pos": None if pos is None else dict(pos),
+        "params": dict(params),
+    }
+
+
+def first_composition() -> dict[str, Any]:
+    """The composition that the Fusion page gives a clip at first, which shows the clip as it is.
+
+    A ``media_in`` linked straight to the ``media_out``, by the ids that DaVinci gives them. The
+    engine gives a clip none of its own accord: a client sends this one with :func:`set_fusion`
+    before the first change of a clip that has none, in the same transaction.
+    """
+    return {
+        "nodes": [
+            fusion_node("media_in", {}, id="MediaIn1"),
+            fusion_node("media_out", {}, id="MediaOut1"),
+        ],
+        "links": [fusion_link("MediaIn1", "MediaOut1", "input")],
+    }
+
+
+def set_fusion(timeline: str, clip: str, value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A composition in place of the one that a clip has; ``None`` takes its composition away.
+
+    A clip without a composition shows its source. The nodes of ``value`` have their ids.
+    """
+    return {
+        "op": "set_fusion",
+        "timeline": timeline,
+        "clip": clip,
+        "value": None if value is None else dict(value),
+    }
+
+
+def add_fusion_node(
+    timeline: str,
+    clip: str,
+    node: Mapping[str, Any],
+    *,
+    index: int | None = None,
+    links: Sequence[Mapping[str, str]] | None = None,
+) -> dict[str, Any]:
+    """A node added to the composition of a clip, with the links that come from it or go into it.
+
+    ``node`` is one of :func:`fusion_node`. Each of ``links`` names the new node at one of its
+    ends, by the id that the node is given (``""``, or its ``$name``); a link into an input that
+    has one takes its place, so a node is laid into a chain by one operation. ``index`` is its
+    place among the nodes, the last where it is ``None``.
+    """
+    written: dict[str, Any] = {
+        "op": "add_fusion_node",
+        "timeline": timeline,
+        "clip": clip,
+        "node": dict(node),
+    }
+    if index is not None:
+        written["index"] = index
+    if links is not None:
+        written["links"] = [dict(link) for link in links]
+    return written
+
+
+def remove_fusion_node(
+    timeline: str, clip: str, id: str, *, links: Sequence[Mapping[str, str]] | None = None
+) -> dict[str, Any]:
+    """A node taken away from the composition of a clip, with its links.
+
+    Nothing is linked in its place: what it fed is left without a picture. ``links`` are put
+    instead where they are given; each goes into an input that the node fed, and none touches
+    the node. The ``media_out`` is not taken away.
+    """
+    written: dict[str, Any] = {
+        "op": "remove_fusion_node",
+        "timeline": timeline,
+        "clip": clip,
+        "id": id,
+    }
+    if links is not None:
+        written["links"] = [dict(link) for link in links]
+    return written
+
+
+def connect_fusion(timeline: str, clip: str, link: Mapping[str, str]) -> dict[str, Any]:
+    """A link of the composition of a clip, in place of the one that its input had, if any."""
+    return {"op": "connect_fusion", "timeline": timeline, "clip": clip, "link": dict(link)}
+
+
+def disconnect_fusion(timeline: str, clip: str, to: str, input: str) -> dict[str, Any]:
+    """The link into ``input`` of node ``to`` of the composition of a clip, taken away."""
+    return {
+        "op": "disconnect_fusion",
+        "timeline": timeline,
+        "clip": clip,
+        "to": to,
+        "input": input,
+    }
+
+
+def set_fusion_node(
+    timeline: str,
+    clip: str,
+    id: str,
+    *,
+    label: str | None = None,
+    pass_through: bool | None = None,
+    pos: Mapping[str, float] | _Kept | None = LEFT_OUT,
+    params: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The settings of a node of a composition that are given.
+
+    ``params`` is a patch of the node's settings: an object goes into the object of its name,
+    any other value (a number, a word, the list of the points of a polygon) in place of the
+    one there. ``pos`` ``None`` leaves the node for the editor to lay out. ``pass_through`` is
+    Fusion's Pass Through: the node hands on the picture of its first input as it is.
+    """
+    written = _set(
+        {"op": "set_fusion_node", "timeline": timeline, "clip": clip, "id": id},
+        label=label,
+        pass_through=pass_through,
+        params=None if params is None else dict(params),
+    )
+    if isinstance(pos, Mapping):
+        written["pos"] = dict(pos)
+    elif pos is None:
+        written["pos"] = None
+    return written
+
+
+def set_fusion_keys(timeline: str, clip: str, path: str, param: float | Keys) -> dict[str, Any]:
+    """A number, or keys, in place of a setting of a node of a composition that takes keys.
+
+    ``path`` is the id of the node, a dot, and the path of the setting in its settings:
+    ``n4.blend``, ``n4.center.x``, ``n10.size.x``; a number of a point of a polygon is named by
+    the place of the point, from 0: ``n9.points.2.x``. The frames of the keys are those that
+    the other keys of the clip count (:class:`Key`).
+    """
+    written = _json(param) if isinstance(param, Keys) else param
+    return {
+        "op": "set_fusion_keys",
+        "timeline": timeline,
+        "clip": clip,
+        "path": path,
+        "param": written,
+    }
+
+
+def splice_fusion_keys(
+    timeline: str, clip: str, path: str, at: int, remove: int, keys: Sequence[Key]
+) -> dict[str, Any]:
+    """``keys`` in place of ``remove`` keys of a setting of a node, from its key ``at`` on.
+
+    ``path`` is as in :func:`set_fusion_keys`. A key is added, moved, changed or taken away
+    without the others being sent. A setting that is a number becomes the keys that are put; a
+    setting keeps one key at least.
+    """
+    return {
+        "op": "splice_fusion_keys",
+        "timeline": timeline,
+        "clip": clip,
+        "path": path,
+        "at": at,
+        "remove": remove,
+        "keys": [_json(key) for key in keys],
+    }
 
 
 def add_bin(name: str, *, id: str = "", parent: str | None = None) -> dict[str, Any]:

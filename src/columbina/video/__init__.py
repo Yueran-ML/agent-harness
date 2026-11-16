@@ -23,8 +23,9 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video import audio, clip_keys, duck, grading
+from columbina.video import audio, clip_keys, duck, fusion, grading
 from columbina.video.editing import Editor, chosen_subtitles, receipt, safe_name, sidecars
+from columbina.video.edits import FusionKind
 from columbina.video.engine import (
     Engine,
     EngineError,
@@ -64,6 +65,7 @@ _FAILURES = (
     EngineError,
     grading.GradeError,
     clip_keys.KeysError,
+    fusion.FusionError,
     ProjectError,
     StoryError,
     WordsError,
@@ -483,6 +485,118 @@ class _ClipKeys(_Graded):
     frame: int | None = None
     value: float | None = None
     interp: str | dict[str, Any] | None = Field(default=None, description="As video_grade_keys.")
+
+
+class _FusionInfo(_Graded):
+    # The tools of the Fusion page, told as compactly as the tools of grades are.
+    clip: str | None = Field(
+        default=None,
+        description="Clip id, of a video track. Omit: the clips that have a composition.",
+    )
+    reference: bool = Field(
+        default=False,
+        description=(
+            "true: the full reference instead: every kind of node with its inputs and each "
+            "setting's range, unit and first value; coordinates, links and keys."
+        ),
+    )
+
+
+class _FusionNode(_Graded):
+    model_config = ConfigDict(populate_by_name=True)
+
+    clip: str = Field(description="Clip id, of a video track.")
+    action: fusion.NodeAction = Field(
+        description=(
+            "add: a node of kind, with settings, label; linked by after (laid into the chain "
+            "after that node: its output into the new node's first input, the new node's into "
+            "what read it), by mask_of (a mask into that node's mask), by links, or not at all. "
+            "remove: node; what read it then reads what it read (bridge false: nothing). "
+            "connect: from's output into input of node, replacing a link there. disconnect: the "
+            "link into input of node. set: node's settings, label, pass_through. reset: no "
+            "composition, the clip shows its source."
+        )
+    )
+    node: str | None = Field(default=None, description="A node id, as video_fusion_info shows.")
+    kind: FusionKind | None = None
+    settings: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            'By paths with dots: {"center.x": 0.3, "size.x": 20, "filter": "box"}; objects '
+            'merge. Numbers only (keys: video_fusion_keys). A polygon\'s "points" is set whole: '
+            '[{"x": -0.2, "y": -0.1}, ...] from its center, in widths, y up. Left out of add: '
+            "as a new node has it."
+        ),
+    )
+    label: str | None = None
+    pass_through: bool | None = Field(
+        default=None, description="true: the node hands its first input on unchanged."
+    )
+    after: str | None = Field(default=None, description="add: the node to come after.")
+    mask_of: str | None = Field(default=None, description="add of a mask: the node it limits.")
+    links: list[dict[str, str]] | None = Field(
+        default=None,
+        description='add: [{"from": id, "to": id, "input": name}], the new node being "".',
+    )
+    source: str | None = Field(
+        default=None, alias="from", description="connect: the node whose output is linked."
+    )
+    input: str | None = Field(
+        default=None,
+        description="input, background, foreground, mask, garbage_matte or solid_matte.",
+    )
+    bridge: bool = True
+
+
+class _FusionKeys(_Graded):
+    clip: str = Field(description="Clip id, of a video track.")
+    path: str = Field(description="<node id>.<setting>: n4.center.x, n9.points.2.x.")
+    action: grading.KeyAction = Field(description="As video_grade_keys.")
+    frame: int | None = Field(default=None, description="A timeline frame within the clip.")
+    value: float | None = None
+    interp: str | dict[str, Any] | None = Field(default=None, description="As video_grade_keys.")
+
+
+_FUSION = (_FusionInfo, _FusionNode, _FusionKeys)
+
+
+async def _fused(args: _Project, engine: Engine) -> dict[str, Any]:
+    """Do what a tool of compositions asks."""
+    if isinstance(args, _FusionInfo):
+        if args.reference:
+            if args.clip is not None:
+                raise fusion.FusionError("reference is told alone: leave clip out")
+            return fusion.reference()
+        return await fusion.info(engine, args.timeline, args.clip)
+    if isinstance(args, _FusionKeys):
+        return await fusion.keys(
+            engine,
+            args.timeline,
+            args.clip,
+            args.path,
+            args.action,
+            frame=args.frame,
+            value=args.value,
+            interp=args.interp,
+        )
+    assert isinstance(args, _FusionNode)
+    return await fusion.node(
+        engine,
+        args.timeline,
+        args.clip,
+        args.action,
+        node=args.node,
+        kind=args.kind,
+        settings=args.settings,
+        label=args.label,
+        pass_through=args.pass_through,
+        after=args.after,
+        mask_of=args.mask_of,
+        links=args.links,
+        source=args.source,
+        input=args.input,
+        bridge=args.bridge,
+    )
 
 
 class _GradeNode(_Graded):
@@ -926,6 +1040,16 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                         )
                     )
 
+                if isinstance(args, _FUSION):
+                    try:
+                        return receipt(await _fused(args, editor.engine))
+                    except EngineError as error:
+                        hint = fusion.hint_of(error)
+                        if hint is None:
+                            raise
+                        failure = _failing(error)
+                        raise ToolFailure(f"{failure}; {hint}", code=failure.code) from None
+
                 def readable(path: str) -> Path | None:
                     try:
                         return videos.checked(run, tool, path, "read")
@@ -1183,6 +1307,9 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                 "away. Made for ungraded clips and Rec.709 Gamma 2.4. One undo step in all."
             ),
         ),
+        tool("video_fusion_info", _FusionInfo, _FUSION_INFO, effect="read"),
+        tool("video_fusion_node", _FusionNode, _FUSION_NODE),
+        tool("video_fusion_keys", _FusionKeys, _FUSION_KEYS),
     ]
 
 
@@ -1334,6 +1461,45 @@ _CLIP_KEYS = (
     "factor; rotation: degrees clockwise; opacity, crop: shares 0-1; size: px. frame: a timeline "
     "frame within the clip. The key is kept on the picture shown there, at its frame of the "
     "clip's media (of the clip, for a title or a still); the result gives both."
+)
+
+_FUSION_INFO = (
+    "The composition of a clip (the Fusion page): the graph of nodes that makes its picture in "
+    "place of its source, before its grade and transform. Tells its nodes (id, kind, label, "
+    "pass_through, what each input is linked from, free inputs, every setting; a keyed one with "
+    "its keys at timeline frames), links (from -> to.input), output (the node MediaOut reads; "
+    "none: the clip is transparent), unread and unused nodes, and each setting's range and unit. "
+    "A clip without one shows its source. Without clip: the clips that have one."
+)
+
+_FUSION_NODE = (
+    "Edit the composition of a clip (the Fusion page); one action a call, one undo step. A "
+    "composition is a graph: pictures go from media_in (the clip's source) through nodes to the "
+    "one media_out (what the timeline shows). A clip without one shows its source; its first "
+    "action here gives it MediaIn1 -> MediaOut1.input. Kinds: media_in; merge (foreground over "
+    "background; center, size, angle place the foreground); transform (move, size, turn, flip); "
+    "background (one colour); rectangle, ellipse, polygon (masks); blur; mosaic (pixelate); "
+    "delta_keyer (a green or blue screen made transparent). Inputs: merge background, "
+    "foreground; transform, blur, mosaic, delta_keyer input; delta_keyer also garbage_matte, "
+    "solid_matte; all but media_in and media_out mask, which limits a node's work to where the "
+    "mask linked into it is. Coordinates: center {x, y} are shares of the picture from its "
+    "LOWER LEFT, y up, the middle 0.5, 0.5; widths, soft edges and points are in widths of the "
+    "picture; angles in degrees counter-clockwise; size is a factor. Recipes. Blur or pixelate "
+    "a face: add blur (or mosaic) after MediaIn1; add ellipse with mask_of that node and "
+    "settings center.x, center.y, width, height, soft_edge; video_fusion_keys keys center.x "
+    "and center.y to follow it. Green screen: add delta_keyer after MediaIn1 (settings "
+    "screen.r, g, b: the screen's colour); add background; add merge with links from the "
+    "background into its background, "
+    'from the keyer into its foreground, and from it ("") into MediaOut1.input. Reframe or '
+    "picture-in-picture: add transform after MediaIn1 (size, center). The result tells the "
+    "composition after the change; video_fusion_info with reference true tells every kind and "
+    "setting. To check the picture, video_grade_scopes measures a frame as exported."
+)
+
+_FUSION_KEYS = (
+    "Put, remove or clear one keyframe of a number of a node of a clip's composition; one undo "
+    "step. frame: a timeline frame within the clip; the key is kept on the picture shown there "
+    "(the result gives both frames). Words and true/false settings take no keys."
 )
 
 VIDEOS = ServiceKey[Videos]("videos")

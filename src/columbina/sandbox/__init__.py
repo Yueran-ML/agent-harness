@@ -225,6 +225,9 @@ def _studio_file(access: Access) -> bool:
         "video_color_settings",
         "video_media_color",
         "video_shot_match",
+        "video_fusion_info",
+        "video_fusion_node",
+        "video_fusion_keys",
     }:
         return True
     return (

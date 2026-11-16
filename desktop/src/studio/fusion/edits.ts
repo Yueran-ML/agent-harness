@@ -410,9 +410,20 @@ export function removeComposition(at: FusionAt, clip: Pick<Clip, 'fusion'>): Op[
   return clip.fusion === undefined ? [] : [{ op: 'set_fusion', ...at, value: null }];
 }
 
+/**
+ * The node that the viewer shows once the node `id` is asked to be viewed (the key `1`, and View
+ * in the menu of a node), where it shows `viewed` now; null is what comes out of the composition.
+ * A node that is viewed already goes back to the output, as the key pressed again does in Fusion;
+ * the MediaOut is the output itself; and a node that the composition has not is none to view.
+ */
+export function viewedAfter(composition: Composition, viewed: string | null, id: string): string | null {
+  const node = composition.nodes.find(each => each.id === id);
+  return !node || node.kind === 'media_out' || viewed === id ? null : id;
+}
+
 /** What a key asks of the node editor. */
 export type FusionCommand = { kind: 'delete'; key: 'Delete' | 'Backspace' }
-  | { kind: 'passThrough' | 'rename' | 'cancel' | 'selectAll' | 'copy' | 'cut' | 'paste' | 'duplicate' | 'selectTool' };
+  | { kind: 'passThrough' | 'rename' | 'cancel' | 'selectAll' | 'copy' | 'cut' | 'paste' | 'duplicate' | 'selectTool' | 'view' | 'viewOutput' };
 
 /**
  * The keys of the node editor, as Fusion has them: Delete deletes the nodes chosen or the link
@@ -421,7 +432,9 @@ export type FusionCommand = { kind: 'delete'; key: 'Delete' | 'Backspace' }
  * Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D copy, cut, paste and duplicate nodes, with Cmd in the place of
  * Ctrl too, as a Mac has them. Shift+Space opens Select Tool: Space alone is the transport's, which
  * would take it with Shift as well, so the editor takes this one key before the transport does. A
- * letter is known by where it lies on the keyboard.
+ * letter is known by where it lies on the keyboard. The key `1` shows the node chosen in the viewer,
+ * as it does in Fusion (the left viewer), and `0` what comes out of the composition again; a digit
+ * is known by what it types, or by where it lies in the row of digits.
  */
 export function fusionKey(key: Key): FusionCommand | null {
   if (key.composing || key.repeat || key.alt) return null;
@@ -441,5 +454,7 @@ export function fusionKey(key: Key): FusionCommand | null {
   if (key.key === 'Delete' || key.key === 'Backspace') return { kind: 'delete', key: key.key };
   if (key.key === 'F2') return { kind: 'rename' };
   if (key.key === 'Escape') return { kind: 'cancel' };
+  if (key.key === '1' || key.code === 'Digit1') return { kind: 'view' };
+  if (key.key === '0' || key.code === 'Digit0') return { kind: 'viewOutput' };
   return null;
 }

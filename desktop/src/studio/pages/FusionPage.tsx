@@ -6,12 +6,15 @@ import type { EngineBridge } from '../../bridge';
 import { covers, currentClip, numberedClips, shownClips, stepClip, type ColorClip } from '../color/clips';
 import { pageKey } from '../color/nodeEdits';
 import { useGradeEditing } from '../color/useGradeEditing';
-import type { Clip, Media, Timeline as TimelineModel } from '../engine';
+import { EngineError, type Clip, type Media, type Timeline as TimelineModel } from '../engine';
 import { FusionCurves } from '../fusion/FusionCurves';
 import { FusionInspector } from '../fusion/FusionInspector';
 import { FusionNodeEditor, NO_SELECTION, type FusionSelection } from '../fusion/FusionNodeEditor';
 import { shownComposition, type FusionAt } from '../fusion/edits';
 import { namesOf } from '../fusion/graph';
+import { useFusionOnscreen } from '../fusion/useFusionOnscreen';
+import { useFusionView } from '../fusion/useFusionView';
+import { refusalText } from '../inspector/refusal';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import type { MonitorControls } from '../useMonitor';
@@ -24,6 +27,10 @@ type Area = 'viewer' | 'nodes' | 'inspector';
 
 const NO_SKIPPED: ReadonlySet<string> = new Set();
 const NO_CLIPS: readonly string[] = [];
+
+/** Whether the engine refused a change because it changes nothing: a handle let go where it was, which is no failure. */
+const isEmpty = (error: unknown): boolean => error instanceof EngineError && typeof error.data === 'object' && error.data !== null
+  && (error.data as { reason?: unknown }).reason === 'empty';
 
 /**
  * The one clip of picture among the clips chosen on the Edit page, or null where there is none or
@@ -73,8 +80,14 @@ interface Props {
  *
  * The viewer is the timeline monitor of the other pages, with its transport and its keys, above the
  * node editor; the Inspector is at the right, and the Spline Editor opens beneath the node editor.
- * The compositor draws a clip through its composition, so the viewer shows what comes out of the
- * MediaOut at the playhead; the picture of another node cannot be looked at yet.
+ * While the page is shown the monitor shows the composition of the clip alone, as the viewers of
+ * Fusion do (`useFusionView`, the Fusion view of the engine): what comes out of its MediaOut at
+ * first, or the node that is viewed (the key `1` in the node editor, and View in the menu of a
+ * node), which the bar names and whose card has a dot; another clip begins with the output again,
+ * and so does a node that is taken away. The page left, the monitor shows the timeline again. Over
+ * the picture the node that is chosen has its on-screen controls, where its kind has any: the
+ * outline and the handles of a mask, and the centre of a Merge or a Transform, dragged on the
+ * picture (`useFusionOnscreen`).
  *
  * The clip is the one at the playhead on the topmost enabled video track, or the one clip of
  * picture chosen on the Edit page (`fusionClip`); the bar names it, and goes to the clip before and
@@ -134,6 +147,24 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
     ? composition.nodes.find(each => each.id === selection.current) ?? null : null;
   const names = useMemo(() => (composition === null ? new Map<string, string>() : namesOf(composition, labels.kinds)), [composition, labels.kinds]);
 
+  // The node that the viewer shows, of the composition of a clip: another clip begins with what comes out of its composition, and
+  // a node that is taken away, or the MediaOut, is the output too.
+  const [viewing, setViewing] = useState<{ clip: string; node: string } | null>(null);
+  const viewingNode = viewing !== null && viewing.clip === clipId ? viewing.node : null;
+  const viewed = viewingNode !== null && composition !== null && composition.nodes.some(each => each.id === viewingNode && each.kind !== 'media_out') ? viewingNode : null;
+  const onView = useCallback((id: string | null) => setViewing(id === null || clipId === null ? null : { clip: clipId, node: id }), [clipId]);
+  const toOutput = useCallback(() => setViewing(null), []);
+  // The Fusion view as the monitor tells it: on while the page is shown and has a clip, and off again as the page is left.
+  const told = timelineState?.monitor === 'timeline' && typeof timelineState.fusion === 'object' && timelineState.fusion !== null ? timelineState.fusion : null;
+  useFusionView({ bridge, session, on: native && timelineState !== null && timelineMonitor.loaded, clip: clipId, node: viewed, told: told?.clip ?? null, onNodeGone: toOutput });
+  // The controls of the node that is chosen, over the picture of the composition of this clip, where the monitor shows it.
+  const viewerPressed = useCallback(() => setArea('viewer'), []);
+  useFusionOnscreen({
+    bridge, session, revision, native, timeline: selected, clip, media, node, frame: frame ?? 0, view: told !== null && told.clip === clipId ? told : null, locked,
+    onPress: viewerPressed,
+    onFailure: (failure) => { if (!isEmpty(failure)) editing.setProblem(refusalText(failure, now.current.words.hint.studio)); },
+  });
+
   // The keys of the transport go to the timeline monitor; Ctrl+Z and Ctrl+Shift+Z undo and redo in the one history of the engine.
   useStudioKeys(timelineMonitor.loaded, timelineMonitor.context, timelineMonitor.run);
   const step = editing.step;
@@ -191,6 +222,9 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
         <button type="button" className="icon-btn" aria-label={labels.nextClip} title={labels.nextClip} disabled={after === null} onClick={() => go(after)}
           data-test="fusion-next-clip"><ChevronRight size={15} /></button>
       </div>
+      {/* What the viewer shows of the composition: the node that is viewed, or what comes out of it. */}
+      {clip !== null && <span className="fusion-viewed" data-node={viewed ?? undefined} data-test="fusion-viewed">
+        {labels.viewing.replace('{name}', () => (viewed !== null ? names.get(viewed) ?? viewed : labels.output))}</span>}
       <span className="fusion-gap" />
       <button type="button" className="color-tool" aria-pressed={curvesOpen} disabled={clip === null} onClick={() => setCurvesOpen(open => !open)}
         data-test="toggle-spline"><Spline size={14} aria-hidden="true" />{labels.spline}</button>
@@ -203,7 +237,7 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
       {selected !== null && clip !== null && composition !== null && at !== null ? <>
         {/* Made anew for another clip, so that nothing dragged, picked or written of the clip before is carried over. */}
         <FusionNodeEditor key={clip.id} bridge={bridge} session={session} revision={revision} clip={clip} composition={composition} at={at} selection={selection}
-          onSelection={onSelection} focused={area === 'nodes'} editing={editing} locked={locked} />
+          onSelection={onSelection} focused={area === 'nodes'} editing={editing} locked={locked} viewed={viewed} onView={onView} />
         {curvesOpen && <FusionCurves key={`${clip.id}/${node?.id ?? ''}`} bridge={bridge} session={session} revision={revision} timeline={selected} clip={clip}
           media={media} composition={composition} node={node} names={names} frame={frame ?? 0} onSeek={seek} onClose={closeCurves} locked={locked} />}
       </> : <p className="caption fusion-empty" data-test="fusion-empty">{empty}</p>}

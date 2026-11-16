@@ -4371,6 +4371,43 @@ describe('the engine of the studio', () => {
     expect(ended()).toBe(2);
   });
 
+  it('turns off a Fusion view that a page left on as it is loaded again or gone', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const ended = () => main.written.filter(request => request.method === 'viewer.fusion' && request.params?.clip === null).length;
+    const view = { method: 'viewer.fusion', params: { clip: 'c1', node: 'n4' } };
+    // A page that looked at no node leaves nothing to turn off.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(0);
+    await shell.invoke('engine-call', view);
+    // Navigations that load no other page turn nothing off.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    await settledAll();
+    expect(ended()).toBe(0);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(1);
+    // Turned off once; and a view that the page turned off itself is not turned off again.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(1);
+    await shell.invoke('engine-call', view);
+    await shell.invoke('engine-call', { method: 'viewer.fusion', params: { clip: null } });
+    expect(ended()).toBe(2);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(2);
+    // A page that crashed with the view on is the same as one loaded again.
+    await shell.invoke('engine-call', view);
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    await settledAll();
+    expect(ended()).toBe(3);
+  });
+
   it('closes the window of the scopes as the main window is put away in the tray', async () => {
     const shell = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python });
     const set = { set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: true, running: false, state: null, code: null, error: null };
@@ -4526,6 +4563,8 @@ describe('the engine of the studio', () => {
       'window_presets.list', 'window_presets.save', 'window_presets.update', 'window_presets.delete', 'window_presets.apply',
       // The LUT browser's previews and the Color Viewer LUT of the Color page (wave E).
       'luts.preview', 'viewer.preview', 'viewer.lut',
+      // The node of a composition that the Fusion page looks at in the timeline viewer (phase 4, T12).
+      'viewer.fusion',
       // The Tracker palette and the keys of the Color › Tracker menu (T24).
       'track.start', 'track.stop', 'track.edit',
       // The meters and the analyses of sound (phase 3, T9b).

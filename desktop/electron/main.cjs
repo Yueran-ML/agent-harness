@@ -180,6 +180,9 @@ const PAGE_METHODS = new Set([
   // The LUT browser's thumbnails and its Live Preview on the viewer, of LUTs named in the folders of
   // LUTs alone (the engine refuses any other name), and the Color Viewer LUT on the Color page alone.
   'luts.preview', 'viewer.preview', 'viewer.lut',
+  // The Fusion view of the timeline monitor: the node of the composition of a clip that the Fusion
+  // page looks at. It names a clip and a node by their ids, and no file.
+  'viewer.fusion',
   // Window tracking (RM20 pp. 3231–3238): a track of the selected window, its stop, and the edits
   // of its track data, which name the window by its grade, node and id alone.
   'track.start', 'track.stop', 'track.edit',
@@ -778,7 +781,8 @@ async function openStudio(cwd) {
   // `migration`: the run of `video migrate` for the folder, while it runs.
   // `scopes`: the ids of the scopes that the page subscribed (see `keepScopes`).
   // `previewed`: whether the page asked for a Live Preview since one was last ended (see `endPreview`).
-  studio = { number, project, workspace: cwd, session, opened, jobs: new Map(), migration: null, duckAnswers: new Map(), scopes: new Set(), windowScopes: new Set(), previewed: false };
+  // `fused`: whether the page has the Fusion view of the timeline monitor on (see `endFusion`).
+  studio = { number, project, workspace: cwd, session, opened, jobs: new Map(), migration: null, duckAnswers: new Map(), scopes: new Set(), windowScopes: new Set(), previewed: false, fused: false };
   tellStudio(number, { kind: 'opened', ...opened });
   tellScopesContext();
   // A view is made anew for every engine, where the page has said where the viewer is.
@@ -1017,6 +1021,17 @@ function endPreview() {
   if (!open?.session.alive || !open.previewed) return;
   open.previewed = false;
   void open.session.call('viewer.preview', { on: false }).catch(() => {});
+}
+/**
+ * Turn off the Fusion view of a page that is loaded again or gone (`viewer.fusion`): the engine
+ * keeps it for the monitor, and the new page, which opens on another page, would show the picture
+ * of a node in place of the timeline.
+ */
+function endFusion() {
+  const open = studio;
+  if (!open?.session.alive || !open.fused) return;
+  open.fused = false;
+  void open.session.call('viewer.fusion', { clip: null }).catch(() => {});
 }
 /** Forget the view of an engine that is gone: one is made anew for the next. */
 function forgetView() {
@@ -2215,6 +2230,7 @@ function installHandlers() {
     if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params); return {}; }));
     if (method === 'scopes.subscribe' || method === 'scopes.unsubscribe') return answered(keepScopes(open, method, params));
     if (method === 'viewer.preview' && params?.on !== false) open.previewed = true;
+    if (method === 'viewer.fusion') open.fused = typeof params?.clip === 'string';
     // Statistics can compile and draw for longer than the engine's gesture idle timeout.
     // Keep the main connection free for edits/gesture keep-alives while that draw runs. Other
     // requests of the view connection wait behind the draw; both connections belong to `open`.
@@ -2955,12 +2971,12 @@ app.whenReady().then(() => {
   if (preferences.petOn) openPet();
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
-  window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); endPreview(); closeScopesWindow(); stopSigningIn(); void enqueueService(stopService); });
+  window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); endPreview(); endFusion(); closeScopesWindow(); stopSigningIn(); void enqueueService(stopService); });
   // The view of the engine is hidden while the page is loaded again, until the new page says where the viewer is.
   window.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     const main = details?.isMainFrame ?? mainFrame;
     const same = details?.isSameDocument ?? inPlace;
-    if (main === true && same !== true) { blankView(); dropScopes(); endPreview(); closeScopesWindow(); }
+    if (main === true && same !== true) { blankView(); dropScopes(); endPreview(); endFusion(); closeScopesWindow(); }
   });
   void window.loadFile(indexPath);
   // An assistant runs again where it ran when the application was left.

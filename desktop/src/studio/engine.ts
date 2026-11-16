@@ -980,8 +980,32 @@ export interface TimelineTransportState extends TransportBase {
   loop?: boolean;
   /** The frames that Play In to Out plays (`transport.play_range`, Alt+/, p. 3745), while it plays them. */
   range?: { from: number; to: number };
+  /** The Fusion view (`viewer.fusion`), while it is on: the node of the composition of a clip that the monitor shows alone, and where its picture lies. */
+  fusion?: FusionView;
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
+/**
+ * Where the picture of a composition lies in the frame that the timeline monitor draws, in the pixels
+ * of that frame from its top left corner: those in which `view.pointer` tells the pointer and
+ * `view.overlay` takes its points. They need not be whole numbers.
+ */
+export interface FusionPicture { x: number; y: number; width: number; height: number }
+/**
+ * The Fusion view of the timeline monitor (PROTOCOL.md, "The Fusion view"): the picture of one node
+ * of the composition of a clip, alone, fitted whole into the frame of the timeline, over black.
+ * `node` is left out where it is what comes out of the composition (the `MediaOut`). `shown` says
+ * whether the picture is drawn at the frame shown (the playhead is on the clip, and so on); `canvas`
+ * is the size of the frame drawn, which `view.overlay` takes as its `canvas`; `size` is that of the
+ * composition and `picture` where it lies, both told while the clip is in the timeline.
+ */
+export interface FusionView {
+  clip: string;
+  node?: string;
+  shown: boolean;
+  canvas: [width: number, height: number];
+  size?: { width: number; height: number };
+  picture?: FusionPicture;
+}
 /** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
 export interface MissingLut { name: string; message: string }
 /** A LUT of the library shown on a node of a grade in place of its own, at a frame where Hover Scrub asks for one (PROTOCOL.md, "Live Preview and the Color Viewer LUT"). */
@@ -1366,6 +1390,8 @@ export interface PageMethods {
   'luts.preview': { previews: LutPreview[] };
   'viewer.preview': { monitor: 'timeline'; preview: LivePreview | null };
   'viewer.lut': { monitor: 'timeline'; on: boolean };
+  // The Fusion view of the timeline monitor: the node of a composition that is viewed (PROTOCOL.md, "The Fusion view").
+  'viewer.fusion': { monitor: 'timeline'; fusion: FusionView | null };
   // The recording of automation of the timeline monitor (PROTOCOL.md, "Recording automation").
   'automation.playback': { on: boolean };
   'automation.parameters': { revision: number; of: LanesOf; parameters: AutomationParameter[] };

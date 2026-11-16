@@ -15,8 +15,8 @@ import { useAudioGesture } from '../timeline/useAudioGesture';
 import { copiedNodes, keepCopied } from './copied';
 import {
   ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addedNodes, addNode, connect, copyNodes, cutNodes, disconnect, fusionKey, insertOnLink, isFirst, moveNodes,
-  pasteNodes, reconnect, relabel, removeComposition, removeNodes, resetComposition, restoreNodes, roomFor, togglePass, withFirst, type CopiedNodes, type FusionAt,
-  type FusionCommand,
+  pasteNodes, reconnect, relabel, removeComposition, removeNodes, resetComposition, restoreNodes, roomFor, togglePass, viewedAfter, withFirst, type CopiedNodes,
+  type FusionAt, type FusionCommand,
 } from './edits';
 import {
   fusionLinkHalves, fusionLinkNear, fusionLinkPath, hasMaskInput, hasOutput, isPictureInput, layoutComposition, linkEnds, linkName, MASK_INSET, MATTE_INSETS,
@@ -38,6 +38,8 @@ const NO_PLACES: Placed = {};
 /** The nodes that are chosen: the one chosen last, whose settings the Inspector shows where it is the only one, and the others. */
 export interface FusionSelection { current: string | null; others: readonly string[] }
 export const NO_SELECTION: FusionSelection = { current: null, others: [] };
+/** An editor that is given no viewer to show a node in shows none. */
+const NO_VIEW = () => {};
 
 /** Why the engine refused, where it is a refusal that changes nothing: a node dropped where it was, which is no failure. */
 const isEmpty = (error: unknown): boolean => error instanceof EngineError && typeof error.data === 'object' && error.data !== null
@@ -51,11 +53,14 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * two matte inputs of a Delta Keyer on its upper edge, each in a colour of its own (the garbage matte a quarter of
  * the way along, the solid matte three quarters), and its output at
  * the middle of its right side. A node that is passed through is drawn dimmed, and one whose
- * settings have keys has a badge. Drawn again only when what it shows changes: while one node is
- * dragged the others are left as they are.
+ * settings have keys has a badge. The node that the viewer shows has a dot in the lower right corner
+ * of its card, where no port and no badge lies. Drawn again only when what it shows changes: while
+ * one node is dragged the others are left as they are.
  */
-const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chosen, lit, keyed, passed, ports, onLabel }: {
+const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chosen, lit, keyed, passed, viewed, ports, onLabel }: {
   node: FusionNode; x: number; y: number; name: string; kind: string; current: boolean; chosen: boolean;
+  /** What the mark of the node that the viewer shows says, where this is that node. */
+  viewed: string | null;
   /** What each port says of itself where the pointer rests on it: the names of the inputs, and of the output. */
   ports: Record<FusionInput | 'output', string>;
   /** The port that a link being drawn would end on, as `portName` names it, or null. */
@@ -69,13 +74,14 @@ const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chose
   const maskX = x + MASK_INSET;
   const foot = y + NODE_HEIGHT;
   return <g className="color-node fusion-node" data-node={node.id} data-kind={node.kind} data-current={current || undefined} data-chosen={chosen || undefined}
-    data-pass-through={node.pass_through || undefined}>
-    <title>{[name, kind, passed ?? '', keyed ?? ''].filter(Boolean).join(' · ')}</title>
+    data-pass-through={node.pass_through || undefined} data-viewed={viewed !== null || undefined}>
+    <title>{[name, kind, passed ?? '', keyed ?? '', viewed ?? ''].filter(Boolean).join(' · ')}</title>
     <rect className="color-node-card" x={x} y={y} width={NODE_WIDTH} height={NODE_HEIGHT} rx={5} />
     <rect className="fusion-node-stripe" x={x + 1} y={y + 1} width={NODE_WIDTH - 2} height={6} rx={3} />
     <text className="fusion-node-name" x={x + NODE_WIDTH / 2} y={y + NODE_HEIGHT / 2 + 5} textAnchor="middle" data-test="node-label"
       onDoubleClick={() => onLabel(node.id)}>{shownLabel(name)}</text>
     {keyed !== null && <KeyedMark x={x + NODE_WIDTH / 2} y={y + NODE_HEIGHT - 8} title={keyed} />}
+    {viewed !== null && <circle className="fusion-node-viewed" cx={x + NODE_WIDTH - 9} cy={y + NODE_HEIGHT - 9} r={3.5} data-test="node-viewed"><title>{viewed}</title></circle>}
     {inputs.map((input, at) => {
       const py = y + (NODE_HEIGHT * (at + 1)) / (inputs.length + 1);
       const port = portName({ side: 'in', input });
@@ -188,7 +194,12 @@ function linkUnder(at: FusionAt, composition: Composition, layout: FusionLayout,
  *   (`insertOnLink`), in the gesture of the move; the link is drawn as one about to be replaced
  *   while the node is over it;
  * - Select Tool (Shift+Space, and in the menus): a dialog that lists the kinds that the editor
- *   adds, narrowed by what is typed, and adds the one taken as its button of the tool bar does.
+ *   adds, narrowed by what is typed, and adds the one taken as its button of the tool bar does;
+ * - the key `1`, and View in the menu of a node, show the node chosen in the viewer, alone, as
+ *   Fusion's left viewer does (`viewed`, `onView`): it has a dot on its card then. The same again,
+ *   the key `0`, or View Output in the menus goes back to what comes out of the composition. The
+ *   viewer is the page's, and looking at a node changes nothing of the project: it is done on a
+ *   locked track too.
  *
  * Where the clip lies on a locked track (`locked`), nothing of it is changed, as on the Edit page:
  * the buttons and the commands that change something are off, a drag moves no node and draws no
@@ -201,8 +212,12 @@ function linkUnder(at: FusionAt, composition: Composition, layout: FusionLayout,
  * above the graph, as the Color page says it; a change that changes nothing (`empty`, a node
  * dragged back to where it was) is no refusal and is not said.
  */
-export function FusionNodeEditor({ bridge, session, revision, clip, composition, at, selection, onSelection, focused, editing, locked = false }: {
+export function FusionNodeEditor({ bridge, session, revision, clip, composition, at, selection, onSelection, focused, editing, locked = false, viewed = null, onView = NO_VIEW }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number;
+  /** The node that the viewer shows, by its id; null where it shows what comes out of the composition. */
+  viewed?: string | null;
+  /** Have the viewer show a node, or what comes out of the composition (null). */
+  onView?: (node: string | null) => void;
   /** The clip whose composition is shown: it has none yet where `fusion` is not there. */
   clip: Clip;
   /** The composition as it is shown: the clip's, or the first one. */
@@ -245,8 +260,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
   const pickedLink = picked !== null && composition.links.some(link => linkName(link) === picked) ? picked : null;
 
   // What the handlers of keys and of the pointer read, as it is now.
-  const now = useRef({ composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, tool, base, words, locked });
-  now.current = { composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, tool, base, words, locked };
+  const now = useRef({ composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, tool, base, words, locked, viewed, onView });
+  now.current = { composition, clip, has, at, selection, selected, pickedLink, focused, editing, onSelection, zoom, menu, labelling, tool, base, words, locked, viewed, onView };
 
   // The places of nodes dragged are sent as one gesture, so that a drag is one step to undo.
   const gesture = useAudioGesture({
@@ -387,6 +402,17 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
       return true;
     }
     if (command.kind === 'copy') return copy(state.selected);
+    // Neither does looking at a node in the viewer: the node chosen last, or what comes out of the composition again.
+    if (command.kind === 'view') {
+      if (state.selection.current === null) return false;
+      state.onView(viewedAfter(state.composition, state.viewed, state.selection.current));
+      return true;
+    }
+    if (command.kind === 'viewOutput') {
+      if (state.viewed === null) return false;
+      state.onView(null);
+      return true;
+    }
     if (state.locked) return false;
     switch (command.kind) {
       case 'delete': {
@@ -655,6 +681,7 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
     { id: 'paste', label: labels.paste, keys: 'Ctrl+V', disabled: locked || copiedNodes() === null, run: () => { paste(copiedNodes(), pos); } },
     { id: 'reset-composition', label: labels.resetComposition, disabled: locked || !has || isFirst(composition), run: () => run(resetComposition(at, clip)) },
     { id: 'remove-composition', label: labels.removeComposition, disabled: locked || !has, run: () => run(removeComposition(at, clip)) },
+    { id: 'view-output', label: labels.viewOutput, keys: '0', disabled: viewed === null, run: () => onView(null) },
     { id: 'zoom-in', label: menuWords.zoomIn, run: () => setZoom(zoom * ZOOM_STEP) },
     { id: 'zoom-out', label: menuWords.zoomOut, run: () => setZoom(zoom / ZOOM_STEP) },
     { id: 'zoom-original', label: menuWords.originalSize, run: () => setZoom(1) },
@@ -698,6 +725,9 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
         { id: 'rename', label: labels.rename, keys: 'F2', disabled: locked, run: () => startLabel(id) },
         { id: 'pass-through', label: labels.passThrough, keys: 'Ctrl+P', checked: node.pass_through === true, disabled: locked,
           run: () => run(togglePass(at, composition, acted)) },
+        // The node right-clicked in the viewer, or what comes out of the composition again: the viewer is the page's, so a locked track does not hinder it.
+        { id: 'view', label: labels.view, keys: '1', checked: viewed === id, run: () => onView(viewedAfter(composition, viewed, id)) },
+        { id: 'view-output', label: labels.viewOutput, keys: '0', disabled: viewed === null, run: () => onView(null) },
         { id: 'delete', label: menuWords.deleteNode, keys: 'Delete', disabled: locked || removeNodes(at, composition, acted).length === 0,
           run: () => run(removeNodes(at, composition, acted)) },
       ] });
@@ -750,8 +780,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
           </g>
           {layout.nodes.map(({ node, x, y }) => <NodeCard key={node.id} node={node} x={x} y={y} name={names.get(node.id) ?? node.id} kind={labels.kinds[node.kind]}
             current={node.id === selection.current} chosen={node.id !== selection.current && selection.others.includes(node.id)} lit={litOf(node.id)}
-            keyed={hasKeys(node) ? colorLabels.keyframesPanel.keyed : null} passed={node.pass_through ? labels.passedThrough : null} ports={portNames}
-            onLabel={startLabel} />)}
+            keyed={hasKeys(node) ? colorLabels.keyframesPanel.keyed : null} passed={node.pass_through ? labels.passedThrough : null}
+            viewed={node.id === viewed ? labels.viewedMark : null} ports={portNames} onLabel={startLabel} />)}
           {preview?.marquee && <rect className="color-marquee" data-test="marquee" x={Math.min(preview.marquee.a.x, preview.marquee.b.x)}
             y={Math.min(preview.marquee.a.y, preview.marquee.b.y)} width={Math.abs(preview.marquee.a.x - preview.marquee.b.x)}
             height={Math.abs(preview.marquee.a.y - preview.marquee.b.y)} />}

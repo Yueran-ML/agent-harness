@@ -805,6 +805,7 @@ export const ja: Messages = {
         effects: 'エフェクト',
         copy: 'コピー', cut: 'カット', paste: 'ペースト', duplicate: '複製',
         selectTool: 'ツールを選択', selectToolMenu: 'ツールを選択…', searchTools: 'ツールを検索',
+        view: '表示', viewOutput: '出力を表示', viewedMark: 'ビューアに表示中', viewing: 'ビューア：{name}',
         settings: {
           apply: '適用モード', operator: 'オペレーター', over: 'オーバー', subtractiveAdditive: '減算 - 加算', alphaGain: 'アルファゲイン', burnIn: 'バーンイン',
           blend: 'ブレンド', centerX: '中心 X', centerY: '中心 Y', size: 'サイズ', angle: '角度', flipHorizontal: '左右反転',

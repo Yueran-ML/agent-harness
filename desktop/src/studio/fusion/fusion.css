@@ -76,6 +76,22 @@
   color: var(--moon-1);
 }
 
+/* What the viewer shows of the composition: the node that is viewed, or what comes out of it. */
+.fusion-viewed {
+  min-width: 0;
+  padding: 0 var(--s1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+/* Named, a node is looked at alone: the name is said as what is chosen is said. */
+.fusion-viewed[data-node] {
+  color: var(--accent);
+}
+
 .fusion-gap {
   flex: 1;
 }
@@ -287,6 +303,14 @@
 /* A node that is passed through hands on its first input as it is: it is drawn dimmed. */
 .fusion-page .fusion-node[data-pass-through] {
   opacity: 0.45;
+}
+
+/* The node that the viewer shows: a dot in the lower right corner of its card, clear of its ports and of the badge of keys. */
+.fusion-page .fusion-node-viewed {
+  pointer-events: none;
+  fill: var(--accent);
+  stroke: var(--ink-1);
+  stroke-width: 1;
 }
 
 /*

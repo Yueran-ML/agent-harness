@@ -123,8 +123,8 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  *   garbage matte, which says where the pointer rests on it that it needs one linked) and Fringe
  *   (Spill Method and Spill Suppression). A colour chosen as one sets its channels together
  *   (`putValues`), so that the engine never checks a screen colour half way between two. The screen
- *   colour is not picked in the viewer: the viewer shows what comes out of the MediaOut, as it is
- *   shown, and not the picture that comes into the keyer;
+ *   colour is not picked in the viewer yet, though the viewer can show the picture that comes into
+ *   the keyer (the node before it, viewed);
  * - a MediaIn and a MediaOut: nothing but the name.
  *
  * Every number has the three buttons of keys beside it (to the key before, a key put or taken away

@@ -888,6 +888,11 @@ export const en = {
         copy: 'Copy', cut: 'Cut', paste: 'Paste', duplicate: 'Duplicate',
         /** Select Tool (Shift+Space): the name of its dialog and of its list, its item in a menu, and its field. */
         selectTool: 'Select Tool', selectToolMenu: 'Select Tool…', searchTools: 'Search tools',
+        /**
+         * The node that the viewer shows: the two commands of the menus, what the dot on the card of that node says, and what the
+         * bar says the viewer shows, where `{name}` is the name of the node, or Output.
+         */
+        view: 'View', viewOutput: 'View Output', viewedMark: 'Shown in the viewer', viewing: 'Viewer: {name}',
         settings: {
           apply: 'Apply Mode', operator: 'Operator', over: 'Over', subtractiveAdditive: 'Subtractive - Additive', alphaGain: 'Alpha Gain', burnIn: 'Burn In',
           blend: 'Blend', centerX: 'Center X', centerY: 'Center Y', size: 'Size', angle: 'Angle', flipHorizontal: 'Flip Horizontal',

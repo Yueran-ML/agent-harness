@@ -819,6 +819,9 @@ enum Pipe {
     /// A pass of the composition of a clip that lays a foreground over a background
     /// (`fusion.wgsl`): it draws no layer, and into a texture of the composition alone.
     Fusion,
+    /// A pass of the composition of a clip that draws a mask, or a Background times its
+    /// effect mask (`fusion_mask.wgsl`): into a texture of the composition alone, too.
+    FusionMask,
 }
 
 impl Pipe {
@@ -964,7 +967,8 @@ struct StageWork {
 ///
 /// And, for the layers of clips that have compositions, what is drawn into textures before any
 /// of that: the passes, in the order they are drawn; the sources of those clips, each drawn
-/// alone; and the uniforms of the passes that lay a foreground over a background. A frame
+/// alone; the uniforms of the passes that lay a foreground over a background and of those
+/// that draw masks; and the sides of the polygons of those masks, one after another. A frame
 /// without such a layer has none of them.
 #[derive(Default)]
 struct Layered {
@@ -976,6 +980,7 @@ struct Layered {
     offscreen: Vec<Offscreen>,
     sources: Vec<Alone>,
     lays: Vec<[f32; fusion::PARAMS]>,
+    sides: Vec<[f32; 4]>,
     /// The textures of the compositions drawn so far that no pass after reads: those of the
     /// compositions of the layers after are drawn into them.
     free: Vec<wgpu::Texture>,
@@ -1011,11 +1016,20 @@ enum Offscreen {
         target: wgpu::Texture,
     },
     /// A foreground laid over a background, or over nothing, by the uniform of this number
-    /// among those of the frame.
+    /// among those of the frame; limited by the alpha of `mask`, where the node has an effect
+    /// mask.
     Lay {
         uniform: usize,
         background: Option<wgpu::Texture>,
         foreground: wgpu::Texture,
+        mask: Option<wgpu::Texture>,
+        target: wgpu::Texture,
+    },
+    /// A mask, or a Background times its effect mask, by the uniform of this number among
+    /// those of the frame: `incoming` is the picture whose alpha is the mask that comes in.
+    Mask {
+        uniform: usize,
+        incoming: Option<wgpu::Texture>,
         target: wgpu::Texture,
     },
 }
@@ -1324,9 +1338,9 @@ pub struct Compositor {
     /// The pipelines that make a canvas opaque (`opaque.wgsl`), by its format, made as they
     /// are first needed: by a frame with a layer that is blended.
     opaque: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
-    /// What the passes of compositions that lay a foreground over a background are drawn
-    /// with, made as it is first needed: by a frame with a layer of a clip whose composition
-    /// has such a pass.
+    /// What the passes of compositions that lay a foreground over a background, and those
+    /// that draw masks, are drawn with, made as it is first needed: by a frame with a layer
+    /// of a clip whose composition has such a pass.
     fusion: Option<fusion::Card>,
     /// How many passes it has drawn into textures of compositions since it was made.
     fusion_passes: u64,
@@ -1693,7 +1707,7 @@ impl Compositor {
         let under = fusion::floats(&self.gpu, width, background);
         let over = fusion::floats(&self.gpu, width, foreground);
         let uniform = fusion::merge_uniform((width, height), settings, luma);
-        let offsets = self.write_lays(&[uniform]);
+        let offsets = self.write_lays(&[uniform], &[]);
         let (Some(card), Some(pipeline), Some(offset)) =
             (&self.fusion, self.pipelines.get(&key), offsets.first())
         else {
@@ -1710,6 +1724,7 @@ impl Compositor {
             *offset,
             Some(&under),
             &over,
+            None,
             &target.texture,
         );
         self.gpu.queue().submit([encoder.finish()]);
@@ -1764,6 +1779,7 @@ impl Compositor {
             offscreen,
             mut sources,
             lays,
+            sides,
             waiting: fusing,
             free: _,
         } = laid;
@@ -1938,8 +1954,9 @@ impl Compositor {
             .flat_map(|tap| tap.passes)
             .collect();
         let mut filter_offsets = self.write_filter_uniforms(&filter_passes).into_iter();
-        // The uniforms of the passes of compositions that lay a foreground over a background.
-        let lay_offsets = self.write_lays(&lays);
+        // The uniforms of the passes of compositions that lay a foreground over a background
+        // and of those that draw masks, and the sides of the polygons of those masks.
+        let lay_offsets = self.write_lays(&lays, &sides);
 
         // The canvases drawn into, one after the other: the frame ends in the target's texture.
         let passes = usize::from(grade.is_some()) + usize::from(output.is_some());
@@ -2107,9 +2124,10 @@ impl Compositor {
     }
 
     /// Write the uniforms of the passes of compositions of a frame that lay a foreground over
-    /// a background, a slot each; give the offset of each. A frame without such a pass writes
-    /// nothing, and makes nothing to write them into.
-    fn write_lays(&mut self, lays: &[[f32; fusion::PARAMS]]) -> Vec<u32> {
+    /// a background and of those that draw masks (`lays`), a slot each, and the sides of the
+    /// polygons of those masks (`sides`); give the offset of each uniform. A frame without
+    /// such a pass writes nothing, and makes nothing to write them into.
+    fn write_lays(&mut self, lays: &[[f32; fusion::PARAMS]], sides: &[[f32; 4]]) -> Vec<u32> {
         if lays.is_empty() {
             return Vec::new();
         }
@@ -2117,12 +2135,14 @@ impl Compositor {
         let card = self
             .fusion
             .get_or_insert_with(|| fusion::Card::new(&self.gpu, slot));
+        card.write_sides(&self.gpu, sides);
         card.write(&self.gpu, slot, lays)
     }
 
     /// Draw the passes of the compositions of a frame into their textures, in their order:
     /// the sources of the clips alone, by their `calls`, and the passes of their nodes, those
-    /// that lay a foreground over a background by the uniforms at `lays`.
+    /// that lay a foreground over a background and those that draw masks by the uniforms at
+    /// `lays`.
     fn draw_offscreen(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2132,6 +2152,7 @@ impl Compositor {
         lays: &[u32],
     ) {
         let laying = (Pipe::Fusion, fusion::FORMAT, None);
+        let masking = (Pipe::FusionMask, fusion::FORMAT, None);
         for pass in offscreen {
             match pass {
                 Offscreen::Source(number) => {
@@ -2148,6 +2169,7 @@ impl Compositor {
                     uniform,
                     background,
                     foreground,
+                    mask,
                     target,
                 } => {
                     let (Some(card), Some(pipeline), Some(offset)) = (
@@ -2164,6 +2186,28 @@ impl Compositor {
                         *offset,
                         background.as_ref(),
                         foreground,
+                        mask.as_ref(),
+                        target,
+                    );
+                }
+                Offscreen::Mask {
+                    uniform,
+                    incoming,
+                    target,
+                } => {
+                    let (Some(card), Some(pipeline), Some(offset)) = (
+                        &self.fusion,
+                        self.pipelines.get(&masking),
+                        lays.get(*uniform),
+                    ) else {
+                        continue;
+                    };
+                    card.mask(
+                        self.gpu.device(),
+                        encoder,
+                        pipeline,
+                        *offset,
+                        incoming.as_ref(),
                         target,
                     );
                 }
@@ -3323,13 +3367,28 @@ impl Compositor {
             Reads::Source => return Ok(Composed::Source),
             Reads::Pass(_) => {}
         }
-        if plan.lays() {
-            let key = (Pipe::Fusion, fusion::FORMAT, None);
+        // The pipelines of its passes: that of those that lay, and that of those that draw
+        // masks, each asked for where the composition has such a pass, both before either is
+        // waited for, so that they are made side by side.
+        let pipes: Vec<Pipe> = [
+            (plan.lays(), Pipe::Fusion),
+            (plan.masks(), Pipe::FusionMask),
+        ]
+        .into_iter()
+        .filter_map(|(needed, pipe)| needed.then_some(pipe))
+        .collect();
+        if !pipes.is_empty() {
             self.keep_made();
-            let mut made = self.pipeline(key.0, key.1, key.2).map_err(failed)?;
+            let mut made = true;
+            for pipe in &pipes {
+                made &= self.pipeline(*pipe, fusion::FORMAT, None).map_err(failed)?;
+            }
             if !made && !self.background {
                 self.finish_compiling();
-                made = self.pipeline(key.0, key.1, key.2).map_err(failed)?;
+                made = true;
+                for pipe in &pipes {
+                    made &= self.pipeline(*pipe, fusion::FORMAT, None).map_err(failed)?;
+                }
             }
             if !made {
                 laid.waiting = true;
@@ -3379,6 +3438,7 @@ impl Compositor {
                 fusion::Pass::Lay {
                     background,
                     foreground,
+                    mask,
                     uniform,
                 } => {
                     let Some(foreground) = read(*foreground) else {
@@ -3388,9 +3448,33 @@ impl Compositor {
                         uniform: laid.lays.len(),
                         background: read(*background),
                         foreground,
+                        mask: read(*mask),
                         target,
                     });
                     laid.lays.push(*uniform);
+                }
+                fusion::Pass::Mask {
+                    incoming,
+                    uniform,
+                    sides,
+                } => {
+                    laid.offscreen.push(Offscreen::Mask {
+                        uniform: laid.lays.len(),
+                        incoming: read(*incoming),
+                        target,
+                    });
+                    // The sides of its polygon go after those of the frame so far, and its
+                    // uniform says where they start.
+                    let mut uniform = *uniform;
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "how many sides the polygons of a frame have, far below what \
+                                  a float counts"
+                    )]
+                    let first = laid.sides.len() as f32;
+                    uniform[fusion::SIDES_AT] = first;
+                    laid.sides.extend_from_slice(sides);
+                    laid.lays.push(uniform);
                 }
             }
         }
@@ -3782,9 +3866,9 @@ impl Compositor {
     /// Whether the pipeline of `pipe` that draws into targets of `format`, with a program of
     /// colour or none, is made: one with a program is asked of the builder if it is not (and is
     /// not made yet as this returns); one without, the compositor's own shader, is made at once.
-    /// But that of the passes of compositions ([`Pipe::Fusion`]), whose shader has the maths of
-    /// every composite mode in it, is asked of the builder too: a frame that is drawn without
-    /// waiting is not held up by it.
+    /// But those of the passes of compositions ([`Pipe::Fusion`], whose shader has the maths of
+    /// every composite mode in it, and [`Pipe::FusionMask`]) are asked of the builder too: a
+    /// frame that is drawn without waiting is not held up by them.
     ///
     /// # Errors
     /// The code of the program is not WGSL that the card takes, or reads what is not bound.
@@ -3814,7 +3898,8 @@ impl Compositor {
         if let Pipe::YuvBetween(texel) | Pipe::YuvBetweenBlended(texel) = pipe {
             self.between_layout(texel);
         }
-        if pipe == Pipe::Fusion && self.fusion.is_none() {
+        let fused = matches!(pipe, Pipe::Fusion | Pipe::FusionMask);
+        if fused && self.fusion.is_none() {
             self.fusion = Some(fusion::Card::new(&self.gpu, self.slot));
         }
         let (shader, layout) = match pipe {
@@ -3835,6 +3920,10 @@ impl Compositor {
                 Some(card) => (fusion::shader(), &card.layout),
                 None => return Err("a pass of a composition has nothing to bind it".into()),
             },
+            Pipe::FusionMask => match &self.fusion {
+                Some(card) => (fusion::mask_shader(), &card.mask_layout),
+                None => return Err("a mask of a composition has nothing to bind it".into()),
+            },
         };
         // What binds the canvas under a layer that is blended: a texture, as a stage reads one.
         let backdrop = pipe.is_blended().then(|| self.stage_layout.clone());
@@ -3849,7 +3938,7 @@ impl Compositor {
             None => (shader, None),
         };
         let making = maker(pipe, source, layout.clone(), colour, backdrop, format);
-        if program.is_none() && pipe != Pipe::Fusion {
+        if program.is_none() && !fused {
             let made = making(self.gpu.device());
             self.keep(vec![(key, made)]);
             return self.pipeline(pipe, format, program);
@@ -4062,7 +4151,7 @@ fn maker(
             .map(|_| device.push_error_scope(wgpu::ErrorFilter::Validation));
         let pipeline = if pipe == Pipe::Stage {
             stage_pipeline(device, &source, &layout, colour.as_ref(), format)
-        } else if pipe == Pipe::Fusion {
+        } else if matches!(pipe, Pipe::Fusion | Pipe::FusionMask) {
             fusion::pipeline(device, &source, &layout)
         } else {
             let groups = (colour.as_ref(), backdrop.as_ref());

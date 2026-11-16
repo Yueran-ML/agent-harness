@@ -135,18 +135,20 @@
 //!
 //! # On the card
 //!
-//! One fragment for each pixel, which reads nothing but the incoming mask at its own place
-//! (`textureLoad`, no sampler). The shader is to be given what [`Shape::placed`] and
+//! The compositor draws a mask node of a composition by `fusion_mask.wgsl` (`fusion.rs`): one
+//! fragment for each pixel, which reads nothing but the incoming mask at its own place
+//! (`textureLoad`, no sampler). The shader is given what [`Shape::placed`] and
 //! [`Common::edge`] make, so that no setting is made pixels twice: for a Rectangle or an
 //! Ellipse the centre, the cosine and sine of the Angle, the two halves and the radius of the
-//! corners; for a Polygon its points in pixels, in the tail of the parameters as the outline of
-//! a window is; and half the Soft Edge, half the Border Width, Solid, Invert, Level and the
-//! Paint Mode. The cosine and the sine are worked out here, not on the card.
+//! corners; for a Polygon its sides in pixels, in a buffer of their own as the outline of a
+//! window is in the parameters of its grade; and half the Soft Edge, half the Border Width,
+//! Solid, Invert, Level and the Paint Mode. The cosine and the sine are worked out here, not on
+//! the card.
 //!
 //! `window_feather` and `window_distance` of `grade/windows.wgsl` serve as they are ([`feather`]
 //! and the distance to a side). The even-odd test of `window_outline` is the Alternate fill; Non
 //! Zero Winding adds a count to the same loop. A polygon of very many points wants the tree of
-//! the windows; this reference reads every side.
+//! the windows; the shader reads every side, as this reference does.
 
 #![allow(
     clippy::cast_possible_truncation,

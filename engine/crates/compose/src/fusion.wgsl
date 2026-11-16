@@ -10,6 +10,11 @@
 //
 // The pictures hold R, G, B and A of the working space of the timeline, premultiplied by their
 // alpha, in half floats: what is above 1 or below 0 is kept as it is.
+//
+// A node that has an effect mask is limited by it in the same pass: where the mask is 1 the
+// pixel is what the node makes, where it is 0 it is the pixel of the picture that came into the
+// first input of the node, and between them the two are mixed by the mask. A pass without one
+// reads no mask, and makes each pixel as it did before there were masks, to the bit.
 
 struct Params {
     // The pixel at (x, y) of the picture that comes out, in its pixels from its top left
@@ -20,7 +25,10 @@ struct Params {
     row1: vec4<f32>,
     // x: the pixels of the picture that comes out to a pixel of the foreground; y: how many
     // points across and down each pixel is made of; z: the Apply Mode, numbered as
-    // `grade/layout.rs` numbers the composite modes.
+    // `grade/layout.rs` numbers the composite modes; w: the effect mask of the node: 0, it has
+    // none; 1, it has one, and the picture that came into its first input is the background (a
+    // Merge); 2, it has one, and that picture is the foreground as it came in, not moved (a
+    // Transform).
     extra: vec4<f32>,
     // Subtractive/Additive, Alpha Gain, Burn In and Blend, as `merge::Settings::held` makes
     // them.
@@ -32,6 +40,9 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var background: texture_2d<f32>;
 @group(0) @binding(2) var foreground: texture_2d<f32>;
+// The picture whose alpha is the effect mask of the node, of the size of the picture that comes
+// out; a texel of nothing, which is not read, where the node has none.
+@group(0) @binding(3) var effect_mask: texture_2d<f32>;
 
 // One triangle that covers the target.
 @vertex
@@ -157,11 +168,52 @@ fn fusion_merged(under: vec4<f32>, over: vec4<f32>) -> vec4<f32> {
     return under;
 }
 
+// The effect mask at the pixel whose middle is `position`: the alpha of the picture that is
+// linked to the `mask` input of the node, within 0 and 1 (`mask.rs` reads an incoming mask so:
+// an alpha below 0, or one that is no number, is 0, and one above 1 is 1).
+fn fusion_mask_at(position: vec2<f32>) -> f32 {
+    let last = vec2<i32>(textureDimensions(effect_mask)) - vec2<i32>(1, 1);
+    let alpha = textureLoad(effect_mask, clamp(vec2<i32>(position), vec2<i32>(0, 0), last), 0).a;
+    if alpha > 0.0 {
+        return min(alpha, 1.0);
+    }
+    return 0.0;
+}
+
+// The foreground at the pixel whose middle is `position`, as it came in: not moved. It is of
+// the size of the picture that comes out.
+fn fusion_as_it_came(position: vec2<f32>) -> vec4<f32> {
+    let last = vec2<i32>(textureDimensions(foreground)) - vec2<i32>(1, 1);
+    return textureLoad(foreground, clamp(vec2<i32>(position), vec2<i32>(0, 0), last), 0);
+}
+
+// What a node makes of a pixel, `own`, limited by its effect mask, `limit`, a number from 0 to
+// 1: `first + (own - first) * limit`, channel by channel, `first` being the pixel of the picture
+// that came into the first input of the node. Both are kept to the bit at the ends of the mask.
+fn fusion_limited(first: vec4<f32>, own: vec4<f32>, limit: f32) -> vec4<f32> {
+    if limit >= 1.0 {
+        return own;
+    }
+    if limit > 0.0 {
+        return first + (own - first) * limit;
+    }
+    return first;
+}
+
 @fragment
 fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // The background is of the size of the picture that comes out; a pass without one is given
     // a texel of nothing, which is read at every pixel.
     let last = vec2<i32>(textureDimensions(background)) - vec2<i32>(1, 1);
     let under = textureLoad(background, clamp(vec2<i32>(position.xy), vec2<i32>(0, 0), last), 0);
-    return fusion_merged(under, fusion_moved(position.xy));
+    let own = fusion_merged(under, fusion_moved(position.xy));
+    let limited = u32(params.extra.w + 0.5);
+    if limited == 0u {
+        return own;
+    }
+    var first = under;
+    if limited == 2u {
+        first = fusion_as_it_came(position.xy);
+    }
+    return fusion_limited(first, own, fusion_mask_at(position.xy));
 }

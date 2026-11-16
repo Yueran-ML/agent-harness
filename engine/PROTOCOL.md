@@ -3988,11 +3988,24 @@ among them, and a node that is passed through is left out for the node that it h
 names its mask as it names its pictures, after them; a `mask` that is not linked, or that
 brings no picture, is none, and a node that is read as a mask alone is among them.
 
-**The masks are not drawn yet.** The compositor draws a composition that has masks as it is
-without them: the effect mask of a `merge`, of a `transform` and of a `background` is not
-applied, and a mask node that is read as a picture gives none (a `merge` whose foreground it is
-is its background). The engine logs `fusion_node_not_drawn` once, with the ids of the mask
-nodes of the first such composition that it draws.
+**The masks are drawn.** A `rectangle`, an `ellipse` and a `polygon` are each drawn into a
+picture of the composition: white premultiplied by the value of the mask, which is that of
+`crates/compose/src/mask.rs` for a frame of the size that the pictures are drawn at (Sizes,
+below), so that a mask is the same share of the picture however large it is drawn, a Soft Edge
+and a Border Width with it. A crisp edge is not smoothed between the pixels. The mask that
+comes into a `mask` input is the alpha of the picture that is linked to it, at the pixel, held
+within 0 and 1 (an alpha below 0, or one that is no number, is 0; one above 1 is 1). A `merge`
+and a `transform` that have a mask are limited as they are drawn, `first + (own − first) ·
+mask` of each of R, G, B and A premultiplied; where the mask is 1 the pixel is the node's own
+to the bit, and where it is 0 it is that of its first input. A `background` that has one is its
+colour, premultiplied, times the mask. A node without a mask is drawn as it was before there
+were masks, by the same passes and to the bit. A `mask` that is linked to a node which gives no
+picture as the compositor draws it (a `media_in` of a clip whose source shows nothing; a
+`background` whose `a` is 0; a `transform` of nothing) is no mask, and the node is not limited:
+but a mask node always gives a picture, and one whose mask is 0 everywhere limits what reads it
+to nothing. Every kind of node is drawn: `fusion_node_not_drawn`, which the engine logs once
+with the ids of the nodes of a kind that it does not draw, in the first composition that has
+any, is logged of none of these kinds.
 
 The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
 scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a
@@ -4038,7 +4051,8 @@ clip that is not made larger or smaller shows each pixel as the composition made
 as large about its middle and turns it by `angle` there, counter-clockwise; a picture that is
 flipped is flipped in its own frame first. A `merge` places its foreground the same way on its
 background, and then merges the two. A `size` of 0 leaves nothing: a `transform` then gives no
-picture, and a `merge` its background. What a picture does not cover is transparent.
+picture (one that has a mask gives its picture as it came in where the mask is 0, and nothing
+where it is 1), and a `merge` its background. What a picture does not cover is transparent.
 
 **Sampling.** A picture that is moved is read between its four nearest pixels (bilinear), and
 its edges are smoothed over a pixel, as a layer of the timeline is; where it is made smaller,
@@ -4054,14 +4068,17 @@ the composite modes of a Layer Mixer, with the weights of luma of the working sp
 Subtractive/Additive (read in the `normal` mode alone), Burn In, the operator, and Blend. A
 `merge` as it is at first is the over of a premultiplied foreground. A node that changes
 nothing costs nothing: a `transform` as it is at first, a `merge` whose `foreground` gives no
-picture or whose `blend` is 0 (it is its background), and a `merge` as it is at first with no
-`background` (it is its foreground).
+picture or whose `blend` is 0 (it is its background), each whatever its mask, and a `merge` as
+it is at first with no `background` and no mask (it is its foreground; with a mask it is its
+foreground times the mask, and is drawn).
 
 **While a shader is being made.** A monitor draws its frames without waiting for the shaders
 of the card. Until the one that lays a foreground over a background is made (once for each
-card, the first time a composition with a `merge` or a `transform` is shown), a clip is shown
-as its source, without its composition, and the frame is drawn again when it is made; an
-export, a still and a frame drawn off screen wait for it.
+card, the first time a composition with a `merge` or a `transform` is shown), and the one that
+draws masks (once for each card, the first time a composition with a mask node, or with a
+`background` that has a mask, is shown), a clip is shown as its source, without its
+composition, and the frame is drawn again when they are made; an export, a still and a frame
+drawn off screen wait for them.
 
 ## Scopes
 

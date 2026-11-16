@@ -1024,8 +1024,9 @@ static UNKNOWN_NODE_TOLD: AtomicBool = AtomicBool::new(false);
 /// are of the size of the source of the clip ([`fusion::size_of`]); of a clip that is not on the
 /// timeline, of the size of the timeline.
 ///
-/// A node whose kind the compositor does not draw hands on the picture of its first input, and
-/// a mask node, which it does not draw yet, gives none: the first such node met is logged, once.
+/// A node whose kind the compositor does not draw hands on the picture of its first input: the
+/// first such node met is logged, once. Every kind that the model has now is drawn, the masks
+/// among them.
 pub(crate) fn composed(
     project: &Project,
     timeline: &columbina_model::Timeline,

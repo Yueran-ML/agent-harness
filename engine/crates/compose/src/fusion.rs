@@ -34,22 +34,19 @@
 //! `plan` makes the passes of a composition at one moment:
 //!
 //! - a `MediaIn` is the picture of the source, drawn once however many there are;
-//! - a Background is a texture cleared to its colour (`Pass::Fill`);
+//! - a Background is a texture cleared to its colour (`Pass::Fill`), where it has no mask;
 //! - a Merge and a Transform are one pass each of `fusion.wgsl` (`Pass::Lay`): the foreground
 //!   moved, made larger or smaller and turned (and, of a Transform, flipped), read between its
 //!   texels and smoothed at its edges as a layer is, then merged with the background by the
 //!   mathematics of [`crate::merge`], step by step. A Transform is its picture laid over
 //!   nothing by a merge that changes nothing;
+//! - a Rectangle, an Ellipse and a Polygon are one pass each of `fusion_mask.wgsl`
+//!   (`Pass::Mask`), always: see Masks below;
 //! - a node that changes nothing is no pass: its picture is that of its input. So is a
 //!   Transform as it is at first, a Merge whose foreground gives no picture or whose Blend is
-//!   0 (its background), and a Merge as it is at first over no background (its foreground). A
-//!   node whose kind is not known here hands on the picture of its first input;
-//! - the masks are not drawn yet. A Rectangle, an Ellipse and a Polygon are no pass, and read
-//!   as a picture each gives none; and the effect mask of a Merge, of a Transform and of a
-//!   Background is not applied: each is drawn as it is without one. So a composition with
-//!   masks is drawn as it is without them, and its mask nodes are told of as not drawn
-//!   ([`Fusion::unknown`]). What they are to do is told with the model
-//!   ([`columbina_model::fusion`], Masks), and their mathematics is [`crate::mask`].
+//!   0 (its background), and a Merge as it is at first over no background (its foreground):
+//!   each where it has no mask, and Masks below tells of those that have one. A node whose
+//!   kind is not known here hands on the picture of its first input.
 //!
 //! A composition whose `MediaOut` shows its `MediaIn`, as the one that a clip has at first
 //! does, has no pass at all: its layer is drawn as that of a clip without a composition, to
@@ -57,28 +54,111 @@
 //!
 //! The textures are those of the neighbourhoods of grades ([`crate::neighbourhood`]), kept from
 //! frame to frame by their size: a pass draws into one that no pass after it reads
-//! (`Plan::slots`), so that a chain of nodes takes two or three, however long it is.
+//! (`Plan::slots`), so that a chain of nodes takes two or three, however long it is. The
+//! picture of a mask is one of them, free for the passes after the last that reads it.
+//!
+//! # Masks
+//!
+//! What a mask is and what it does is told with the model ([`columbina_model::fusion`],
+//! Masks), and its mathematics is [`crate::mask`], which the shader is held to.
+//!
+//! A mask node is a pass that reads no picture but the mask that comes into it: each pixel
+//! is white premultiplied by the value of the mask there, so that its R, G, B and A are all
+//! that value. The value is that of [`crate::mask::mask`] for a frame of the size that the
+//! pictures are drawn at: the settings are made pixels of that size by
+//! [`crate::mask::Shape::placed`] and [`crate::mask::Common::edge`], here and not on the card,
+//! so that a mask is the same share of the picture at any size. The sides of a Polygon go to
+//! the card in a buffer of their own, those of all the polygons of a frame one after another,
+//! as the outlines of the windows of the Color page go in the parameters of their grade: a
+//! polygon may have any number of points. Read as a picture, by a Merge, a Transform or the
+//! `MediaOut`, a mask node is that white picture.
+//!
+//! A `mask` input reads the alpha of the picture that is linked to it, at the pixel, within 0
+//! and 1: an alpha below 0, or one that is no number, is 0, and one above 1 is 1, as
+//! [`crate::mask`] reads an incoming mask. What a mask does to the node that it comes into:
+//!
+//! - a Merge and a Transform are limited in the pass that lays them, which reads the mask
+//!   too: `first + (own - first) * mask`, channel by channel, `own` what the node draws
+//!   without a mask and `first` the picture of its first input as it came in (of a Merge its
+//!   background, of a Transform its picture where it lay; nothing where that is not linked).
+//!   Where the mask is 1 the pixel is `own` to the bit, and where it is 0 it is `first`;
+//! - a Background that has a mask is a pass of `fusion_mask.wgsl` in place of the clear: its
+//!   colour, premultiplied, times the mask, all four channels;
+//! - a mask node combines the mask that comes in with its own by its Paint Mode.
+//!
+//! A node without a mask is drawn by the passes that it was drawn by before there were masks,
+//! and its picture is the same to the bit. A node with one is no pass where the mask cannot
+//! change it, `own` and `first` being one picture:
+//!
+//! - a Transform as it is at first is its input, whatever its mask;
+//! - a Merge whose foreground gives no picture, of which nothing is left or whose Blend is 0
+//!   is its background, whatever its mask;
+//! - a Transform of no picture is no picture; and so is a Background of which nothing is
+//!   seen.
+//!
+//! But a node with a mask is a pass where it would have been none without, `own` and `first`
+//! being two pictures:
+//!
+//! - a Merge as it is at first over no background is its foreground times its mask, not its
+//!   foreground;
+//! - a Transform that leaves nothing of its picture (a Size of 0) is that picture as it came
+//!   in times what the mask leaves, `1 - mask`, not nothing.
+//!
+//! A `mask` that names a node which gives no picture here is no mask, and the node is not
+//! limited, as the model has a link that brings no picture: so a `MediaIn` of a clip whose
+//! source shows nothing, and so too a picture that is known to be nothing without a pass (a
+//! Background whose alpha is 0, a Transform of nothing). A mask node is never such a
+//! picture: a mask of 0 everywhere is a picture, and limits what reads it to nothing.
+//!
+//! A mask node into which no picture comes has no Paint Mode: the mask is its own.
 
 use columbina_model::fusion::{self as model, Fused, FusedKind, Merged, Transformed};
 
 use crate::geometry::{fit, raster_scale, samples, Affine};
 use crate::gpu::Gpu;
 use crate::grade::layout;
+use crate::mask::{self, Common, FillMethod, PaintMode, Placed, Shape};
 use crate::merge::{Operator, Settings};
 use crate::Source;
 
 /// The shader of a pass that lays a foreground over a background.
 const SHADER: &str = include_str!("fusion.wgsl");
 
+/// The shader of a pass that draws a mask, or a Background times its effect mask.
+const MASK_SHADER: &str = include_str!("fusion_mask.wgsl");
+
 /// The format of the pictures of a composition: that of the canvas, half floats, which keep
 /// what is above 1 and below 0.
 pub(crate) const FORMAT: wgpu::TextureFormat = crate::WORKING_FORMAT;
 
-/// How many values the uniform of `fusion.wgsl` has.
+/// How many values the uniform of `fusion.wgsl` has, and that of `fusion_mask.wgsl`, which is
+/// of the same size, so that the uniforms of all the passes of a frame lie in one buffer, a
+/// slot each.
 pub(crate) const PARAMS: usize = 20;
 
-/// The bytes of the uniform of `fusion.wgsl`.
+/// The bytes of the uniform of `fusion.wgsl`, and of that of `fusion_mask.wgsl`.
 const PARAMS_SIZE: u64 = 80;
+
+/// The place in the uniform of `fusion.wgsl` of how the pass is limited by an effect mask
+/// (`extra.w`): 0 where the node has none.
+const LIMITED_AT: usize = 11;
+
+/// What the uniform of `fusion.wgsl` has at [`LIMITED_AT`] for a node that has an effect mask
+/// and whose first input is the background of the pass: a Merge.
+const LIMITED_TO_BACKGROUND: f32 = 1.0;
+
+/// What the uniform of `fusion.wgsl` has at [`LIMITED_AT`] for a node that has an effect mask
+/// and whose first input is the foreground of the pass as it came in: a Transform.
+const LIMITED_TO_FOREGROUND: f32 = 2.0;
+
+/// The place in the uniform of `fusion_mask.wgsl` of the first of the sides of a Polygon among
+/// those of the frame (`kind.z`): whoever puts the sides of the passes of a frame one after
+/// another writes it ([`Pass::Mask`]).
+pub(crate) const SIDES_AT: usize = 6;
+
+/// What the uniform of `fusion_mask.wgsl` has as what is drawn (`kind.x`) for a Background
+/// that has an effect mask; a Rectangle is 0, an Ellipse 1 and a Polygon 2.
+const TINTED: f32 = 3.0;
 
 /// What a layer of a clip that has a composition shows ([`crate::Source::Fused`]): the picture
 /// that comes out of the composition, in place of the source of the clip.
@@ -118,6 +198,9 @@ fn is_drawn(kind: &FusedKind) -> bool {
             | FusedKind::Background { .. }
             | FusedKind::Merge { .. }
             | FusedKind::Transform { .. }
+            | FusedKind::Rectangle { .. }
+            | FusedKind::Ellipse { .. }
+            | FusedKind::Polygon { .. }
     )
 }
 
@@ -246,16 +329,75 @@ pub(crate) enum Reads {
 /// A pass of a composition: what one texture is drawn with.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Pass {
-    /// A colour over the whole picture, premultiplied: a Background.
+    /// A colour over the whole picture, premultiplied: a Background that has no mask.
     Fill([f32; 4]),
     /// A foreground moved and merged with a background (`fusion.wgsl`): a Merge, or a
     /// Transform, whose background is nothing. The foreground is never nothing.
     Lay {
         background: Reads,
         foreground: Reads,
+        /// The picture whose alpha is the effect mask of the node; nothing where it has none,
+        /// and the pass is not limited.
+        mask: Reads,
         /// The uniform of `fusion.wgsl`.
         uniform: [f32; PARAMS],
     },
+    /// A mask node, white premultiplied by its mask; or a Background that has an effect mask,
+    /// its colour times that mask (`fusion_mask.wgsl`).
+    Mask {
+        /// The picture whose alpha is the mask that comes in; nothing where none comes in. Of
+        /// a Background it is never nothing.
+        incoming: Reads,
+        /// The uniform of `fusion_mask.wgsl`, but for the first of the sides of a Polygon
+        /// among those of the frame ([`SIDES_AT`]), which whoever draws the frame knows.
+        uniform: [f32; PARAMS],
+        /// The sides of a Polygon of three points or more, each from where it starts (x, y)
+        /// to where it ends (x, y), in the pixels of the picture; none of any other pass.
+        sides: Vec<[f32; 4]>,
+    },
+}
+
+impl Pass {
+    /// The pictures that the pass reads: nothing in the places of those that it has not.
+    fn reads(&self) -> [Reads; 3] {
+        match self {
+            Pass::Fill(_) => [Reads::Nothing; 3],
+            Pass::Lay {
+                background,
+                foreground,
+                mask,
+                ..
+            } => [*background, *foreground, *mask],
+            Pass::Mask { incoming, .. } => [*incoming, Reads::Nothing, Reads::Nothing],
+        }
+    }
+
+    /// The pass, each picture that it reads made what `renumbered` makes of it.
+    fn with_reads(self, renumbered: impl Fn(Reads) -> Reads) -> Pass {
+        match self {
+            fill @ Pass::Fill(_) => fill,
+            Pass::Lay {
+                background,
+                foreground,
+                mask,
+                uniform,
+            } => Pass::Lay {
+                background: renumbered(background),
+                foreground: renumbered(foreground),
+                mask: renumbered(mask),
+                uniform,
+            },
+            Pass::Mask {
+                incoming,
+                uniform,
+                sides,
+            } => Pass::Mask {
+                incoming: renumbered(incoming),
+                uniform,
+                sides,
+            },
+        }
+    }
 }
 
 /// The passes of a composition at one moment, each after those that it reads, and the picture
@@ -280,14 +422,10 @@ impl Plan {
     /// that comes out.
     pub(crate) fn reads_source(&self) -> bool {
         self.output == Reads::Source
-            || self.passes.iter().any(|pass| match pass {
-                Pass::Fill(_) => false,
-                Pass::Lay {
-                    background,
-                    foreground,
-                    ..
-                } => [*background, *foreground].contains(&Reads::Source),
-            })
+            || self
+                .passes
+                .iter()
+                .any(|pass| pass.reads().contains(&Reads::Source))
     }
 
     /// Whether a pass of it is one of `fusion.wgsl`, which needs its pipeline.
@@ -295,6 +433,13 @@ impl Plan {
         self.passes
             .iter()
             .any(|pass| matches!(pass, Pass::Lay { .. }))
+    }
+
+    /// Whether a pass of it is one of `fusion_mask.wgsl`, which needs its pipeline.
+    pub(crate) fn masks(&self) -> bool {
+        self.passes
+            .iter()
+            .any(|pass| matches!(pass, Pass::Mask { .. }))
     }
 
     /// The textures of its passes: a pass draws into one that no pass from it on reads, and
@@ -316,14 +461,8 @@ impl Plan {
             }
         };
         for (by, pass) in self.passes.iter().enumerate() {
-            if let Pass::Lay {
-                background,
-                foreground,
-                ..
-            } = pass
-            {
-                read(*background, by);
-                read(*foreground, by);
+            for reads in pass.reads() {
+                read(reads, by);
             }
         }
         read(self.output, after);
@@ -339,21 +478,13 @@ impl Plan {
         for (by, pass) in self.passes.iter().enumerate() {
             let slot = take(&mut free, &mut slots.count);
             slots.passes.push(slot);
-            let Pass::Lay {
-                background,
-                foreground,
-                ..
-            } = pass
-            else {
-                continue;
-            };
-            // What this pass is the last to read is free for the passes after it.
-            let both = if background == foreground {
-                [*background, Reads::Nothing]
-            } else {
-                [*background, *foreground]
-            };
-            for reads in both {
+            // What this pass is the last to read is free for the passes after it: each
+            // picture once, though the pass read it in two places.
+            let all = pass.reads();
+            for (place, reads) in all.into_iter().enumerate() {
+                if all[..place].contains(&reads) {
+                    continue;
+                }
                 let freed = match reads {
                     Reads::Nothing => None,
                     Reads::Source => slots.source.filter(|_| last_of_source == Some(by)),
@@ -384,43 +515,54 @@ pub(crate) fn plan(composition: &Fused, size: (u32, u32), luma: [f32; 3], source
                 .and_then(|at| made.get(at).copied())
                 .unwrap_or_default()
         };
+        // A `mask` that names a node which gives no picture is no mask: `read` gives nothing
+        // for it, as for one that is not linked.
         let reads = match &node.kind {
             FusedKind::MediaIn if source => Reads::Source,
-            // A `MediaIn` of a source that gives no picture. And a mask node, which is not
-            // drawn yet: read as a picture it gives none, and it does not hand on the mask
-            // that comes into it, which is no picture of its own.
-            FusedKind::MediaIn
-            | FusedKind::Rectangle { .. }
-            | FusedKind::Ellipse { .. }
-            | FusedKind::Polygon { .. } => Reads::Nothing,
-            // The effect mask of a Background, of a Transform and of a Merge is not applied
-            // yet: each is drawn as it is without one.
-            FusedKind::Background { rgba, .. } => match filled(*rgba) {
-                Some(colour) => {
-                    passes.push(Pass::Fill(colour));
-                    Reads::Pass(passes.len() - 1)
-                }
-                None => Reads::Nothing,
+            // A `MediaIn` of a source that gives no picture.
+            FusedKind::MediaIn => Reads::Nothing,
+            FusedKind::Background { rgba, mask } => match (filled(*rgba), read(*mask)) {
+                (None, _) => Reads::Nothing,
+                (Some(colour), Reads::Nothing) => drawn(&mut passes, Pass::Fill(colour)),
+                (Some(colour), incoming) => drawn(
+                    &mut passes,
+                    Pass::Mask {
+                        incoming,
+                        uniform: tinted(colour),
+                        sides: Vec::new(),
+                    },
+                ),
             },
             FusedKind::Transform {
-                input, settings, ..
-            } => transformed(read(*input), settings, size, luma, &mut passes),
+                input,
+                mask,
+                settings,
+            } => transformed(read(*input), read(*mask), settings, size, luma, &mut passes),
             FusedKind::Merge {
                 background,
                 foreground,
+                mask,
                 settings,
-                ..
             } => merged(
                 read(*background),
                 read(*foreground),
+                read(*mask),
                 settings,
                 size,
                 luma,
                 &mut passes,
             ),
-            // A kind that is not known here: the picture of its first input, as a node that is
-            // passed through hands it on.
-            other => read(other.first_input()),
+            other => match mask::of_node(other) {
+                // A mask node: a pass whatever its settings are, as a mask of nothing is a
+                // picture too, which limits what reads it to nothing.
+                Some((shape, common)) => {
+                    let incoming = read(other.mask());
+                    drawn(&mut passes, masked(&shape, &common, incoming, size))
+                }
+                // A kind that is not known here: the picture of its first input, as a node
+                // that is passed through hands it on.
+                None => read(other.first_input()),
+            },
         };
         made.push(reads);
     }
@@ -429,6 +571,104 @@ pub(crate) fn plan(composition: &Fused, size: (u32, u32), luma: [f32; 3], source
         .and_then(|at| made.get(at).copied())
         .unwrap_or_default();
     needed(passes, output)
+}
+
+/// Put `pass` among `passes`, and give the picture that it makes.
+fn drawn(passes: &mut Vec<Pass>, pass: Pass) -> Reads {
+    passes.push(pass);
+    Reads::Pass(passes.len() - 1)
+}
+
+/// The uniform of `fusion_mask.wgsl` for a Background of the colour `colour`, premultiplied,
+/// that has an effect mask: its colour, and that it reads the mask that comes in.
+fn tinted(colour: [f32; 4]) -> [f32; PARAMS] {
+    let mut uniform = [0.0; PARAMS];
+    uniform[..4].copy_from_slice(&colour);
+    uniform[4] = TINTED;
+    uniform[5] = 1.0;
+    uniform
+}
+
+/// The pass of a mask node of the shape `shape` and the controls `common`, into which the
+/// mask `incoming` comes (nothing: none), for a picture drawn `size` pixels large.
+///
+/// The settings are made pixels of that size here, by [`Shape::placed`] and [`Common::edge`],
+/// as [`mask::mask`] makes them for a frame of that size: the shader is given what the maths
+/// of a pixel reads, and makes nothing pixels itself. A Polygon of fewer than three points has
+/// no sides, and is a mask of nothing.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "how many sides a polygon has, far below what a float counts"
+)]
+fn masked(shape: &Shape, common: &Common, incoming: Reads, size: (u32, u32)) -> Pass {
+    let mut sides = Vec::new();
+    let (what, place, extent) = match shape.placed(size.0, size.1) {
+        Placed::Rectangle {
+            centre,
+            turn,
+            half,
+            radius,
+        } => (
+            0.0,
+            [centre[0], centre[1], turn[0], turn[1]],
+            [half[0], half[1], radius, 0.0],
+        ),
+        Placed::Ellipse { centre, turn, half } => (
+            1.0,
+            [centre[0], centre[1], turn[0], turn[1]],
+            [half[0], half[1], 0.0, 0.0],
+        ),
+        Placed::Polygon { points, fill } => {
+            // Closed from the last point to the first, as the maths reads its sides.
+            if points.len() >= 3 {
+                let mut start = points[points.len() - 1];
+                for &end in &points {
+                    sides.push([start[0], start[1], end[0], end[1]]);
+                    start = end;
+                }
+            }
+            let winds = f32::from(fill == FillMethod::NonZeroWinding);
+            (2.0, [0.0; 4], [0.0, 0.0, 0.0, winds])
+        }
+    };
+    // With nothing coming in there is no Paint Mode, whatever it is set to.
+    let paint = match (incoming, common.paint_mode) {
+        (Reads::Nothing, _) => 0.0,
+        (_, PaintMode::Merge) => 1.0,
+        (_, PaintMode::Add) => 2.0,
+        (_, PaintMode::Subtract) => 3.0,
+    };
+    let edge = common.edge(size.0);
+    // Level as the maths holds it: what it makes of a pixel that is covered whole.
+    let level = mask::value(1.0, common.level, false);
+    let uniform = [
+        place[0],
+        place[1],
+        place[2],
+        place[3],
+        what,
+        paint,
+        // The first of its sides among those of the frame: [`SIDES_AT`].
+        0.0,
+        sides.len() as f32,
+        extent[0],
+        extent[1],
+        extent[2],
+        extent[3],
+        edge.soft,
+        edge.border,
+        f32::from(edge.solid),
+        f32::from(common.invert),
+        level,
+        0.0,
+        0.0,
+        0.0,
+    ];
+    Pass::Mask {
+        incoming,
+        uniform,
+        sides,
+    }
 }
 
 /// The colour of a Background, premultiplied by its alpha: its channels held within 0 and 1,
@@ -442,38 +682,72 @@ fn filled(rgba: [f64; 4]) -> Option<[f32; 4]> {
     (a > 0.0).then_some([(r * a) as f32, (g * a) as f32, (b * a) as f32, a as f32])
 }
 
-/// The picture of a Transform of `input`: none where it is given none or leaves nothing of it,
-/// that of its input where it changes nothing, and else a pass that lays it over nothing.
+/// The picture of a Transform of `input`, limited by the effect mask `limit` (nothing: it has
+/// none): none where it is given none; that of its input where it changes nothing, whatever
+/// its mask; and else a pass that lays it over nothing, and mixes that with the picture as it
+/// came in by the mask, where it has one.
+///
+/// A Transform that leaves nothing of its picture is no picture where it has no mask. With
+/// one it is a pass too: the picture as it came in where the mask is 0, nothing where it is
+/// 1.
 fn transformed(
     input: Reads,
+    limit: Reads,
     settings: &Transformed,
     size: (u32, u32),
     luma: [f32; 3],
     passes: &mut Vec<Pass>,
 ) -> Reads {
     let scale = settings.size;
-    if input == Reads::Nothing || scale.is_nan() || scale <= 0.0 {
+    if input == Reads::Nothing {
         return Reads::Nothing;
+    }
+    let lay = |uniform: [f32; PARAMS]| Pass::Lay {
+        background: Reads::Nothing,
+        foreground: input,
+        mask: limit,
+        uniform: limited(uniform, limit, LIMITED_TO_FOREGROUND),
+    };
+    if scale.is_nan() || scale <= 0.0 {
+        if limit == Reads::Nothing {
+            return Reads::Nothing;
+        }
+        return drawn(
+            passes,
+            lay(uniform(&NOWHERE, 1.0, &Settings::default(), luma)),
+        );
     }
     let flips = (settings.flip_horizontal, settings.flip_vertical);
     if flips == (false, false) && lies_as_it_is(settings.center, scale, settings.angle) {
         return input;
     }
     let map = reading(size, settings.center, scale, settings.angle, flips);
-    passes.push(Pass::Lay {
-        background: Reads::Nothing,
-        foreground: input,
-        uniform: uniform(&map, scale, &Settings::default(), luma),
-    });
-    Reads::Pass(passes.len() - 1)
+    drawn(
+        passes,
+        lay(uniform(&map, scale, &Settings::default(), luma)),
+    )
 }
 
-/// The picture of a Merge: its background where its foreground gives nothing, or nothing is
-/// left of it, or its Blend is 0; its foreground where that lies as it is over no background
-/// and the merge is the plain over of it; and else a pass.
+/// A map by which every pixel of a picture reads a place that the foreground does not reach,
+/// a pixel beyond its top left corner: the foreground of a pass laid by it is nothing.
+const NOWHERE: Affine = Affine {
+    a: 0.0,
+    b: 0.0,
+    c: 0.0,
+    d: 0.0,
+    tx: -1.0,
+    ty: -1.0,
+};
+
+/// The picture of a Merge, limited by the effect mask `limit` (nothing: it has none): its
+/// background where its foreground gives nothing, or nothing is left of it, or its Blend is
+/// 0, whatever its mask; its foreground where that lies as it is over no background, the
+/// merge is the plain over of it and it has no mask; and else a pass, which mixes what it
+/// lays with its background by the mask, where it has one.
 fn merged(
     background: Reads,
     foreground: Reads,
+    limit: Reads,
     settings: &Merged,
     size: (u32, u32),
     luma: [f32; 3],
@@ -485,16 +759,35 @@ fn merged(
         return background;
     }
     let placed = lies_as_it_is(settings.center, scale, settings.angle);
-    if background == Reads::Nothing && placed && adds_as_it_is(&held) {
+    let plain = background == Reads::Nothing && placed && adds_as_it_is(&held);
+    if plain && limit == Reads::Nothing {
         return foreground;
     }
     let map = reading(size, settings.center, scale, settings.angle, (false, false));
-    passes.push(Pass::Lay {
-        background,
-        foreground,
-        uniform: uniform(&map, scale, &held, luma),
-    });
-    Reads::Pass(passes.len() - 1)
+    drawn(
+        passes,
+        Pass::Lay {
+            background,
+            foreground,
+            mask: limit,
+            uniform: limited(
+                uniform(&map, scale, &held, luma),
+                limit,
+                LIMITED_TO_BACKGROUND,
+            ),
+        },
+    )
+}
+
+/// The uniform of `fusion.wgsl` `uniform`, of a pass that the effect mask `limit` limits
+/// (nothing: it has none, and the uniform is as it was): `first` says which of the pictures
+/// of the pass came into the first input of its node ([`LIMITED_TO_BACKGROUND`],
+/// [`LIMITED_TO_FOREGROUND`]).
+fn limited(mut uniform: [f32; PARAMS], limit: Reads, first: f32) -> [f32; PARAMS] {
+    if limit != Reads::Nothing {
+        uniform[LIMITED_AT] = first;
+    }
+    uniform
 }
 
 /// The settings of a Merge of the model as the mathematics takes them
@@ -591,13 +884,8 @@ fn needed(passes: Vec<Pass>, output: Reads) -> Plan {
         if std::mem::replace(seen, true) {
             continue;
         }
-        if let Some(Pass::Lay {
-            background,
-            foreground,
-            ..
-        }) = passes.get(at)
-        {
-            next.extend([*background, *foreground]);
+        if let Some(pass) = passes.get(at) {
+            next.extend(pass.reads());
         }
     }
     if read.iter().all(|read| *read) {
@@ -620,18 +908,7 @@ fn needed(passes: Vec<Pass>, output: Reads) -> Plan {
         .into_iter()
         .zip(&read)
         .filter(|(_, kept)| **kept)
-        .map(|(pass, _)| match pass {
-            Pass::Lay {
-                background,
-                foreground,
-                uniform,
-            } => Pass::Lay {
-                background: renumbered(background),
-                foreground: renumbered(foreground),
-                uniform,
-            },
-            fill @ Pass::Fill(_) => fill,
-        })
+        .map(|(pass, _)| pass.with_reads(renumbered))
         .collect();
     Plan {
         passes,
@@ -646,8 +923,16 @@ pub(crate) fn shader() -> String {
     format!("{}\n{SHADER}", crate::grade::composite_library())
 }
 
-/// The pipeline of the passes that lay, of the shader `source` ([`shader`]): it writes each
-/// pixel as it makes it, into a texture of [`FORMAT`].
+/// The shader of the passes that draw masks: the feather of an edge and the distance to a
+/// side as the windows of the Color page have them, which are not written a second time
+/// ([`crate::grade::window_edge_library`]), and then `fusion_mask.wgsl`.
+pub(crate) fn mask_shader() -> String {
+    format!("{}\n{MASK_SHADER}", crate::grade::window_edge_library())
+}
+
+/// The pipeline of the passes that lay, of the shader `source` ([`shader`]), or of those that
+/// draw masks ([`mask_shader`]), `layout` binding what they read: it writes each pixel as it
+/// makes it, into a texture of [`FORMAT`].
 pub(crate) fn pipeline(
     device: &wgpu::Device,
     source: &str,
@@ -751,17 +1036,32 @@ pub(crate) fn floats(gpu: &Gpu, width: u32, pixels: &[[f32; 4]]) -> wgpu::Textur
     texture
 }
 
-/// What the passes that lay are drawn with on a card, but for their pipeline, which the
-/// compositor keeps with its others: made the first time a composition has such a pass, so
-/// that a compositor that draws none has nothing of it.
+/// What the passes that lay and those that draw masks are drawn with on a card, but for their
+/// pipelines, which the compositor keeps with its others: made the first time a composition
+/// has such a pass, so that a compositor that draws none has nothing of it.
 pub(crate) struct Card {
-    /// What binds the uniform of a pass, its background and its foreground.
+    /// What binds the uniform of a pass that lays, its background, its foreground and its
+    /// effect mask.
     pub layout: wgpu::BindGroupLayout,
-    /// A texel of nothing: the background of a pass that has none.
+    /// What binds the uniform of a pass that draws a mask, the mask that comes into it and
+    /// the sides of the polygons of the frame.
+    pub mask_layout: wgpu::BindGroupLayout,
+    /// A texel of nothing: the background of a pass that has none, and what is bound in the
+    /// place of a mask where there is none, which is not read.
     nothing: wgpu::TextureView,
     /// The uniforms of the passes of a frame, a slot each.
     uniform: wgpu::Buffer,
+    /// The sides of the polygons of the masks of a frame, one after another: never empty,
+    /// as what is bound is to hold a side at the least.
+    sides: wgpu::Buffer,
 }
+
+/// How many sides the buffer of the sides of polygons holds when it is made: those of one
+/// polygon of as many points as the model allows.
+const FIRST_SIDES: u64 = model::MOST_POINTS as u64;
+
+/// The bytes of a side of a polygon: where it starts and where it ends, four floats.
+const SIDE_SIZE: u64 = 16;
 
 impl Card {
     /// What the passes are drawn with on the card of `gpu`, whose uniforms lie `slot` bytes
@@ -778,52 +1078,59 @@ impl Card {
             },
             count: None,
         };
+        let buffer = |binding, ty, has_dynamic_offset, size| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset,
+                min_binding_size: wgpu::BufferSize::new(size),
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("columbina composition"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(PARAMS_SIZE),
-                    },
-                    count: None,
-                },
+                buffer(0, wgpu::BufferBindingType::Uniform, true, PARAMS_SIZE),
                 picture(1),
                 picture(2),
+                picture(3),
             ],
         });
-        let nothing = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("columbina nothing"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+        let storage = wgpu::BufferBindingType::Storage { read_only: true };
+        let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("columbina mask of a composition"),
+            entries: &[
+                buffer(0, wgpu::BufferBindingType::Uniform, true, PARAMS_SIZE),
+                picture(1),
+                buffer(2, storage, false, SIDE_SIZE),
+            ],
         });
-        gpu.queue().write_texture(
-            nothing.as_image_copy(),
-            &[0; 4],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            nothing.size(),
-        );
         Card {
             layout,
-            nothing: nothing.create_view(&wgpu::TextureViewDescriptor::default()),
+            mask_layout,
+            nothing: nothing(gpu),
             uniform: uniform_buffer(device, u64::from(slot) * 4),
+            sides: sides_buffer(device, FIRST_SIDES * SIDE_SIZE),
         }
+    }
+
+    /// Write the sides of the polygons of the masks of a frame, one after another, into
+    /// their buffer, made larger if it is too small. A frame without a polygon writes
+    /// nothing: no pass reads a side.
+    pub(crate) fn write_sides(&mut self, gpu: &Gpu, sides: &[[f32; 4]]) {
+        if sides.is_empty() {
+            return;
+        }
+        let bytes: Vec<u8> = sides
+            .as_flattened()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        if self.sides.size() < bytes.len() as u64 {
+            self.sides = sides_buffer(gpu.device(), (bytes.len() as u64).next_power_of_two());
+        }
+        gpu.queue().write_buffer(&self.sides, 0, &bytes);
     }
 
     /// Write the uniforms of the passes of a frame, a slot of `slot` bytes each, into their
@@ -846,7 +1153,8 @@ impl Card {
     }
 
     /// Draw a pass that lays `foreground` over `background` (nothing, where there is none)
-    /// into `target`, by `pipeline` and the uniform at `offset`.
+    /// into `target`, by `pipeline` and the uniform at `offset`, limited by the alpha of
+    /// `mask` where the node has an effect mask.
     #[allow(
         clippy::too_many_arguments,
         reason = "what a pass is drawn with, each of another kind"
@@ -859,54 +1167,147 @@ impl Card {
         offset: u32,
         background: Option<&wgpu::Texture>,
         foreground: &wgpu::Texture,
+        mask: Option<&wgpu::Texture>,
         target: &wgpu::Texture,
     ) {
-        let whole = wgpu::TextureViewDescriptor::default();
-        let under =
-            background.map_or_else(|| self.nothing.clone(), |under| under.create_view(&whole));
+        let under = self.view(background);
+        let over = self.view(Some(foreground));
+        let limit = self.view(mask);
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("columbina composition"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.uniform,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(PARAMS_SIZE),
-                    }),
-                },
+                self.params(),
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&under),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&foreground.create_view(&whole)),
+                    resource: wgpu::BindingResource::TextureView(&over),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&limit),
                 },
             ],
         });
-        let view = target.create_view(&whole);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("columbina composition"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &bind, &[offset]);
-        pass.draw(0..3, 0..1);
+        draw(encoder, pipeline, &bind, offset, target);
     }
+
+    /// Draw a pass that draws a mask, or a Background times its effect mask, into `target`,
+    /// by `pipeline` and the uniform at `offset`: `incoming` is the picture whose alpha is the
+    /// mask that comes in (nothing, where none does). The sides of its polygon are among
+    /// those written last ([`Card::write_sides`]).
+    pub(crate) fn mask(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        offset: u32,
+        incoming: Option<&wgpu::Texture>,
+        target: &wgpu::Texture,
+    ) {
+        let under = self.view(incoming);
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("columbina mask of a composition"),
+            layout: &self.mask_layout,
+            entries: &[
+                self.params(),
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&under),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.sides.as_entire_binding(),
+                },
+            ],
+        });
+        draw(encoder, pipeline, &bind, offset, target);
+    }
+
+    /// What binds the uniform of a pass: a slot of the buffer of the uniforms of the frame,
+    /// which the offset of the pass chooses.
+    fn params(&self) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &self.uniform,
+                offset: 0,
+                size: wgpu::BufferSize::new(PARAMS_SIZE),
+            }),
+        }
+    }
+
+    /// The whole of `picture` as a pass reads it; the texel of nothing where there is none.
+    fn view(&self, picture: Option<&wgpu::Texture>) -> wgpu::TextureView {
+        picture.map_or_else(
+            || self.nothing.clone(),
+            |picture| picture.create_view(&wgpu::TextureViewDescriptor::default()),
+        )
+    }
+}
+
+/// Draw a pass of a composition into `target`, over nothing, by `pipeline`, with what `bind`
+/// binds and the uniform at `offset`.
+fn draw(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    bind: &wgpu::BindGroup,
+    offset: u32,
+    target: &wgpu::Texture,
+) {
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("columbina composition"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind, &[offset]);
+    pass.draw(0..3, 0..1);
+}
+
+/// A view of a texel of nothing on the card of `gpu`: what a pass reads where it has no
+/// picture.
+fn nothing(gpu: &Gpu) -> wgpu::TextureView {
+    let nothing = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("columbina nothing"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    gpu.queue().write_texture(
+        nothing.as_image_copy(),
+        &[0; 4],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        nothing.size(),
+    );
+    nothing.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// A buffer of the uniforms of passes, of `size` bytes.
@@ -915,6 +1316,16 @@ fn uniform_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
         label: Some("columbina composition"),
         size,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// A buffer of the sides of the polygons of masks, of `size` bytes.
+fn sides_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("columbina sides of polygons"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
@@ -972,7 +1383,18 @@ mod tests {
     }
 
     fn planned(nodes: Vec<FusedNode>, output: Option<usize>) -> Plan {
-        plan(&Fused { nodes, output }, SIZE, REC709_LUMA, true)
+        plan_of(nodes, output, SIZE, true)
+    }
+
+    /// The passes of `nodes`, the `MediaOut` reading the one at `output`, drawn `size` pixels
+    /// large; `source` says whether the source of the clip gives a picture.
+    fn plan_of(
+        nodes: Vec<FusedNode>,
+        output: Option<usize>,
+        size: (u32, u32),
+        source: bool,
+    ) -> Plan {
+        plan(&Fused { nodes, output }, size, REC709_LUMA, source)
     }
 
     #[test]
@@ -1325,24 +1747,193 @@ mod tests {
         assert_eq!(drawn_size((1920, 1080), (0.0, 1080.0), 1.0, most), None);
     }
 
+    /// The controls of a mask as they are at first.
+    fn common() -> model::Masked {
+        model::Ellipse::default().common_at(0.0)
+    }
+
     /// An Ellipse mask as it is at first, into which the mask `mask` comes.
     fn ellipse(mask: Option<usize>) -> FusedKind {
         FusedKind::Ellipse {
             mask,
-            common: model::Ellipse::default().common_at(0.0),
+            common: common(),
             shape: model::Ellipse::default().at(0.0),
         }
     }
 
-    #[test]
-    fn a_composition_with_masks_is_drawn_as_it_is_without_them() {
-        let rectangle = FusedKind::Rectangle {
-            mask: None,
-            common: model::Rectangle::default().common_at(0.0),
+    /// A Rectangle mask as it is at first, into which the mask `mask` comes.
+    fn rectangle(mask: Option<usize>) -> FusedKind {
+        FusedKind::Rectangle {
+            mask,
+            common: common(),
             shape: model::Rectangle::default().at(0.0),
+        }
+    }
+
+    /// A Polygon mask of `points` about the middle of the picture, added to the mask `mask`
+    /// that comes into it.
+    fn polygon(mask: Option<usize>, points: Vec<[f64; 2]>, fill: model::FillMethod) -> FusedKind {
+        FusedKind::Polygon {
+            mask,
+            common: model::Masked {
+                paint_mode: model::PaintMode::Add,
+                ..common()
+            },
+            shape: model::PolygonShape {
+                center: [0.5, 0.5],
+                size: 1.0,
+                angle: 0.0,
+                points,
+                fill,
+            },
+        }
+    }
+
+    /// A Transform of the picture at `input` that flips it left for right, with the effect
+    /// mask `mask`.
+    fn flipped(input: usize, mask: Option<usize>) -> FusedKind {
+        FusedKind::Transform {
+            input: Some(input),
+            mask,
+            settings: Transformed {
+                flip_horizontal: true,
+                ..transform()
+            },
+        }
+    }
+
+    #[test]
+    fn a_mask_node_is_a_pass_of_its_settings_in_the_pixels_of_the_picture() {
+        let empty = polygon(None, vec![], model::FillMethod::Alternate);
+        for kind in [ellipse(None), rectangle(None), empty] {
+            assert!(is_drawn(&kind), "{kind:?}");
+        }
+        // A Rectangle a quarter of the way from the left and from the top, with rounded
+        // corners, an edge, a border and a level of its own, not solid and inverted.
+        let kind = FusedKind::Rectangle {
+            mask: None,
+            common: model::Masked {
+                level: 0.5,
+                soft_edge: 0.25,
+                border_width: -0.125,
+                invert: true,
+                solid: false,
+                paint_mode: model::PaintMode::Subtract,
+            },
+            shape: model::RectangleShape {
+                center: [0.25, 0.75],
+                width: 0.5,
+                height: 0.5,
+                corner_radius: 1.0,
+                angle: 0.0,
+            },
         };
+        let plan = planned(vec![node("r", kind)], Some(0));
+        assert_eq!(plan.output, Reads::Pass(0));
+        assert!(plan.masks() && !plan.lays() && !plan.reads_source());
+        let [Pass::Mask {
+            incoming,
+            uniform,
+            sides,
+        }] = plan.passes.as_slice()
+        else {
+            panic!("a mask");
+        };
+        assert_eq!(*incoming, Reads::Nothing);
+        assert_eq!(*sides, [] as [[f32; 4]; 0]);
+        // In a picture of 16 by 8: its middle at (4, 2), `center.y` counting from the bottom;
+        // not turned.
+        assert_eq!(uniform[..4], [4.0, 2.0, 1.0, 0.0]);
+        // A Rectangle; no Paint Mode, whatever it is set to, as nothing comes in; no sides.
+        assert_eq!(uniform[4..8], [0.0, 0.0, 0.0, 0.0]);
+        // Half its width and half its height, and corners as round as the lesser allows.
+        assert_eq!(uniform[8..12], [4.0, 2.0, 2.0, 0.0]);
+        // Half the Soft Edge and half the Border Width, in widths of the picture made
+        // pixels; not solid; inverted. And its Level.
+        assert_eq!(uniform[12..16], [2.0, -1.0, 0.0, 1.0]);
+        assert_eq!(uniform[16..], [0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(u64::try_from(uniform.len() * 4).unwrap(), PARAMS_SIZE);
+        // At twice the size the same shares are twice the pixels.
+        let twice = plan_of(vec![node("e", ellipse(None))], Some(0), (32, 16), true);
+        let [Pass::Mask { uniform, .. }] = twice.passes.as_slice() else {
+            panic!("a mask");
+        };
+        // An Ellipse, whose height is in widths of the picture as its width is: a circle.
+        assert_eq!(uniform[..4], [16.0, 8.0, 1.0, 0.0]);
+        assert_eq!(uniform[4], 1.0);
+        assert_eq!(uniform[8..12], [8.0, 8.0, 0.0, 0.0]);
+        assert_eq!(uniform[12..17], [0.0, 0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn the_sides_of_a_polygon_go_with_its_pass_and_the_mask_that_comes_in_is_read() {
+        // A triangle about the middle, its points in widths of the picture, y up.
+        let triangle = vec![[-0.25, -0.25], [0.25, -0.25], [0.0, 0.25]];
+        let nodes = |fill| {
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("p", polygon(Some(0), triangle.clone(), fill)),
+            ]
+        };
+        let plan = planned(nodes(model::FillMethod::NonZeroWinding), Some(1));
+        assert!(plan.masks() && !plan.lays() && plan.reads_source());
+        let [Pass::Mask {
+            incoming,
+            uniform,
+            sides,
+        }] = plan.passes.as_slice()
+        else {
+            panic!("a mask");
+        };
+        // The mask that comes in is the alpha of the picture of the clip, added to.
+        assert_eq!(*incoming, Reads::Source);
+        // In pixels of a picture of 16 by 8, y down; closed from the last point to the first.
+        assert_eq!(
+            *sides,
+            [
+                [8.0, 0.0, 4.0, 8.0],
+                [4.0, 8.0, 12.0, 8.0],
+                [12.0, 8.0, 8.0, 0.0]
+            ]
+        );
+        // A Polygon; Add; the first of its sides is for who draws the frame to say; three
+        // sides. And the Non Zero Winding fill.
+        assert_eq!(uniform[4..8], [2.0, 2.0, 0.0, 3.0]);
+        assert_eq!(uniform[SIDES_AT], 0.0);
+        assert_eq!(uniform[8..12], [0.0, 0.0, 0.0, 1.0]);
+        // The Alternate fill; and of a clip whose source shows nothing no mask comes in, so
+        // that there is no Paint Mode.
+        let unseen = plan_of(nodes(model::FillMethod::Alternate), Some(1), SIZE, false);
+        let [Pass::Mask {
+            incoming, uniform, ..
+        }] = unseen.passes.as_slice()
+        else {
+            panic!("a mask");
+        };
+        assert_eq!(*incoming, Reads::Nothing);
+        assert_eq!(uniform[4..8], [2.0, 0.0, 0.0, 3.0]);
+        assert_eq!(uniform[11], 0.0);
+        // Fewer than three points have no sides: a mask of nothing, which is a pass still.
+        let two = vec![[0.0, 0.0], [0.25, 0.25]];
+        let open = planned(
+            vec![node("p", polygon(None, two, model::FillMethod::Alternate))],
+            Some(0),
+        );
+        let [Pass::Mask { uniform, sides, .. }] = open.passes.as_slice() else {
+            panic!("a mask");
+        };
+        assert_eq!(*sides, [] as [[f32; 4]; 0]);
+        assert_eq!(uniform[4..8], [2.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a graph and what each of its passes reads"
+    )]
+    fn the_effect_mask_of_a_node_is_read_by_the_pass_that_draws_it() {
         let fill = |mask| FusedKind::Background {
-            rgba: [0.0, 0.0, 0.0, 1.0],
+            rgba: [1.0, 0.5, 0.25, 0.5],
             mask,
         };
         let over = |background, foreground, mask| FusedKind::Merge {
@@ -1356,9 +1947,9 @@ mod tests {
         };
         // The picture of the clip over a Background: the Merge limited by an Ellipse into
         // which a Rectangle comes, and the Background by the Rectangle.
-        let masked = planned(
+        let plan = planned(
             vec![
-                node("r", rectangle),
+                node("r", rectangle(None)),
                 node("bg", fill(Some(0))),
                 node("in", FusedKind::MediaIn),
                 node("e", ellipse(Some(0))),
@@ -1366,29 +1957,102 @@ mod tests {
             ],
             Some(4),
         );
-        let plain = planned(
-            vec![
-                node("bg", fill(None)),
-                node("in", FusedKind::MediaIn),
-                node("over", over(Some(0), Some(1), None)),
-            ],
-            Some(2),
-        );
-        assert_eq!(masked, plain);
-        assert_eq!(masked.passes.len(), 2);
-        // A mask node is not drawn: read as a picture it gives none, whatever comes into it,
-        // and a Merge whose foreground it is is its background.
-        assert!(!is_drawn(&ellipse(None)));
+        assert_eq!(plan.passes.len(), 4);
+        assert_eq!(plan.output, Reads::Pass(3));
+        assert!(plan.lays() && plan.masks() && plan.reads_source());
+        // The Background: a pass in place of the clear, its colour premultiplied, which reads
+        // the mask.
+        let Pass::Mask {
+            incoming,
+            uniform,
+            sides,
+        } = &plan.passes[1]
+        else {
+            panic!("a background with a mask");
+        };
+        assert_eq!(*incoming, Reads::Pass(0));
+        assert_eq!(uniform[..8], [0.5, 0.25, 0.125, 0.5, 3.0, 1.0, 0.0, 0.0]);
+        assert_eq!(uniform[8..], [0.0; 12]);
+        assert_eq!(*sides, [] as [[f32; 4]; 0]);
+        // The Ellipse: merged with the mask that comes in.
+        let Pass::Mask {
+            incoming, uniform, ..
+        } = &plan.passes[2]
+        else {
+            panic!("an ellipse");
+        };
+        assert_eq!(*incoming, Reads::Pass(0));
+        assert_eq!(uniform[4..6], [1.0, 1.0]);
+        // The Merge: one pass, which reads its mask too, and mixes with its background.
+        let Pass::Lay {
+            background,
+            foreground,
+            mask,
+            uniform,
+        } = &plan.passes[3]
+        else {
+            panic!("a merge");
+        };
         assert_eq!(
-            planned(vec![node("e", ellipse(None))], Some(0)),
-            Plan::default()
+            (*background, *foreground, *mask),
+            (Reads::Pass(1), Reads::Source, Reads::Pass(2))
         );
-        let handed = planned(
-            vec![node("in", FusedKind::MediaIn), node("e", ellipse(Some(0)))],
-            Some(1),
+        assert_eq!(uniform[LIMITED_AT], LIMITED_TO_BACKGROUND);
+        // The picture of the Rectangle is free once the Ellipse, the last to read it, is
+        // drawn: the Merge draws into its texture.
+        assert_eq!(
+            plan.slots(),
+            Slots {
+                source: Some(0),
+                passes: vec![1, 2, 3, 1],
+                count: 4
+            }
         );
-        assert_eq!(handed, Plan::default());
-        let under = planned(
+        // A Transform: its mask is read by its pass, which mixes with its picture as it
+        // came in. Without a mask the pass is as it was, and the mask node is not drawn.
+        let turned = |mask| {
+            planned(
+                vec![
+                    node("in", FusedKind::MediaIn),
+                    node("e", ellipse(None)),
+                    node("flip", flipped(0, mask)),
+                ],
+                Some(2),
+            )
+        };
+        let limited = turned(Some(1));
+        assert_eq!(limited.passes.len(), 2);
+        let Pass::Lay {
+            background,
+            foreground,
+            mask,
+            uniform,
+        } = &limited.passes[1]
+        else {
+            panic!("a transform");
+        };
+        assert_eq!(
+            (*background, *foreground, *mask),
+            (Reads::Nothing, Reads::Source, Reads::Pass(0))
+        );
+        assert_eq!(uniform[LIMITED_AT], LIMITED_TO_FOREGROUND);
+        let bare = turned(None);
+        let [Pass::Lay {
+            mask,
+            uniform: unlimited,
+            ..
+        }] = bare.passes.as_slice()
+        else {
+            panic!("a transform alone");
+        };
+        assert_eq!(*mask, Reads::Nothing);
+        assert_eq!(unlimited[LIMITED_AT], 0.0);
+        let mut same = *uniform;
+        same[LIMITED_AT] = 0.0;
+        assert_eq!(same, *unlimited);
+        assert!(!bare.masks());
+        // A mask node read as a picture: the foreground of a Merge over a Background.
+        let white = planned(
             vec![
                 node("bg", fill(None)),
                 node("e", ellipse(None)),
@@ -1396,8 +2060,259 @@ mod tests {
             ],
             Some(2),
         );
-        assert_eq!(under.passes, vec![Pass::Fill([0.0, 0.0, 0.0, 1.0])]);
-        assert_eq!(under.output, Reads::Pass(0));
+        let Pass::Lay {
+            foreground, mask, ..
+        } = &white.passes[2]
+        else {
+            panic!("a merge of a mask");
+        };
+        assert_eq!((*foreground, *mask), (Reads::Pass(1), Reads::Nothing));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a graph for each node that a mask cannot change"
+    )]
+    fn a_node_with_a_mask_is_no_pass_where_the_mask_cannot_change_it() {
+        // In each graph the `MediaIn` is at 0 and an Ellipse, the mask, at 1.
+        let with = |kinds: Vec<FusedKind>| {
+            let mut nodes = vec![node("in", FusedKind::MediaIn), node("e", ellipse(None))];
+            nodes.extend(kinds.into_iter().map(|kind| node("n", kind)));
+            let output = nodes.len() - 1;
+            planned(nodes, Some(output))
+        };
+        // A Transform as it is at first is its input, whatever its mask: and the mask, which
+        // nothing reads then, is not drawn.
+        let first = with(vec![FusedKind::Transform {
+            input: Some(0),
+            mask: Some(1),
+            settings: transform(),
+        }]);
+        assert_eq!(first.passes, [] as [Pass; 0]);
+        assert_eq!(first.output, Reads::Source);
+        // A Merge whose result is its background, whatever its mask: with no foreground,
+        // with nothing left of it, or with a Blend of 0.
+        let fill = Pass::Fill([0.2, 0.4, 0.6, 1.0]);
+        for (foreground, settings) in [
+            (None, merge()),
+            (
+                Some(0),
+                Merged {
+                    size: 0.0,
+                    ..merge()
+                },
+            ),
+            (
+                Some(0),
+                Merged {
+                    blend: 0.0,
+                    ..merge()
+                },
+            ),
+        ] {
+            let plan = with(vec![
+                background([0.2, 0.4, 0.6, 1.0]),
+                FusedKind::Merge {
+                    background: Some(2),
+                    foreground,
+                    mask: Some(1),
+                    settings,
+                },
+            ]);
+            assert_eq!(plan.passes, vec![fill.clone()]);
+            assert_eq!(plan.output, Reads::Pass(0));
+        }
+        // A Transform of nothing is nothing, and so is a Background of which nothing is seen.
+        let nothing = with(vec![FusedKind::Transform {
+            input: None,
+            mask: Some(1),
+            settings: Transformed {
+                angle: 30.0,
+                ..transform()
+            },
+        }]);
+        assert_eq!(nothing, Plan::default());
+        let clear = with(vec![FusedKind::Background {
+            rgba: [1.0, 1.0, 1.0, 0.0],
+            mask: Some(1),
+        }]);
+        assert_eq!(clear, Plan::default());
+        // But a Merge as it is at first over no background, which without a mask is its
+        // foreground, is with one its foreground times the mask: a pass.
+        let over = |mask| {
+            with(vec![FusedKind::Merge {
+                background: None,
+                foreground: Some(0),
+                mask,
+                settings: merge(),
+            }])
+        };
+        assert_eq!(over(None).passes, [] as [Pass; 0]);
+        assert_eq!(over(None).output, Reads::Source);
+        let limited = over(Some(1));
+        assert_eq!(limited.passes.len(), 2);
+        let Pass::Lay {
+            background,
+            foreground,
+            mask,
+            uniform,
+        } = &limited.passes[1]
+        else {
+            panic!("a merge");
+        };
+        assert_eq!(
+            (*background, *foreground, *mask),
+            (Reads::Nothing, Reads::Source, Reads::Pass(0))
+        );
+        assert_eq!(uniform[LIMITED_AT], LIMITED_TO_BACKGROUND);
+        // And a Transform that leaves nothing of its picture, which without a mask is no
+        // picture, is with one the picture as it came in where the mask is not 1: a pass
+        // whose foreground is laid nowhere.
+        let gone = |mask| {
+            with(vec![FusedKind::Transform {
+                input: Some(0),
+                mask,
+                settings: Transformed {
+                    size: 0.0,
+                    ..transform()
+                },
+            }])
+        };
+        assert_eq!(gone(None), Plan::default());
+        let left = gone(Some(1));
+        assert_eq!(left.passes.len(), 2);
+        let Pass::Lay {
+            background,
+            foreground,
+            mask,
+            uniform,
+        } = &left.passes[1]
+        else {
+            panic!("a transform");
+        };
+        assert_eq!(
+            (*background, *foreground, *mask),
+            (Reads::Nothing, Reads::Source, Reads::Pass(0))
+        );
+        assert_eq!(uniform[..8], [0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]);
+        assert_eq!(uniform[8..12], [1.0, 1.0, 0.0, LIMITED_TO_FOREGROUND]);
+        assert_eq!(uniform[12..16], [1.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_mask_that_gives_no_picture_is_no_mask() {
+        // Every kind that has a mask, each with the mask `mask`: a Background, an Ellipse, a
+        // Transform and a Merge, all of which the last Merge reads.
+        let graph = |mask: Option<usize>| {
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("clear", background([1.0, 1.0, 1.0, 0.0])),
+                node("red", background([1.0, 0.0, 0.0, 1.0])),
+                node(
+                    "bg",
+                    FusedKind::Background {
+                        rgba: [0.0, 0.0, 1.0, 1.0],
+                        mask,
+                    },
+                ),
+                node("e", ellipse(mask)),
+                node("flip", flipped(2, mask)),
+                node(
+                    "over",
+                    FusedKind::Merge {
+                        background: Some(3),
+                        foreground: Some(5),
+                        mask,
+                        settings: Merged {
+                            center: [0.75, 0.5],
+                            ..merge()
+                        },
+                    },
+                ),
+                node(
+                    "last",
+                    FusedKind::Merge {
+                        background: Some(6),
+                        foreground: Some(4),
+                        mask: None,
+                        settings: Merged {
+                            center: [0.25, 0.5],
+                            ..merge()
+                        },
+                    },
+                ),
+            ]
+        };
+        let without = planned(graph(None), Some(7));
+        assert_eq!(without.passes.len(), 6);
+        // The `MediaIn` of a clip whose source shows nothing.
+        let unseen = |mask| plan_of(graph(mask), Some(7), SIZE, false);
+        assert_eq!(unseen(Some(0)), unseen(None));
+        assert_eq!(unseen(None), without);
+        // A picture that is known to be nothing: a Background of which nothing is seen.
+        assert_eq!(planned(graph(Some(1)), Some(7)), without);
+        // A place that is not before the node.
+        assert_eq!(planned(graph(Some(9)), Some(7)), without);
+        // But a picture is a mask, whatever made it: the picture of the clip (at 0), which
+        // is that of its source, and the red Background (at 2), which is that of the first
+        // pass.
+        for (mask, picture) in [(0, Reads::Source), (2, Reads::Pass(0))] {
+            let limited = planned(graph(Some(mask)), Some(7));
+            assert_ne!(limited, without, "{mask}");
+            assert_eq!(limited.passes.len(), 6, "{mask}");
+            assert_eq!(limited.passes[0], Pass::Fill([1.0, 0.0, 0.0, 1.0]));
+            // The Background, the Ellipse, the Transform and the Merge read it, each in one
+            // pass.
+            let readers = limited
+                .passes
+                .iter()
+                .filter(|pass| pass.reads().contains(&picture))
+                .count();
+            assert_eq!(readers, 4, "{mask}");
+        }
+        // And a mask node is a picture though its mask is 0 everywhere: it limits the node
+        // that reads it, to nothing.
+        let none = FusedKind::Ellipse {
+            mask: None,
+            common: model::Masked {
+                level: 0.0,
+                ..common()
+            },
+            shape: model::Ellipse::default().at(0.0),
+        };
+        let plan = planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("e", none),
+                node("flip", flipped(0, Some(1))),
+            ],
+            Some(2),
+        );
+        let Pass::Lay { mask, .. } = &plan.passes[1] else {
+            panic!("a transform");
+        };
+        assert_eq!(*mask, Reads::Pass(0));
+    }
+
+    #[test]
+    fn the_shader_of_a_mask_has_the_edge_of_the_windows_once_and_the_numbers_of_the_maths() {
+        let shader = mask_shader();
+        assert_eq!(shader.matches("fn window_feather(").count(), 1);
+        assert_eq!(shader.matches("fn window_distance(").count(), 1);
+        // Nothing of the windows that reads the parameters of a grade.
+        assert!(!shader.contains("fn window_outline(") && !shader.contains("param("));
+        assert_eq!(shader.matches("@vertex").count(), 1);
+        assert_eq!(shader.matches("@fragment").count(), 1);
+        // The numbers of the maths, which the shader is held to.
+        let steps = format!("const MASK_ELLIPSE_STEPS: u32 = {}u;", mask::ELLIPSE_STEPS);
+        assert!(shader.contains(&steps), "{steps}");
+        assert!(shader.contains("const MASK_FAR: f32 = 1.0e30;"));
+        assert_eq!(mask::FAR, 1.0e30);
+        // The shader that lays reads its effect mask, and no side of a polygon.
+        let lays = super::shader();
+        assert_eq!(lays.matches("var effect_mask: texture_2d<f32>;").count(), 1);
+        assert!(!lays.contains("sides"));
     }
 
     #[test]

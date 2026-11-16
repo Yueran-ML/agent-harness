@@ -301,6 +301,21 @@ pub(crate) fn composite_library() -> String {
     .replace("GRADE_", "LAYER_")
 }
 
+/// The feather of an edge and the distance to a side alone, as the windows have them (the
+/// start of `windows.wgsl`: `window_feather` and `window_distance`), for the compositor, which
+/// draws the masks of the compositions of clips with the same two (`fusion_mask.wgsl`). The
+/// rest of that library reads the parameters of a grade, which a mask has none of.
+///
+/// # Panics
+/// The library has no `window_outline`, the first of its functions after those two.
+#[must_use]
+pub(crate) fn window_edge_library() -> &'static str {
+    let rest = windows::LIBRARY
+        .find("fn window_outline(")
+        .expect("the library has the outline of a window after its feather and its distance");
+    &windows::LIBRARY[..rest]
+}
+
 /// The operations of `grade` at `frame` (of the clip, from its first frame at 0; of the
 /// timeline, for its grade): an operation for the libraries of its LUTs, each once and doing
 /// nothing, and the operation of the grade. None where it changes nothing.

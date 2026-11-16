@@ -10,7 +10,10 @@
 //!
 //! Every change is checked on the composition as it would be, whole
 //! ([`Composition::check`]): so a change that would leave it with no `media_out`, or with
-//! two, is refused, as one that would make a loop is.
+//! two, is refused, as one that would make a loop is; and so is one that would have a centre
+//! follow a node that is not there or is no Tracker. A Tracker that a centre follows is not
+//! taken away (`in_use`): so every change is undone by its inverse, which puts back a
+//! composition that was checked.
 
 use std::collections::HashSet;
 
@@ -179,6 +182,16 @@ pub(super) fn remove_node(
     let at = composition
         .position(id)
         .ok_or_else(|| missing("node", id))?;
+    // A Tracker that the centre of another node follows stays: the centre lets go of it
+    // first.
+    let follows = |node: &&Node| node.kind.follow().is_some_and(|follow| follow.node == id);
+    if let Some(by) = composition.nodes.iter().find(follows) {
+        return Err(OpError::InUse {
+            what: "node",
+            id: id.into(),
+            by: by.id.clone(),
+        });
+    }
     let own: Vec<Link> = composition
         .links
         .iter()
@@ -338,6 +351,10 @@ pub(super) fn set_node(
     };
     let mut new = composition.clone();
     new.nodes[at] = node;
+    // What its centre is set to follow is a Tracker of the composition.
+    if params.is_some() {
+        new.check_follows()?;
+    }
     clip_mut(project, spot).fusion = Some(new);
     Ok(inverse)
 }

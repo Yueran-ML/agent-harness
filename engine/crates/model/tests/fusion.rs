@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 
 use columbina_model::edit::copy_clips;
 use columbina_model::fusion::{
-    BlurFilter, Blurred, Composition, DeltaKeyed, FillMethod, Fused, FusedKind, FusedNode, Input,
-    KeyerView, Kind, Link, Mosaicked, Node, NodeKind, PaintMode, Point, ReplaceMode, SpillMethod,
-    MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS,
+    size_of, BlurFilter, Blurred, Composition, DeltaKeyed, FillMethod, Follow, FollowOutput, Fused,
+    FusedKind, FusedNode, Input, KeyerView, Kind, Link, Mosaicked, Node, NodeKind, PaintMode,
+    Pattern, Place, Point, ReplaceMode, SpillMethod, Tracked, Tracker, TrackerMerge,
+    TrackerOperation, TrackerPivot, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS, MOST_TRACKERS,
 };
 use columbina_model::grade::{Composite, Interp, Key, Param, Pos, LONGEST_LABEL};
 use columbina_model::resolve::{video_at, Layer};
@@ -17,6 +18,7 @@ use columbina_model::{
     apply, apply_done, expand, Change, Clip, Edit, History, Invalid, Material, Op, OpError,
     Project, ReadError, Rgba, Source, Time, TrackKind, TransactionError,
 };
+use columbina_track::matchmove;
 use serde_json::json;
 
 fn key(frame: i64, value: f64) -> Key {
@@ -3752,4 +3754,1072 @@ fn a_change_of_a_delta_keyer_that_changes_nothing_makes_no_step() {
     assert_ne!(history.project(), &before);
     history.undo("desktop").unwrap().unwrap();
     assert_eq!(history.project(), &before);
+}
+
+// The Tracker.
+
+/// The sample of `merged` with a Tracker, n5, of the picture of c1, whose picture the Merge
+/// n3 lays over the Background n4 in the place of the picture of the clip: `next_id` is 6.
+fn tracked() -> Project {
+    let mut project = merged();
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Tracker),
+            vec![
+                Link::new(MEDIA_IN, "", Input::Input),
+                Link::new("", "n3", Input::Foreground),
+            ],
+        ),
+    );
+    assert_eq!(project.next_id, 6);
+    project
+}
+
+/// A pattern as it is written: named `name`, put at `at`, as large as one is at first, with
+/// no offset, and with `path`.
+fn written_pattern(name: &str, at: [f64; 2], path: serde_json::Value) -> serde_json::Value {
+    let mut pattern = json!({
+        "name": name, "enabled": true,
+        "pattern": {"x": at[0], "y": at[1], "width": 0.05, "height": 0.05},
+        "search": {"width": 0.125, "height": 0.125},
+        "offset": {"x": 0.0, "y": 0.0},
+    });
+    pattern["path"] = path;
+    pattern
+}
+
+/// Two patterns as they are written, which both go a sixteenth of the width to the right
+/// and an eighth of the height up from frame 10 to frame 20.
+fn two_patterns() -> serde_json::Value {
+    json!([
+        written_pattern(
+            "Left",
+            [0.25, 0.5],
+            json!({"10": [0.25, 0.5], "20": [0.3125, 0.625]}),
+        ),
+        written_pattern(
+            "Right",
+            [0.75, 0.5],
+            json!({"10": [0.75, 0.5], "20": [0.8125, 0.625]}),
+        ),
+    ])
+}
+
+/// The two patterns of `two_patterns` with `change` made to the second, as the `trackers`
+/// of a patch.
+fn with_second(change: fn(&mut serde_json::Value)) -> serde_json::Value {
+    let mut patch = json!({ "trackers": two_patterns() });
+    change(&mut patch["trackers"][1]);
+    patch
+}
+
+/// The Tracker n5 of c1.
+fn tracker_of(project: &Project) -> &Tracker {
+    match &composition(project, "c1").node("n5").unwrap().kind {
+        NodeKind::Tracker(tracker) => tracker,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// What the Tracker that the one layer of the timeline draws at `frame` draws there.
+fn tracked_at(project: &Project, frame: i64) -> Tracked {
+    let fused = layer_at(project, frame)
+        .fusion
+        .expect("the layer has its composition");
+    fused
+        .nodes
+        .iter()
+        .find_map(|node| match &node.kind {
+            FusedKind::Tracker { settings, .. } => Some(*settings),
+            _ => None,
+        })
+        .expect("the layer draws its tracker")
+}
+
+/// Whether two places are one, but for the rounding of a few floats.
+fn near(one: [f64; 2], other: [f64; 2]) -> bool {
+    (one[0] - other[0]).abs() < 1e-9 && (one[1] - other[1]).abs() < 1e-9
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a tracker as it is written, read, written by another program and taken away"
+)]
+fn a_tracker_is_added_with_every_setting_written_and_is_read_back() {
+    let mut project = tracked();
+    let written = serde_json::to_value(composition(&project, "c1")).unwrap();
+    assert_eq!(
+        written["nodes"][4],
+        json!({
+            "id": "n5", "kind": "tracker", "label": "", "pass_through": false, "pos": null,
+            "params": {
+                "operation": "none", "merge": "bg_only", "position": true, "rotation": true,
+                "scaling": true, "pivot": "tracker_average", "pivot_tracker": 0,
+                "pivot_point": {"x": 0.5, "y": 0.5}, "reference": 0, "trackers": [],
+            },
+        })
+    );
+    // The picture of the clip is its first input, and it is the foreground of the Merge.
+    assert_eq!(
+        written["links"],
+        json!([
+            {"from": "n3", "to": "MediaOut1", "input": "input"},
+            {"from": "n4", "to": "n3", "input": "background"},
+            {"from": "n5", "to": "n3", "input": "foreground"},
+            {"from": "MediaIn1", "to": "n5", "input": "input"},
+        ])
+    );
+    // To the byte, in the order of its settings.
+    let nodes = &composition(&project, "c1").nodes;
+    assert_eq!(
+        serde_json::to_string(&nodes[4]).unwrap(),
+        concat!(
+            r#"{"id":"n5","kind":"tracker","label":"","pass_through":false,"pos":null,"#,
+            r#""params":{"operation":"none","merge":"bg_only","position":true,"#,
+            r#""rotation":true,"scaling":true,"pivot":"tracker_average","pivot_tracker":0,"#,
+            r#""pivot_point":{"x":0.5,"y":0.5},"reference":0,"trackers":[]}}"#,
+        )
+    );
+    // A project with it is read back as it was written, and written the same again.
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    assert_eq!(serde_json::to_string(&read).unwrap(), text);
+    // A Tracker as another program writes it, with every setting and two patterns with
+    // their paths: the Background its foreground, and the Tracker before it its mask.
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "tracker", "label": "Sign", "params": {
+            "operation": "match_move", "merge": "fg_over_bg", "position": true,
+            "rotation": false, "scaling": true, "pivot": "selected_tracker",
+            "pivot_tracker": 1, "pivot_point": {"x": 0.25, "y": 0.75}, "reference": 10,
+            "trackers": two_patterns(),
+        }},
+        "links": [
+            {"from": "MediaIn1", "to": "", "input": "input"},
+            {"from": "n4", "to": "", "input": "foreground"},
+            {"from": "n5", "to": "", "input": "mask"},
+        ],
+    }))
+    .unwrap();
+    let (done, inverse) = applied(&mut project, op);
+    assert_eq!(inverse, remove("n6", Some(vec![])));
+    let Op::AddFusionNode { node, links, .. } = done else {
+        panic!("a node was added")
+    };
+    assert_eq!(node.id, "n6");
+    assert_eq!(
+        links,
+        [
+            Link::new("n4", "n6", Input::Foreground),
+            Link::new(MEDIA_IN, "n6", Input::Input),
+            Link::new("n5", "n6", Input::Mask),
+        ]
+    );
+    let NodeKind::Tracker(sign) = &node.kind else {
+        panic!("n6 is a tracker")
+    };
+    assert_eq!(sign.operation, TrackerOperation::MatchMove);
+    assert_eq!(sign.merge, TrackerMerge::FgOverBg);
+    assert_eq!(sign.pivot, TrackerPivot::SelectedTracker);
+    assert_eq!((sign.pivot_tracker, sign.reference), (1, 10));
+    assert_eq!(sign.pivot_point, Place { x: 0.25, y: 0.75 });
+    assert!(sign.position && !sign.rotation && sign.scaling);
+    assert_eq!(sign.trackers.len(), 2);
+    assert_eq!(sign.trackers[1].name, "Right");
+    let path: Vec<(i64, [f64; 2])> = sign.trackers[0]
+        .path
+        .iter()
+        .map(|(&frame, &at)| (frame, at))
+        .collect();
+    assert_eq!(path, [(10, [0.25, 0.5]), (20, [0.3125, 0.625])]);
+    assert_eq!(
+        serde_json::to_string(&sign.trackers[0]).unwrap(),
+        concat!(
+            r#"{"name":"Left","enabled":true,"pattern":{"x":0.25,"y":0.5,"width":0.05,"#,
+            r#""height":0.05},"search":{"width":0.125,"height":0.125},"#,
+            r#""offset":{"x":0.0,"y":0.0},"path":{"10":[0.25,0.5],"20":[0.3125,0.625]}}"#,
+        )
+    );
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    assert_eq!(serde_json::to_string(&read).unwrap(), text);
+    let value = serde_json::to_value(&project).unwrap();
+    assert_eq!(Project::from_value(value).unwrap(), project);
+    // One whose settings are not all there, or that has a setting that a Tracker has not,
+    // cannot be read; and so it is with a pattern.
+    let whole = serde_json::to_value(&node).unwrap()["params"].clone();
+    for setting in [
+        "operation",
+        "merge",
+        "position",
+        "rotation",
+        "scaling",
+        "pivot",
+        "pivot_tracker",
+        "pivot_point",
+        "reference",
+        "trackers",
+    ] {
+        let mut params = whole.clone();
+        params.as_object_mut().unwrap().remove(setting);
+        let node = json!({"id": "", "kind": "tracker", "label": "", "params": params});
+        assert!(serde_json::from_value::<Node>(node).is_err(), "{setting}");
+    }
+    for setting in ["name", "enabled", "pattern", "search", "offset", "path"] {
+        let mut params = whole.clone();
+        params["trackers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(setting);
+        let node = json!({"id": "", "kind": "tracker", "label": "", "params": params});
+        assert!(serde_json::from_value::<Node>(node).is_err(), "{setting}");
+    }
+    let mut more = whole.clone();
+    more["adaptive_mode"] = json!("none");
+    let node = json!({"id": "", "kind": "tracker", "label": "", "params": more});
+    assert!(serde_json::from_value::<Node>(node).is_err());
+    let node = json!({"id": "", "kind": "tracker", "label": "", "params": whole});
+    assert!(serde_json::from_value::<Node>(node).is_ok());
+    // Taken away again, the first with the link that takes its place, they leave the
+    // composition as it was before them, and written as it was: one without a Tracker is
+    // written as it always was.
+    applied(&mut project, remove("n6", None));
+    let bridge = vec![Link::new(MEDIA_IN, "n3", Input::Foreground)];
+    applied(&mut project, remove("n5", Some(bridge)));
+    let before = merged();
+    assert_eq!(composition(&project, "c1"), composition(&before, "c1"));
+    assert_eq!(
+        serde_json::to_string(composition(&project, "c1")).unwrap(),
+        serde_json::to_string(composition(&before, "c1")).unwrap()
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a refusal for each number of a tracker and of its patterns"
+)]
+fn the_settings_of_a_tracker_are_those_of_its_kind_within_their_ranges() {
+    let mut project = tracked();
+    let many: Vec<serde_json::Value> = (0..=MOST_TRACKERS)
+        .map(|_| written_pattern("", [0.5, 0.5], json!({})))
+        .collect();
+    for (patch, what) in [
+        (json!({ "trackers": many }), "tracker.trackers"),
+        (
+            with_second(|pattern| pattern["name"] = json!("x".repeat(LONGEST_LABEL + 1))),
+            "tracker.trackers.name",
+        ),
+        (
+            with_second(|pattern| pattern["pattern"]["x"] = json!(17)),
+            "tracker.trackers.pattern",
+        ),
+        (
+            with_second(|pattern| pattern["pattern"]["y"] = json!(-16)),
+            "tracker.trackers.pattern",
+        ),
+        (
+            with_second(|pattern| pattern["pattern"]["width"] = json!(1.5)),
+            "tracker.trackers.pattern",
+        ),
+        (
+            with_second(|pattern| pattern["pattern"]["height"] = json!(-0.1)),
+            "tracker.trackers.pattern",
+        ),
+        (
+            with_second(|pattern| pattern["search"]["width"] = json!(-0.1)),
+            "tracker.trackers.search",
+        ),
+        (
+            with_second(|pattern| pattern["search"]["height"] = json!(1.5)),
+            "tracker.trackers.search",
+        ),
+        (
+            with_second(|pattern| pattern["offset"]["x"] = json!(16.5)),
+            "tracker.trackers.offset",
+        ),
+        (
+            with_second(|pattern| pattern["offset"]["y"] = json!(-17)),
+            "tracker.trackers.offset",
+        ),
+        // A place of a path beyond its range, and a frame beyond the largest.
+        (
+            with_second(|pattern| pattern["path"]["30"] = json!([0.5, 17])),
+            "tracker.trackers.path",
+        ),
+        (
+            with_second(|pattern| pattern["path"]["9007199254740992"] = json!([0.5, 0.5])),
+            "tracker.trackers.path",
+        ),
+        (
+            with_second(|pattern| pattern["path"]["-9007199254740992"] = json!([0.5, 0.5])),
+            "tracker.trackers.path",
+        ),
+        (
+            json!({ "pivot_tracker": MOST_TRACKERS }),
+            "tracker.pivot_tracker",
+        ),
+        (json!({"pivot_point": {"x": 17}}), "tracker.pivot_point"),
+        (json!({"pivot_point": {"y": -15.6}}), "tracker.pivot_point"),
+        (
+            json!({"reference": 9_007_199_254_740_992_i64}),
+            "tracker.reference",
+        ),
+    ] {
+        assert_eq!(
+            refused(&project, set_params("n5", patch)),
+            range(what),
+            "{what}"
+        );
+    }
+    // A number that is no number cannot be written: put in with a composition, whole, it is
+    // refused.
+    let mut broken = composition(&project, "c1").clone();
+    if let NodeKind::Tracker(tracker) = &mut broken.nodes[4].kind {
+        tracker.trackers.push(Pattern {
+            path: [(3, [f64::NAN, 0.5])].into_iter().collect(),
+            ..Pattern::default()
+        });
+    }
+    assert_eq!(
+        refused(&project, set("c1", Some(broken))),
+        range("tracker.trackers.path")
+    );
+    // What is not a setting of the kind, or not written as one, is refused: a frame of a
+    // path that is no whole number, a place that is not two numbers, and keys, which no
+    // number of a Tracker takes.
+    let keyed = json!({"keys": [{"frame": 0, "value": 0.5, "interp": "linear"}]});
+    for patch in [
+        json!({"operation": "stabilize"}),
+        json!({"merge": "fg_under_bg"}),
+        json!({"pivot": "tracker_center"}),
+        json!({"position": 1}),
+        json!({"pivot_tracker": -1}),
+        json!({"pivot_tracker": 1.5}),
+        json!({"pivot_point": 0.5}),
+        json!({"pivot_point": {"x": keyed}}),
+        json!({"reference": 1.5}),
+        json!({ "reference": keyed }),
+        json!({"trackers": {"0": {}}}),
+        json!({"trackers": [{"name": "", "enabled": true}]}),
+        with_second(|pattern| pattern["path"]["1.5"] = json!([0.5, 0.5])),
+        with_second(|pattern| pattern["path"]["first"] = json!([0.5, 0.5])),
+        with_second(|pattern| pattern["path"]["30"] = json!([0.5])),
+        with_second(|pattern| pattern["path"] = json!([[0.5, 0.5]])),
+        with_second(|pattern| pattern["pattern"]["x"] = json!({"keys": []})),
+        with_second(|pattern| pattern["confidence"] = json!(1.0)),
+        json!({"center": {"x": 0.5, "y": 0.5}}),
+        json!({"adaptive_mode": "none"}),
+    ] {
+        let error = refused(&project, set_params("n5", patch.clone()));
+        assert!(
+            matches!(&error, OpError::Params { node, .. } if node == "n5"),
+            "{patch}: {error:?}"
+        );
+    }
+    // What is given is set, and set back by the inverse; the list of patterns whole.
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({
+                "operation": "match_move", "merge": "fg_over_bg", "rotation": false,
+                "pivot": "manual", "pivot_point": {"x": 0.25}, "pivot_tracker": 1,
+                "reference": 10, "trackers": two_patterns(),
+            }),
+        ),
+    );
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({
+            "operation": "none", "merge": "bg_only", "rotation": true,
+            "pivot": "tracker_average", "pivot_point": {"x": 0.5}, "pivot_tracker": 0,
+            "reference": 0, "trackers": [],
+        }))
+    );
+    let tracker = tracker_of(&project);
+    assert_eq!(tracker.operation, TrackerOperation::MatchMove);
+    assert_eq!(tracker.merge, TrackerMerge::FgOverBg);
+    assert!(tracker.position && !tracker.rotation && tracker.scaling);
+    assert_eq!(tracker.pivot, TrackerPivot::Manual);
+    assert_eq!(tracker.pivot_point, Place { x: 0.25, y: 0.5 });
+    assert_eq!((tracker.pivot_tracker, tracker.reference), (1, 10));
+    assert_eq!(tracker.trackers.len(), 2);
+    let single = json!([written_pattern(
+        "Only",
+        [0.5, 0.5],
+        json!({"0": [0.5, 0.5]})
+    )]);
+    let (done, inverse) = applied(
+        &mut project,
+        set_params("n5", json!({ "trackers": single })),
+    );
+    assert_eq!(patch_of(&done), Some(json!({ "trackers": single })));
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({ "trackers": two_patterns() }))
+    );
+    assert_eq!(tracker_of(&project).trackers[0].name, "Only");
+    // The ends of each range are within it, and each way of each menu.
+    for patch in [
+        json!({"pivot_tracker": MOST_TRACKERS - 1, "pivot_point": {"x": -15.5, "y": 16.5}}),
+        json!({"reference": -9_007_199_254_740_991_i64}),
+        json!({"reference": 9_007_199_254_740_991_i64}),
+        json!({"operation": "none", "merge": "bg_over_fg", "pivot": "selected_tracker"}),
+        json!({"merge": "fg_only", "position": false, "scaling": false}),
+        with_second(|pattern| {
+            pattern["pattern"] = json!({"x": -15.5, "y": 16.5, "width": 0.0, "height": 1.0});
+            pattern["search"] = json!({"width": 1.0, "height": 0.0});
+            pattern["offset"] = json!({"x": -16.0, "y": 16.0});
+            pattern["path"] = json!({"-9007199254740991": [-15.5, 16.5], "0": [16.5, -15.5]});
+        }),
+        json!({"trackers": []}),
+    ] {
+        applied(&mut project, set_params("n5", patch));
+    }
+    // No number of a Tracker takes keys.
+    for path in [
+        "n5.reference",
+        "n5.pivot_tracker",
+        "n5.pivot_point.x",
+        "n5.operation",
+        "n5.trackers",
+        "n5.trackers.0.pattern.x",
+        "n5.trackers.0.offset.y",
+        "n5.trackers.0.path.10.0",
+    ] {
+        assert_eq!(
+            refused(&project, set_keys("c1", path, Param::Fixed(0.5))),
+            missing("setting", path),
+            "{path}"
+        );
+        assert_eq!(
+            refused(&project, splice(path, 0, 0, vec![key(0, 0.5)])),
+            missing("setting", path),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each input of a tracker, what it refuses, and what a layer draws of it"
+)]
+fn a_tracker_takes_a_picture_a_foreground_and_a_mask() {
+    let mut project = tracked();
+    // The Background, n4, is its foreground, and an Ellipse, n6, its mask.
+    let (done, inverse) = applied(
+        &mut project,
+        connect(Link::new("n4", "n5", Input::Foreground)),
+    );
+    assert_eq!(done, connect(Link::new("n4", "n5", Input::Foreground)));
+    assert_eq!(inverse, disconnect("n5", Input::Foreground));
+    let (_, inverse) = applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n5", Input::Mask)],
+        ),
+    );
+    assert_eq!(inverse, remove("n6", Some(vec![])));
+    // It has no background and no matte; and no kind but a Merge and a Tracker has a
+    // foreground.
+    for input in [Input::Background, Input::GarbageMatte, Input::SolidMatte] {
+        assert_eq!(
+            refused(&project, connect(Link::new(MEDIA_IN, "n5", input))),
+            OpError::NoInput {
+                node: "n5".into(),
+                input
+            }
+        );
+    }
+    for node in [MEDIA_OUT, "n4", "n6"] {
+        assert_eq!(
+            refused(
+                &project,
+                connect(Link::new(MEDIA_IN, node, Input::Foreground))
+            ),
+            OpError::NoInput {
+                node: node.into(),
+                input: Input::Foreground
+            },
+            "{node}"
+        );
+    }
+    // A loop through its foreground or its mask is a loop.
+    for input in [Input::Input, Input::Foreground, Input::Mask] {
+        assert!(
+            matches!(
+                refused(&project, connect(Link::new("n3", "n5", input))),
+                OpError::Loop { .. }
+            ),
+            "{input:?}"
+        );
+    }
+    assert_eq!(
+        refused(&project, connect(Link::new("n5", "n5", Input::Foreground))),
+        OpError::Loop { node: "n5".into() }
+    );
+    // Its links are kept by the names of its inputs.
+    let into: Vec<&str> = composition(&project, "c1")
+        .links
+        .iter()
+        .filter(|link| link.to == "n5")
+        .map(|link| link.input.name())
+        .collect();
+    assert_eq!(into, ["foreground", "input", "mask"]);
+    // The layer draws it after its picture, its foreground and its mask, which it names in
+    // the order of its inputs.
+    let at = |id: &str, mask: Option<usize>| (id.to_owned(), mask);
+    assert_eq!(
+        drawn(&project),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n6", None),
+            at("n5", Some(2)),
+            at("n3", None)
+        ]
+    );
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    assert_eq!(fused.nodes[3].kind.reads(), [1, 0, 2]);
+    assert_eq!(fused.nodes[3].kind.first_input(), Some(1));
+    assert!(matches!(
+        fused.nodes[3].kind,
+        FusedKind::Tracker {
+            input: Some(1),
+            foreground: Some(0),
+            mask: Some(2),
+            ..
+        }
+    ));
+    // Passed through, it hands on its picture, and neither its foreground nor its mask: the
+    // Merge lays the picture of the clip, as it did before the Tracker.
+    applied(&mut project, passed_through("n5"));
+    assert_eq!(drawn(&project), drawn(&merged()));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "what a tracker draws at a frame, each way and with each control"
+)]
+fn a_tracker_of_a_layer_is_what_it_draws_at_the_frame() {
+    let mut project = tracked();
+    let left = || {
+        written_pattern(
+            "Left",
+            [0.25, 0.5],
+            json!({"10": [0.25, 0.5], "20": [0.3125, 0.625]}),
+        )
+    };
+    applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({"operation": "match_move", "reference": 10, "trackers": [left()]}),
+        ),
+    );
+    assert!(composition(&project, "c1").is_animated());
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20.
+    // Held still, the picture is put as far to the left and down as the pattern has gone to
+    // the right and up since the reference frame.
+    let held = tracked_at(&project, 20);
+    assert_eq!(
+        (held.operation, held.merge),
+        (TrackerOperation::MatchMove, TrackerMerge::BgOnly)
+    );
+    assert!(near(held.center, [0.4375, 0.375]), "{held:?}");
+    assert_eq!((held.size, held.angle), (1.0, 0.0));
+    // Between two frames of the path, on the line between them.
+    assert!(near(tracked_at(&project, 15).center, [0.46875, 0.4375]));
+    // At the reference frame, and before the path, where the pattern is where it was first,
+    // the picture lies as it is; after the last frame of the path, as at that one.
+    for frame in [10, 5, 0] {
+        assert_eq!(tracked_at(&project, frame).center, [0.5, 0.5], "{frame}");
+    }
+    assert_eq!(tracked_at(&project, 30), held);
+    // With each of the other three the foreground follows the pattern.
+    for (merge, written) in [
+        (TrackerMerge::FgOnly, "fg_only"),
+        (TrackerMerge::FgOverBg, "fg_over_bg"),
+        (TrackerMerge::BgOverFg, "bg_over_fg"),
+    ] {
+        applied(&mut project, set_params("n5", json!({ "merge": written })));
+        let follows = tracked_at(&project, 20);
+        assert_eq!(follows.merge, merge);
+        assert!(near(follows.center, [0.5625, 0.625]), "{follows:?}");
+        assert_eq!((follows.size, follows.angle), (1.0, 0.0));
+    }
+    // The reference frame is where nothing moves: with the last frame of the path for it,
+    // the first is as far the other way.
+    applied(
+        &mut project,
+        set_params("n5", json!({"merge": "bg_only", "reference": 20})),
+    );
+    assert_eq!(tracked_at(&project, 20).center, [0.5, 0.5]);
+    assert_eq!(tracked_at(&project, 40).center, [0.5, 0.5]);
+    assert!(near(tracked_at(&project, 10).center, [0.5625, 0.625]));
+    // Without Position the shift of one pattern is no motion.
+    applied(
+        &mut project,
+        set_params("n5", json!({"reference": 10, "position": false})),
+    );
+    assert_eq!(tracked_at(&project, 20).center, [0.5, 0.5]);
+    applied(&mut project, set_params("n5", json!({"position": true})));
+    // With an Operation of None, with its pattern off, and with no pattern, the picture
+    // lies as it is; and one with no path is the same at every frame.
+    let mut idle = project.clone();
+    applied(&mut idle, set_params("n5", json!({"operation": "none"})));
+    let still = tracked_at(&idle, 20);
+    assert_eq!(still.operation, TrackerOperation::None);
+    assert_eq!(
+        (still.center, still.size, still.angle),
+        ([0.5, 0.5], 1.0, 0.0)
+    );
+    let mut off = project.clone();
+    let mut pattern = left();
+    pattern["enabled"] = json!(false);
+    applied(&mut off, set_params("n5", json!({ "trackers": [pattern] })));
+    assert_eq!(tracked_at(&off, 20).center, [0.5, 0.5]);
+    let mut none = project.clone();
+    applied(&mut none, set_params("n5", json!({"trackers": []})));
+    assert_eq!(tracked_at(&none, 20).center, [0.5, 0.5]);
+    assert!(!composition(&none, "c1").is_animated());
+    // Two patterns: a shift, a turn and a size, as the mathematics has them for pictures of
+    // the size of the composition.
+    let ends = [[0.3, 0.6], [0.7, 0.3]];
+    let patterns = json!([
+        written_pattern(
+            "Left",
+            [0.25, 0.5],
+            json!({"10": [0.25, 0.5], "20": ends[0]})
+        ),
+        written_pattern(
+            "Right",
+            [0.75, 0.5],
+            json!({"10": [0.75, 0.5], "20": ends[1]})
+        ),
+    ]);
+    applied(
+        &mut project,
+        set_params("n5", json!({ "trackers": patterns })),
+    );
+    let size = size_of(clip(&project, "c1"), &project, &project.timelines[0]);
+    let extent = (f64::from(size.0), f64::from(size.1));
+    let pixels = |at: [f64; 2]| matchmove::from_fusion(at, extent);
+    let paths = [
+        [pixels([0.25, 0.5]), pixels(ends[0])],
+        [pixels([0.75, 0.5]), pixels(ends[1])],
+    ];
+    let trackers = [
+        matchmove::Tracker::new(&paths[0]),
+        matchmove::Tracker::new(&paths[1]),
+    ];
+    let settings = matchmove::Settings {
+        operation: matchmove::Operation::MatchMove,
+        ..matchmove::Settings::default()
+    };
+    let solved = matchmove::solve(&trackers, &settings)[1].expect("the patterns have moved");
+    let middle = [extent.0 / 2.0, extent.1 / 2.0];
+    let held = tracked_at(&project, 20);
+    assert!(
+        (held.size - 1.0 / solved.motion.zoom).abs() < 1e-9,
+        "{held:?}"
+    );
+    assert!(
+        (held.angle - solved.motion.rotate.to_degrees()).abs() < 1e-9,
+        "{held:?}"
+    );
+    let put = matchmove::to_fusion(solved.steady().apply(middle), extent).unwrap();
+    assert!(near(held.center, put), "{held:?}");
+    assert!((held.size - 1.0).abs() > 0.01 && held.angle.abs() > 1.0);
+    applied(&mut project, set_params("n5", json!({"merge": "fg_only"})));
+    let follows = tracked_at(&project, 20);
+    assert!((follows.size - solved.motion.zoom).abs() < 1e-9);
+    assert!((follows.angle + solved.motion.rotate.to_degrees()).abs() < 1e-9);
+    let put = matchmove::to_fusion(solved.unsteady().apply(middle), extent).unwrap();
+    assert!(near(follows.center, put), "{follows:?}");
+}
+
+/// `tracked` with its two patterns on their paths, the second with an offset, frame 10 its
+/// reference; and an Ellipse, n6, as the effect mask of the Merge n3: `next_id` is 7.
+fn followed() -> Project {
+    let mut project = tracked();
+    let patterns = with_second(|pattern| pattern["offset"] = json!({"x": 0.125, "y": -0.25}));
+    applied(&mut project, set_params("n5", patterns));
+    applied(&mut project, set_params("n5", json!({"reference": 10})));
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n3", Input::Mask)],
+        ),
+    );
+    assert_eq!(project.next_id, 7);
+    project
+}
+
+/// `set_fusion_node` that makes the centre of node `id` of c1 follow `follow`, as it is
+/// written, or changes what it follows by it; `null` lets go.
+fn following(id: &str, follow: serde_json::Value) -> Op {
+    let mut patch = json!({"center": {}});
+    patch["center"]["follow"] = follow;
+    set_params(id, patch)
+}
+
+/// The centre of the Merge or of the Ellipse `id` as the layer of c1 draws it at `frame`.
+fn centre_at(project: &Project, id: &str, frame: i64) -> [f64; 2] {
+    let fused = layer_at(project, frame)
+        .fusion
+        .expect("the layer has its composition");
+    let node = fused
+        .nodes
+        .iter()
+        .find(|node| node.id == id)
+        .expect("the node is drawn");
+    match &node.kind {
+        FusedKind::Merge { settings, .. } => settings.center,
+        FusedKind::Ellipse { shape, .. } => shape.center,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a centre that follows each place, what is refused of it, and letting go"
+)]
+fn a_centre_follows_what_a_tracker_publishes_and_lets_go_of_it() {
+    let mut project = followed();
+    let before = serde_json::to_string(composition(&project, "c1")).unwrap();
+    assert!(!before.contains("follow"));
+    // The Ellipse follows the second pattern, with its offset: it is set with the centre,
+    // and what the centre had is set back by the inverse.
+    let second = json!({"node": "n5", "output": "tracker", "tracker": 1});
+    let (done, inverse) = applied(&mut project, following("n6", second.clone()));
+    assert_eq!(done, following("n6", second.clone()));
+    assert_eq!(inverse, following("n6", json!(null)));
+    let written = serde_json::to_value(composition(&project, "c1")).unwrap();
+    assert_eq!(
+        written["nodes"][5]["params"]["center"],
+        json!({"x": 0.5, "y": 0.5, "follow": second})
+    );
+    let NodeKind::Ellipse(ellipse) = &composition(&project, "c1").node("n6").unwrap().kind else {
+        panic!("n6 is an ellipse")
+    };
+    assert_eq!(ellipse.center.follow, Some(Follow::tracker("n5", 1)));
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20. The
+    // centre is where the pattern is, and its offset, right and up: on its path, between
+    // two frames of it, and before it.
+    assert_eq!(centre_at(&project, "n6", 20), [0.9375, 0.375]);
+    assert_eq!(centre_at(&project, "n6", 15), [0.90625, 0.3125]);
+    assert_eq!(centre_at(&project, "n6", 0), [0.875, 0.25]);
+    let size = size_of(clip(&project, "c1"), &project, &project.timelines[0]);
+    assert_eq!(
+        tracker_of(&project).published(FollowOutput::Tracker, 1, 20.0, size),
+        Some([0.9375, 0.375])
+    );
+    // The Merge follows the Unsteady Position. A pattern need not be named for it: it is
+    // then written as the first.
+    let mut short = project.clone();
+    let unnamed = json!({"node": "n5", "output": "unsteady_position"});
+    apply(&mut short, following("n3", unnamed)).unwrap();
+    let unsteady = json!({"node": "n5", "output": "unsteady_position", "tracker": 0});
+    let (done, _) = applied(&mut project, following("n3", unsteady.clone()));
+    assert_eq!(done, following("n3", unsteady));
+    assert_eq!(short, project);
+    let wanted = tracker_of(&project)
+        .published(FollowOutput::UnsteadyPosition, 0, 20.0, size)
+        .unwrap();
+    assert_eq!(centre_at(&project, "n3", 20), wanted);
+    assert!(near(wanted, [0.5625, 0.625]), "{wanted:?}");
+    let follow = Follow::of("n5", FollowOutput::UnsteadyPosition);
+    assert_eq!(
+        composition(&project, "c1").published(&follow, 20.0, size),
+        Some(wanted)
+    );
+    assert_eq!(centre_at(&project, "n3", 10), [0.5, 0.5]);
+    // What is followed is changed by a patch, which leaves the node as it is: the Steady
+    // Position is as far from the middle the other way.
+    let (_, inverse) = applied(
+        &mut project,
+        following("n3", json!({"output": "steady_position"})),
+    );
+    assert_eq!(
+        inverse,
+        following("n3", json!({"output": "unsteady_position"}))
+    );
+    let steady = centre_at(&project, "n3", 20);
+    assert!(near(steady, [0.4375, 0.375]), "{steady:?}");
+    // The own numbers of a centre that follows are kept, and not read; where nothing is
+    // published they are the centre: a pattern that the Tracker has not, and a Tracker that
+    // is passed through.
+    applied(
+        &mut project,
+        set_params("n6", json!({"center": {"x": 0.25, "y": 0.75}})),
+    );
+    assert_eq!(centre_at(&project, "n6", 20), [0.9375, 0.375]);
+    applied(&mut project, following("n6", json!({"tracker": 5})));
+    assert_eq!(centre_at(&project, "n6", 20), [0.25, 0.75]);
+    applied(&mut project, following("n6", json!({"tracker": 1})));
+    applied(&mut project, passed_through("n5"));
+    assert_eq!(centre_at(&project, "n6", 20), [0.25, 0.75]);
+    assert_eq!(centre_at(&project, "n3", 20), [0.5, 0.5]);
+    let mut shown = set_node("n5");
+    if let Op::SetFusionNode { pass_through, .. } = &mut shown {
+        *pass_through = Some(false);
+    }
+    applied(&mut project, shown);
+    assert_eq!(centre_at(&project, "n6", 20), [0.9375, 0.375]);
+    // The node that is followed is a Tracker of the composition, and the pattern one that a
+    // Tracker may have.
+    assert_eq!(
+        refused(&project, following("n6", json!({"node": "n404"}))),
+        missing("node", "n404")
+    );
+    let wrong = OpError::WrongNode {
+        node: "n3".into(),
+        kind: "merge",
+    };
+    assert_eq!(
+        refused(&project, following("n6", json!({"node": "n3"}))),
+        wrong
+    );
+    assert_eq!(serde_json::to_value(wrong).unwrap()["reason"], "wrong_node");
+    assert_eq!(
+        refused(
+            &project,
+            following("n6", json!({ "tracker": MOST_TRACKERS }))
+        ),
+        range("center.follow.tracker")
+    );
+    for patch in [
+        json!({"output": "steady_angle"}),
+        json!({"output": 1}),
+        json!({"tracker": -1}),
+        json!({"input": "mask"}),
+        json!("n5"),
+    ] {
+        let error = refused(&project, following("n6", patch.clone()));
+        assert!(
+            matches!(&error, OpError::Params { node, .. } if node == "n6"),
+            "{patch}: {error:?}"
+        );
+    }
+    // A kind that has no centre follows nothing; and a node that is added, or a composition
+    // that is put in whole, is held to the same.
+    let error = refused(&project, following("n4", second.clone()));
+    assert!(matches!(&error, OpError::Params { node, .. } if node == "n4"));
+    let mut stray = Node::new("", Kind::Rectangle);
+    if let NodeKind::Rectangle(rectangle) = &mut stray.kind {
+        rectangle.center.follow = Some(Follow::tracker("n4", 0));
+    }
+    assert_eq!(
+        refused(&project, add(stray, vec![])),
+        OpError::WrongNode {
+            node: "n4".into(),
+            kind: "background"
+        }
+    );
+    let mut alone = composition(&project, "c1").clone();
+    alone.nodes.retain(|node| node.id != "n5");
+    alone.links.retain(|link| !link.touches("n5"));
+    assert_eq!(
+        refused(&project, set("c1", Some(alone))),
+        missing("node", "n5")
+    );
+    // A Tracker that is followed is not taken away.
+    let used = OpError::InUse {
+        what: "node",
+        id: "n5".into(),
+        by: "n3".into(),
+    };
+    assert_eq!(refused(&project, remove("n5", None)), used);
+    assert_eq!(serde_json::to_value(used).unwrap()["reason"], "in_use");
+    // Let go of, by a `follow` of `null`, the centre is its own numbers again, and is
+    // written as it was.
+    let (done, inverse) = applied(&mut project, following("n3", json!(null)));
+    assert_eq!(done, following("n3", json!(null)));
+    assert_eq!(
+        inverse,
+        following(
+            "n3",
+            json!({"node": "n5", "output": "steady_position", "tracker": 0})
+        )
+    );
+    assert_eq!(centre_at(&project, "n3", 20), [0.5, 0.5]);
+    assert_eq!(
+        refused(&project, remove("n5", None)),
+        OpError::InUse {
+            what: "node",
+            id: "n5".into(),
+            by: "n6".into(),
+        }
+    );
+    applied(&mut project, following("n6", json!(null)));
+    assert_eq!(centre_at(&project, "n6", 20), [0.25, 0.75]);
+    applied(
+        &mut project,
+        set_params("n6", json!({"center": {"x": 0.5, "y": 0.5}})),
+    );
+    assert_eq!(
+        serde_json::to_string(composition(&project, "c1")).unwrap(),
+        before
+    );
+    // And the Tracker may go.
+    let bridge = vec![Link::new(MEDIA_IN, "n3", Input::Foreground)];
+    applied(&mut project, remove("n5", Some(bridge)));
+}
+
+/// A composition that holds the picture of its clip still: `in` through the Tracker
+/// `track`, whose one pattern has `path` and whose reference is `reference`, into `out`.
+fn holding(path: &[(i64, [f64; 2])], reference: i64) -> Composition {
+    let mut track = Node::new("track", Kind::Tracker);
+    track.kind = NodeKind::Tracker(Tracker {
+        operation: TrackerOperation::MatchMove,
+        reference,
+        trackers: vec![Pattern {
+            path: path.iter().copied().collect(),
+            ..Pattern::default()
+        }],
+        ..Tracker::default()
+    });
+    let mut composition = Composition {
+        nodes: vec![
+            Node::new("in", Kind::MediaIn),
+            track,
+            Node::new("out", Kind::MediaOut),
+        ],
+        links: vec![
+            Link::new("in", "track", Input::Input),
+            Link::new("track", "out", Input::Input),
+        ],
+    };
+    composition.sort_links();
+    composition
+}
+
+/// The frames of the path of the pattern of the Tracker `track` of clip `id`, and its
+/// reference.
+fn path_of(project: &Project, id: &str) -> (Vec<i64>, i64) {
+    let node = composition(project, id)
+        .node("track")
+        .expect("the composition has the tracker");
+    let NodeKind::Tracker(tracker) = &node.kind else {
+        panic!("the node is a tracker")
+    };
+    (
+        tracker.trackers[0].path.keys().copied().collect(),
+        tracker.reference,
+    )
+}
+
+#[test]
+fn the_paths_of_a_tracker_are_moved_with_the_keys_of_its_clip() {
+    // A colour counts its own frames: where its head is trimmed, the frames of the path and
+    // the reference are moved as its keys are, so that each frame of the timeline shows what
+    // it showed.
+    let frames = [210, 215, 220, 230, 245];
+    let mut project = with_a_colour_that_moves();
+    let colour = project.timelines[0].tracks[0]
+        .clips
+        .iter_mut()
+        .find(|clip| clip.id == "k1")
+        .expect("the colour is there");
+    colour.fusion = Some(holding(&[(0, [0.25, 0.5]), (40, [0.75, 0.25])], 10));
+    project.validate().unwrap();
+    let seen = |project: &Project| frames.map(|frame| tracked_at(project, frame));
+    let before = seen(&project);
+    assert_ne!(before[0], before[4]);
+    edited(
+        &mut project,
+        edit(json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "in", "delta": 10})),
+    );
+    assert_eq!(path_of(&project, "k1"), (vec![-10, 30], 0));
+    assert_eq!(seen(&project), before);
+    // Cut in two by the blade, both halves keep the Tracker, the second its path on its own
+    // frames.
+    edited(
+        &mut project,
+        edit(json!({"edit": "blade", "timeline": "t1", "at": 225, "tracks": ["V1"]})),
+    );
+    let second = project.timelines[0].tracks[0]
+        .clips
+        .iter()
+        .find(|clip| clip.start == 225)
+        .expect("the second half is there")
+        .id
+        .clone();
+    assert_eq!(path_of(&project, "k1"), (vec![-10, 30], 0));
+    assert_eq!(path_of(&project, &second), (vec![-25, 15], -15));
+    assert_eq!(seen(&project), before);
+    // Of media, a path is on its pictures: a trim of the head leaves it where it was.
+    let mut media = Project::sample();
+    applied(
+        &mut media,
+        set(
+            "c1",
+            Some(holding(&[(20, [0.25, 0.5]), (60, [0.75, 0.25])], 30)),
+        ),
+    );
+    let before = [30, 40, 70].map(|frame| tracked_at(&media, frame));
+    edited(
+        &mut media,
+        edit(
+            json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "in", "delta": 10,
+            "linked": false}),
+        ),
+    );
+    assert_eq!(path_of(&media, "c1"), (vec![20, 60], 30));
+    assert_eq!([30, 40, 70].map(|frame| tracked_at(&media, frame)), before);
+}
+
+#[test]
+fn a_change_of_a_tracker_that_changes_nothing_makes_no_step() {
+    let mut project = followed();
+    let second = json!({"node": "n5", "output": "tracker", "tracker": 1});
+    applied(&mut project, following("n6", second.clone()));
+    let mut history = History::new(project);
+    let revision = history.revision();
+    for op in [
+        set_params(
+            "n5",
+            json!({"operation": "none", "merge": "bg_only", "reference": 10}),
+        ),
+        set_params(
+            "n5",
+            with_second(|pattern| pattern["offset"] = json!({"x": 0.125, "y": -0.25})),
+        ),
+        following("n6", second),
+        following("n6", json!({"output": "tracker"})),
+        following("n3", json!(null)),
+    ] {
+        let nothing = history.change(vec![Change::Op(op.clone())], "desktop", |change, _| change);
+        assert_eq!(nothing.err(), Some(TransactionError::Empty), "{op:?}");
+    }
+    assert_eq!(history.revision(), revision);
+    assert!(!history.can_undo());
+    // One that changes something is a step, and is undone: a place of a path, and what a
+    // centre follows.
+    let before = history.project().clone();
+    for op in [
+        set_params(
+            "n5",
+            with_second(|pattern| pattern["path"]["20"] = json!([0.875, 0.625])),
+        ),
+        following("n6", json!({"tracker": 0})),
+    ] {
+        history
+            .change(vec![Change::Op(op)], "desktop", |change, _| change)
+            .unwrap();
+        assert_ne!(history.project(), &before);
+        history.undo("desktop").unwrap().unwrap();
+        assert_eq!(history.project(), &before);
+    }
 }

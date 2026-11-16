@@ -27,8 +27,9 @@ use columbina_compose::{
 use columbina_media::{Alpha, NativePicture, PictureFormat};
 use columbina_model::fusion::{
     BlurFilter, Blurred, DeltaKeyed, DeltaKeyer, EllipseShape, FillMethod, Fused, FusedKind,
-    FusedNode, KeyerView, Masked, Merged, Mosaicked, Operator, PaintMode, PolygonShape,
-    RectangleShape, ReplaceMode, SpillMethod, Transformed, MOST_POINTS,
+    FusedNode, KeyerView, Masked, Merged, Mosaicked, Operator, PaintMode, Pattern, PolygonShape,
+    RectangleShape, ReplaceMode, SpillMethod, Tracked, Tracker, TrackerMerge, TrackerOperation,
+    Transformed, MOST_POINTS,
 };
 use columbina_model::project::{Rgba, Styled, TextAlign};
 
@@ -1137,6 +1138,12 @@ fn the_nodes_that_are_not_drawn_are_told_of() {
             mask: Some(5),
             settings: keyed(|_| {}),
         },
+        FusedKind::Tracker {
+            input: Some(9),
+            foreground: Some(6),
+            mask: Some(5),
+            settings: put_by(TrackerMerge::FgOverBg, [0.625, 0.375]),
+        },
     ]);
     let Source::Fused(fusion) = fused(Source::Color([1.0; 4]), nodes, output) else {
         panic!("a composition");
@@ -1266,7 +1273,8 @@ fn with_mask(kind: &FusedKind, mask: Option<usize>) -> FusedKind {
     | FusedKind::Polygon { mask: own, .. }
     | FusedKind::Blur { mask: own, .. }
     | FusedKind::Mosaic { mask: own, .. }
-    | FusedKind::DeltaKeyer { mask: own, .. } = &mut kind
+    | FusedKind::DeltaKeyer { mask: own, .. }
+    | FusedKind::Tracker { mask: own, .. } = &mut kind
     {
         *own = mask;
     }
@@ -4064,5 +4072,380 @@ fn a_mask_node_viewed_alone_is_white_by_its_mask_where_its_picture_lies() {
     // The mask is somewhere full: the picture is not black all over.
     assert!(most > 0.9, "{most}");
     assert_eq!(compositor.fusion_passes(), 1);
+    assert_no_errors(&gpu);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Tracker
+// ---------------------------------------------------------------------------------------------
+
+/// The pixel of the picture of the tests that the Trackers of the tests follow: its column
+/// and its row.
+const MARK: (i32, i32) = (6, 3);
+
+/// How far the picture that is tracked has gone at each frame of the tests of a Tracker, in
+/// whole pixels to the right and down: nowhere at frame 0, the reference frame.
+const SHIFTS: [(i32, i32); 4] = [(0, 0), (2, 1), (-3, 0), (4, -2)];
+
+/// A pixel of a preview that is white and opaque, in half floats.
+const WHITE: [u16; 4] = [0x3C00; 4];
+
+/// The place, as the settings of a composition count one, of the point `x` pixels from the
+/// left edge and `y` pixels from the top of a picture of the tests: a pixel reaches from its
+/// number to the next, so that its middle is half a pixel on.
+fn place(x: f64, y: f64) -> [f64; 2] {
+    [x / f64::from(WIDTH), 1.0 - y / f64::from(HEIGHT)]
+}
+
+/// A Transform of the picture at `input` that puts it `by` pixels to the right and down.
+fn shifted(input: usize, by: (i32, i32)) -> FusedKind {
+    FusedKind::Transform {
+        input: Some(input),
+        mask: None,
+        settings: Transformed {
+            center: place(8.0 + f64::from(by.0), 4.0 + f64::from(by.1)),
+            ..transform()
+        },
+    }
+}
+
+/// A Tracker that match moves and draws as `merge` says, whose one pattern follows the
+/// middle of the pixel [`MARK`] of a picture that goes as [`SHIFTS`] says, a frame for each:
+/// what the tracking of such a picture writes.
+fn follower(merge: TrackerMerge) -> Tracker {
+    let middle = (f64::from(MARK.0) + 0.5, f64::from(MARK.1) + 0.5);
+    let path = (0_i64..)
+        .zip(SHIFTS)
+        .map(|(frame, (right, down))| {
+            let at = place(middle.0 + f64::from(right), middle.1 + f64::from(down));
+            (frame, at)
+        })
+        .collect();
+    Tracker {
+        operation: TrackerOperation::MatchMove,
+        merge,
+        trackers: vec![Pattern {
+            path,
+            ..Pattern::default()
+        }],
+        ..Tracker::default()
+    }
+}
+
+/// The Tracker `tracker` as the model has it at `frame`, in pictures of the size of the
+/// pictures of the tests: its `input`, its `foreground` and its `mask` reading `reads`.
+fn tracked(tracker: &Tracker, frame: u32, reads: [Option<usize>; 3]) -> FusedKind {
+    let [input, foreground, mask] = reads;
+    FusedKind::Tracker {
+        input,
+        foreground,
+        mask,
+        settings: tracker.at(f64::from(frame), (WIDTH, HEIGHT)),
+    }
+}
+
+/// What a Tracker that match moves and draws as `merge` says draws, the picture that it
+/// moves put at `center`, as large as it is and not turned.
+fn put_by(merge: TrackerMerge, center: [f64; 2]) -> Tracked {
+    Tracked {
+        operation: TrackerOperation::MatchMove,
+        merge,
+        center,
+        size: 1.0,
+        angle: 0.0,
+    }
+}
+
+/// A Rectangle mask of two pixels by two whose top left pixel is [`MARK`]: a white block, in
+/// a picture that is transparent about it.
+fn block() -> FusedKind {
+    let middle = (f64::from(MARK.0) + 1.0, f64::from(MARK.1) + 1.0);
+    rectangle(
+        masked(),
+        RectangleShape {
+            center: place(middle.0, middle.1),
+            width: 2.0 / f64::from(WIDTH),
+            height: 2.0 / f64::from(HEIGHT),
+            ..rectangle_shape()
+        },
+    )
+}
+
+/// Whether the pixel (x, y) of a frame is of the block of [`block`] as it lies when it has
+/// gone `by` pixels to the right and down.
+fn on_the_block(x: i64, y: i64, by: (i32, i32)) -> bool {
+    let left = i64::from(MARK.0 + by.0);
+    let top = i64::from(MARK.1 + by.1);
+    (left..left + 2).contains(&x) && (top..top + 2).contains(&y)
+}
+
+/// The frame `frame`, of the size of the pictures of the tests, with the pixels (x, y) for
+/// which `on` holds made `colour`.
+fn painted(frame: &[u16], colour: [u16; 4], on: impl Fn(i64, i64) -> bool) -> Vec<u16> {
+    let width = i64::from(WIDTH);
+    let mut out = Vec::with_capacity(frame.len());
+    for (at, pixel) in (0_i64..).zip(frame.as_chunks::<4>().0) {
+        let shown = if on(at % width, at / width) {
+            colour
+        } else {
+            *pixel
+        };
+        out.extend(shown);
+    }
+    out
+}
+
+#[test]
+fn a_tracker_holds_still_the_picture_that_it_was_tracked_in() {
+    // A picture that goes by whole pixels, frame after frame, and a Tracker whose path
+    // follows a mark of it: held still, each frame is the picture where it was at the
+    // reference frame, to the pixel.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let picture = Source::Picture(pattern(), 0);
+    let plain = halves(
+        &gpu,
+        &mut compositor,
+        &scene(vec![layer(picture.clone(), ColorRange::Full)]),
+    );
+    let (width, height) = (i64::from(WIDTH), i64::from(HEIGHT));
+    let tracker = follower(TrackerMerge::BgOnly);
+    for (frame, by) in (0_u32..).zip(SHIFTS) {
+        let nodes = vec![
+            FusedKind::MediaIn,
+            shifted(0, by),
+            tracked(&tracker, frame, [Some(1), None, None]),
+        ];
+        let passes = compositor.fusion_passes();
+        let held = layer(fused(picture.clone(), nodes, Some(2)), ColorRange::Full);
+        let shown = halves(&gpu, &mut compositor, &scene(vec![held]));
+        // Each pixel is the one that it was at the reference frame, of those that the
+        // picture as it has gone still has.
+        let (right, down) = (i64::from(by.0), i64::from(by.1));
+        let wanted = rearranged(&plain, NOTHING, |x, y| {
+            let kept = (0..width).contains(&(x + right)) && (0..height).contains(&(y + down));
+            kept.then_some((x, y))
+        });
+        assert_within(&shown, &wanted, 1, &format!("frame {frame}"));
+        // The mark is back where it was.
+        let mark = (i64::from(MARK.0), i64::from(MARK.1));
+        assert_within(
+            &pixel(&shown, mark.0, mark.1),
+            &pixel(&plain, mark.0, mark.1),
+            1,
+            &format!("the mark at frame {frame}"),
+        );
+        // At the reference frame nothing is drawn for it; at another, the source alone, the
+        // picture as it has gone, and that held still.
+        let drawn = if frame == 0 { 0 } else { 3 };
+        assert_eq!(compositor.fusion_passes(), passes + drawn, "frame {frame}");
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_tracker_makes_its_foreground_follow_what_it_tracked() {
+    // A white block that lies on the mark at the reference frame is laid, by a Tracker
+    // whose path follows the mark, on the mark where it has gone.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let picture = Source::Picture(pattern(), 0);
+    let plain = halves(
+        &gpu,
+        &mut compositor,
+        &scene(vec![layer(picture.clone(), ColorRange::Full)]),
+    );
+    let nothing = NOTHING.repeat((WIDTH * HEIGHT) as usize);
+    for (frame, by) in (0_u32..).zip(SHIFTS) {
+        let mut drawn = |nodes: Vec<FusedKind>| {
+            let clip = layer(fused(picture.clone(), nodes, Some(3)), ColorRange::Full);
+            halves(&gpu, &mut compositor, &scene(vec![clip]))
+        };
+        let (right, down) = (i64::from(by.0), i64::from(by.1));
+        // The picture as it has gone, and the block on its mark.
+        let gone = rearranged(&plain, NOTHING, |x, y| Some((x - right, y - down)));
+        let on_the_mark = painted(&gone, WHITE, |x, y| on_the_block(x, y, by));
+        // The picture is what was tracked, and the block the foreground: over the picture,
+        // and alone.
+        let over = |merge: TrackerMerge| {
+            vec![
+                FusedKind::MediaIn,
+                shifted(0, by),
+                block(),
+                tracked(&follower(merge), frame, [Some(1), Some(2), None]),
+            ]
+        };
+        let shown = drawn(over(TrackerMerge::FgOverBg));
+        assert_within(&shown, &on_the_mark, 1, &format!("over, frame {frame}"));
+        let shown = drawn(over(TrackerMerge::FgOnly));
+        let alone = painted(&nothing, WHITE, |x, y| on_the_block(x, y, by));
+        assert_within(&shown, &alone, 1, &format!("alone, frame {frame}"));
+        // The block is what was tracked, and the picture the foreground: the block as it
+        // has gone lies over the picture, which follows it; and held still, the block is
+        // where it was at the reference frame.
+        let under = |merge: TrackerMerge| {
+            vec![
+                FusedKind::MediaIn,
+                block(),
+                shifted(1, by),
+                tracked(&follower(merge), frame, [Some(2), Some(0), None]),
+            ]
+        };
+        let shown = drawn(under(TrackerMerge::BgOverFg));
+        assert_within(&shown, &on_the_mark, 1, &format!("under, frame {frame}"));
+        let shown = drawn(under(TrackerMerge::BgOnly));
+        let back = painted(&nothing, WHITE, |x, y| on_the_block(x, y, (0, 0)));
+        assert_within(&shown, &back, 1, &format!("held, frame {frame}"));
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_tracker_of_two_patterns_brings_back_a_picture_that_was_turned() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let picture = Source::Picture(pattern(), 0);
+    let plain = halves(
+        &gpu,
+        &mut compositor,
+        &scene(vec![layer(picture.clone(), ColorRange::Full)]),
+    );
+    // The picture turned a quarter counter-clockwise about its middle, (8, 4): the point
+    // (x, y) of it is then at (y + 4, 12 - x).
+    let turned = FusedKind::Transform {
+        input: Some(0),
+        mask: None,
+        settings: Transformed {
+            angle: 90.0,
+            ..transform()
+        },
+    };
+    // Two patterns at the middles of two pixels at frame 0, and where the turn has put them
+    // at frame 1.
+    let trackers = [(6.5, 2.5), (9.5, 5.5)]
+        .into_iter()
+        .map(|(x, y)| Pattern {
+            path: [(0, place(x, y)), (1, place(y + 4.0, 12.0 - x))]
+                .into_iter()
+                .collect(),
+            ..Pattern::default()
+        })
+        .collect();
+    let tracker = Tracker {
+        trackers,
+        ..follower(TrackerMerge::BgOnly)
+    };
+    // The motion is a quarter turn about the middle, with no shift and no size: held still,
+    // the picture is turned a quarter the other way.
+    let FusedKind::Tracker { settings, .. } = tracked(&tracker, 1, [Some(1), None, None]) else {
+        panic!("a tracker")
+    };
+    assert!(
+        (settings.angle + 90.0).abs() < 1e-9 && (settings.size - 1.0).abs() < 1e-9,
+        "{settings:?}"
+    );
+    let off = [settings.center[0] - 0.5, settings.center[1] - 0.5];
+    assert!(off[0].abs() < 1e-9 && off[1].abs() < 1e-9, "{settings:?}");
+    let nodes = vec![
+        FusedKind::MediaIn,
+        turned,
+        tracked(&tracker, 1, [Some(1), None, None]),
+    ];
+    let held = layer(fused(picture, nodes, Some(2)), ColorRange::Full);
+    let shown = halves(&gpu, &mut compositor, &scene(vec![held]));
+    // Brought back, each pixel is where it was, of those that the turned picture still had:
+    // the columns from 4 to 11. The turn that the model found is a quarter but for the
+    // rounding of its fit, so that a value may be a step further off than one that is read
+    // at the middle of a pixel.
+    let wanted = rearranged(&plain, NOTHING, |x, y| {
+        (4..=11).contains(&x).then_some((x, y))
+    });
+    assert_within(&shown, &wanted, 2, "a quarter turn brought back");
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn the_effect_mask_of_a_tracker_mixes_what_it_draws_with_the_picture_that_was_tracked() {
+    // Each way of a Tracker is drawn without its mask (`own`), with it, and so is the
+    // picture of its `input` alone (`first`), over black and over white: the node with its
+    // mask is `first + (own - first) * mask` of each of R, G and B of the frames, as of
+    // every node that hands a picture on.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let picture = Source::Picture(pattern(), 0);
+    let size = (WIDTH, HEIGHT);
+    // The picture that was tracked: that of the clip at half its size, transparent about
+    // it. The foreground is the opaque Background.
+    let small = FusedKind::Transform {
+        input: Some(1),
+        mask: None,
+        settings: Transformed {
+            size: 0.5,
+            ..transform()
+        },
+    };
+    let alone = fused(picture.clone(), limiting(), Some(0));
+    let mask: Vec<f32> = frame_of(&gpu, &mut compositor, None, alone, size)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|pixel| pixel[0])
+        .collect();
+    assert!(mask.iter().any(|value| *value >= 0.999));
+    assert!(mask.iter().any(|value| *value <= 0.001));
+    for under in [None, Some([1.0; 4])] {
+        for merge in [
+            TrackerMerge::BgOnly,
+            TrackerMerge::FgOnly,
+            TrackerMerge::FgOverBg,
+            TrackerMerge::BgOverFg,
+        ] {
+            // The picture that is moved is put two pixels to the right and one down.
+            let moves = FusedKind::Tracker {
+                input: Some(3),
+                foreground: Some(2),
+                mask: None,
+                settings: put_by(merge, place(10.0, 5.0)),
+            };
+            let mut frame = |mask: Option<Option<usize>>, output: usize| {
+                let mut nodes = limiting();
+                nodes.push(small.clone());
+                if let Some(mask) = mask {
+                    nodes.push(with_mask(&moves, mask));
+                }
+                let clip = fused(picture.clone(), nodes, Some(output));
+                frame_of(&gpu, &mut compositor, under, clip, size)
+            };
+            let own = frame(Some(None), 4);
+            let limited = frame(Some(Some(0)), 4);
+            let first = frame(None, 3);
+            let pixels = limited
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(own.as_chunks::<4>().0)
+                .zip(first.as_chunks::<4>().0)
+                .zip(&mask);
+            for (at, (((limited, own), first), mask)) in pixels.enumerate() {
+                for channel in 0..3 {
+                    let wanted = first[channel] + (own[channel] - first[channel]) * mask;
+                    assert!(
+                        (limited[channel] - wanted).abs() <= LIMITED_TOLERANCE,
+                        "{merge:?}, over {under:?}: pixel {at} is {limited:?}, not {wanted} \
+                         of {own:?} and {first:?} by {mask}"
+                    );
+                }
+            }
+            // The node draws something of its own, and the mask does something to it.
+            for (what, other) in [("the node", &first), ("the mask", &limited)] {
+                assert!(
+                    own.iter()
+                        .zip(other)
+                        .any(|(own, other)| (own - other).abs() > 0.05),
+                    "{what}: {merge:?}, over {under:?}"
+                );
+            }
+        }
+    }
     assert_no_errors(&gpu);
 }

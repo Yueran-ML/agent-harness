@@ -62,6 +62,8 @@
 //! - a Delta Keyer (`Pass::Key`) is a picture of the composition made by one pass of
 //!   `fusion_keyer.wgsl`, and through textures of its own before it where it reads the
 //!   pixels about each one: see The Delta Keyer below;
+//! - a Tracker is the passes of a Transform and of a Merge (`Pass::Lay`), one or two, or
+//!   none: see The Tracker below;
 //! - a node that changes nothing is no pass: its picture is that of its input. So is a
 //!   Transform as it is at first, a Merge whose foreground gives no picture or whose Blend is
 //!   0 (its background), and a Merge as it is at first over no background (its foreground):
@@ -245,9 +247,42 @@
 //!
 //! A `garbage_matte` or a `solid_matte` that names a node which gives no picture here is not
 //! there, as a `mask` that does is no mask.
+//!
+//! # The Tracker
+//!
+//! What a Tracker is is told with the model ([`columbina_model::fusion`], The Tracker). The
+//! model finds the motion of its patterns, and hands the node on as the numbers by which a
+//! Transform puts its picture and a Merge its foreground: where the middle of the picture
+//! that is moved is put, how large it is made about its middle and how far it is turned
+//! there ([`columbina_model::fusion::Tracked`]). So nothing is drawn for a Tracker that is
+//! not drawn for those two, by the same passes of `fusion.wgsl`, and no shader is its own:
+//!
+//! - with an Operation of None it is its `input`, and no pass;
+//! - BG Only is the pass of a Transform of its `input`: held still, the picture that was
+//!   tracked is read through the inverse of the motion. Where it lies as it is (at the
+//!   reference frame, and where there is no motion to be had) it is its `input`, and no
+//!   pass, whatever its mask;
+//! - FG Only is the pass of a Transform of its `foreground`, over nothing;
+//! - FG Over BG is the pass of a Merge as it is at first, the plain over, of its
+//!   `foreground`, put so, on its `input`;
+//! - BG Over FG is two: the pass of a Transform of its `foreground`, and that of a Merge as
+//!   it is at first of its `input`, as it lies, on what the first made.
+//!
+//! Its effect mask limits it as it limits every node that hands a picture on, the picture
+//! of its `input` being the first: `input + (own - input) * mask`. With BG Only and FG Over
+//! BG that is the mask of the pass, as of a Transform and of a Merge. With FG Only the
+//! picture that the node makes is not made of its `input`, so that the two are mixed by a
+//! pass more, which lays nothing over the picture that was made and is limited to its
+//! `input` as it came in; and with BG Over FG the pass that lays the `input` is limited to
+//! it as it came in. Where its `input` gives no picture, what it makes is multiplied by the
+//! mask, as a Merge over no background is.
+//!
+//! A turn that the model found is no whole number of quarter turns but by chance, and is
+//! drawn by its sine and its cosine: a picture that is brought back by a quarter turn is
+//! read within a rounding of the middles of its texels.
 
 use columbina_model::fusion::{
-    self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, Transformed,
+    self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, Tracked, Transformed,
 };
 
 use crate::color::Filter;
@@ -415,6 +450,7 @@ fn is_drawn(kind: &FusedKind) -> bool {
             | FusedKind::Blur { .. }
             | FusedKind::Mosaic { .. }
             | FusedKind::DeltaKeyer { .. }
+            | FusedKind::Tracker { .. }
     )
 }
 
@@ -959,6 +995,7 @@ pub(crate) fn plan(
                 size,
                 &mut passes,
             ),
+            tracker @ FusedKind::Tracker { .. } => tracked(tracker, read, size, luma, &mut passes),
             other => match mask::of_node(other) {
                 // A mask node: a pass whatever its settings are, as a mask of nothing is a
                 // picture too, which limits what reads it to nothing.
@@ -1181,6 +1218,127 @@ fn merged(
                 uniform(&map, scale, &held, luma),
                 limit,
                 LIMITED_TO_BACKGROUND,
+            ),
+        },
+    )
+}
+
+/// The picture of the Tracker `node`, `read` giving the picture that an input of it reads,
+/// drawn `size` pixels large: what its Operation and its Merge make of its `input` and of
+/// its `foreground`, the one that is moved put as the model says, and that limited by its
+/// effect mask to its `input` as it came in. None of a node that is no Tracker.
+///
+/// It is drawn by the passes of a Transform and of a Merge, and is no pass where those are
+/// none: see The Tracker of the [module](self).
+fn tracked(
+    node: &FusedKind,
+    read: impl Fn(Option<usize>) -> Reads,
+    size: (u32, u32),
+    luma: [f32; 3],
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    let FusedKind::Tracker {
+        input,
+        foreground,
+        mask,
+        settings,
+    } = node
+    else {
+        return Reads::Nothing;
+    };
+    let (input, foreground, limit) = (read(*input), read(*foreground), read(*mask));
+    if settings.operation == model::TrackerOperation::None {
+        return input;
+    }
+    // The picture that is moved, as a Transform puts its picture and as a Merge as it is at
+    // first puts its foreground; and a Merge as it is at first, which moves nothing.
+    let Tracked {
+        center,
+        size: scale,
+        angle,
+        ..
+    } = *settings;
+    let put = Transformed {
+        center,
+        size: scale,
+        angle,
+        flip_horizontal: false,
+        flip_vertical: false,
+    };
+    let plain = model::Merge::default().at(0.0);
+    let laid = Merged {
+        center,
+        size: scale,
+        angle,
+        ..plain
+    };
+    // The foreground as it follows the patterns, alone.
+    let moved =
+        |passes: &mut Vec<Pass>| transformed(foreground, Reads::Nothing, &put, size, luma, passes);
+    match settings.merge {
+        model::TrackerMerge::BgOnly => transformed(input, limit, &put, size, luma, passes),
+        model::TrackerMerge::FgOverBg => {
+            merged(input, foreground, limit, &laid, size, luma, passes)
+        }
+        model::TrackerMerge::FgOnly => {
+            // With no mask, and over no `input`, what is made is the foreground as it
+            // follows, laid over nothing by a Merge as it is at first, which its mask limits
+            // to nothing.
+            if input == Reads::Nothing || limit == Reads::Nothing {
+                return merged(Reads::Nothing, foreground, limit, &laid, size, luma, passes);
+            }
+            let own = moved(passes);
+            if own == input {
+                return input;
+            }
+            mixed(input, own, limit, &NOWHERE, luma, passes)
+        }
+        model::TrackerMerge::BgOverFg => {
+            let under = moved(passes);
+            if input == Reads::Nothing {
+                // Nothing over the foreground as it follows: that, limited to nothing.
+                return merged(Reads::Nothing, under, limit, &plain, size, luma, passes);
+            }
+            if limit == Reads::Nothing {
+                return merged(under, input, limit, &plain, size, luma, passes);
+            }
+            if under == Reads::Nothing {
+                return input;
+            }
+            let as_it_lies = reading(size, [0.5, 0.5], 1.0, 0.0, (false, false));
+            mixed(input, under, limit, &as_it_lies, luma, passes)
+        }
+    }
+}
+
+/// The picture `first` laid by `map` over the picture `under`, as a Merge as it is at first
+/// lays a foreground, and that limited by the effect mask `limit` to `first` as it came in:
+/// `first + (own - first) * mask`, `own` being what is laid. Neither `first` nor `limit` is
+/// nothing.
+///
+/// It is the pass by which a Tracker with a mask mixes what it makes with the picture of its
+/// `input`, where what it makes is not that picture moved: with a map by which nothing of
+/// `first` is laid ([`NOWHERE`]), `own` is `under` as it is, to the bit, which is nothing
+/// where `under` is; and with one by which `first` lies as it is, `own` is `first` over
+/// `under`.
+fn mixed(
+    first: Reads,
+    under: Reads,
+    limit: Reads,
+    map: &Affine,
+    luma: [f32; 3],
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    drawn(
+        passes,
+        Pass::Lay {
+            background: under,
+            foreground: first,
+            mask: limit,
+            uniform: limited(
+                uniform(map, 1.0, &Settings::default(), luma),
+                limit,
+                LIMITED_TO_FOREGROUND,
             ),
         },
     )
@@ -4082,5 +4240,263 @@ mod tests {
         assert!(!shader.contains("grade_") && !shader.contains("GRADE_"));
         assert_eq!(shader.matches("fn fusion_merged(").count(), 1);
         assert_eq!(shader.matches("@fragment").count(), 1);
+    }
+
+    /// Where the picture that a Tracker of the tests moves is put: two pixels to the right.
+    const PUT: [f64; 2] = [0.625, 0.5];
+
+    /// A Tracker that match moves and draws as `merge` says, its `input`, its `foreground`
+    /// and its `mask` reading `reads`: the picture that it moves is put at [`PUT`].
+    fn tracker(merge: model::TrackerMerge, reads: [Option<usize>; 3]) -> FusedKind {
+        let [input, foreground, mask] = reads;
+        FusedKind::Tracker {
+            input,
+            foreground,
+            mask,
+            settings: Tracked {
+                operation: model::TrackerOperation::MatchMove,
+                merge,
+                center: PUT,
+                size: 1.0,
+                angle: 0.0,
+            },
+        }
+    }
+
+    /// The passes of the source of the clip, a Background and an Ellipse, and of `last`
+    /// after them, which the `MediaOut` reads.
+    fn after_three(last: FusedKind) -> Plan {
+        planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("bg", background([0.2, 0.4, 0.6, 1.0])),
+                node("e", ellipse(None)),
+                node("last", last),
+            ],
+            Some(3),
+        )
+    }
+
+    /// What a pass that lays reads, as its background, its foreground and its mask, and
+    /// its uniform.
+    fn laid(pass: &Pass) -> ([Reads; 3], [f32; PARAMS]) {
+        let Pass::Lay {
+            background,
+            foreground,
+            mask,
+            uniform,
+        } = pass
+        else {
+            panic!("{pass:?} lays nothing");
+        };
+        ([*background, *foreground, *mask], *uniform)
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each way of a tracker, with a mask and without"
+    )]
+    fn a_tracker_is_drawn_by_the_passes_of_a_transform_and_of_a_merge() {
+        use model::TrackerMerge::{BgOnly, BgOverFg, FgOnly, FgOverBg};
+        let put = Transformed {
+            center: PUT,
+            ..transform()
+        };
+        let over = Merged {
+            center: PUT,
+            ..merge()
+        };
+        for mask in [None, Some(2)] {
+            // Held still: a Transform of the picture that was tracked.
+            let held = after_three(tracker(BgOnly, [Some(0), Some(1), mask]));
+            let transform = FusedKind::Transform {
+                input: Some(0),
+                mask,
+                settings: put,
+            };
+            assert_eq!(held, after_three(transform), "{mask:?}");
+            assert!(held.lays() && held.reads_source());
+            // The foreground as it follows, over the picture that was tracked: a Merge.
+            let follows = after_three(tracker(FgOverBg, [Some(0), Some(1), mask]));
+            let merge = FusedKind::Merge {
+                background: Some(0),
+                foreground: Some(1),
+                mask,
+                settings: over,
+            };
+            assert_eq!(follows, after_three(merge), "{mask:?}");
+        }
+        // The foreground alone: a Transform of it, which reads nothing of the picture that
+        // was tracked.
+        let alone = after_three(tracker(FgOnly, [Some(0), Some(1), None]));
+        let transform = FusedKind::Transform {
+            input: Some(1),
+            mask: None,
+            settings: put,
+        };
+        assert_eq!(alone, after_three(transform));
+        assert!(!alone.reads_source());
+        // With a mask and no picture to be limited to: the foreground as it follows times
+        // the mask, as a Merge over no background is.
+        let masked = after_three(tracker(FgOnly, [None, Some(1), Some(2)]));
+        let merge = FusedKind::Merge {
+            background: None,
+            foreground: Some(1),
+            mask: Some(2),
+            settings: over,
+        };
+        assert_eq!(masked, after_three(merge));
+        // With a mask over the picture that was tracked, a pass more: the foreground as it
+        // follows, alone; and that under the picture as it came in, of which nothing is
+        // laid, limited to it.
+        let moved = uniform(
+            &reading(SIZE, PUT, 1.0, 0.0, (false, false)),
+            1.0,
+            &Settings::default(),
+            REC709_LUMA,
+        );
+        let to_its_picture = |mut numbers: [f32; PARAMS]| {
+            numbers[LIMITED_AT] = LIMITED_TO_FOREGROUND;
+            numbers
+        };
+        let both = after_three(tracker(FgOnly, [Some(0), Some(1), Some(2)]));
+        assert_eq!(both.passes.len(), 4);
+        assert_eq!(both.output, Reads::Pass(3));
+        assert!(matches!(both.passes[0], Pass::Fill(_)));
+        assert!(matches!(both.passes[1], Pass::Mask { .. }));
+        let nothing = Reads::Nothing;
+        assert_eq!(
+            laid(&both.passes[2]),
+            ([nothing, Reads::Pass(0), nothing], moved)
+        );
+        let nowhere = uniform(&NOWHERE, 1.0, &Settings::default(), REC709_LUMA);
+        assert_eq!(
+            laid(&both.passes[3]),
+            (
+                [Reads::Pass(2), Reads::Source, Reads::Pass(1)],
+                to_its_picture(nowhere)
+            )
+        );
+        // The picture that was tracked over the foreground as it follows: the foreground
+        // moved, and the picture laid over it as it lies by a Merge as it is at first.
+        let as_it_lies = merge_uniform(SIZE, &Settings::default(), REC709_LUMA);
+        let under = after_three(tracker(BgOverFg, [Some(0), Some(1), None]));
+        assert_eq!(under.passes.len(), 3);
+        assert_eq!(under.output, Reads::Pass(2));
+        assert_eq!(
+            laid(&under.passes[1]),
+            ([nothing, Reads::Pass(0), nothing], moved)
+        );
+        assert_eq!(
+            laid(&under.passes[2]),
+            ([Reads::Pass(1), Reads::Source, nothing], as_it_lies)
+        );
+        // With a mask, that pass is limited to the picture as it came in.
+        let under = after_three(tracker(BgOverFg, [Some(0), Some(1), Some(2)]));
+        assert_eq!(under.passes.len(), 4);
+        assert_eq!(
+            laid(&under.passes[3]),
+            (
+                [Reads::Pass(2), Reads::Source, Reads::Pass(1)],
+                to_its_picture(as_it_lies)
+            )
+        );
+        // And over no picture it is the foreground as it follows, times its mask where it
+        // has one.
+        let bare = after_three(tracker(BgOverFg, [None, Some(1), None]));
+        assert_eq!(bare, alone);
+        let bare = after_three(tracker(BgOverFg, [None, Some(1), Some(2)]));
+        assert_eq!(bare.passes.len(), 4);
+        let (reads, by) = laid(&bare.passes[3]);
+        assert_eq!(reads, [nothing, Reads::Pass(2), Reads::Pass(1)]);
+        assert_eq!(by[LIMITED_AT], LIMITED_TO_BACKGROUND);
+        // Every one of them is drawn as what it is.
+        for merge in [BgOnly, FgOnly, FgOverBg, BgOverFg] {
+            assert!(is_drawn(&tracker(merge, [Some(0), Some(1), Some(2)])));
+        }
+    }
+
+    #[test]
+    fn a_tracker_that_moves_nothing_is_no_pass() {
+        use model::TrackerMerge::{BgOnly, BgOverFg, FgOnly, FgOverBg};
+        let source = Plan {
+            passes: vec![],
+            output: Reads::Source,
+        };
+        // With an Operation of None it is the picture that was tracked, whatever else.
+        for merge in [BgOnly, FgOnly, FgOverBg, BgOverFg] {
+            for mask in [None, Some(2)] {
+                let mut idle = tracker(merge, [Some(0), Some(1), mask]);
+                if let FusedKind::Tracker { settings, .. } = &mut idle {
+                    settings.operation = model::TrackerOperation::None;
+                }
+                assert_eq!(after_three(idle), source, "{merge:?}, {mask:?}");
+            }
+        }
+        // The picture that it moves lying as it is: at the reference frame, and where there
+        // is no motion to be had.
+        let still = |merge: model::TrackerMerge, reads: [Option<usize>; 3]| {
+            let mut kind = tracker(merge, reads);
+            if let FusedKind::Tracker { settings, .. } = &mut kind {
+                settings.center = [0.5, 0.5];
+            }
+            after_three(kind)
+        };
+        // Held still, it is the picture that was tracked, whatever its mask.
+        for mask in [None, Some(2)] {
+            assert_eq!(still(BgOnly, [Some(0), Some(1), mask]), source, "{mask:?}");
+        }
+        // Alone, it is its foreground.
+        let alone = still(FgOnly, [Some(0), Some(1), None]);
+        assert_eq!(alone.passes, vec![Pass::Fill([0.2, 0.4, 0.6, 1.0])]);
+        assert_eq!(alone.output, Reads::Pass(0));
+        // With no foreground it is the picture that was tracked, over which and under which
+        // nothing lies, whatever its mask; and held still of no picture it is none.
+        for merge in [FgOverBg, BgOverFg] {
+            for mask in [None, Some(2)] {
+                let bare = after_three(tracker(merge, [Some(0), None, mask]));
+                assert_eq!(bare, source, "{merge:?}, {mask:?}");
+            }
+        }
+        let none = after_three(tracker(BgOnly, [None, Some(1), None]));
+        assert_eq!(none, Plan::default());
+        // No foreground alone is nothing: with a mask, the picture that was tracked where
+        // the mask is 0, which is a pass.
+        let none = after_three(tracker(FgOnly, [Some(0), None, None]));
+        assert_eq!(none, Plan::default());
+        let left = after_three(tracker(FgOnly, [Some(0), None, Some(2)]));
+        assert_eq!(left.passes.len(), 2);
+        let (reads, by) = laid(&left.passes[1]);
+        assert_eq!(reads, [Reads::Nothing, Reads::Source, Reads::Pass(0)]);
+        assert_eq!(by[LIMITED_AT], LIMITED_TO_FOREGROUND);
+        // One picture as what was tracked and as the foreground that lies as it is, with a
+        // mask: the two that are mixed are one, and it is that.
+        let same = still(FgOnly, [Some(0), Some(0), Some(2)]);
+        assert_eq!(same, source);
+    }
+
+    #[test]
+    fn a_picture_put_by_a_centre_a_size_and_a_turn_is_read_where_it_was() {
+        // What the model takes a Transform to do where it hands a Tracker on as one: the
+        // middle of the picture put at the centre, and about it a size and a turn
+        // counter-clockwise. A pixel then reads the place that was put there.
+        let (width, height) = (64.0, 32.0);
+        let (center, scale, angle) = ([0.4, 0.7], 1.5, 30.0_f64);
+        let map = reading((64, 32), center, scale, angle, (false, false));
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let to = (center[0] * width, (1.0 - center[1]) * height);
+        for point in [(0.0, 0.0), (64.0, 0.0), (10.5, 20.25), (32.0, 16.0)] {
+            let (x, y) = (point.0 - width / 2.0, point.1 - height / 2.0);
+            let put = (
+                to.0 + scale * (x * cos + y * sin),
+                to.1 + scale * (-x * sin + y * cos),
+            );
+            let read = map.apply(put);
+            assert!(
+                (read.0 - point.0).abs() < 1e-9 && (read.1 - point.1).abs() < 1e-9,
+                "{point:?} is read at {read:?}"
+            );
+        }
     }
 }

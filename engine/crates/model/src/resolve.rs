@@ -68,7 +68,7 @@
 use std::sync::Arc;
 
 use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
-use crate::fusion::{Composition, Fused};
+use crate::fusion::{size_of, Composition, Fused};
 use crate::grade::Composite;
 use crate::keyframes::KeyClock;
 use crate::project::{
@@ -200,9 +200,11 @@ pub fn fused_for(
         reason = "a frame of keys is within 2^53 of 0"
     )]
     let at = at as f64;
+    // The size of its pictures, which a Tracker and a centre that follows one read.
+    let size = size_of(clip, project, t);
     match node {
-        Some(node) => composition.at_node(node, at),
-        None => Some(composition.at(at)),
+        Some(node) => composition.at_node_size(node, at, size),
+        None => Some(composition.at_size(at, size)),
     }
 }
 
@@ -319,7 +321,10 @@ fn layer(
         composite: clip.composite,
         opacity: unit(placed.opacity * faded(clip, k) * share),
         blend,
-        fusion: clip.fusion.as_ref().map(|composition| composition.at(at)),
+        fusion: clip
+            .fusion
+            .as_ref()
+            .map(|composition| composition.at_size(at, size_of(clip, project, t))),
     })
 }
 

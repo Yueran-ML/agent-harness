@@ -2115,6 +2115,7 @@ mod tests {
             center: model::Center {
                 x: Param::Fixed(0.25),
                 y: rising(0.0, 1.5),
+                follow: None,
             },
             size: Param::Fixed(2.0),
             angle: Param::Fixed(90.0),

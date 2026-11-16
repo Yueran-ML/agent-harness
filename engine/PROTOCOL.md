@@ -3575,7 +3575,7 @@ A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`, 
 | `grouped` | `group`, `clip` | `remove_group` of a group that clip `clip` is in |
 | `ungrouped` | `clip` | `collapse_group_grades` of a clip that is in no group |
 | `params` | `node`, `why` | `set_node` params that are not those of the node's kind |
-| `wrong_node` | `node`, `kind` (the node's kind, `source` or `output`) | an edit that cannot be done to or about that node |
+| `wrong_node` | `node`, `kind` (the node's kind, `source` or `output`) | an edit that cannot be done to or about that node; of a composition, the node that a `center` is to follow is no `tracker` (see Compositions, Following a Tracker) |
 | `node_locked` | `node` | the `params` of a locked node set, by `set_node` or an edit that sets them (Lock Node, p. 3382). Not `locked`, which is the refusal of a locked track (`track`) |
 
 `missing` also names `group`, `node` and `link`; `taken` `node` and `group`; `out_of_range` also
@@ -3788,10 +3788,10 @@ and is `n` + `next_id` where the engine makes it. `label` is at most 100 charact
 `{x, y}` or `null`, where the node lies in the node editor, as a node of a grade has it (see
 Grades). `pass_through` is Fusion's Pass Through (Ctrl-P): a node that is passed through hands
 on the picture of its **first** input as it is (a `merge` its `background`, a `transform`, a
-`blur`, a `mosaic` and a `delta_keyer` their `input`, a mask node the mask that comes into it),
-and one that has no such input, a `media_in` or a `background`, then gives no picture: the
-effect mask of a node is not a picture that it hands on, and neither are the mattes of a
-`delta_keyer`. The engine always writes `pass_through` and `pos`, and reads a node without
+`blur`, a `mosaic`, a `delta_keyer` and a `tracker` their `input`, a mask node the mask that
+comes into it), and one that has no such input, a `media_in` or a `background`, then gives no
+picture: the effect mask of a node is not a picture that it hands on, and neither are the
+mattes of a `delta_keyer` nor the `foreground` of a `tracker`. The engine always writes `pass_through` and `pos`, and reads a node without
 them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 `fusion_nodes`).
 
@@ -3808,11 +3808,12 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 | `blur` | `input`, `mask` | yes | its picture blurred, below (Blur and Mosaic) |
 | `mosaic` | `input`, `mask` | yes | its picture laid out in cells of one colour each, below (Blur and Mosaic) |
 | `delta_keyer` | `input`, `garbage_matte`, `solid_matte`, `mask` | yes | its picture keyed, the screen that it was shot against made transparent, below (The Delta Keyer) |
+| `tracker` | `input`, `foreground`, `mask` | yes | the picture that was tracked (`input`) held still, or the `foreground` made to follow it, by the paths of its patterns, below (The Tracker) |
 
 An input that is not linked gives no picture: a transparent one of the size of the
 composition; but a `mask` that is not linked is **no mask** (Masks, below), and a
 `garbage_matte` or a `solid_matte` that is not linked is no matte (The Delta Keyer, below).
-The other kinds (the Tracker, Text+) are not there yet: a `kind` or an `input` that is not
+The other kinds (Text+) are not there yet: a `kind` or an `input` that is not
 listed cannot be read.
 
 **Links.** A link `{from, to, input}` goes from the output of node `from` into the input
@@ -3831,7 +3832,9 @@ DaVinci shows for it and what a tracker gives: a place `center: {x, y}` is a sha
 width and of the height of the picture from its **lower left** corner, `x` to the right and
 `y` **up**, so that the middle is `{0.5, 0.5}`; `size` is a factor, 1 as it is; `angle` is in
 degrees, **counter-clockwise**. (A clip's `transform` counts from the middle, `y` down and
-clockwise: the two are not the same.)
+clockwise: the two are not the same.) A `center` may also follow what a `tracker` publishes,
+`center: {x, y, follow}` (Following a Tracker, below); one that follows nothing is written
+`{x, y}`, as it always was.
 
 `params` of a `merge` (pp. 2162–2170; the mathematics is `crates/compose/src/merge.rs`, whose
 settings these are, by the same names):
@@ -3863,7 +3866,8 @@ listed with the defaults and the units under `fusion_merge`, `fusion_transform`,
 `fusion_mosaic` and `fusion_delta_keyer` in `crates/model/tests/data/catalog.json` (page and
 palette `fusion`; an angle is in `degrees_counterclockwise`, a Blur Size and the lengths of a
 keyer in `pixels1080`, pixels of a picture 1080 high, and an offset of a mosaic in `pixels`,
-pixels of the picture of the composition). Every field
+pixels of the picture of the composition). A `tracker` has no entry there: none of its numbers
+takes keys. Every field
 of the `params` of a node is written, and all of them must be there where a node is given whole
 (`add_fusion_node`, `set_fusion`).
 
@@ -3914,9 +3918,9 @@ of one channel):
 
 What a mask does to the node whose `mask` it comes into:
 
-- a `transform`, a `blur`, a `mosaic`, a `delta_keyer` and a `merge`, which have a picture to
-  hand on (`input`; of a `merge`, `background`): where the mask is 1 the result is the node's
-  own, where it is 0
+- a `transform`, a `blur`, a `mosaic`, a `delta_keyer`, a `tracker` and a `merge`, which have a
+  picture to hand on (`input`; of a `merge`, `background`): where the mask is 1 the result is
+  the node's own, where it is 0
   it is the picture of that first input as it came in (transparent where that is not linked),
   and between them the two are mixed by the value of the mask, channel by channel:
   `first + (own − first) · mask` (a `mosaic` with `whole_cells_only` reads its mask cell by
@@ -4037,10 +4041,129 @@ the status are opaque whatever that alpha. **The values are keyed as they are**,
 working space of the timeline: where the project is not colour managed they are coded with
 their gamma, and the keyer makes nothing of linear light of them.
 
+**The Tracker.** A `tracker` is Fusion's Tracker node (Reference Manual 20, Chapter 82,
+pp. 1724–1759, and pp. 2773–2784): its patterns with their paths, and the Match Move of its
+Operation tab. Corner Positioning and Perspective Positioning are not kept. The mathematics is
+`crates/track/src/matchmove.rs`, which says what a motion is; the node is
+`crates/model/src/fusion/tracker.rs`. **Following a pattern through the pictures of a clip is
+not an operation of the model**: a path is a setting, set as any other, which the tracking
+writes. Its `params`, all of which are written:
+
+| field | default | meaning |
+|---|---|---|
+| `operation` | `none` | Operation (p. 2778): `none` (the node is its `input`; what it publishes is published all the same) or `match_move` |
+| `merge` | `bg_only` | Merge (p. 2779), which pictures are drawn and which way the motion goes: `bg_only`, `fg_only`, `fg_over_bg` or `bg_over_fg` |
+| `position`, `rotation`, `scaling` | `true` each | the boxes (p. 2782): the parts of the motion that are corrected; one that is off is left as no motion. A turn and a size take two patterns |
+| `pivot` | `tracker_average` | Pivot Type (p. 2783), the point that the turn and the size are about: `tracker_average` (the mean of where the patterns are at the reference frame), `selected_tracker` (where the pattern `pivot_tracker` is there; the average where it is not there, is off or has no path) or `manual` (`pivot_point`) |
+| `pivot_tracker` | 0 | 0…15: a place in `trackers`; read with `selected_tracker`, and kept otherwise (`out_of_range` `tracker.pivot_tracker`) |
+| `pivot_point.x`, `pivot_point.y` | 0.5 | −15.5…16.5 each: a place, as a `center` is; read with `manual`, and kept otherwise (`tracker.pivot_point`) |
+| `reference` | 0 | Reference (p. 2783): the frame, of the keys of the clip, that the picture is brought back to, at which nothing moves; a whole number within ±(2^53−1) (`tracker.reference`). Each pattern is where its path has it there, as at any frame: so a reference before the first frame of the paths is that frame, and one after the last the last |
+| `trackers` | `[]` | its patterns, at most 16 (`tracker.trackers`), below. The list is set whole, by `set_fusion_node` with `params` `{"trackers": [...]}` |
+
+None of these takes keys (`set_fusion_keys` of any of them is `missing` `setting`): the paths
+are what moves the node. A pattern is
+
+```json
+{"name": "Left", "enabled": true,
+ "pattern": {"x": 0.25, "y": 0.5, "width": 0.05, "height": 0.05},
+ "search": {"width": 0.125, "height": 0.125},
+ "offset": {"x": 0.0, "y": 0.0},
+ "path": {"10": [0.25, 0.5], "11": [0.2531, 0.5012], "20": [0.3125, 0.625]}}
+```
+
+| field | range | meaning |
+|---|---|---|
+| `name` | at most 100 characters (`tracker.trackers.name`) | the name that it was given, or empty |
+| `enabled` | | `false` leaves it out of the motion, as if it had no path; it publishes its own place all the same |
+| `pattern.x`, `pattern.y` | −15.5…16.5 | where the pattern was put: its middle, as a `center` is (`tracker.trackers.pattern`) |
+| `pattern.width`, `pattern.height` | 0…1 | how large it is, in widths and in **heights** of the picture; 0.05 at first (the engine's own: the manual gives none) |
+| `search.width`, `search.height` | 0…1 | how large the area is that it is searched for in, in widths and in heights of the picture; 0.125 at first (`tracker.trackers.search`) |
+| `offset.x`, `offset.y` | −16…16 | X and Y Offset (pp. 1741, 2777), right and **up**, in widths and in heights of the picture: how far from the middle of the pattern the thing lies that the path is wanted for. It shifts what the pattern publishes, and has no say in the motion (`tracker.trackers.offset`) |
+| `path` | frames within ±(2^53−1), numbers −15.5…16.5 (`tracker.trackers.path`) | where the middle of the pattern was found: an object of the frames, each `"<frame>": [x, y]`, a place as a `center` is. The frames are whole numbers written as the names of the fields (`params` otherwise), of the keys of the clip (Frames of keys, below): of media, the frames of the media |
+
+The numbers of a pattern are plain numbers: they take no keys. **A place of a path is where
+`x · W` and `(1 − y) · H` pixels from the left and from the top of a picture `W` wide and `H`
+high lie, a pixel `p` reaching from `p` to `p + 1`**: the middle of the pixel in column `i` and
+row `j` from the top is `[(i + 0.5) / W, 1 − (j + 0.5) / H]`, as the masks and the pictures of
+the compositor have it. (The tracker of a window counts the middle of pixel `i` as `i`: what
+tracks for a `tracker` adds the half.) A frame that a path has not was not tracked. **Between
+two frames of its path a pattern is on the line between them, before its first frame it is
+where it was at that one, and after its last where it was at that one**, as the curves of a
+window are read; a pattern with no path is not tracked at all.
+
+**The motion.** At a frame the node has the motion of its patterns since the reference frame,
+of those that are `enabled` and have a path: of one pattern a shift alone; of two or more the
+shift, the turn and the size that fit them best (least squares), about the pivot; by the three
+boxes. The places are made pixels of the pictures of the composition for it (Sizes, below), so
+that a turn is a turn of the picture as it is seen. Where no pattern counts, and where the
+mathematics has no solution (two patterns that were at one place at the reference frame, or
+that have come together), there is **no motion**, and the picture that would be moved lies as
+it is. What the node draws, by `operation` and `merge`:
+
+| `operation`, `merge` | the picture of the node |
+|---|---|
+| `none`, any | its `input`, as it is |
+| `match_move`, `bg_only` | its `input` **held still**: drawn through the inverse of the motion, which brings each frame back to where it was at the reference frame (Stabilize) |
+| `match_move`, `fg_only` | its `foreground` drawn through the motion, alone, over nothing |
+| `match_move`, `fg_over_bg` | its `foreground` drawn through the motion, laid over its `input` as it is (Normal, Over) |
+| `match_move`, `bg_over_fg` | its `input` as it is, laid over its `foreground` drawn through the motion |
+
+The effect mask limits it as it limits every node that hands a picture on, the picture of its
+`input` being the first: `input + (own − input) · mask`. Passed through, it is its `input`.
+
+**What it publishes.** A `tracker` publishes places for the centres of other nodes to follow
+(pp. 1745–1748, 2784), whatever its `operation` and its `merge`, from its settings alone:
+
+| `output` | the place |
+|---|---|
+| `tracker` | where one pattern is at the frame, and its `offset` (the Offset Position): `path + offset`. A pattern that is off publishes it too; one that has no path, or that the node has not, publishes nothing |
+| `steady_position` | `[0.5, 0.5]` less the shift of the motion, as shares of the picture (p. 1745): at the reference frame the middle |
+| `unsteady_position` | `[0.5, 0.5]` and that shift (p. 1746) |
+
+The two positions are published where there is a motion. The angles and the sizes of the
+mathematics (Steady Angle, Steady Size, which is one over the size, and the others) are not
+yet places that a setting may follow.
+
+**Following a Tracker.** The `center` of a `merge`, of a `transform`, of a `rectangle`, of an
+`ellipse` and of a `polygon` may follow what a `tracker` of the same composition publishes
+(Fusion's Connect To of a Center):
+
+```json
+"center": {"x": 0.5, "y": 0.5, "follow": {"node": "n5", "output": "tracker", "tracker": 1}}
+```
+
+- `node` is the id of a `tracker` of the composition: `missing` `node` where there is none,
+  and `wrong_node` (with `node` and its `kind`) where it is of another kind. `output` is
+  `tracker`, `steady_position` or `unsteady_position`. `tracker` is the place of a pattern in
+  the `trackers` of the node, 0…15 (`out_of_range` `center.follow.tracker`); it is read with
+  the output `tracker` alone, **always written**, and 0 where it is left out.
+- At a frame the centre **is** the place that is published there, held within the range of
+  the centre (−15.5…16.5 of a `merge` and a `transform`, −10…10 of a mask); its own `x` and
+  `y` are kept, checked and not read. Where nothing is published at the frame (the pattern is
+  not there or has no path, there is no motion, or the `tracker` is passed through) the centre
+  is its own `x` and `y`.
+- `follow` is written only where there is one: a centre that follows nothing is `{x, y}`, and
+  a project without a `tracker` and without a `follow` is read and written to the byte as
+  before. It is set with the centre, by `set_fusion_node` (`params`
+  `{"center": {"follow": {...}}}`, a patch, so that `{"center": {"follow": {"output":
+  "steady_position"}}}` changes the output alone); and **let go of by `"follow": null`**
+  (`{"center": {"follow": null}}`): a patch that leaves `follow` out leaves it as it is.
+- Following makes **no link** and no dependency: what is published is made of the settings of
+  the `tracker`, not of a picture, so the `tracker` need not be linked to anything, and the
+  node that follows is its numbers at the frame (Compositions in the picture, below). A
+  `tracker` has no centre, so nothing follows in a circle.
+- A `tracker` that a centre follows **is not taken away**: `remove_fusion_node` of it is
+  `in_use` (`what` `node`, `id`, and `by` the node that follows it), and a composition put in
+  whole whose centre follows a node that it has not is `missing` `node`. The centres let go of
+  it first, in the same transaction where that is wanted. So every operation is undone by its
+  inverse.
+
 **Frames of keys.** The keys of a composition count the frames that the other keys of its clip
 count (Frames of keys, in Grades): of media, the frames of the media, so that a key stays on
 its picture where the clip is trimmed, slipped, cut or played at another speed; of a title, a
-colour or a still, the frames of the clip from its first, 0. The edits carry a composition as
+colour or a still, the frames of the clip from its first, 0. The frames of the paths of a
+`tracker`, and its `reference`, are frames of the same count, and are moved where the keys are
+moved, a place of a path with its frame; of places that come to one frame the last is kept. The edits carry a composition as
 they carry the clip's transform: a trim of the head or a roll moves the keys of a clip that
 counts its own frames so that they stay at their frames of the timeline; `blade` leaves both
 halves the composition, each its keys where they were; a clip that is copied and pasted, or
@@ -4075,7 +4198,12 @@ They name the clip by `timeline` and `clip`; each is refused on a clip that has 
   what the node fed is left without a picture. With `links`, those are put instead: each must
   go into an input that the node fed, and not touch the node (`out_of_range` `links`). Its
   `done` always carries the `links` it put (`[]` for none), and its inverse adds the node
-  again with the links that it had.
+  again with the links that it had. A `tracker` that the `center` of another node follows is
+  not taken away (`in_use`: Following a Tracker, above).
+- The `params` of `set_fusion_node` are a patch: an object is put into an object, field by
+  field, and anything else in the place of what was there, whole. So the `points` of a
+  `polygon` and the `trackers` of a `tracker`, which are lists, are set whole, the paths of
+  the patterns with them; and what a `center` follows is let go of by `"follow": null`.
 - Every one of them is checked on the composition as it would be, whole: so taking the
   `media_out` away, or adding a second, is `one_media_out` (with `count`, how many there would
   be), and a link that would close a loop is `loop`.
@@ -4103,8 +4231,9 @@ They name the clip by `timeline` and `clip`; each is refused on a clip that has 
   `n…` id must be below `next_id` (`reserved`).
 
 `$names` (see below) may be given to a node by `add_fusion_node`, whose links name it by the
-same `$name`; later operations name it where they name a node, and at the start of a `path`
-(`$over.blend`).
+same `$name`; later operations name it where they name a node, at the start of a `path`
+(`$over.blend`), and as the `node` that a `center` follows (`{"center": {"follow": {"node":
+"$track", ...}}}` of a node that is added or set, and of a composition put in whole).
 
 ### Refusals of compositions
 
@@ -4121,7 +4250,16 @@ and `setting` as for a grade; `wrong_track` `fusion` (a composition on a clip of
 `pos`, `links`, `polygon.points` (more points than a polygon may have), `delta_keyer.screen`
 (a screen colour with no channel above its other two), `delta_keyer.low` (a lower threshold
 above the upper one, too) and the settings of nodes by kind and path (of a point of a polygon,
-`polygon.points.x` and `polygon.points.y`).
+`polygon.points.x` and `polygon.points.y`). Of a `tracker`: `out_of_range` `tracker.trackers`
+(more than 16 patterns), `tracker.trackers.name`, `tracker.trackers.pattern`,
+`tracker.trackers.search`, `tracker.trackers.offset` and `tracker.trackers.path` (a number of
+a pattern, or a place or a frame of its path, out of its range), `tracker.pivot_tracker`,
+`tracker.pivot_point` and `tracker.reference`; a path that is not written as frames and
+places is `params`. Of a `center` that follows: `missing` `node` (the composition has no such
+node), `wrong_node` with `node` and `kind` (it is no `tracker`), `out_of_range`
+`center.follow.tracker`, `params` (a `follow` that is not written as one, or on a kind that
+has no `center`); and `in_use` with `what` `node`, `id` and `by` (a `tracker` that node `by`
+follows is to be taken away).
 
 ### Compositions in the picture
 
@@ -4133,7 +4271,16 @@ among them, and a node that is passed through is left out for the node that it h
 names its mask as it names its pictures, after them; a `mask` that is not linked, or that
 brings no picture, is none, and a node that is read as a mask alone is among them. So it is
 with the `garbage_matte` and the `solid_matte` of a `delta_keyer`, which it names between its
-picture and its mask.
+picture and its mask, and with the `foreground` of a `tracker`. A `center` that follows a
+`tracker` is the place that is published at the frame, as the numbers that it is there, and
+the `tracker` is not among the nodes for it: a `tracker` is there where its picture is read.
+A `tracker` is given as its `operation`, its `merge` and how the picture that is moved is put
+at the frame, in the numbers of a `transform`: where its middle is put (`center`), how large
+it is made about its middle (`size`) and how far it is turned there (`angle`); a turn and a
+size about a pivot and then a shift is the same map. With no motion, and with `operation`
+`none`, they are `[0.5, 0.5]`, 1 and 0. The composition is made at a frame for the size of
+its pictures (`Composition::at_size`), which the motion of a `tracker` is counted in; a
+composition with keys or with a path is another at another frame.
 
 **The picture of one node.** The composition is made the same way for the picture of any one
 of its nodes in place of what comes into the `media_out`
@@ -4231,6 +4378,22 @@ was before there were any, by the same passes and to the bit.
 No colour is converted for a keyer: it keys the pictures of the composition as they are, in
 the working space of the timeline (Space, below).
 
+**A Tracker is drawn.** A `tracker` is drawn by the passes of a `transform` and of a `merge`
+(Placing, Sampling and The merge, below), and has no shader of its own. With `operation`
+`none` it is its `input`, at no cost. `bg_only` is the pass of a `transform` of its `input`,
+put as the motion holds it still; where the picture lies as it is (at the reference frame, and
+where there is no motion) it is its `input`, at no cost, whatever its mask. `fg_only` is the
+pass of a `transform` of its `foreground`. `fg_over_bg` is the pass of a `merge` as it is at
+first (`normal`, the plain over) of its `foreground`, put so, on its `input`. `bg_over_fg` is
+two passes: its `foreground` put so, and its `input` as it lies merged over that. Its effect
+mask is that of the pass, `input + (own − input) · mask`, of each of R, G, B and A
+premultiplied; with `fg_only` over an `input`, what the node makes is not made of its `input`,
+and the two are mixed by one pass more. Where its `input` gives no picture, what it makes is
+multiplied by the mask. A picture held still or made to follow by a whole number of pixels
+comes out pixel for pixel; a turn that the fit of two patterns found is drawn by its sine and
+its cosine, within a rounding of a quarter turn where it is one. A composition without a
+`tracker` is drawn as it was before there were any, by the same passes and to the bit.
+
 The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
 scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a
 composition as what comes out of it. (The tracker of a window reads the media of the clip
@@ -4262,8 +4425,8 @@ transform of graphics.
 
 **Sizes.** Every picture of a composition is of one size, that of the composition (above):
 what a `media_in` shows fills it; a `background` covers it; a `transform` gives a picture of
-the size that came in, and what it moves beyond the edges is cut (a `blur`, a `mosaic` and a
-`delta_keyer` give one of the size that came in too); a `merge` gives a picture of
+the size that came in, and what it moves beyond the edges is cut (a `blur`, a `mosaic`, a
+`delta_keyer` and a `tracker` give one of the size that came in too); a `merge` gives a picture of
 the size of its background, and one whose `background` is not linked lays its foreground over
 a transparent picture of the size of the composition. The settings are shares of the picture,
 and the engine draws the pictures at the pixels that are seen: at the size of the composition
@@ -4299,8 +4462,8 @@ foreground times the mask, and is drawn).
 
 **While a shader is being made.** A monitor draws its frames without waiting for the shaders
 of the card. Until the one that lays a foreground over a background is made (once for each
-card, the first time a composition with a `merge` or a `transform` is shown), and the one that
-draws masks (once for each card, the first time a composition with a mask node, or with a
+card, the first time a composition with a `merge`, a `transform` or a `tracker` that is drawn
+is shown), and the one that draws masks (once for each card, the first time a composition with a mask node, or with a
 `background` that has a mask, is shown), a clip is shown as its source, without its
 composition, and the frame is drawn again when they are made; an export, a still and a frame
 drawn off screen wait for them. So it is with the one that mixes a blurred picture, the one
@@ -5506,7 +5669,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `scale` | `scale`, `media_scale` | a time of scale 0, or not of the scale of its media |
 | `overlap` | `with` | the clip covers frames that clip `with` covers |
 | `out_of_timeline` | `start` | the clip starts before frame 0 |
-| `in_use` | `what`, `id`, `by` | media (`what: "media"`) still used by clip `by`; a track of sound (`what: "track"`) that group of tracks, track or bus `by` names (as a member, or as the source of a sidechain or a Ducker); a bus (`what: "bus"`) that track or bus `by` outputs or sends to or drives a sidechain or Ducker of, or that timeline `by` monitors; a VCA (`what: "vca"`) that track, bus or VCA `by` is a member of |
+| `in_use` | `what`, `id`, `by` | media (`what: "media"`) still used by clip `by`; a track of sound (`what: "track"`) that group of tracks, track or bus `by` names (as a member, or as the source of a sidechain or a Ducker); a bus (`what: "bus"`) that track or bus `by` outputs or sends to or drives a sidechain or Ducker of, or that timeline `by` monitors; a VCA (`what: "vca"`) that track, bus or VCA `by` is a member of; a `tracker` of a composition (`what: "node"`) that the `center` of node `by` follows |
 | `too_large` | `what` | an integer further than 2^53 − 1 from 0 |
 | `zero_rate` | | a rate with a 0 in it |
 | `negative_duration` | `ticks` | media lasting less than no time |

@@ -143,7 +143,7 @@ use crate::audio::{
     TrackGroup, Vca,
 };
 use crate::color_management::{Levels, LutPair};
-use crate::fusion::{Composition, MOST_NODES, MOST_POINTS};
+use crate::fusion::{Composition, MOST_NODES, MOST_POINTS, MOST_TRACKERS};
 use crate::grade::{
     Composite, Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL,
     LONGEST_PATH, MOST_INPUTS,
@@ -1275,8 +1275,10 @@ pub enum OpError {
         start: i64,
     },
     /// A thing that another names is to be taken away: media that a clip uses (`what` is
-    /// `media`, `by` the clip), or a track of sound that a group of tracks, a sidechain or a
-    /// Ducker names (`what` is `track`, `by` the group, track or bus that names it).
+    /// `media`, `by` the clip), a track of sound that a group of tracks, a sidechain or a
+    /// Ducker names (`what` is `track`, `by` the group, track or bus that names it), or a
+    /// Tracker of a composition that the centre of another node follows (`what` is `node`,
+    /// `by` the node that follows it).
     #[error("{what} {id} is used by {by}")]
     InUse {
         /// The kind of the thing.
@@ -1325,9 +1327,14 @@ pub enum OpError {
     /// and its path, such as `merge.blend`, `transform.center.x`, `background.color.a`,
     /// `ellipse.soft_edge`, `blur.size.x`, `mosaic.frequency` or `delta_keyer.gain`; of a
     /// Polygon, `polygon.points` (more points than it may have) and `polygon.points.x` or
-    /// `polygon.points.y` (a number of one of its points); and of a Delta Keyer,
+    /// `polygon.points.y` (a number of one of its points); of a Delta Keyer,
     /// `delta_keyer.screen` (a screen colour with no channel above its other two) and
-    /// `delta_keyer.low` (a lower threshold above the upper one).
+    /// `delta_keyer.low` (a lower threshold above the upper one); of a Tracker,
+    /// `tracker.trackers` (more patterns than it may have), `tracker.trackers.name`,
+    /// `tracker.trackers.pattern`, `tracker.trackers.search`, `tracker.trackers.offset` and
+    /// `tracker.trackers.path` (a number, or a frame of the path, of one of its patterns),
+    /// `tracker.pivot_tracker`, `tracker.pivot_point` and `tracker.reference`; and of a centre
+    /// that follows a Tracker, `center.follow.tracker` (a pattern that no Tracker may have).
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -1499,7 +1506,8 @@ pub enum OpError {
         node: Id,
     },
     /// A node is not of a kind that the change can be made to or about. `kind` is the kind
-    /// that it is, or `source` or `output`.
+    /// that it is, or `source` or `output`. Of a composition ([`crate::fusion`]): the node
+    /// that a centre is to follow is not a Tracker.
     #[error("node {node} is a {kind}, which this cannot be done to")]
     WrongNode {
         /// The node.
@@ -1963,6 +1971,13 @@ fn range_message(what: &str) -> String {
         "param" => "the node has no such setting".into(),
         "fusion_nodes" => format!("a composition has at most {MOST_NODES} nodes"),
         "polygon.points" => format!("a Polygon has at most {MOST_POINTS} points"),
+        "tracker.trackers" => format!("a Tracker has at most {MOST_TRACKERS} patterns"),
+        "tracker.trackers.path" => "a path of a pattern of a Tracker is not of places within \
+                                    their range at frames within 2^53 of 0"
+            .into(),
+        "tracker.pivot_tracker" | "center.follow.tracker" => {
+            format!("a Tracker has no pattern at that place: it has at most {MOST_TRACKERS}")
+        }
         "fusion_id" => "the id of a node of a composition has a dot in it, which ends the id \
                         in the path of a setting"
             .into(),

@@ -1144,6 +1144,10 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             if let Some(composition) = value {
                 for node in &mut composition.nodes {
                     f(&mut node.id, Role::Names)?;
+                    // The Tracker that its centre follows is named as the end of a link is.
+                    if let Some(follow) = node.kind.follow_mut() {
+                        f(&mut follow.node, Role::Names)?;
+                    }
                 }
                 for link in &mut composition.links {
                     f(&mut link.from, Role::Names)?;
@@ -1171,6 +1175,10 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
                         f(end, Role::Names)?;
                     }
                 }
+            }
+            // The Tracker that its centre follows is one that is there already.
+            if let Some(follow) = node.kind.follow_mut() {
+                f(&mut follow.node, Role::Names)?;
             }
             f(&mut node.id, Role::Gives(Place::Node))
         }
@@ -1202,12 +1210,28 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             clip,
             to: id,
             ..
-        }
-        | Op::SetFusionNode {
-            timeline, clip, id, ..
         } => {
             visit_clip(timeline, clip, f)?;
             f(id, Role::Names)
+        }
+        Op::SetFusionNode {
+            timeline,
+            clip,
+            id,
+            params,
+            ..
+        } => {
+            visit_clip(timeline, clip, f)?;
+            f(id, Role::Names)?;
+            // The Tracker that the patch has the centre of the node follow, as it is written
+            // there: `{"center": {"follow": {"node": id}}}`.
+            let followed = params
+                .as_mut()
+                .and_then(|patch| patch.pointer_mut("/center/follow/node"));
+            match followed {
+                Some(Value::String(node)) => f(node, Role::Names),
+                _ => Ok(()),
+            }
         }
         Op::SetFusionKeys {
             timeline,
@@ -1972,5 +1996,57 @@ mod tests {
             ]
         );
         assert_eq!(t.tracks[0].transitions[0].id, names["$again"]);
+    }
+
+    #[test]
+    fn a_tracker_named_in_a_transaction_is_followed_by_its_name() {
+        use columbina_model::fusion::{Composition, Kind, Node};
+        let mut history = History::new(Project::sample());
+        // A node as it is at first, named `id`.
+        let node = |id: &str, kind: Kind| {
+            let mut node = serde_json::to_value(Node::new("", kind)).unwrap();
+            node["id"] = id.into();
+            node
+        };
+        let add = |node: serde_json::Value| {
+            json!({"op": "add_fusion_node", "timeline": "t1", "clip": "c1", "node": node,
+                "links": []})
+        };
+        let follow = json!({"node": "$track", "output": "tracker", "tracker": 0});
+        // A mask that follows the Tracker as it is added, and a Transform that is set to.
+        let mut mask = node("$mask", Kind::Ellipse);
+        mask["params"]["center"]["follow"] = follow.clone();
+        let first = serde_json::to_value(Composition::default()).unwrap();
+        let transaction = ops(json!([
+            {"op": "set_fusion", "timeline": "t1", "clip": "c1", "value": first},
+            add(node("$track", Kind::Tracker)),
+            add(mask),
+            add(node("$move", Kind::Transform)),
+            {"op": "set_fusion_node", "timeline": "t1", "clip": "c1", "id": "$move",
+                "params": {"center": {"follow": follow}}},
+        ]));
+        let (_, ids) = apply(&mut history, transaction).unwrap();
+        let track = ids["$track"].clone();
+        let clip = &history.project().timelines[0].tracks[0].clips[0];
+        let composition = clip.fusion.as_ref().unwrap();
+        assert_eq!(composition.node(&track).unwrap().kind.kind(), Kind::Tracker);
+        for name in ["$mask", "$move"] {
+            let follows = composition.node(&ids[name]).unwrap().kind.follow();
+            assert_eq!(
+                follows.map(|follow| follow.node.as_str()),
+                Some(track.as_str()),
+                "{name}"
+            );
+        }
+        // A name that no operation before it gave is not one to follow.
+        let mut unknown = ops(json!([
+            {"op": "set_fusion_node", "timeline": "t1", "clip": "c1", "id": ids["$move"],
+                "params": {"center": {"follow": {"node": "$nowhere"}}}},
+        ]));
+        let error = prepare(&mut unknown).unwrap_err();
+        assert_eq!(
+            (error.index, error.name.as_str(), error.reason),
+            (0, "$nowhere", "unknown_name")
+        );
     }
 }

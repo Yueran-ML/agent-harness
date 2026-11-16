@@ -834,6 +834,145 @@ async def test_the_fake_engine_keeps_a_delta_keyer_of_a_composition(tmp_path: Pa
         assert links(fake) == sorted(left, key=lambda link: (link[1], link[2]))
 
 
+async def test_the_fake_engine_keeps_a_tracker_of_a_composition(tmp_path: Path) -> None:
+    def composition(fake: fake_engine.Fake) -> Any:
+        return fake.project["timelines"][0]["tracks"][0]["clips"][0]["fusion"]
+
+    def node(name: str, kind: str, **params: Any) -> dict[str, Any]:
+        return {"id": name, "kind": kind, "label": "", "params": params}
+
+    def links(fake: fake_engine.Fake) -> list[tuple[str, str, str]]:
+        return [(link["from"], link["to"], link["input"]) for link in composition(fake)["links"]]
+
+    def params(fake: fake_engine.Fake, name: str) -> Any:
+        return next(each for each in composition(fake)["nodes"] if each["id"] == name)["params"]
+
+    def pattern(name: str, x: float, path: dict[str, list[float]]) -> dict[str, Any]:
+        # A pattern as the engine writes one: where it was put, how large it and its search
+        # area are, its offset, and its path by the frame.
+        return {
+            "name": name,
+            "enabled": True,
+            "pattern": {"x": x, "y": 0.5, "width": 0.05, "height": 0.05},
+            "search": {"width": 0.125, "height": 0.125},
+            "offset": {"x": 0.0, "y": 0.0},
+            "path": path,
+        }
+
+    def at_first() -> dict[str, Any]:
+        # Every setting is written, as the engine writes a node: none is left out.
+        return {
+            "operation": "none",
+            "merge": "bg_only",
+            "position": True,
+            "rotation": True,
+            "scaling": True,
+            "pivot": "tracker_average",
+            "pivot_tracker": 0,
+            "pivot_point": {"x": 0.5, "y": 0.5},
+            "reference": 0,
+            "trackers": [],
+        }
+
+    tracker = node("", "tracker", **at_first())
+    ellipse = node(
+        "",
+        "ellipse",
+        level=1.0,
+        soft_edge=0.0,
+        border_width=0.0,
+        invert=False,
+        solid=True,
+        paint_mode="merge",
+        center={"x": 0.5, "y": 0.5},
+        width=0.5,
+        height=0.5,
+        angle=0.0,
+    )
+    async with served(tmp_path / "film") as fake:
+        async with await Engine.attach(tmp_path / "film", program=fake_engine.__file__) as one:
+            await one.apply(
+                [edits.add_timeline("Cut", Rate(num=25, den=1), tracks=[edits.track("video")])]
+            )
+            await one.apply([edits.insert("t1", of_color("#000000ff", 50), 0)])
+            at = {
+                "timeline": "t1",
+                "clip": fake.project["timelines"][0]["tracks"][0]["clips"][0]["id"],
+            }
+            colour = {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}
+            first = {
+                "nodes": [node("bg", "background", **colour), node("out", "media_out")],
+                "links": [{"from": "bg", "to": "out", "input": "input"}],
+            }
+            await one.apply([{"op": "set_fusion", **at, "value": first}])
+
+            # A tracker of the background goes to the media_out in its place, the background
+            # its foreground too.
+            into = [
+                {"from": "bg", "to": "", "input": "input"},
+                {"from": "", "to": "out", "input": "input"},
+                {"from": "bg", "to": "", "input": "foreground"},
+            ]
+            await one.apply([{"op": "add_fusion_node", **at, "node": tracker, "links": into}])
+            t = composition(fake)["nodes"][-1]["id"]
+            kinds = [each["kind"] for each in composition(fake)["nodes"]]
+            assert kinds == ["background", "media_out", "tracker"]
+            assert params(fake, t) == at_first()
+            # An ellipse is its effect mask: the links are in the engine's order, by the node
+            # and then by the name of the input.
+            mask = [{"from": "", "to": t, "input": "mask"}]
+            await one.apply([{"op": "add_fusion_node", **at, "node": ellipse, "links": mask}])
+            e = composition(fake)["nodes"][-1]["id"]
+            into_tracker = [("bg", t, "foreground"), ("bg", t, "input"), (e, t, "mask")]
+            assert links(fake) == sorted(
+                [(t, "out", "input"), *into_tracker],
+                key=lambda link: (link[1], link[2]),
+            )
+            assert [link for link in links(fake) if link[1] == t] == into_tracker
+
+            # The patterns are set whole, with their paths, as the tracking writes them; the
+            # other settings by a patch, which leaves what it does not name.
+            patterns = [
+                pattern("Left", 0.25, {"0": [0.25, 0.5], "1": [0.26, 0.5]}),
+                pattern("Right", 0.75, {"0": [0.75, 0.5], "1": [0.76, 0.5]}),
+            ]
+            await one.apply(
+                [{"op": "set_fusion_node", **at, "id": t, "params": {"trackers": patterns}}]
+            )
+            settings: dict[str, Any] = {
+                "operation": "match_move",
+                "merge": "fg_over_bg",
+                "reference": 1,
+            }
+            await one.apply([{"op": "set_fusion_node", **at, "id": t, "params": settings}])
+            assert params(fake, t) == {**at_first(), **settings, "trackers": patterns}
+            further = {"0": [0.25, 0.5], "1": [0.26, 0.5], "2": [0.27, 0.5]}
+            longer = [pattern("Left", 0.25, further)]
+            await one.apply(
+                [{"op": "set_fusion_node", **at, "id": t, "params": {"trackers": longer}}]
+            )
+            assert params(fake, t)["trackers"] == longer
+
+            # The centre of the ellipse follows a pattern of the tracker, by a patch of the
+            # centre, which keeps its own numbers; and lets go of it by a follow of null.
+            follow: dict[str, Any] = {"node": t, "output": "tracker", "tracker": 0}
+            centre: dict[str, Any] = {"center": {"follow": follow}}
+            await one.apply([{"op": "set_fusion_node", **at, "id": e, "params": centre}])
+            assert params(fake, e)["center"] == {"x": 0.5, "y": 0.5, "follow": follow}
+            centre = {"center": {"follow": {"output": "steady_position"}}}
+            await one.apply([{"op": "set_fusion_node", **at, "id": e, "params": centre}])
+            assert params(fake, e)["center"]["follow"] == {**follow, "output": "steady_position"}
+            centre = {"center": {"follow": None}}
+            await one.apply([{"op": "set_fusion_node", **at, "id": e, "params": centre}])
+            assert params(fake, e)["center"] == {"x": 0.5, "y": 0.5, "follow": None}
+
+            # The foreground of a tracker is unlinked as another input is.
+            await one.apply([{"op": "disconnect_fusion", **at, "to": t, "input": "foreground"}])
+
+        left = [(t, "out", "input"), ("bg", t, "input"), (e, t, "mask")]
+        assert links(fake) == sorted(left, key=lambda link: (link[1], link[2]))
+
+
 def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> None:
     opening = Keys(keys=[Key(frame=0, value=1.0), Key(frame=20, value=0.0)])
 

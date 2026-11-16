@@ -2068,6 +2068,19 @@ export function mergePatch(base: unknown, patch: unknown): unknown {
   return merged;
 }
 
+/**
+ * The settings of a node of a composition as the engine writes them once a patch is merged in: a
+ * centre that was let go of a tracker (`follow: null`) has no `follow`, and one that follows has
+ * the pattern that it follows written, the first where the patch named none.
+ */
+function settledFollow(params: unknown): unknown {
+  if (!isObject(params) || !isObject(params.center) || !Object.hasOwn(params.center, 'follow')) return params;
+  const { follow, ...center } = params.center;
+  if (follow == null) return { ...params, center };
+  if (!isObject(follow) || Object.hasOwn(follow, 'tracker')) return params;
+  return { ...params, center: { ...center, follow: { ...follow, tracker: 0 } } };
+}
+
 /** A list of things with ids, the one `id` merged with `patch` (a bus, a VCA, a group of tracks). */
 function patchedIn<T extends { id: string }>(list: readonly T[], id: string, what: string, patch: Record<string, unknown>): T[] {
   const at = placeOf(list, id, what);
@@ -2422,7 +2435,7 @@ export function applyOp(project: Project, op: Op): Project {
       const at = fusionNodeAt(composition, op.id);
       // `pos: null` puts a node back where the editor lays it out; left out, it stays.
       const changed = patched(composition.nodes[at], op, ['label', 'pass_through', 'pos'], ['pos']);
-      const node = op.params == null ? changed : { ...changed, params: mergePatch(changed.params, op.params) } as FusionNode;
+      const node = op.params == null ? changed : { ...changed, params: settledFollow(mergePatch(changed.params, op.params)) } as FusionNode;
       return { ...composition, nodes: replaced(composition.nodes, at, node) };
     });
     case 'set_fusion_keys': return inFusion(project, op, composition => withFusionSetting(composition, op.path, () => op.param));

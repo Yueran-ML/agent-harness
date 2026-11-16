@@ -486,7 +486,8 @@ fn mask(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Background
         | Kind::Blur
         | Kind::Mosaic
-        | Kind::DeltaKeyer => &[],
+        | Kind::DeltaKeyer
+        | Kind::Tracker => &[],
     }
 }
 
@@ -523,7 +524,8 @@ fn filter(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Rectangle
         | Kind::Ellipse
         | Kind::Polygon
-        | Kind::DeltaKeyer => &[],
+        | Kind::DeltaKeyer
+        | Kind::Tracker => &[],
     }
 }
 
@@ -559,8 +561,9 @@ fn keyer() -> &'static [Entry] {
 
 /// The settings of a node of a composition of a kind that take keys
 /// ([`crate::fusion`]), each named by its path in the `params` of the node: `center.x`. A
-/// `media_in` and a `media_out` have none. A point of a Polygon is listed with a star for its
-/// place in the list of points: `points.*.x`.
+/// `media_in` and a `media_out` have none, and neither has a `tracker`, whose numbers take
+/// no keys: the paths of its patterns are what moves it. A point of a Polygon is listed with
+/// a star for its place in the list of points: `points.*.x`.
 #[must_use]
 pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
     use crate::fusion::bounds as f;
@@ -577,7 +580,7 @@ pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
         ("angle", f::ANGLE, DegreesCounterclockwise),
     ];
     match kind {
-        Kind::MediaIn | Kind::MediaOut => &[],
+        Kind::MediaIn | Kind::MediaOut | Kind::Tracker => &[],
         Kind::Merge => MERGE.get_or_init(|| {
             let mut all = fused(&[
                 ("subtractive_additive", f::SUBTRACTIVE_ADDITIVE, Number),
@@ -915,7 +918,8 @@ mod tests {
     }
 
     /// The kinds of node of a composition.
-    const FUSION_KINDS: [crate::fusion::Kind; 11] = [
+    const FUSION_KINDS: [crate::fusion::Kind; 12] = [
+        crate::fusion::Kind::Tracker,
         crate::fusion::Kind::MediaIn,
         crate::fusion::Kind::MediaOut,
         crate::fusion::Kind::Merge,
@@ -930,16 +934,24 @@ mod tests {
     ];
 
     /// A node of a kind as a new one is set; but a Polygon, which has no points at first,
-    /// with two, each at its centre, so that it has every setting that one may have.
+    /// with two, each at its centre, so that it has every setting that one may have; and a
+    /// Tracker, which has no patterns at first, with one that has a path of two frames, so
+    /// that it has every number that one may have.
     fn first_of(kind: crate::fusion::Kind) -> crate::fusion::NodeKind {
-        use crate::fusion::{NodeKind, Point, Polygon};
-        if kind == crate::fusion::Kind::Polygon {
-            NodeKind::Polygon(Polygon {
+        use crate::fusion::{NodeKind, Pattern, Point, Polygon, Tracker};
+        match kind {
+            crate::fusion::Kind::Polygon => NodeKind::Polygon(Polygon {
                 points: vec![Point::new(0.0, 0.0), Point::new(0.0, 0.0)],
                 ..Polygon::default()
-            })
-        } else {
-            NodeKind::new(kind)
+            }),
+            crate::fusion::Kind::Tracker => NodeKind::Tracker(Tracker {
+                trackers: vec![Pattern {
+                    path: [(0, [0.5, 0.5]), (12, [0.25, 0.75])].into_iter().collect(),
+                    ..Pattern::default()
+                }],
+                ..Tracker::default()
+            }),
+            _ => NodeKind::new(kind),
         }
     }
 
@@ -1001,6 +1013,20 @@ mod tests {
         }
         assert_eq!(fusion(crate::fusion::Kind::MediaIn), &[] as &[Entry]);
         assert_eq!(fusion(crate::fusion::Kind::MediaOut), &[] as &[Entry]);
+        // No number of a Tracker takes keys: not its pivot, not its reference, and not a
+        // number of a pattern or a place of its path.
+        let tracker = crate::fusion::Kind::Tracker;
+        assert_eq!(fusion(tracker), &[] as &[Entry]);
+        for path in [
+            "reference",
+            "pivot_tracker",
+            "pivot_point.x",
+            "trackers.0.pattern.width",
+            "trackers.0.offset.x",
+            "trackers.0.path.12.0",
+        ] {
+            assert!(of_fusion(tracker, path).is_none(), "{path}");
+        }
         assert_eq!(fusion(crate::fusion::Kind::Merge).len(), 8);
         assert_eq!(fusion(crate::fusion::Kind::Transform).len(), 4);
         assert_eq!(fusion(crate::fusion::Kind::Background).len(), 4);

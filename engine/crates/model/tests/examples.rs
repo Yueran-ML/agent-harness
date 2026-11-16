@@ -2284,7 +2284,131 @@ fn fusion_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 link: fusion::Link::new("n10", "n12", Input::SolidMatte),
             },
         ),
+        (
+            "add_fusion_node of a tracker with two patterns and their paths",
+            masked(),
+            tracker_node(),
+        ),
+        (
+            "set_fusion_node of the operation, the merge and the reference of a tracker",
+            {
+                let mut setup = masked();
+                setup.push(tracker_node());
+                setup
+            },
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n12".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "operation": "match_move", "merge": "fg_over_bg", "rotation": false,
+                    "pivot": "selected_tracker", "pivot_tracker": 1, "reference": 24,
+                })),
+            },
+        ),
+        (
+            "set_fusion_node of the patterns of a tracker with their paths, whole",
+            {
+                let mut setup = masked();
+                setup.push(tracker_node());
+                setup
+            },
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n12".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "trackers": [{
+                        "name": "Sign", "enabled": true,
+                        "pattern": {"x": 0.25, "y": 0.5, "width": 0.05, "height": 0.05},
+                        "search": {"width": 0.125, "height": 0.125},
+                        "offset": {"x": 0, "y": 0},
+                        "path": {"0": [0.25, 0.5], "1": [0.26, 0.5], "2": [0.27, 0.51],
+                            "4": [0.29, 0.52]},
+                    }],
+                })),
+            },
+        ),
+        (
+            "set_fusion_node of a centre that follows a pattern of a tracker",
+            {
+                let mut setup = masked();
+                setup.push(tracker_node());
+                setup
+            },
+            follow_op(serde_json::json!({"node": "n12", "output": "tracker", "tracker": 1})),
+        ),
+        (
+            "set_fusion_node of a centre that lets go of a tracker",
+            {
+                let mut setup = masked();
+                setup.push(tracker_node());
+                setup.push(follow_op(serde_json::json!(
+                    {"node": "n12", "output": "steady_position"}
+                )));
+                setup
+            },
+            follow_op(serde_json::Value::Null),
+        ),
     ]
+}
+
+/// Add a Tracker, n12 after `masked`, as another program writes one: every setting, two
+/// patterns with their paths, the picture of c1 what was tracked, and the Merge n9 laying
+/// its picture in the place of that of the clip.
+fn tracker_node() -> Op {
+    written_op(serde_json::json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {
+            "id": "", "kind": "tracker", "label": "Stabilize", "params": {
+                "operation": "match_move", "merge": "bg_only", "position": true,
+                "rotation": true, "scaling": true, "pivot": "tracker_average",
+                "pivot_tracker": 0, "pivot_point": {"x": 0.5, "y": 0.5}, "reference": 0,
+                "trackers": [
+                    {
+                        "name": "Left", "enabled": true,
+                        "pattern": {"x": 0.25, "y": 0.5, "width": 0.05, "height": 0.05},
+                        "search": {"width": 0.125, "height": 0.125},
+                        "offset": {"x": 0, "y": 0},
+                        "path": {"0": [0.25, 0.5], "12": [0.28, 0.52], "24": [0.3, 0.55]},
+                    },
+                    {
+                        "name": "Right", "enabled": true,
+                        "pattern": {"x": 0.75, "y": 0.5, "width": 0.05, "height": 0.05},
+                        "search": {"width": 0.125, "height": 0.125},
+                        "offset": {"x": 0.02, "y": -0.01},
+                        "path": {"0": [0.75, 0.5], "12": [0.77, 0.5], "24": [0.8, 0.48]},
+                    },
+                ],
+            },
+        },
+        "links": [
+            {"from": "MediaIn1", "to": "", "input": "input"},
+            {"from": "", "to": "n9", "input": "foreground"},
+        ],
+    }))
+}
+
+/// Set what the centre of the Ellipse n11 of c1 follows: a Tracker, as `follow` writes it,
+/// or nothing, with `null`.
+fn follow_op(follow: serde_json::Value) -> Op {
+    let mut patch = serde_json::json!({"center": {}});
+    patch["center"]["follow"] = follow;
+    Op::SetFusionNode {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+        id: "n11".into(),
+        label: None,
+        pass_through: None,
+        pos: None,
+        params: Some(patch),
+    }
 }
 
 /// Add a Delta Keyer, n12 after `masked`, as another program writes one: every setting, the

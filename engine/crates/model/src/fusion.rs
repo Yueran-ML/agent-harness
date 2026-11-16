@@ -49,15 +49,19 @@
 //! - `delta_keyer`, the inputs `input`, `garbage_matte` and `solid_matte`, and its effect
 //!   mask, `mask`: its picture keyed, the screen that it was shot against made transparent
 //!   ([`DeltaKeyer`]; see The Delta Keyer below).
+//! - `tracker`, the inputs `input` and `foreground`, and its effect mask, `mask`: the picture
+//!   that was tracked held still, or another made to follow it ([`Tracker`]; see The Tracker
+//!   below).
 //!
 //! An input that is not linked gives no picture: a transparent one of the size of the
 //! composition; but a `mask` that is not linked is no mask at all (see Masks), and a
 //! `garbage_matte` or a `solid_matte` that is not linked is no matte. A node that is
 //! passed through (Fusion's Pass Through, Ctrl-P) hands on the picture of its first input as
-//! it is ([`Kind::through`]): a Merge its background, a Transform, a Blur, a Mosaic and a
-//! Delta Keyer their picture, and a mask node the mask that comes into it. A node that has no
-//! such input, a `media_in` or a `background`, then gives none: the effect mask of a node is
-//! not a picture that it hands on, and neither are the mattes of a Delta Keyer.
+//! it is ([`Kind::through`]): a Merge its background, a Transform, a Blur, a Mosaic, a Delta
+//! Keyer and a Tracker their picture, and a mask node the mask that comes into it. A node
+//! that has no such input, a `media_in` or a `background`, then gives none: the effect mask
+//! of a node is not a picture that it hands on, and neither are the mattes of a Delta Keyer
+//! nor the foreground of a Tracker.
 //!
 //! # Masks
 //!
@@ -82,9 +86,9 @@
 //!
 //! What a mask does to the node whose `mask` it comes into, which the compositor is held to:
 //!
-//! - A node that has a picture to hand on (a `transform`, a `blur`, a `mosaic` and a
-//!   `delta_keyer`, their `input`; a `merge`, its `background`): where the mask is 1 its
-//!   result is its own, where
+//! - A node that has a picture to hand on (a `transform`, a `blur`, a `mosaic`, a
+//!   `delta_keyer` and a `tracker`, their `input`; a `merge`, its `background`): where the
+//!   mask is 1 its result is its own, where
 //!   it is 0 it is the picture of that first input as it came in (transparent where that is
 //!   not linked), and between them the two are mixed by the value of the mask, channel by
 //!   channel: `first + (own − first) · mask`. (A `mosaic` with Whole Cells Only reads its
@@ -171,6 +175,71 @@
 //! every pixel is kept. And `low` is to be at most `high`: with keys, at a frame where they
 //! have crossed the matte is a step at `low`, solid above it and transparent at it and below.
 //!
+//! # The Tracker
+//!
+//! A Tracker is Fusion's Tracker node (Reference Manual 20, Chapter 82, pp. 1724–1759, and
+//! pp. 2773–2784), with its patterns and the Match Move of its Operation tab; Corner
+//! Positioning and Perspective Positioning are not kept. The mathematics is that of
+//! `columbina_track::matchmove`, which says what a motion is and is not written a second
+//! time.
+//!
+//! **Its patterns.** A Tracker has a list of patterns ([`Pattern`]), at most
+//! [`MOST_TRACKERS`], each with where it was put and how large it and its search area are,
+//! its offset, whether it counts, and its **path**: where the middle of the pattern was found
+//! at frames of the keys of the clip, each a place as a [`Center`] counts one. Following a
+//! pattern through the pictures of a clip, which writes a path, is not done by the model: a
+//! path is a setting like another, and is set with the list, whole. A frame that a path has
+//! not was not tracked; the pattern is taken to be on the line between the frames about it
+//! that were, and before the first of them where it was at that one, and after the last
+//! where it was at that one ([`Pattern::place_at`]). A pattern that has no path, and one
+//! that is off, is left out of the motion.
+//!
+//! **The motion.** At a frame the node has the motion of its patterns since the reference
+//! frame ([`Tracker::solution`]): a shift alone of one pattern, and a shift, a turn and a size
+//! of two or more, by the boxes Position, Rotation and Scaling, about its pivot. The
+//! reference is a frame of the keys of the clip; each pattern is where its path has it
+//! there, as at any frame, so that a reference before the first frame of the paths is that
+//! frame. Where no pattern counts, and where the mathematics has no solution, there is no
+//! motion.
+//!
+//! **What it draws** ([`Tracked`]), by its Operation and its Merge:
+//!
+//! - Operation `none`: the picture of its `input`, as it is, whatever else is set.
+//! - `match_move` and `bg_only`: its `input` held still, drawn through the inverse of the
+//!   motion, which brings each frame back to where it was at the reference frame.
+//! - `fg_only`: its `foreground` drawn through the motion, alone, over nothing.
+//! - `fg_over_bg`: that, laid over its `input` as it is (Normal, Over).
+//! - `bg_over_fg`: its `input` as it is, laid over its `foreground` drawn through the motion.
+//!
+//! Where there is no motion at the frame the picture that would be moved lies as it is. The
+//! effect mask limits the node as it limits every node that hands a picture on, the picture
+//! of its `input` being the first: `first + (own − first) · mask`. The motion is a turn and
+//! a size about a pivot and then a shift; the node hands it to the compositor as a Transform
+//! and a Merge have theirs, a turn and a size about the middle of the picture and where the
+//! middle is put, which is the same map.
+//!
+//! The picture depends on the size of the pictures of the composition ([`size_of`]), since
+//! a turn is one of pixels and the settings are shares of the width and of the height: so
+//! the composition at a frame is made for a size ([`Composition::at_size`]).
+//!
+//! # Following a Tracker
+//!
+//! A [`Center`] (of a Merge, of a Transform and of the masks) may follow what a Tracker of
+//! its composition publishes ([`Follow`]), as a Center of Fusion is connected to one
+//! (pp. 1745–1748): the place of one pattern with its offset, the Steady Position or the
+//! Unsteady Position ([`Tracker::published`]). At a frame the centre is then that place,
+//! held within the bounds of the centre, and its own `x` and `y` are kept and not read.
+//! Where nothing is published at the frame (the pattern has no path, there is no motion to
+//! be had, or the Tracker is passed through) the centre is its own `x` and `y`.
+//!
+//! What is published is made of the settings of the Tracker alone, and of no picture: so
+//! following needs no link, the Tracker need not be a node that the `MediaOut` reads, and
+//! the node that follows does not depend on it in [`Fused`], where its centre is the numbers
+//! that it is at the frame, as that of any node. A Tracker has no centre, so that no
+//! following goes round. The node that is followed is to be a Tracker of the same
+//! composition, and a Tracker that is followed is not taken away: the centres that follow it
+//! are to let go of it first.
+//!
 //! # Coordinates
 //!
 //! The settings are kept in Fusion's own units, so that a number is what `DaVinci` shows for
@@ -192,6 +261,10 @@
 //! from 0: `n7.points.2.x`. Its two numbers take keys each on its own, as those of a point of
 //! a Polygon window of the Color page do; the list itself, how many points there are and in
 //! which order, is set whole and takes no keys.
+//!
+//! No number of a Tracker takes keys: the paths of its patterns are what moves it. Their
+//! frames, and its reference, are frames of the same count, and are moved with the keys
+//! where the keys are moved ([`Composition::with_key_frames`]).
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -202,6 +275,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::grade::{check_label, Bounds, Composite, Param, Pos};
 use crate::ops::OpError;
 use crate::project::{Clip, Id, Project, Source, Timeline};
+
+mod tracker;
+
+pub use tracker::{
+    Follow, FollowOutput, Pattern, PatternArea, Place, SearchArea, Tracked, Tracker, TrackerMerge,
+    TrackerOperation, TrackerPivot, MOST_TRACKERS,
+};
 
 /// The most nodes of a composition. The manual gives none, and a grade has none: this is
 /// ours, as many as a mixer of a grade has inputs at the most.
@@ -314,14 +394,26 @@ pub mod bounds {
     /// Spill Suppression of a Delta Keyer (p. 2446): 1, all that the method takes, at first;
     /// 0 takes none.
     pub const KEYER_SPILL_SUPPRESSION: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// A place of a Tracker, across and up: where a pattern was put, a place of its path, and
+    /// a pivot given by hand. 0.5, the middle, at first; as far as a Center X and Y may be,
+    /// which follows one.
+    pub const TRACKER_PLACE: Bounds = Bounds::new(0.5, -15.5, 16.5);
+    /// The width and the height of a pattern of a Tracker (p. 2776), in widths and in heights
+    /// of the picture: a twentieth at first; from 0 to the whole picture.
+    pub const TRACKER_PATTERN: Bounds = Bounds::new(0.05, 0.0, 1.0);
+    /// The width and the height of the search area of a pattern of a Tracker (p. 2776), in
+    /// widths and in heights of the picture: an eighth at first; from 0 to the whole picture.
+    pub const TRACKER_SEARCH: Bounds = Bounds::new(0.125, 0.0, 1.0);
+    /// X Offset and Y Offset of a pattern of a Tracker (pp. 1741, 2777), in widths and in
+    /// heights of the picture, right and up: none at first; as far as 16 pictures either way.
+    pub const TRACKER_OFFSET: Bounds = Bounds::new(0.0, -16.0, 16.0);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Kinds, inputs and links
 // ---------------------------------------------------------------------------------------------
 
-/// The kinds of node, as they are named in `kind`. Others are to come: the Tracker and
-/// Text+.
+/// The kinds of node, as they are named in `kind`. Another is to come: Text+.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -348,6 +440,8 @@ pub enum Kind {
     Mosaic,
     /// A picture keyed: the screen that it was shot against made transparent.
     DeltaKeyer,
+    /// The picture that was tracked held still, or another made to follow it.
+    Tracker,
 }
 
 impl Kind {
@@ -366,13 +460,14 @@ impl Kind {
             Self::Blur => "blur",
             Self::Mosaic => "mosaic",
             Self::DeltaKeyer => "delta_keyer",
+            Self::Tracker => "tracker",
         }
     }
 
     /// The inputs that a node of the kind has: its pictures, and after them its effect mask,
     /// `mask`, which every kind has but `media_in` and `media_out`. A mask node has that one
     /// alone: the mask that comes into it. A Delta Keyer has its two mattes between its
-    /// picture and its mask.
+    /// picture and its mask, and a Tracker its foreground.
     #[must_use]
     pub fn inputs(self) -> &'static [Input] {
         match self {
@@ -387,6 +482,7 @@ impl Kind {
                 Input::SolidMatte,
                 Input::Mask,
             ],
+            Self::Tracker => &[Input::Input, Input::Foreground, Input::Mask],
         }
     }
 
@@ -398,9 +494,12 @@ impl Kind {
     pub fn through(self) -> Option<Input> {
         match self {
             Self::MediaIn | Self::Background => None,
-            Self::MediaOut | Self::Transform | Self::Blur | Self::Mosaic | Self::DeltaKeyer => {
-                Some(Input::Input)
-            }
+            Self::MediaOut
+            | Self::Transform
+            | Self::Blur
+            | Self::Mosaic
+            | Self::DeltaKeyer
+            | Self::Tracker => Some(Input::Input),
             Self::Merge => Some(Input::Background),
             Self::Rectangle | Self::Ellipse | Self::Polygon => Some(Input::Mask),
         }
@@ -425,11 +524,13 @@ impl Kind {
 #[non_exhaustive]
 pub enum Input {
     /// The one input of a node that has one picture: of `media_out`, of `transform`, of
-    /// `blur` and of `mosaic`; and the picture that a `delta_keyer` keys.
+    /// `blur` and of `mosaic`; the picture that a `delta_keyer` keys; and the picture that a
+    /// `tracker` was tracked in (Fusion's Background of a Tracker).
     Input,
     /// The background of a Merge (the orange input of an editor).
     Background,
-    /// The foreground of a Merge (the green one).
+    /// The foreground of a Merge (the green one); and the picture that a `tracker` makes
+    /// follow its patterns.
     Foreground,
     /// The garbage matte of a `delta_keyer`: where it is 1 the matte is made transparent. It
     /// reads the alpha of the picture that is linked to it; not linked, it is not there.
@@ -438,9 +539,9 @@ pub enum Input {
     /// the alpha of the picture that is linked to it; not linked, it is not there.
     SolidMatte,
     /// The effect mask of a node (the blue input of an editor): the mask that limits a
-    /// `merge`, a `transform`, a `background`, a `blur`, a `mosaic` or a `delta_keyer`, and
-    /// the mask that comes into a mask node. It reads the alpha of the picture that is linked
-    /// to it; not linked, it is no mask.
+    /// `merge`, a `transform`, a `background`, a `blur`, a `mosaic`, a `delta_keyer` or a
+    /// `tracker`, and the mask that comes into a mask node. It reads the alpha of the picture
+    /// that is linked to it; not linked, it is no mask.
     Mask,
 }
 
@@ -509,6 +610,12 @@ impl Link {
 
 /// A place in a picture, as Fusion counts it: `x` the share of its width from its left edge,
 /// and `y` the share of its height from its lower edge, so that the middle is 0.5 and 0.5.
+///
+/// It may follow what a Tracker of its composition publishes (`follow`; see Following a
+/// Tracker of the [module](self)): at a frame it is then that place, and its own `x` and `y`
+/// are kept, checked and not read, but where nothing is published. `follow` is written only
+/// where there is one, so that a centre that follows nothing is written `{"x", "y"}`, as it
+/// always was; and it is read as none where it is left out or `null`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Center {
@@ -516,6 +623,9 @@ pub struct Center {
     pub x: Param,
     /// How far up, as a share of the height.
     pub y: Param,
+    /// What it follows of a Tracker, or none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<Follow>,
 }
 
 impl Center {
@@ -524,9 +634,11 @@ impl Center {
         Self {
             x: bounds::CENTER.param(),
             y: bounds::CENTER.param(),
+            follow: None,
         }
     }
 
+    /// Its own `x` and `y` at a frame of its keys, whatever it follows.
     fn at(&self, frame: f64) -> [f64; 2] {
         [self.x.value_at(frame), self.y.value_at(frame)]
     }
@@ -536,10 +648,18 @@ impl Center {
     }
 
     /// Check that its `x` and its `y` are within `bounds`, each by the name that it is
-    /// refused by.
+    /// refused by; and, where it follows a pattern, that the place of the pattern is one
+    /// that a Tracker may have.
     fn check_within(&self, bounds: Bounds, names: [&'static str; 2]) -> Result<(), OpError> {
         bounds.check(names[0], &self.x)?;
-        bounds.check(names[1], &self.y)
+        bounds.check(names[1], &self.y)?;
+        let beyond = |follow: &Follow| follow.tracker >= MOST_TRACKERS;
+        if self.follow.as_ref().is_some_and(beyond) {
+            return Err(OpError::OutOfRange {
+                what: "center.follow.tracker",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1822,6 +1942,8 @@ pub enum NodeKind {
     Mosaic(Mosaic),
     /// A picture keyed: the screen that it was shot against made transparent.
     DeltaKeyer(DeltaKeyer),
+    /// The picture that was tracked held still, or another made to follow it.
+    Tracker(Tracker),
 }
 
 /// The settings of a kind that has none, as they are written: `{}`.
@@ -1845,6 +1967,7 @@ impl NodeKind {
             Self::Blur(_) => Kind::Blur,
             Self::Mosaic(_) => Kind::Mosaic,
             Self::DeltaKeyer(_) => Kind::DeltaKeyer,
+            Self::Tracker(_) => Kind::Tracker,
         }
     }
 
@@ -1863,6 +1986,7 @@ impl NodeKind {
             Kind::Blur => Self::Blur(Blur::default()),
             Kind::Mosaic => Self::Mosaic(Mosaic::default()),
             Kind::DeltaKeyer => Self::DeltaKeyer(DeltaKeyer::default()),
+            Kind::Tracker => Self::Tracker(Tracker::default()),
         }
     }
 
@@ -1889,6 +2013,7 @@ impl NodeKind {
             Kind::Blur => Self::Blur(serde_json::from_value(params)?),
             Kind::Mosaic => Self::Mosaic(serde_json::from_value(params)?),
             Kind::DeltaKeyer => Self::DeltaKeyer(serde_json::from_value(params)?),
+            Kind::Tracker => Self::Tracker(serde_json::from_value(params)?),
         })
     }
 
@@ -1910,14 +2035,17 @@ impl NodeKind {
             Self::Blur(params) => serde_json::to_value(params),
             Self::Mosaic(params) => serde_json::to_value(params),
             Self::DeltaKeyer(params) => serde_json::to_value(params),
+            Self::Tracker(params) => serde_json::to_value(params),
         };
         value.expect("the settings of a node are written as JSON")
     }
 
     /// Check its settings: each within its bounds, as a number or at each key; of a Polygon,
-    /// that it has no more points than it may; and of a Delta Keyer, that its thresholds are
-    /// in order and its screen colour has a channel above its other two, where they have no
-    /// keys.
+    /// that it has no more points than it may; of a Delta Keyer, that its thresholds are in
+    /// order and its screen colour has a channel above its other two, where they have no
+    /// keys; and of a Tracker, that it has no more patterns than it may, each with its
+    /// numbers and the places and frames of its path within their bounds. That the node
+    /// which a centre follows is a Tracker is checked of the composition, whole.
     pub(crate) fn check(&self) -> Result<(), OpError> {
         match self {
             Self::MediaIn | Self::MediaOut => Ok(()),
@@ -1930,13 +2058,14 @@ impl NodeKind {
             Self::Blur(blur) => blur.check(),
             Self::Mosaic(mosaic) => mosaic.check(),
             Self::DeltaKeyer(keyer) => keyer.check(),
+            Self::Tracker(tracker) => tracker.check(),
         }
     }
 
-    /// Its settings that take keys, each with its path in `params`.
+    /// Its settings that take keys, each with its path in `params`. A Tracker has none.
     fn keyed(&self) -> Vec<(Cow<'static, str>, &Param)> {
         match self {
-            Self::MediaIn | Self::MediaOut => vec![],
+            Self::MediaIn | Self::MediaOut | Self::Tracker(_) => vec![],
             Self::Merge(merge) => named(merge.settings()),
             Self::Transform(transform) => named(transform.settings()),
             Self::Background(background) => named(background.settings()),
@@ -1952,7 +2081,7 @@ impl NodeKind {
     /// Its settings that take keys, each with its path in `params`, to be changed.
     fn settings_mut(&mut self) -> Vec<(Cow<'static, str>, &mut Param)> {
         match self {
-            Self::MediaIn | Self::MediaOut => vec![],
+            Self::MediaIn | Self::MediaOut | Self::Tracker(_) => vec![],
             Self::Merge(merge) => named(merge.settings_mut()),
             Self::Transform(transform) => named(transform.settings_mut()),
             Self::Background(background) => named(background.settings_mut()),
@@ -1974,7 +2103,7 @@ impl NodeKind {
     }
 
     /// The paths of its settings that take keys, in the order of its `params`: of a
-    /// Polygon, those of the points that it has, by their places.
+    /// Polygon, those of the points that it has, by their places. A Tracker has none.
     #[must_use]
     pub fn settings(&self) -> Vec<String> {
         self.keyed()
@@ -1983,18 +2112,73 @@ impl NodeKind {
             .collect()
     }
 
-    /// Whether any of its settings has keys.
+    /// Its centre, of a kind that has one: a Merge, a Transform and the masks.
+    fn center(&self) -> Option<&Center> {
+        match self {
+            Self::Merge(merge) => Some(&merge.center),
+            Self::Transform(transform) => Some(&transform.center),
+            Self::Rectangle(rectangle) => Some(&rectangle.center),
+            Self::Ellipse(ellipse) => Some(&ellipse.center),
+            Self::Polygon(polygon) => Some(&polygon.center),
+            Self::MediaIn
+            | Self::MediaOut
+            | Self::Background(_)
+            | Self::Blur(_)
+            | Self::Mosaic(_)
+            | Self::DeltaKeyer(_)
+            | Self::Tracker(_) => None,
+        }
+    }
+
+    /// What its centre follows of a Tracker, if it has a centre and that follows one.
+    #[must_use]
+    pub fn follow(&self) -> Option<&Follow> {
+        self.center().and_then(|center| center.follow.as_ref())
+    }
+
+    /// What its centre follows of a Tracker, to be changed: for whoever puts the id of a
+    /// node in the place of a name.
+    #[must_use]
+    pub fn follow_mut(&mut self) -> Option<&mut Follow> {
+        let center = match self {
+            Self::Merge(merge) => &mut merge.center,
+            Self::Transform(transform) => &mut transform.center,
+            Self::Rectangle(rectangle) => &mut rectangle.center,
+            Self::Ellipse(ellipse) => &mut ellipse.center,
+            Self::Polygon(polygon) => &mut polygon.center,
+            Self::MediaIn
+            | Self::MediaOut
+            | Self::Background(_)
+            | Self::Blur(_)
+            | Self::Mosaic(_)
+            | Self::DeltaKeyer(_)
+            | Self::Tracker(_) => return None,
+        };
+        center.follow.as_mut()
+    }
+
+    /// Whether what it is changes with the frame of its own accord: one of its settings has
+    /// keys, or, of a Tracker, one of its patterns has a path. A node whose centre follows
+    /// such a Tracker changes with it too, which its composition tells
+    /// ([`Composition::node_is_animated`]).
     #[must_use]
     pub fn is_animated(&self) -> bool {
+        if let Self::Tracker(tracker) = self {
+            return tracker.has_paths();
+        }
         self.keyed()
             .into_iter()
             .any(|(_, setting)| setting.is_animated())
     }
 
     /// It with each key of its settings at the frame `to` of its frame
-    /// ([`Param::with_key_frames`]).
+    /// ([`Param::with_key_frames`]); and, of a Tracker, each frame of the paths of its
+    /// patterns and its reference.
     #[must_use]
     pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> NodeKind {
+        if let Self::Tracker(tracker) = self {
+            return Self::Tracker(tracker.with_key_frames(to));
+        }
         let mut moved = self.clone();
         for (_, setting) in moved.settings_mut() {
             *setting = setting.with_key_frames(to);
@@ -2007,8 +2191,8 @@ impl NodeKind {
 ///
 /// It is written `{"id", "kind", "label", "pass_through", "pos", "params"}`, where `params` is
 /// what a node of its kind is set by: a [`Merge`], a [`Transform`], a [`Background`], a
-/// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`], a [`Mosaic`] or a
-/// [`DeltaKeyer`], and an object with no fields for `media_in` and `media_out`.
+/// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`], a [`Mosaic`], a [`DeltaKeyer`]
+/// or a [`Tracker`], and an object with no fields for `media_in` and `media_out`.
 /// `pass_through` and `pos` are always written, and may be left out where a node is read:
 /// they are then `false` and `null`.
 #[derive(Clone, Debug, PartialEq)]
@@ -2078,6 +2262,7 @@ impl Serialize for Node {
             NodeKind::Blur(params) => node.serialize_field("params", params)?,
             NodeKind::Mosaic(params) => node.serialize_field("params", params)?,
             NodeKind::DeltaKeyer(params) => node.serialize_field("params", params)?,
+            NodeKind::Tracker(params) => node.serialize_field("params", params)?,
         }
         node.end()
     }
@@ -2125,6 +2310,17 @@ fn missing_node(id: &str) -> OpError {
         what: "node",
         id: id.into(),
     }
+}
+
+/// The size of the pictures of a composition that is made at a frame with no size told: a
+/// square, of which a share of the width and a share of the height are one length.
+const SQUARE: (u32, u32) = (1, 1);
+
+/// A moment of a composition: a frame of its keys, and the size of its pictures in pixels.
+#[derive(Clone, Copy)]
+struct Moment {
+    frame: f64,
+    size: (u32, u32),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2191,14 +2387,64 @@ impl Composition {
         self.links.sort_by(|a, b| a.place().cmp(&b.place()));
     }
 
-    /// Whether a setting of one of its nodes has keys.
+    /// Whether a setting of one of its nodes has keys, or a pattern of one of its Trackers a
+    /// path: whether it is another composition at another frame. A centre that follows a
+    /// Tracker moves where that Tracker has a path, which is a node of the composition.
     #[must_use]
     pub fn is_animated(&self) -> bool {
         self.nodes.iter().any(|node| node.kind.is_animated())
     }
 
+    /// Whether the node `id` changes with the frame: one of its settings has keys, one of its
+    /// patterns has a path ([`NodeKind::is_animated`]), or its centre follows a Tracker one
+    /// of whose patterns has a path. A node that is not there does not.
+    #[must_use]
+    pub fn node_is_animated(&self, id: &str) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        let follows_a_path = node
+            .kind
+            .follow()
+            .and_then(|follow| self.node(&follow.node))
+            .is_some_and(|named| named.kind.kind() == Kind::Tracker && named.kind.is_animated());
+        node.kind.is_animated() || follows_a_path
+    }
+
+    /// The place that the Tracker which `follow` names publishes at `frame` of its keys, in
+    /// pictures of `size` pixels ([`Tracker::published`]). None where nothing is published:
+    /// the composition has no such node, the node is no Tracker or is passed through, the
+    /// pattern is not there or has no path, or there is no motion to be had at the frame.
+    #[must_use]
+    pub fn published(&self, follow: &Follow, frame: f64, size: (u32, u32)) -> Option<[f64; 2]> {
+        let node = self.node(&follow.node)?;
+        let NodeKind::Tracker(tracker) = &node.kind else {
+            return None;
+        };
+        if node.pass_through {
+            return None;
+        }
+        tracker.published(follow.output, follow.tracker, frame, size)
+    }
+
+    /// Where `center` is at `frame` of its keys, in pictures of `size` pixels: what it
+    /// follows, where that is published ([`Composition::published`]), held within `within`,
+    /// the bounds of the centre; and its own `x` and `y` otherwise.
+    fn center_at(&self, center: &Center, within: Bounds, moment: Moment) -> [f64; 2] {
+        let Moment { frame, size } = moment;
+        let published = center
+            .follow
+            .as_ref()
+            .and_then(|follow| self.published(follow, frame, size));
+        match published {
+            Some(place) => place.map(|at| at.clamp(within.low, within.high)),
+            None => center.at(frame),
+        }
+    }
+
     /// The composition with each key of each setting of its nodes moved from frame `k` to
-    /// `to(k)`, as [`Param::with_key_frames`] moves the keys of a setting.
+    /// `to(k)`, as [`Param::with_key_frames`] moves the keys of a setting; and so each frame
+    /// of the paths of its Trackers that have any, and their references.
     #[must_use]
     pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> Composition {
         let mut moved = self.clone();
@@ -2211,7 +2457,8 @@ impl Composition {
     }
 
     /// Check the composition: how many nodes it has, their ids and their settings, that it has
-    /// one `MediaOut`, and its links. The links are to be in order.
+    /// one `MediaOut`, that what its centres follow are Trackers of it, and its links. The
+    /// links are to be in order.
     pub(crate) fn check(&self) -> Result<(), OpError> {
         if self.nodes.len() > MOST_NODES {
             return Err(OpError::OutOfRange {
@@ -2237,7 +2484,25 @@ impl Composition {
         if outs != 1 {
             return Err(OpError::OneMediaOut { count: outs });
         }
+        self.check_follows()?;
         self.check_links()
+    }
+
+    /// Check what its centres follow: each node that one follows is there, and is a Tracker.
+    pub(crate) fn check_follows(&self) -> Result<(), OpError> {
+        for follow in self.nodes.iter().filter_map(|node| node.kind.follow()) {
+            let named = self
+                .node(&follow.node)
+                .ok_or_else(|| missing_node(&follow.node))?;
+            let kind = named.kind.kind();
+            if kind != Kind::Tracker {
+                return Err(OpError::WrongNode {
+                    node: follow.node.clone(),
+                    kind: kind.name(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Check its links: each comes from a node that has an output and goes into an input that
@@ -2329,16 +2594,28 @@ impl Composition {
         None
     }
 
-    /// The composition at a frame of its keys: the nodes that the picture of its `MediaOut`
-    /// is made of, each with its settings as the numbers that they are there (see [`Fused`]).
+    /// The composition at a frame of its keys, as [`Composition::at_size`] has it for pictures
+    /// that are square. The size is read by a Tracker alone, and by a centre that follows
+    /// one: so this is the composition that has neither, whatever the size of its pictures.
     #[must_use]
     pub fn at(&self, frame: f64) -> Fused {
+        self.at_size(frame, SQUARE)
+    }
+
+    /// The composition at a frame of its keys, its pictures of `size` pixels ([`size_of`]):
+    /// the nodes that the picture of its `MediaOut` is made of, each with its settings as
+    /// the numbers that they are there (see [`Fused`]). A centre that follows a Tracker is
+    /// where that publishes, and a Tracker has the motion of its patterns there, which is a
+    /// motion of pixels: that is what the size is for.
+    #[must_use]
+    pub fn at_size(&self, frame: f64, size: (u32, u32)) -> Fused {
+        let moment = Moment { frame, size };
         let mut nodes = Vec::new();
         let mut placed = HashMap::new();
         let output = self
             .media_out()
             .and_then(|out| self.feeding(&out.id, Input::Input))
-            .and_then(|node| self.place(node, frame, &mut nodes, &mut placed));
+            .and_then(|node| self.place(node, moment, &mut nodes, &mut placed));
         Fused { nodes, output }
     }
 
@@ -2356,12 +2633,20 @@ impl Composition {
     /// it has no such input or that input brings no picture; a node on the way that is passed
     /// through is left out for the one that it hands on, as it is in [`Composition::at`]. Of
     /// the `MediaOut` it is [`Composition::at`] itself. None where the composition has no node
-    /// `id`.
+    /// `id`. Its pictures are taken to be square, as [`Composition::at`] takes them.
     #[must_use]
     pub fn at_node(&self, id: &str, frame: f64) -> Option<Fused> {
+        self.at_node_size(id, frame, SQUARE)
+    }
+
+    /// The composition at a frame of its keys for the picture of the node `id`, as
+    /// [`Composition::at_node`] has it, its pictures of `size` pixels, as
+    /// [`Composition::at_size`] has them.
+    #[must_use]
+    pub fn at_node_size(&self, id: &str, frame: f64, size: (u32, u32)) -> Option<Fused> {
         let node = self.node(id)?;
         if node.kind.kind() == Kind::MediaOut {
-            return Some(self.at(frame));
+            return Some(self.at_size(frame, size));
         }
         let shown = if node.pass_through {
             node.kind
@@ -2371,19 +2656,24 @@ impl Composition {
         } else {
             Some(node)
         };
+        let moment = Moment { frame, size };
         let mut nodes = Vec::new();
         let mut placed = HashMap::new();
-        let output = shown.and_then(|node| self.place(node, frame, &mut nodes, &mut placed));
+        let output = shown.and_then(|node| self.place(node, moment, &mut nodes, &mut placed));
         Some(Fused { nodes, output })
     }
 
     /// Put `node` among `nodes`, after the nodes whose pictures it reads, and give its place
     /// there: the one that it has already where it was put before, and none for a node that
     /// has no picture to give.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "what each kind of node is at a moment, one after another"
+    )]
     fn place<'a>(
         &'a self,
         node: &'a Node,
-        frame: f64,
+        moment: Moment,
         nodes: &mut Vec<FusedNode>,
         placed: &mut HashMap<&'a str, Option<usize>>,
     ) -> Option<usize> {
@@ -2393,10 +2683,12 @@ impl Composition {
         // A node on a loop, which a composition that is checked has none of, reads nothing of
         // itself.
         placed.insert(&node.id, None);
+        let frame = moment.frame;
         let mut read = |input: Input| {
             self.feeding(&node.id, input)
-                .and_then(|from| self.place(from, frame, nodes, placed))
+                .and_then(|from| self.place(from, moment, nodes, placed))
         };
+        // A centre is where it is at the frame: what it follows, where that is published.
         let kind = match &node.kind {
             NodeKind::MediaIn => FusedKind::MediaIn,
             NodeKind::MediaOut => return None,
@@ -2408,27 +2700,42 @@ impl Composition {
                 background: read(Input::Background),
                 foreground: read(Input::Foreground),
                 mask: read(Input::Mask),
-                settings: merge.at(frame),
+                settings: Merged {
+                    center: self.center_at(&merge.center, bounds::CENTER, moment),
+                    ..merge.at(frame)
+                },
             },
             NodeKind::Transform(transform) => FusedKind::Transform {
                 input: read(Input::Input),
                 mask: read(Input::Mask),
-                settings: transform.at(frame),
+                settings: Transformed {
+                    center: self.center_at(&transform.center, bounds::CENTER, moment),
+                    ..transform.at(frame)
+                },
             },
             NodeKind::Rectangle(rectangle) => FusedKind::Rectangle {
                 mask: read(Input::Mask),
                 common: rectangle.common_at(frame),
-                shape: rectangle.at(frame),
+                shape: RectangleShape {
+                    center: self.center_at(&rectangle.center, bounds::MASK_CENTER, moment),
+                    ..rectangle.at(frame)
+                },
             },
             NodeKind::Ellipse(ellipse) => FusedKind::Ellipse {
                 mask: read(Input::Mask),
                 common: ellipse.common_at(frame),
-                shape: ellipse.at(frame),
+                shape: EllipseShape {
+                    center: self.center_at(&ellipse.center, bounds::MASK_CENTER, moment),
+                    ..ellipse.at(frame)
+                },
             },
             NodeKind::Polygon(polygon) => FusedKind::Polygon {
                 mask: read(Input::Mask),
                 common: polygon.common_at(frame),
-                shape: polygon.at(frame),
+                shape: PolygonShape {
+                    center: self.center_at(&polygon.center, bounds::MASK_CENTER, moment),
+                    ..polygon.at(frame)
+                },
             },
             NodeKind::Blur(blur) => FusedKind::Blur {
                 input: read(Input::Input),
@@ -2446,6 +2753,12 @@ impl Composition {
                 solid_matte: read(Input::SolidMatte),
                 mask: read(Input::Mask),
                 settings: keyer.at(frame),
+            },
+            NodeKind::Tracker(tracker) => FusedKind::Tracker {
+                input: read(Input::Input),
+                foreground: read(Input::Foreground),
+                mask: read(Input::Mask),
+                settings: tracker.at(frame, moment.size),
             },
         };
         let at = nodes.len();
@@ -2622,15 +2935,29 @@ pub enum FusedKind {
         /// How it is keyed.
         settings: DeltaKeyed,
     },
+    /// The picture that was tracked held still, or another made to follow it (see The
+    /// Tracker of the [module](self)).
+    Tracker {
+        /// The picture that was tracked: what the node is with an Operation of None, what is
+        /// held still with BG Only, and what lies under or over the foreground.
+        input: Option<usize>,
+        /// The picture that follows the patterns, with FG Only, FG Over BG and BG Over FG.
+        foreground: Option<usize>,
+        /// Its effect mask: what the node draws where it is 1, the picture of its `input` as
+        /// it came in where it is 0. None where it has none.
+        mask: Option<usize>,
+        /// What it draws, and how the picture that is moved is put.
+        settings: Tracked,
+    },
 }
 
 impl FusedKind {
     /// The picture that the first input of a node of the kind reads, by its place in
-    /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur, a Mosaic and a
-    /// Delta Keyer their picture, and of a mask node the mask that comes into it. None of a
-    /// kind that has no such input, and where the input reads no picture. It is the picture
-    /// that a node that is passed through hands on ([`Kind::through`]), and that what cannot
-    /// draw a kind may hand on in its place.
+    /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur, a Mosaic, a Delta
+    /// Keyer and a Tracker their picture, and of a mask node the mask that comes into it.
+    /// None of a kind that has no such input, and where the input reads no picture. It is
+    /// the picture that a node that is passed through hands on ([`Kind::through`]), and that
+    /// what cannot draw a kind may hand on in its place.
     #[must_use]
     pub fn first_input(&self) -> Option<usize> {
         match self {
@@ -2639,7 +2966,8 @@ impl FusedKind {
             Self::Transform { input, .. }
             | Self::Blur { input, .. }
             | Self::Mosaic { input, .. }
-            | Self::DeltaKeyer { input, .. } => *input,
+            | Self::DeltaKeyer { input, .. }
+            | Self::Tracker { input, .. } => *input,
             Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
             | Self::Polygon { mask, .. } => *mask,
@@ -2648,9 +2976,9 @@ impl FusedKind {
 
     /// The mask that the `mask` input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform, of a Background, of a
-    /// Blur, of a Mosaic and of a Delta Keyer, and the mask that comes into a mask node. None
-    /// of a `MediaIn`, which has no such input, and where the input is not linked or brings
-    /// no picture.
+    /// Blur, of a Mosaic, of a Delta Keyer and of a Tracker, and the mask that comes into a
+    /// mask node. None of a `MediaIn`, which has no such input, and where the input is not
+    /// linked or brings no picture.
     #[must_use]
     pub fn mask(&self) -> Option<usize> {
         match self {
@@ -2663,7 +2991,8 @@ impl FusedKind {
             | Self::Polygon { mask, .. }
             | Self::Blur { mask, .. }
             | Self::Mosaic { mask, .. }
-            | Self::DeltaKeyer { mask, .. } => *mask,
+            | Self::DeltaKeyer { mask, .. }
+            | Self::Tracker { mask, .. } => *mask,
         }
     }
 
@@ -2671,7 +3000,8 @@ impl FusedKind {
     /// [`Fused::nodes`], in the order of the inputs of the kind ([`Kind::inputs`]): its
     /// pictures, the two mattes of a Delta Keyer, and its mask last. An input that reads no
     /// picture is left out. They are the nodes that the node depends on, each of which is
-    /// before it in the list.
+    /// before it in the list. A Tracker that a centre follows is not among them: the centre
+    /// is its numbers at the frame, and reads no picture.
     #[must_use]
     pub fn reads(&self) -> Vec<usize> {
         let inputs: Vec<Option<usize>> = match self {
@@ -2686,6 +3016,12 @@ impl FusedKind {
                 mask,
                 ..
             } => vec![*background, *foreground, *mask],
+            Self::Tracker {
+                input,
+                foreground,
+                mask,
+                ..
+            } => vec![*input, *foreground, *mask],
             Self::Transform { input, mask, .. }
             | Self::Blur { input, mask, .. }
             | Self::Mosaic { input, mask, .. } => vec![*input, *mask],
@@ -2995,6 +3331,7 @@ mod tests {
             json!({"id": "a", "kind": "blur", "label": "", "params": {}}),
             json!({"id": "a", "kind": "delta_keyer", "label": "", "params": {}}),
             json!({"id": "a", "kind": "tracker", "label": "", "params": {}}),
+            json!({"id": "a", "kind": "text_plus", "label": "", "params": {}}),
             json!({"id": "a", "kind": "media_in", "label": "", "params": {}, "enabled": true}),
         ] {
             assert!(
@@ -3043,6 +3380,14 @@ mod tests {
         );
         assert_eq!(Kind::DeltaKeyer.through(), Some(Input::Input));
         assert!(!Kind::DeltaKeyer.is_mask());
+        // A Tracker has the picture that was tracked, the one that follows it and its effect
+        // mask, hands on the first, and makes no mask.
+        assert_eq!(
+            Kind::Tracker.inputs(),
+            &[Input::Input, Input::Foreground, Input::Mask]
+        );
+        assert_eq!(Kind::Tracker.through(), Some(Input::Input));
+        assert!(!Kind::Tracker.is_mask());
         assert_eq!(Kind::MediaIn.through(), None);
         assert_eq!(Kind::Background.through(), None);
         assert_eq!(Kind::MediaOut.through(), Some(Input::Input));
@@ -3060,6 +3405,7 @@ mod tests {
             Kind::Blur,
             Kind::Mosaic,
             Kind::DeltaKeyer,
+            Kind::Tracker,
         ] {
             // What is handed on is an input of the kind, and its mask comes after its pictures.
             let inputs = kind.inputs();
@@ -3397,6 +3743,22 @@ mod tests {
         let paths = |kind: Kind| NodeKind::new(kind).settings();
         assert_eq!(paths(Kind::MediaIn), [] as [&str; 0]);
         assert_eq!(paths(Kind::MediaOut), [] as [&str; 0]);
+        // No number of a Tracker takes keys, with patterns neither: its paths move it.
+        assert_eq!(paths(Kind::Tracker), [] as [&str; 0]);
+        let mut tracked = NodeKind::Tracker(Tracker {
+            trackers: vec![Pattern::new(0.25, 0.75)],
+            ..Tracker::default()
+        });
+        assert_eq!(tracked.settings(), [] as [&str; 0]);
+        for path in [
+            "reference",
+            "pivot_point.x",
+            "trackers.0.pattern.x",
+            "trackers.0.offset.y",
+            "trackers.0.path",
+        ] {
+            assert!(tracked.setting_mut(path).is_none(), "{path}");
+        }
         assert_eq!(
             paths(Kind::Merge),
             [
@@ -4883,5 +5245,287 @@ mod tests {
             10,
         );
         assert_eq!(size_of(&colour, &project, &timeline), (1920, 1080));
+    }
+
+    /// The size of the pictures of the compositions with a Tracker: not square.
+    const TRACKED: (u32, u32) = (64, 32);
+
+    /// A pattern that goes from a quarter of the width and half the height at frame 0 eight
+    /// pixels to the right and eight up by frame 8, in pictures of [`TRACKED`].
+    fn rising() -> Pattern {
+        Pattern {
+            path: [(0, [0.25, 0.5]), (8, [0.375, 0.75])].into_iter().collect(),
+            ..Pattern::default()
+        }
+    }
+
+    /// The composition of `merged` with a Tracker `track` of `patterns` that match moves:
+    /// the picture of the clip comes into it, the Merge is its foreground and the Ellipse
+    /// `e` its mask, and the Transform `move` moves its picture in place of that of the
+    /// Merge.
+    fn tracked(patterns: Vec<Pattern>) -> Composition {
+        let mut composition = merged();
+        composition.nodes.push(Node {
+            kind: NodeKind::Tracker(Tracker {
+                operation: TrackerOperation::MatchMove,
+                trackers: patterns,
+                ..Tracker::default()
+            }),
+            ..Node::new("track", Kind::Tracker)
+        });
+        composition.nodes.push(Node::new("e", Kind::Ellipse));
+        composition.links.retain(|link| link.to != "move");
+        composition.links.extend([
+            Link::new("in", "track", Input::Input),
+            Link::new("over", "track", Input::Foreground),
+            Link::new("e", "track", Input::Mask),
+            Link::new("track", "move", Input::Input),
+        ]);
+        composition.sort_links();
+        composition
+    }
+
+    /// The node `id` of a composition, to be changed.
+    fn node_mut<'a>(composition: &'a mut Composition, id: &str) -> &'a mut Node {
+        composition
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == id)
+            .expect("the composition has the node")
+    }
+
+    /// Make the centre of the node `id` of a composition follow `follow`, or nothing.
+    fn follow(composition: &mut Composition, id: &str, follow: Option<Follow>) {
+        let center = match &mut node_mut(composition, id).kind {
+            NodeKind::Merge(merge) => &mut merge.center,
+            NodeKind::Transform(transform) => &mut transform.center,
+            NodeKind::Rectangle(rectangle) => &mut rectangle.center,
+            NodeKind::Ellipse(ellipse) => &mut ellipse.center,
+            NodeKind::Polygon(polygon) => &mut polygon.center,
+            other => panic!("{other:?} has no centre"),
+        };
+        center.follow = follow;
+    }
+
+    /// The centre of the node `id` of a composition at a moment.
+    fn center_of(fused: &Fused, id: &str) -> [f64; 2] {
+        let node = fused
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .expect("the node is drawn");
+        match &node.kind {
+            FusedKind::Merge { settings, .. } => settings.center,
+            FusedKind::Transform { settings, .. } => settings.center,
+            FusedKind::Rectangle { shape, .. } => shape.center,
+            FusedKind::Ellipse { shape, .. } => shape.center,
+            FusedKind::Polygon { shape, .. } => shape.center,
+            other => panic!("{other:?} has no centre"),
+        }
+    }
+
+    #[test]
+    fn a_tracker_at_a_frame_is_what_it_draws_after_what_it_reads() {
+        let mut composition = tracked(vec![rising()]);
+        assert_eq!(composition.check(), Ok(()));
+        assert!(composition.is_animated());
+        let fused = composition.at_size(8.0, TRACKED);
+        // Its picture, its foreground with what that reads, and its mask, each before it.
+        assert_eq!(ids(&fused), ["in", "bg", "over", "e", "track", "move"]);
+        assert_eq!(fused.output, Some(5));
+        // Held still: the picture is put eight pixels to the left and eight down.
+        assert_eq!(
+            fused.nodes[4].kind,
+            FusedKind::Tracker {
+                input: Some(0),
+                foreground: Some(2),
+                mask: Some(3),
+                settings: Tracked {
+                    operation: TrackerOperation::MatchMove,
+                    merge: TrackerMerge::BgOnly,
+                    center: [0.375, 0.25],
+                    size: 1.0,
+                    angle: 0.0,
+                },
+            }
+        );
+        assert_eq!(fused.nodes[4].kind.first_input(), Some(0));
+        assert_eq!(fused.nodes[4].kind.mask(), Some(3));
+        assert_eq!(fused.nodes[4].kind.reads(), [0, 2, 3]);
+        // Half way along its path, half as far; and with no size told, the shift of one
+        // pattern is the same share of a square picture.
+        let half = composition.at_size(4.0, TRACKED);
+        let FusedKind::Tracker { settings, .. } = &half.nodes[4].kind else {
+            panic!("the fifth node is the tracker")
+        };
+        assert_eq!(settings.center, [0.4375, 0.375]);
+        assert_eq!(composition.at(8.0), fused);
+        // The picture of the Tracker alone, and of what leads to it.
+        let alone = composition.at_node_size("track", 8.0, TRACKED).unwrap();
+        assert_eq!(ids(&alone), ["in", "bg", "over", "e", "track"]);
+        assert_eq!(alone.output, Some(4));
+        assert_eq!(alone.nodes[..], fused.nodes[..5]);
+        assert_eq!(composition.at_node("track", 8.0), Some(alone));
+        // Its paths are moved with the keys, and it draws later what it drew.
+        let later = composition.with_key_frames(&|frame| frame + 5);
+        assert_eq!(later.at_size(13.0, TRACKED), fused);
+        assert_eq!(later.check(), Ok(()));
+        // Passed through, it hands on the picture that was tracked, and neither its
+        // foreground nor its mask.
+        node_mut(&mut composition, "track").pass_through = true;
+        assert_eq!(ids(&composition.at_size(8.0, TRACKED)), ["in", "move"]);
+        // A Tracker with no path is the same at every frame.
+        let idle = tracked(vec![Pattern::default()]);
+        assert!(!idle.is_animated());
+        assert_eq!(idle.at_size(8.0, TRACKED), idle.at_size(0.0, TRACKED));
+        assert!(!tracked(vec![]).is_animated());
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each place that is followed, and each way in which nothing is published"
+    )]
+    fn a_centre_that_follows_a_tracker_is_where_the_tracker_publishes() {
+        let mut pattern = rising();
+        pattern.offset = Place { x: 0.125, y: -0.25 };
+        let mut composition = tracked(vec![pattern]);
+        follow(&mut composition, "e", Some(Follow::tracker("track", 0)));
+        let unsteady = Follow::of("track", FollowOutput::UnsteadyPosition);
+        follow(&mut composition, "over", Some(unsteady.clone()));
+        let steady = Follow::of("track", FollowOutput::SteadyPosition);
+        follow(&mut composition, "move", Some(steady.clone()));
+        // The own numbers of a centre that follows are kept, and not read.
+        if let NodeKind::Ellipse(ellipse) = &mut node_mut(&mut composition, "e").kind {
+            ellipse.center.x = Param::Fixed(-3.0);
+            ellipse.center.y = keys(&[(0, 2.0), (8, 4.0)]);
+        }
+        assert_eq!(composition.check(), Ok(()));
+        let fused = composition.at_size(8.0, TRACKED);
+        // The pattern with its offset, right and up; the middle and the shift of the
+        // patterns; and the middle less it.
+        assert_eq!(center_of(&fused, "e"), [0.5, 0.5]);
+        assert_eq!(center_of(&fused, "over"), [0.625, 0.75]);
+        assert_eq!(center_of(&fused, "move"), [0.375, 0.25]);
+        let first = Follow::tracker("track", 0);
+        assert_eq!(
+            composition.published(&first, 8.0, TRACKED),
+            Some([0.5, 0.5])
+        );
+        assert_eq!(
+            composition.published(&first, 4.0, TRACKED),
+            Some([0.4375, 0.375])
+        );
+        assert_eq!(
+            composition.published(&unsteady, 4.0, TRACKED),
+            Some([0.5625, 0.625])
+        );
+        assert_eq!(
+            composition.published(&steady, 4.0, TRACKED),
+            Some([0.4375, 0.375])
+        );
+        // The node that follows reads no picture of the Tracker: it is its numbers.
+        let ellipse = fused.nodes.iter().find(|node| node.id == "e").unwrap();
+        assert_eq!(ellipse.kind.reads(), [] as [usize; 0]);
+        // A node that follows a Tracker with a path changes with the frame.
+        for (id, moves) in [("e", true), ("over", true), ("track", true), ("bg", false)] {
+            assert_eq!(composition.node_is_animated(id), moves, "{id}");
+        }
+        assert!(!composition.node_is_animated("n404"));
+        // It is written with what it follows, and one that follows nothing as it always was.
+        let written = serde_json::to_value(&composition).unwrap();
+        assert_eq!(
+            written["nodes"][2]["params"]["center"],
+            json!({"x": 0.5, "y": 0.5,
+                   "follow": {"node": "track", "output": "unsteady_position", "tracker": 0}})
+        );
+        assert_eq!(written["nodes"][1]["params"].get("center"), None);
+        let read: Composition = serde_json::from_value(written).unwrap();
+        assert_eq!(read, composition);
+        let plain = serde_json::to_string(&Center::middle()).unwrap();
+        assert_eq!(plain, r#"{"x":0.5,"y":0.5}"#);
+        let null = json!({"x": 0.5, "y": 0.5, "follow": null});
+        assert_eq!(
+            serde_json::from_value::<Center>(null).unwrap(),
+            Center::middle()
+        );
+        // Where nothing is published the centre is its own numbers: a pattern that is not
+        // there, a Tracker that is passed through, and one with no path.
+        let own = [-3.0, 4.0];
+        let mut beyond = composition.clone();
+        follow(&mut beyond, "e", Some(Follow::tracker("track", 3)));
+        assert_eq!(beyond.check(), Ok(()));
+        assert_eq!(center_of(&beyond.at_size(8.0, TRACKED), "e"), own);
+        let mut passed = composition.clone();
+        node_mut(&mut passed, "track").pass_through = true;
+        assert_eq!(passed.published(&first, 8.0, TRACKED), None);
+        assert_eq!(
+            passed.at_node_size("e", 8.0, TRACKED).unwrap().nodes.len(),
+            1
+        );
+        let shown = passed.at_node_size("e", 8.0, TRACKED).unwrap();
+        assert_eq!(center_of(&shown, "e"), own);
+        let mut pathless = composition.clone();
+        if let NodeKind::Tracker(tracker) = &mut node_mut(&mut pathless, "track").kind {
+            tracker.trackers[0].path.clear();
+        }
+        let still = pathless.at_size(8.0, TRACKED);
+        assert_eq!(center_of(&still, "e"), own);
+        assert_eq!(center_of(&still, "over"), [0.5, 0.5]);
+        assert!(!pathless.node_is_animated("over") && pathless.node_is_animated("e"));
+        // What is published is held within the bounds of the centre that follows it.
+        let mut far = composition.clone();
+        if let NodeKind::Tracker(tracker) = &mut node_mut(&mut far, "track").kind {
+            tracker.trackers[0].path.insert(8, [14.0, -12.0]);
+            tracker.trackers[0].offset = Place { x: 0.0, y: 0.0 };
+        }
+        assert_eq!(far.check(), Ok(()));
+        assert_eq!(center_of(&far.at_size(8.0, TRACKED), "e"), [10.0, -10.0]);
+        assert_eq!(
+            center_of(&far.at_size(8.0, TRACKED), "over"),
+            [14.25, -12.0]
+        );
+        // The node that is followed is a Tracker of the composition, and the pattern one
+        // that a Tracker may have.
+        let mut nowhere = composition.clone();
+        follow(&mut nowhere, "e", Some(Follow::tracker("n404", 0)));
+        assert_eq!(
+            nowhere.check(),
+            Err(OpError::Missing {
+                what: "node",
+                id: "n404".into()
+            })
+        );
+        let mut wrong = composition.clone();
+        follow(&mut wrong, "e", Some(Follow::tracker("over", 0)));
+        assert_eq!(
+            wrong.check(),
+            Err(OpError::WrongNode {
+                node: "over".into(),
+                kind: "merge"
+            })
+        );
+        let mut many = composition.clone();
+        follow(
+            &mut many,
+            "e",
+            Some(Follow::tracker("track", MOST_TRACKERS)),
+        );
+        assert_eq!(
+            many.check(),
+            Err(OpError::OutOfRange {
+                what: "center.follow.tracker"
+            })
+        );
+        follow(
+            &mut many,
+            "e",
+            Some(Follow::tracker("track", MOST_TRACKERS - 1)),
+        );
+        assert_eq!(many.check(), Ok(()));
+        // Let go of, the centre is its own numbers again.
+        follow(&mut composition, "e", None);
+        assert_eq!(center_of(&composition.at_size(8.0, TRACKED), "e"), own);
+        assert_eq!(composition.check(), Ok(()));
     }
 }

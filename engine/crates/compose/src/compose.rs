@@ -10,7 +10,12 @@
 //! crop cuts it in its own frame, before its transform, and a composite mode other than Normal
 //! blends it with what is under it (see [`SceneLayer`], and `Compositor::draw_calls`). A layer
 //! of a clip that is retimed by Frame Blend is of two pictures of its media, mixed as they are
-//! stored, before they are made R'G'B' ([`Source::Between`], `between.wgsl`). A
+//! stored, before they are made R'G'B' ([`Source::Between`], `between.wgsl`). A layer of a clip
+//! that has a composition shows what comes out of it ([`Source::Fused`]): its source is drawn
+//! alone, through its input transform, into a texture, the nodes of the composition are drawn
+//! from that into textures of their own ([`crate::fusion`]), and the last of them is the picture
+//! of the layer, to which its grade, its crop, its transform, its composite mode and its
+//! opacity are done as they are to the picture of a title. A
 //! layer whose operations read the pixels about each one is drawn first into textures of its
 //! own, one for each such neighbourhood, at the size of its picture, and those are filtered
 //! (`color.rs`); the others are drawn in their one pass. The canvas is black at first, and of
@@ -32,6 +37,7 @@ use columbina_model::grade::Composite;
 use columbina_model::project::{Rgba, TextAlign};
 
 use crate::color::{self, Filter, Inputs, LayerColor, Part, Program, Stage, TextureKind};
+use crate::fusion::{self, Fusion, Reads};
 use crate::geometry::{
     fit, minification, picture_stride, placement, raster_scale, samples, shown_size,
     subtitle_origin, subtitle_size, text_window, title_origin, Affine, Crop, Transform, UNCUT,
@@ -193,6 +199,19 @@ pub enum Source {
     /// A colour over the canvas: R', G', B' and how opaque it is, from 0 to 1, not
     /// premultiplied.
     Color([f32; 4]),
+    /// The picture that comes out of the composition of a clip ([`Fusion`]), in place of the
+    /// source of the clip, which a `MediaIn` of the composition shows: decoded and through the
+    /// input transform of the layer ([`LayerColor::input`]), as it is before the grade. The
+    /// picture is of the shape of the composition, fitted to the canvas as a picture is; the
+    /// grade of the layer, its crop (of the picture as it is fitted), its transform, its
+    /// composite mode and its opacity are done to it as they are to a source, its alpha with
+    /// it. Where nothing comes into the `MediaOut` of the composition, the layer shows
+    /// nothing; and where the `MediaOut` shows the `MediaIn` itself, as in the composition
+    /// that a clip has at first, the layer is drawn as one of the source alone is, to the bit.
+    ///
+    /// The source is one of the other kinds: that of a composition within it is taken in its
+    /// place ([`Source::own`]).
+    Fused(Box<Fusion>),
 }
 
 impl Source {
@@ -200,6 +219,19 @@ impl Source {
     #[must_use]
     pub fn color(rgba: Rgba) -> Source {
         Source::Color(rgba.0.map(|channel| f32::from(channel) / 255.0))
+    }
+
+    /// The source of the clip itself: of a layer that shows what comes out of a composition
+    /// ([`Source::Fused`]), what a `MediaIn` of it shows; of any other, the source as it is.
+    /// For what goes by the media of a layer: how its codes are read, its input transform,
+    /// and the shape of its picture.
+    #[must_use]
+    pub fn own(&self) -> &Source {
+        let mut source = self;
+        while let Source::Fused(fusion) = source {
+            source = &fusion.source;
+        }
+        source
     }
 }
 
@@ -784,6 +816,9 @@ enum Pipe {
     YuvBetween(Texel),
     /// Two pictures mixed, and blended with what is under them on the canvas.
     YuvBetweenBlended(Texel),
+    /// A pass of the composition of a clip that lays a foreground over a background
+    /// (`fusion.wgsl`): it draws no layer, and into a texture of the composition alone.
+    Fusion,
 }
 
 impl Pipe {
@@ -926,6 +961,11 @@ struct StageWork {
 /// What the layers of a frame draw: the draws, their uniforms and their programs of colour, one
 /// each; and what is done first for the neighbourhoods of some, with the uniforms of their draws
 /// alone.
+///
+/// And, for the layers of clips that have compositions, what is drawn into textures before any
+/// of that: the passes, in the order they are drawn; the sources of those clips, each drawn
+/// alone; and the uniforms of the passes that lay a foreground over a background. A frame
+/// without such a layer has none of them.
 #[derive(Default)]
 struct Layered {
     draws: Vec<Draw>,
@@ -933,6 +973,75 @@ struct Layered {
     colours: Vec<Option<Graded>>,
     taps: Vec<LayerTaps>,
     tap_uniforms: Vec<Vec<f32>>,
+    offscreen: Vec<Offscreen>,
+    sources: Vec<Alone>,
+    lays: Vec<[f32; fusion::PARAMS]>,
+    /// The textures of the compositions drawn so far that no pass after reads: those of the
+    /// compositions of the layers after are drawn into them.
+    free: Vec<wgpu::Texture>,
+    /// Whether a layer is drawn of its source alone, the pipeline of the passes of its
+    /// composition being made.
+    waiting: bool,
+}
+
+/// The source of a clip that has a composition, drawn alone into a texture of the
+/// composition: what a `MediaIn` shows.
+struct Alone {
+    /// The number of its layer in the scene.
+    layer: usize,
+    draw: Draw,
+    uniform: Vec<f32>,
+    /// The input transform of the layer, where it does something.
+    colour: Option<Graded>,
+    /// The texture that it is drawn into.
+    target: Option<wgpu::Texture>,
+}
+
+/// A pass that draws into a texture of the composition of a clip.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a frame has a few of them, made and dropped within it"
+)]
+enum Offscreen {
+    /// The source of the clip, alone: the one of this number among those of the frame.
+    Source(usize),
+    /// A colour over the whole picture, premultiplied.
+    Fill {
+        colour: [f32; 4],
+        target: wgpu::Texture,
+    },
+    /// A foreground laid over a background, or over nothing, by the uniform of this number
+    /// among those of the frame.
+    Lay {
+        uniform: usize,
+        background: Option<wgpu::Texture>,
+        foreground: wgpu::Texture,
+        target: wgpu::Texture,
+    },
+}
+
+/// What a layer of a clip that has a composition shows.
+enum Composed {
+    /// Nothing: no picture comes out of the composition, or its crop keeps none of it.
+    Nothing,
+    /// The source of the clip, as the layer of a clip without a composition shows it.
+    Source,
+    /// The picture that comes out of the composition.
+    Picture(Outcome),
+}
+
+/// The picture that comes out of the composition of a clip, to be laid on the canvas.
+struct Outcome {
+    view: wgpu::TextureView,
+    /// The size that it is drawn at.
+    size: (u32, u32),
+    /// The frame that it is fitted into on the canvas.
+    frame: (f64, f64),
+    /// What the crop of the layer keeps of that frame.
+    kept: [f64; 4],
+    /// Whether the input transform of the layer is done to its source, before the
+    /// composition; else it is done after, with the grade.
+    early: bool,
 }
 
 /// What a texture that the passes of a frame share is drawn into with.
@@ -948,7 +1057,8 @@ enum Role {
 
 /// The textures of neighbourhoods, kept from frame to frame by their sizes: those lent to a
 /// frame, each to one use, and those shared within it by the passes that draw into them one
-/// after another, one of each size for each [`Role`].
+/// after another, one of each size for each [`Role`]. The pictures of the compositions of
+/// clips are drawn into textures lent from them too (`fusion.rs`).
 #[derive(Default)]
 struct Spares {
     kept: HashMap<(u32, u32), Vec<(wgpu::Texture, u64)>>,
@@ -1151,7 +1261,7 @@ fn pictures_of(source: &Source) -> Option<Pictures<'_>> {
                 rotation: *rotation,
             })
         }
-        Source::Title(_) | Source::Color(_) => None,
+        Source::Title(_) | Source::Color(_) | Source::Fused(_) => None,
     }
 }
 
@@ -1214,6 +1324,12 @@ pub struct Compositor {
     /// The pipelines that make a canvas opaque (`opaque.wgsl`), by its format, made as they
     /// are first needed: by a frame with a layer that is blended.
     opaque: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    /// What the passes of compositions that lay a foreground over a background are drawn
+    /// with, made as it is first needed: by a frame with a layer of a clip whose composition
+    /// has such a pass.
+    fusion: Option<fusion::Card>,
+    /// How many passes it has drawn into textures of compositions since it was made.
+    fusion_passes: u64,
     /// The number of the frame being composed.
     frame: u64,
 }
@@ -1397,6 +1513,8 @@ impl Compositor {
             filter_uniform,
             spares: Spares::default(),
             opaque: HashMap::new(),
+            fusion: None,
+            fusion_passes: 0,
             yuv_layouts,
             between_layouts: HashMap::new(),
             rgba_layout,
@@ -1443,11 +1561,14 @@ impl Compositor {
     /// changed is shown as it was, and then as it is. Else the layer is drawn with no colour of
     /// its own, its input transform too. A layer of two pictures mixed ([`Source::Between`]) is
     /// drawn first as its first picture alone, where a layer of one picture is drawn with its
-    /// colour already. A stage over the canvas (the timeline grade, the output
-    /// transform) is done as the last frame did it, or not at such a frame. Such a frame is
-    /// [`Compositor::is_provisional`]: a preview draws it, and again once `wake` is called; an
-    /// export is to wait ([`Compositor::finish_compiling`]), or use a compositor of its own,
-    /// which waits.
+    /// colour already. A layer of a clip that has a composition ([`Source::Fused`]) is drawn
+    /// of its source alone, as that of a clip without one, until the pipeline of the passes of
+    /// compositions is made; and its source is drawn into the composition without its input
+    /// transform until the pipeline of that is. A stage over the canvas (the timeline grade,
+    /// the output transform) is done as the last frame did it, or not at such a frame. Such a
+    /// frame is [`Compositor::is_provisional`]: a preview draws it, and again once `wake` is
+    /// called; an export is to wait ([`Compositor::finish_compiling`]), or use a compositor of
+    /// its own, which waits.
     pub fn compile_in_background(&mut self, wake: impl Fn() + Send + Sync + 'static) {
         self.background = true;
         self.builder.wake_with(Arc::new(wake));
@@ -1496,7 +1617,8 @@ impl Compositor {
         self.pipelines.len()
     }
 
-    /// The bytes of the textures of neighbourhoods kept for the frames to come.
+    /// The bytes of the textures of neighbourhoods, and of the pictures of compositions, kept
+    /// for the frames to come.
     #[doc(hidden)]
     #[must_use]
     pub fn neighbourhood_bytes(&self) -> u64 {
@@ -1509,6 +1631,89 @@ impl Compositor {
     #[must_use]
     pub fn texts_drawn(&self) -> u64 {
         self.text_draws
+    }
+
+    /// How many passes it has drawn into textures of compositions since it was made (the
+    /// sources of clips drawn alone, and the passes of their nodes): for the tests, that a
+    /// layer without a composition, and one whose composition shows its source, draw none.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fusion_passes(&self) -> u64 {
+        self.fusion_passes
+    }
+
+    /// Merge the pixels `foreground` with the pixels `background`, both of the size of the
+    /// preview `target` and row after row, by `settings` on the card, into `target`: a pass of
+    /// a composition as it lays a foreground that lies where it is, for the tests that hold
+    /// its shader to [`crate::merge::merge_pixel`]. The pixels are given to the card as they
+    /// are, floats of 32 bits; `luma` has the weights of R, G and B in the luma of the working
+    /// space.
+    ///
+    /// # Errors
+    /// The card was lost; the target is not a preview of this card, or the pictures are not
+    /// of its size; or the pipeline of the pass cannot be made.
+    #[doc(hidden)]
+    pub fn merge_for_tests(
+        &mut self,
+        background: &[[f32; 4]],
+        foreground: &[[f32; 4]],
+        settings: &crate::merge::Settings,
+        luma: [f32; 3],
+        target: &Target,
+    ) -> Result<(), ComposeError> {
+        if let Some(why) = self.gpu.lost_reason() {
+            return Err(ComposeError::Lost(why));
+        }
+        let (width, height) = target.size();
+        let pixels = width as usize * height as usize;
+        if !Arc::ptr_eq(&self.gpu, &target.gpu)
+            || target.export.is_some()
+            || background.len() != pixels
+            || foreground.len() != pixels
+        {
+            return Err(ComposeError::Target(
+                "two pictures of the size of a preview of this card are merged into it".into(),
+            ));
+        }
+        let not_made = || ComposeError::Color("the pipeline of compositions is not made".into());
+        let key = (Pipe::Fusion, fusion::FORMAT, None);
+        self.keep_made();
+        if !self
+            .pipeline(key.0, key.1, key.2)
+            .map_err(ComposeError::Color)?
+        {
+            self.finish_compiling();
+            if !self
+                .pipeline(key.0, key.1, key.2)
+                .map_err(ComposeError::Color)?
+            {
+                return Err(not_made());
+            }
+        }
+        let under = fusion::floats(&self.gpu, width, background);
+        let over = fusion::floats(&self.gpu, width, foreground);
+        let uniform = fusion::merge_uniform((width, height), settings, luma);
+        let offsets = self.write_lays(&[uniform]);
+        let (Some(card), Some(pipeline), Some(offset)) =
+            (&self.fusion, self.pipelines.get(&key), offsets.first())
+        else {
+            return Err(not_made());
+        };
+        let device = self.gpu.device();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("columbina merge"),
+        });
+        card.lay(
+            device,
+            &mut encoder,
+            pipeline,
+            *offset,
+            Some(&under),
+            &over,
+            &target.texture,
+        );
+        self.gpu.queue().submit([encoder.finish()]);
+        Ok(())
     }
 
     /// How many texts laid out it keeps: for the tests, that a title whose size changes at
@@ -1547,7 +1752,7 @@ impl Compositor {
         let whole = [0.0, 0.0, canvas.0, canvas.1];
         let mut laid = Layered::default();
         if let Err(error) = self.layers(scene, canvas, whole, &mut laid) {
-            self.give_back(laid.draws);
+            self.give_back(laid.draws, laid.sources);
             return Err(error);
         }
         let Layered {
@@ -1556,6 +1761,11 @@ impl Compositor {
             mut colours,
             mut taps,
             tap_uniforms,
+            offscreen,
+            mut sources,
+            lays,
+            waiting: fusing,
+            free: _,
         } = laid;
         // The stages over the canvas, where they do something.
         let size = (scene.width, scene.height);
@@ -1589,7 +1799,7 @@ impl Compositor {
                 }
                 Ok(None) => {}
                 Err(message) => {
-                    self.give_back(draws);
+                    self.give_back(draws, sources);
                     return Err(ComposeError::Layer {
                         layer: scene.layers.len(),
                         message,
@@ -1598,29 +1808,39 @@ impl Compositor {
             }
         }
 
-        // The uniforms of all the layers, one slot each, and then of the layers as their
-        // neighbourhoods draw them.
+        // The uniforms of all the layers, one slot each; then of the layers as their
+        // neighbourhoods draw them; and then of the sources of the clips that have
+        // compositions, as they are drawn alone.
         let drawn = uniforms.len();
         uniforms.extend(tap_uniforms);
+        let tapped = uniforms.len();
+        uniforms.extend(
+            sources
+                .iter_mut()
+                .map(|source| std::mem::take(&mut source.uniform)),
+        );
         let mut offsets = match self.write_uniforms(&uniforms) {
             Ok(offsets) => offsets,
             Err(error) => {
-                self.give_back(draws);
+                self.give_back(draws, sources);
                 return Err(error);
             }
         };
+        let source_offsets = offsets.split_off(tapped);
         let tap_offsets = offsets.split_off(drawn);
 
         let format = target.texture.format();
-        let made = self.pipelines_of(&draws, &colours, &taps, [&grade, &output], format);
+        let made = self
+            .ask_for_sources(&sources)
+            .and_then(|()| self.pipelines_of(&draws, &colours, &taps, [&grade, &output], format));
         let mut waiting = match made {
             Ok(waiting) => waiting,
             Err(error) => {
-                self.give_back(draws);
+                self.give_back(draws, sources);
                 return Err(error);
             }
         };
-        self.provisional = !waiting.is_empty();
+        self.provisional = !waiting.is_empty() || fusing;
         if self.background {
             self.first_pictures_alone(&mut draws, &colours, &taps, &mut waiting.draws, format);
             let stood = self.stand_in_for_layers(
@@ -1632,46 +1852,23 @@ impl Compositor {
                 format,
             );
             if let Err(error) = stood {
-                self.give_back(draws);
+                self.give_back(draws, sources);
                 return Err(error);
             }
             grade = self.stand_in_for_stage(0, grade, waiting.stages[0], format);
             output = self.stand_in_for_stage(1, output, waiting.stages[1], format);
         }
+        if let Err(error) = self.sources_made(&mut sources) {
+            self.give_back(draws, sources);
+            return Err(error);
+        }
         let mut calls = Vec::with_capacity(draws.len());
         for (draw, offset) in draws.iter_mut().zip(offsets) {
-            let blended = is_blended(draw);
-            let (pipe, bind) = match draw {
-                Draw::Picture {
-                    shape,
-                    planes,
-                    second: Some(second),
-                    ..
-                } => (
-                    Pipe::YuvBetween(shape.texel),
-                    self.pictures_bind(shape.texel, planes, second),
-                ),
-                Draw::Picture { shape, planes, .. } => {
-                    let bind = match &planes.bind {
-                        Some((generation, bind)) if *generation == self.generation => bind.clone(),
-                        _ => {
-                            let bind = self.planes_bind(shape.texel, planes);
-                            planes.bind = Some((self.generation, bind.clone()));
-                            bind
-                        }
-                    };
-                    (Pipe::Yuv(shape.texel), bind)
-                }
-                Draw::Texture(view, _) => (Pipe::Rgba, self.texture_bind(view)),
-            };
-            calls.push(Call {
-                pipe,
-                program: None,
-                bind,
-                offset,
-                colour: None,
-                blended,
-            });
+            calls.push(self.call_of(draw, offset));
+        }
+        let mut source_calls = Vec::with_capacity(sources.len());
+        for (source, offset) in sources.iter_mut().zip(source_offsets) {
+            source_calls.push(self.call_of(&mut source.draw, offset));
         }
         // What the layers that are blended read of the canvas under them: a texture of its
         // size that the canvas is copied into before each is drawn, bound as their group 2;
@@ -1687,8 +1884,9 @@ impl Compositor {
         } else {
             None
         };
-        // What the programs of colour read: those of the layers, of the stages, and of the
-        // neighbourhoods of the layers and of the stages, in that order.
+        // What the programs of colour read: those of the layers, of the stages, of the
+        // neighbourhoods of the layers and of the stages, and of the sources of the clips
+        // that have compositions, in that order.
         let stage_taps = [&grade, &output]
             .into_iter()
             .flatten()
@@ -1703,7 +1901,21 @@ impl Compositor {
         for tap in taps.iter().flat_map(|layer| &layer.taps).chain(stage_taps) {
             blocks.push((tap.program, &tap.inputs));
         }
-        let mut colour_binds = self.colour_binds(&blocks).into_iter();
+        let before_sources = blocks.len();
+        for colour in sources.iter().filter_map(|source| source.colour.as_ref()) {
+            blocks.push((colour.program, &colour.inputs));
+        }
+        let mut colour_binds = self.colour_binds(&blocks);
+        let mut source_binds = colour_binds
+            .split_off(before_sources.min(colour_binds.len()))
+            .into_iter();
+        let mut colour_binds = colour_binds.into_iter();
+        for (call, source) in source_calls.iter_mut().zip(&sources) {
+            if let Some(colour) = &source.colour {
+                call.program = Some(colour.program);
+                call.colour = source_binds.next();
+            }
+        }
         for (call, colour) in calls.iter_mut().zip(&colours) {
             if let Some(colour) = colour {
                 call.program = Some(colour.program);
@@ -1726,6 +1938,8 @@ impl Compositor {
             .flat_map(|tap| tap.passes)
             .collect();
         let mut filter_offsets = self.write_filter_uniforms(&filter_passes).into_iter();
+        // The uniforms of the passes of compositions that lay a foreground over a background.
+        let lay_offsets = self.write_lays(&lays);
 
         // The canvases drawn into, one after the other: the frame ends in the target's texture.
         let passes = usize::from(grade.is_some()) + usize::from(output.is_some());
@@ -1743,6 +1957,16 @@ impl Compositor {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("columbina compose"),
         });
+        // The pictures of the clips that have compositions: the source of each drawn alone,
+        // and then the passes of its composition, before the neighbourhoods of the layers that
+        // show them and before those layers.
+        self.draw_offscreen(
+            &mut encoder,
+            &offscreen,
+            &sources,
+            &source_calls,
+            &lay_offsets,
+        );
         // The neighbourhoods of the layers, each layer drawn into a texture of its own and that
         // filtered, before the layers are laid on the canvas.
         for layer in &taps {
@@ -1787,9 +2011,199 @@ impl Compositor {
             self.convert(&mut encoder, &view, export, target.height);
         }
         self.gpu.queue().submit([encoder.finish()]);
-        self.give_back(draws);
+        self.give_back(draws, sources);
         self.forget_unused();
         Ok(())
+    }
+
+    /// What draws `draw` with the uniform at `offset`: the kind of its pipeline and what binds
+    /// what it reads, with no program of colour yet.
+    fn call_of(&mut self, draw: &mut Draw, offset: u32) -> Call {
+        let blended = is_blended(draw);
+        let (pipe, bind) = match draw {
+            Draw::Picture {
+                shape,
+                planes,
+                second: Some(second),
+                ..
+            } => (
+                Pipe::YuvBetween(shape.texel),
+                self.pictures_bind(shape.texel, planes, second),
+            ),
+            Draw::Picture { shape, planes, .. } => {
+                let bind = match &planes.bind {
+                    Some((generation, bind)) if *generation == self.generation => bind.clone(),
+                    _ => {
+                        let bind = self.planes_bind(shape.texel, planes);
+                        planes.bind = Some((self.generation, bind.clone()));
+                        bind
+                    }
+                };
+                (Pipe::Yuv(shape.texel), bind)
+            }
+            Draw::Texture(view, _) => (Pipe::Rgba, self.texture_bind(view)),
+        };
+        Call {
+            pipe,
+            program: None,
+            bind,
+            offset,
+            colour: None,
+            blended,
+        }
+    }
+
+    /// Ask for the pipelines that draw the sources of the clips that have compositions alone,
+    /// each with the input transform of its layer, where they are not made or asked for yet:
+    /// before those of the layers are waited for, so that these are waited for with them.
+    ///
+    /// # Errors
+    /// The input transform of a layer is not WGSL that the card takes.
+    fn ask_for_sources(&mut self, sources: &[Alone]) -> Result<(), ComposeError> {
+        for source in sources {
+            let program = source.colour.as_ref().map(|colour| colour.program);
+            self.pipeline(pipe_of(&source.draw), fusion::FORMAT, program)
+                .map_err(|message| ComposeError::Layer {
+                    layer: source.layer,
+                    message,
+                })?;
+        }
+        Ok(())
+    }
+
+    /// See that the pipeline that draws each source of a clip that has a composition alone is
+    /// made. One that is being made still, where frames are drawn without waiting
+    /// ([`Compositor::compile_in_background`]), is stood in for, and the frame is provisional:
+    /// two pictures mixed are drawn as the first of them alone, where the pipeline of one
+    /// picture with the same colour is made (as [`Compositor::first_pictures_alone`] draws a
+    /// layer), and else the source is drawn without its input transform.
+    ///
+    /// # Errors
+    /// The pipeline of a source cannot be made.
+    fn sources_made(&mut self, sources: &mut [Alone]) -> Result<(), ComposeError> {
+        for source in sources {
+            let layer = source.layer;
+            let failed = |message: String| ComposeError::Layer { layer, message };
+            let pipe = pipe_of(&source.draw);
+            let program = source.colour.as_ref().map(|colour| colour.program);
+            if self
+                .pipeline(pipe, fusion::FORMAT, program)
+                .map_err(failed)?
+            {
+                continue;
+            }
+            self.provisional = true;
+            if let Draw::Picture { shape, second, .. } = &mut source.draw {
+                let one = (Pipe::Yuv(shape.texel), fusion::FORMAT, program);
+                if second.is_some() && self.pipelines.contains_key(&one) {
+                    self.planes.entry(*shape).or_default().extend(second.take());
+                    continue;
+                }
+            }
+            source.colour = None;
+            self.pipeline(pipe, fusion::FORMAT, None).map_err(failed)?;
+        }
+        Ok(())
+    }
+
+    /// Write the uniforms of the passes of compositions of a frame that lay a foreground over
+    /// a background, a slot each; give the offset of each. A frame without such a pass writes
+    /// nothing, and makes nothing to write them into.
+    fn write_lays(&mut self, lays: &[[f32; fusion::PARAMS]]) -> Vec<u32> {
+        if lays.is_empty() {
+            return Vec::new();
+        }
+        let slot = self.slot;
+        let card = self
+            .fusion
+            .get_or_insert_with(|| fusion::Card::new(&self.gpu, slot));
+        card.write(&self.gpu, slot, lays)
+    }
+
+    /// Draw the passes of the compositions of a frame into their textures, in their order:
+    /// the sources of the clips alone, by their `calls`, and the passes of their nodes, those
+    /// that lay a foreground over a background by the uniforms at `lays`.
+    fn draw_offscreen(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        offscreen: &[Offscreen],
+        sources: &[Alone],
+        calls: &[Call],
+        lays: &[u32],
+    ) {
+        let laying = (Pipe::Fusion, fusion::FORMAT, None);
+        for pass in offscreen {
+            match pass {
+                Offscreen::Source(number) => {
+                    let target = sources
+                        .get(*number)
+                        .and_then(|source| source.target.as_ref());
+                    let (Some(target), Some(call)) = (target, calls.get(*number)) else {
+                        continue;
+                    };
+                    self.source_pass(encoder, call, target);
+                }
+                Offscreen::Fill { colour, target } => fusion::fill(encoder, target, *colour),
+                Offscreen::Lay {
+                    uniform,
+                    background,
+                    foreground,
+                    target,
+                } => {
+                    let (Some(card), Some(pipeline), Some(offset)) = (
+                        &self.fusion,
+                        self.pipelines.get(&laying),
+                        lays.get(*uniform),
+                    ) else {
+                        continue;
+                    };
+                    card.lay(
+                        self.gpu.device(),
+                        encoder,
+                        pipeline,
+                        *offset,
+                        background.as_ref(),
+                        foreground,
+                        target,
+                    );
+                }
+            }
+            self.fusion_passes += 1;
+        }
+    }
+
+    /// Draw the source of a clip that has a composition alone into `target`, a texture of the
+    /// composition, by `call`: over nothing, so that what it does not cover is transparent.
+    fn source_pass(&self, encoder: &mut wgpu::CommandEncoder, call: &Call, target: &wgpu::Texture) {
+        let Some(pipeline) = self
+            .pipelines
+            .get(&(call.pipe, fusion::FORMAT, call.program))
+        else {
+            return;
+        };
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("columbina source of a composition"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &call.bind, &[call.offset]);
+        if let Some(colour) = &call.colour {
+            pass.set_bind_group(1, colour, &[]);
+        }
+        pass.draw(0..6, 0..1);
     }
 
     /// Do `stage` over the whole of the picture that the preview `from` holds once it is
@@ -2557,14 +2971,32 @@ impl Compositor {
                 layer: index,
                 message,
             };
+            // What comes out of the composition of its clip, where it has one, drawn into a
+            // texture of its own before the layers; a layer without one shows its source, as
+            // it always did.
+            let composed = if let Source::Fused(fusion) = &layer.source {
+                match self.composition(scene, index, layer, fusion, canvas, laid)? {
+                    Composed::Nothing => continue,
+                    Composed::Source => None,
+                    Composed::Picture(picture) => Some(picture),
+                }
+            } else {
+                None
+            };
             // Blended with what is under it, where its mode is not Normal and a layer is
             // drawn before it: the first has nothing under it, and is laid as it is.
             let blended = layer.composite != Composite::Normal && !laid.draws.is_empty();
             let blend = blended.then(|| blend_of(layer.composite, scene.luma));
             // Its input transform and its grade, after it is decoded; with what is done first
             // for their neighbourhoods, where they read any, once the size of its picture is
-            // known.
-            let stages = [&layer.color.input, &layer.color.grade];
+            // known. The input transform of a layer that shows what comes out of a
+            // composition was done to its source, before the composition: its grade alone is
+            // done to the picture.
+            let done = Stage::default();
+            let stages = match &composed {
+                Some(picture) if picture.early => [&done, &layer.color.grade],
+                _ => [&layer.color.input, &layer.color.grade],
+            };
             let filters = color::filters(&stages);
             let spatial = stages
                 .iter()
@@ -2605,13 +3037,46 @@ impl Compositor {
                     taps,
                 });
             };
-            match &layer.source {
+            if let Some(picture) = composed {
+                // The picture of the composition, laid as the picture of a title is: its
+                // texture over the frame that it is fitted into, which its crop cuts.
+                let frame = picture.frame;
+                let own = (f64::from(picture.size.0), f64::from(picture.size.1));
+                let alone = layer_uniform(
+                    &placement(own, own, &Transform::NONE),
+                    own,
+                    [0.0, 0.0, own.0, own.1],
+                    1.0,
+                    1.0,
+                    1,
+                    Some([1.0; 4]),
+                );
+                let units = neighbourhood::units(own.1, frame.1, canvas.1);
+                let draw = laid.draws.len();
+                neighbourhoods(self, laid, draw, picture.size, units, alone);
+                let mut values = layer_uniform(
+                    &placement(canvas, frame, &layer.transform),
+                    canvas,
+                    [0.0, 0.0, frame.0, frame.1],
+                    opacity,
+                    scale,
+                    1,
+                    Some([1.0; 4]),
+                );
+                cut_and_blend(&mut values, picture.kept, layer.crop.fade(frame.1), blend);
+                laid.uniforms.push(values);
+                laid.draws.push(Draw::Texture(picture.view, blended));
+                laid.colours.push(graded);
+                continue;
+            }
+            let source = layer.source.own();
+            match source {
                 Source::Picture(..) | Source::Between { .. } => {
                     let Some(Pictures {
                         first: picture,
                         second,
                         rotation,
-                    }) = pictures_of(&layer.source)
+                    }) = pictures_of(source)
                     else {
                         continue;
                     };
@@ -2807,9 +3272,327 @@ impl Compositor {
                         laid.colours.push(graded);
                     }
                 }
+                // The source of a clip is never what comes out of a composition
+                // ([`Source::own`]).
+                Source::Fused(_) => {}
             }
         }
         Ok(())
+    }
+
+    /// What the layer numbered `index`, of a clip that has a composition, shows: nothing, its
+    /// source as it is, or the picture that comes out of the composition, whose passes are
+    /// put among those of the frame (`laid`), each with the texture that it draws into.
+    ///
+    /// The pictures are drawn at the size that the layer shows them at
+    /// ([`fusion::drawn_size`]). The source is drawn alone only where a pass reads it. Where
+    /// the pipeline of the passes is being made still and frames are drawn without waiting
+    /// ([`Compositor::compile_in_background`]), the layer shows its source meanwhile.
+    ///
+    /// # Errors
+    /// The source of the clip cannot be drawn, or the pipeline of the passes cannot be made.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one composition, step by step: its plan, its source, its textures, its passes"
+    )]
+    fn composition(
+        &mut self,
+        scene: &Scene,
+        index: usize,
+        layer: &SceneLayer,
+        fusion: &Fusion,
+        canvas: (f64, f64),
+        laid: &mut Layered,
+    ) -> Result<Composed, ComposeError> {
+        let failed = |message: String| ComposeError::Layer {
+            layer: index,
+            message,
+        };
+        // Fitted to the canvas by its shape, as a picture of its size is; its crop, of the
+        // picture as it is fitted.
+        let nominal = (f64::from(fusion.size.0), f64::from(fusion.size.1));
+        let frame = fit(canvas, nominal);
+        let most = self.gpu.device().limits().max_texture_dimension_2d;
+        let drawn = fusion::drawn_size(fusion.size, canvas, layer.transform.scale, most);
+        let (Some(size), Some(kept)) = (drawn, layer.crop.kept(frame)) else {
+            return Ok(Composed::Nothing);
+        };
+        let mut plan = fusion::plan(&fusion.composition, size, scene.luma, true);
+        match plan.output {
+            Reads::Nothing => return Ok(Composed::Nothing),
+            Reads::Source => return Ok(Composed::Source),
+            Reads::Pass(_) => {}
+        }
+        if plan.lays() {
+            let key = (Pipe::Fusion, fusion::FORMAT, None);
+            self.keep_made();
+            let mut made = self.pipeline(key.0, key.1, key.2).map_err(failed)?;
+            if !made && !self.background {
+                self.finish_compiling();
+                made = self.pipeline(key.0, key.1, key.2).map_err(failed)?;
+            }
+            if !made {
+                laid.waiting = true;
+                return Ok(Composed::Source);
+            }
+        }
+        // The input transform of the layer is done to the source, before the composition,
+        // which works in the space of the timeline; but one that reads the pixels about each
+        // one, which is not drawn alone here, is done after it, with the grade.
+        let early = !layer.color.input.reads_neighbourhoods();
+        let mut source = None;
+        if plan.reads_source() {
+            source = self.alone(index, layer, fusion, size, early, laid)?;
+            if source.is_none() {
+                // A title of which nothing is seen: a `MediaIn` is no picture.
+                plan = fusion::plan(&fusion.composition, size, scene.luma, false);
+            }
+        }
+        let Reads::Pass(output) = plan.output else {
+            return Ok(Composed::Nothing);
+        };
+        let slots = plan.slots();
+        let textures: Vec<wgpu::Texture> = (0..slots.count)
+            .map(|_| self.fusion_texture(size, &mut laid.free))
+            .collect();
+        let texture = |slot: Option<usize>| slot.and_then(|slot| textures.get(slot)).cloned();
+        let read = |reads: Reads| match reads {
+            Reads::Nothing => None,
+            Reads::Source => texture(slots.source),
+            Reads::Pass(at) => texture(slots.passes.get(at).copied()),
+        };
+        if let (Some(source), Some(target)) = (source, read(Reads::Source)) {
+            if let Some(alone) = laid.sources.get_mut(source) {
+                alone.target = Some(target);
+                laid.offscreen.push(Offscreen::Source(source));
+            }
+        }
+        for (at, pass) in plan.passes.iter().enumerate() {
+            let Some(target) = read(Reads::Pass(at)) else {
+                continue;
+            };
+            match pass {
+                fusion::Pass::Fill(colour) => laid.offscreen.push(Offscreen::Fill {
+                    colour: *colour,
+                    target,
+                }),
+                fusion::Pass::Lay {
+                    background,
+                    foreground,
+                    uniform,
+                } => {
+                    let Some(foreground) = read(*foreground) else {
+                        continue;
+                    };
+                    laid.offscreen.push(Offscreen::Lay {
+                        uniform: laid.lays.len(),
+                        background: read(*background),
+                        foreground,
+                        target,
+                    });
+                    laid.lays.push(*uniform);
+                }
+            }
+        }
+        let Some(out) = read(Reads::Pass(output)) else {
+            return Ok(Composed::Nothing);
+        };
+        let view = out.create_view(&wgpu::TextureViewDescriptor::default());
+        // The textures but that of the picture that comes out, which the layer reads, are
+        // free for the compositions of the layers after this one.
+        let kept_slot = slots.passes.get(output).copied();
+        for (slot, texture) in textures.into_iter().enumerate() {
+            if Some(slot) != kept_slot {
+                laid.free.push(texture);
+            }
+        }
+        Ok(Composed::Picture(Outcome {
+            view,
+            size,
+            frame,
+            kept,
+            early,
+        }))
+    }
+
+    /// A texture of `size` for a pass of a composition: one that the compositions drawn
+    /// before in the frame read no more (`free`), or one of the spares of neighbourhoods,
+    /// which are kept from frame to frame by their size.
+    fn fusion_texture(&mut self, size: (u32, u32), free: &mut Vec<wgpu::Texture>) -> wgpu::Texture {
+        let done_with = free
+            .iter()
+            .position(|texture| (texture.width(), texture.height()) == size);
+        match done_with {
+            Some(at) => free.swap_remove(at),
+            None => self.spares.take(&self.gpu, size),
+        }
+    }
+
+    /// The source of the clip of the layer numbered `index`, to be drawn alone over a texture
+    /// of `size` pixels of its composition, which it fills: what a `MediaIn` shows. It is kept
+    /// among the sources of the frame (`laid`), and its number there is given; none where it
+    /// shows nothing, as a title of which nothing is seen. With `early`, the input transform
+    /// of the layer is done to it.
+    ///
+    /// A picture is read as a layer reads it, at as many points of each pixel as it is drawn
+    /// smaller; a title is drawn where its style puts it in the picture of the composition,
+    /// its letters as many pixels high as the picture is drawn larger or smaller than the
+    /// timeline; a colour covers the picture.
+    ///
+    /// # Errors
+    /// A picture whose planes do not hold it, or one larger than the card takes; two pictures
+    /// to be mixed that are not laid out alike; or a text too large to be drawn.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each kind of source, one after another"
+    )]
+    fn alone(
+        &mut self,
+        index: usize,
+        layer: &SceneLayer,
+        fusion: &Fusion,
+        size: (u32, u32),
+        early: bool,
+        laid: &mut Layered,
+    ) -> Result<Option<usize>, ComposeError> {
+        let failed = |message: String| ComposeError::Layer {
+            layer: index,
+            message,
+        };
+        let own = (f64::from(size.0), f64::from(size.1));
+        let whole = [0.0, 0.0, own.0, own.1];
+        let place = placement(own, own, &Transform::NONE);
+        let colour = if early {
+            color::program(&[&layer.color.input]).map(|(program, inputs)| Graded {
+                layer: index,
+                program: self.number(program),
+                inputs,
+            })
+        } else {
+            None
+        };
+        let (draw, uniform) = match fusion.source.own() {
+            source @ (Source::Picture(..) | Source::Between { .. }) => {
+                let Some(Pictures {
+                    first: picture,
+                    second,
+                    rotation,
+                }) = pictures_of(source)
+                else {
+                    return Ok(None);
+                };
+                let layout = yuv::check(picture).map_err(failed)?;
+                let most = self.gpu.device().limits().max_texture_dimension_2d;
+                if picture.width > most || picture.height > most {
+                    return Err(failed(format!(
+                        "a picture of {}×{} is larger than the {most}×{most} that the card takes",
+                        picture.width, picture.height
+                    )));
+                }
+                let shown = shown_size((picture.width, picture.height), rotation);
+                let shape = Shape {
+                    width: picture.width,
+                    height: picture.height,
+                    format: picture.format,
+                    alpha: layout.alpha_plane(),
+                    texel: layout.texel(self.gpu.has_sixteen_norm()),
+                };
+                let planes = self.take_planes(shape);
+                let uploaded = yuv::upload(self.gpu.queue(), &planes.textures, picture);
+                // The second picture of two that are mixed, into planes of its own.
+                let (other, mixed) = match second {
+                    Some((second, weight)) => {
+                        let other = self.take_planes(shape);
+                        let uploaded = yuv::check(second).and_then(|second_layout| {
+                            if second_layout == layout {
+                                yuv::upload(self.gpu.queue(), &other.textures, second)
+                            } else {
+                                Err("the two pictures that it mixes are not laid out alike".into())
+                            }
+                        });
+                        (Some(other), uploaded.map(|()| Some(weight)))
+                    }
+                    None => (None, Ok(None)),
+                };
+                // Kept before anything of it is refused, so that its planes are given back.
+                let number = laid.sources.len();
+                laid.sources.push(Alone {
+                    layer: index,
+                    draw: Draw::Picture {
+                        shape,
+                        planes,
+                        second: other,
+                        blended: false,
+                    },
+                    uniform: Vec::new(),
+                    colour,
+                    target: None,
+                });
+                uploaded.map_err(failed)?;
+                let weight = mixed.map_err(failed)?;
+                let mut decoded = yuv::picture_params(
+                    [0.0; 4],
+                    layout,
+                    shape.texel,
+                    layer.color.coding,
+                    rotation,
+                );
+                yuv::set_unclamped(&mut decoded, layer.color.unclamped);
+                if let Some(weight) = weight {
+                    yuv::set_between(&mut decoded, weight);
+                }
+                let mut values = decoded.to_vec();
+                values.extend(layer_uniform(
+                    &place,
+                    own,
+                    whole,
+                    1.0,
+                    1.0,
+                    samples(minification(shown, own, 1.0)),
+                    None,
+                ));
+                if let Some(alone) = laid.sources.get_mut(number) {
+                    alone.uniform = values;
+                }
+                return Ok(Some(number));
+            }
+            Source::Color(rgba) => {
+                let tint = rgba.map(|channel| channel.clamp(0.0, 1.0));
+                let values = layer_uniform(&place, own, whole, 1.0, 1.0, 1, Some(tint));
+                (Draw::Texture(self.white.clone(), false), values)
+            }
+            Source::Title(title) => {
+                let style = &title.style;
+                // The pixels that the picture is drawn at to a pixel of the composition, whose
+                // pixels are those of the timeline, in which the size of the letters is said.
+                let per = own.0 / f64::from(fusion.size.0.max(1));
+                #[allow(clippy::cast_possible_truncation, reason = "a size of letters")]
+                let letters = |by: f64| (style.size.min(4096.0) * per * by) as f32;
+                let put = self.put_fitted(
+                    |by| Spec::title(title, letters(by).max(1.0)),
+                    1.0,
+                    |block| title_origin(size, block, (style.x, style.y), style.align),
+                    &place,
+                    own,
+                );
+                let Some((quad, view, _)) = put.map_err(failed)? else {
+                    return Ok(None);
+                };
+                let mut values = layer_uniform(&place, own, quad, 1.0, 1.0, 1, Some([1.0; 4]));
+                window_canvas(&mut values, quad, own);
+                (Draw::Texture(view, false), values)
+            }
+            // The source of a clip is never what comes out of a composition.
+            Source::Fused(_) => return Ok(None),
+        };
+        laid.sources.push(Alone {
+            layer: index,
+            draw,
+            uniform,
+            colour,
+            target: None,
+        });
+        Ok(Some(laid.sources.len() - 1))
     }
 
     /// Planes for a picture of `shape`: some of those kept, or new ones.
@@ -2834,9 +3617,11 @@ impl Compositor {
         planes
     }
 
-    /// Keep the planes of the draws of a frame, for the next.
-    fn give_back(&mut self, draws: Vec<Draw>) {
-        for draw in draws {
+    /// Keep the planes of the draws of a frame, and of the sources of its compositions that
+    /// were drawn alone, for the next.
+    fn give_back(&mut self, draws: Vec<Draw>, sources: Vec<Alone>) {
+        let alone = sources.into_iter().map(|source| source.draw);
+        for draw in draws.into_iter().chain(alone) {
             if let Draw::Picture {
                 shape,
                 planes,
@@ -2997,6 +3782,9 @@ impl Compositor {
     /// Whether the pipeline of `pipe` that draws into targets of `format`, with a program of
     /// colour or none, is made: one with a program is asked of the builder if it is not (and is
     /// not made yet as this returns); one without, the compositor's own shader, is made at once.
+    /// But that of the passes of compositions ([`Pipe::Fusion`]), whose shader has the maths of
+    /// every composite mode in it, is asked of the builder too: a frame that is drawn without
+    /// waiting is not held up by it.
     ///
     /// # Errors
     /// The code of the program is not WGSL that the card takes, or reads what is not bound.
@@ -3026,6 +3814,9 @@ impl Compositor {
         if let Pipe::YuvBetween(texel) | Pipe::YuvBetweenBlended(texel) = pipe {
             self.between_layout(texel);
         }
+        if pipe == Pipe::Fusion && self.fusion.is_none() {
+            self.fusion = Some(fusion::Card::new(&self.gpu, self.slot));
+        }
         let (shader, layout) = match pipe {
             Pipe::Yuv(texel) => (texel.shader(), &self.yuv_layouts[&texel]),
             Pipe::Rgba => (LAYER_SHADER.to_owned(), &self.rgba_layout),
@@ -3040,6 +3831,10 @@ impl Compositor {
                 &self.between_layouts[&texel],
             ),
             Pipe::Stage => (STAGE_SHADER.to_owned(), &self.stage_layout),
+            Pipe::Fusion => match &self.fusion {
+                Some(card) => (fusion::shader(), &card.layout),
+                None => return Err("a pass of a composition has nothing to bind it".into()),
+            },
         };
         // What binds the canvas under a layer that is blended: a texture, as a stage reads one.
         let backdrop = pipe.is_blended().then(|| self.stage_layout.clone());
@@ -3054,7 +3849,7 @@ impl Compositor {
             None => (shader, None),
         };
         let making = maker(pipe, source, layout.clone(), colour, backdrop, format);
-        if program.is_none() {
+        if program.is_none() && pipe != Pipe::Fusion {
             let made = making(self.gpu.device());
             self.keep(vec![(key, made)]);
             return self.pipeline(pipe, format, program);
@@ -3248,10 +4043,11 @@ impl Compositor {
 }
 
 /// What makes the pipeline of `pipe` of the shader `source` that draws into targets of
-/// `format`, `layout` binding what it reads, `colour` what its program of colour reads, where
-/// it has one, and `backdrop` the canvas under a layer that is blended: on whatever thread, the
-/// errors of its validation caught in a scope of that thread, as the code of a program is not
-/// the compositor's.
+/// `format` (that of a pass of a composition, into the format of its textures), `layout`
+/// binding what it reads, `colour` what its program of colour reads, where it has one, and
+/// `backdrop` the canvas under a layer that is blended: on whatever thread, the errors of its
+/// validation caught in a scope of that thread, as the code of a program is not the
+/// compositor's.
 fn maker(
     pipe: Pipe,
     source: String,
@@ -3266,6 +4062,8 @@ fn maker(
             .map(|_| device.push_error_scope(wgpu::ErrorFilter::Validation));
         let pipeline = if pipe == Pipe::Stage {
             stage_pipeline(device, &source, &layout, colour.as_ref(), format)
+        } else if pipe == Pipe::Fusion {
+            fusion::pipeline(device, &source, &layout)
         } else {
             let groups = (colour.as_ref(), backdrop.as_ref());
             layer_pipeline(device, &source, &layout, groups, format)

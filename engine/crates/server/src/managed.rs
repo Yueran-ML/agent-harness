@@ -449,7 +449,9 @@ impl Colour {
     pub fn apply<S: AsRef<str>>(&self, scene: &mut Scene, media: &[Option<S>]) {
         for (index, layer) in scene.layers.iter_mut().enumerate() {
             layer.color.unclamped = self.managed;
-            match &layer.source {
+            // Of a layer that shows what comes out of a composition, by the source of its
+            // clip, to which its input transform is done before the composition.
+            match layer.source.own() {
                 Source::Picture(..) | Source::Between { .. } => {
                     let own = media
                         .get(index)

@@ -544,6 +544,62 @@ async fn timeline_undo_while_playing_changes_the_picture_without_stopping() {
 }
 
 #[tokio::test]
+async fn timeline_shows_a_clip_that_has_a_composition_as_what_comes_out_of_it() {
+    use columbina_model::fusion::{Composition, Input, Kind, Link, Node, NodeKind};
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(
+        dir.path(),
+        &["--no-proxies", "--sound", "null", "--test-hooks"],
+    )
+    .await;
+    let mut client = engine.client("agent").await;
+    let mut color = clip("$color", "unused", 0, 200);
+    color["source"] = json!({"kind":"color","color":"#ff0000ff"});
+    let names = add_timeline(&mut client, vec![color], vec![]).await;
+    // The red of the clip merged over a blue Background by a Blend of a half.
+    let mut behind = Node::new("bg", Kind::Background);
+    if let NodeKind::Background(background) = &mut behind.kind {
+        background.color.b = 1.0.into();
+    }
+    let mut over = Node::new("over", Kind::Merge);
+    if let NodeKind::Merge(merge) = &mut over.kind {
+        merge.blend = 0.5.into();
+    }
+    let composition = Composition {
+        nodes: vec![
+            Node::new("in", Kind::MediaIn),
+            behind,
+            over,
+            Node::new("out", Kind::MediaOut),
+        ],
+        links: vec![
+            Link::new("bg", "over", Input::Background),
+            Link::new("in", "over", Input::Foreground),
+            Link::new("over", "out", Input::Input),
+        ],
+    };
+    client
+        .apply(
+            json!([{"op":"set_fusion","timeline":names["$timeline"],"clip":names["$color"],
+        "value":serde_json::to_value(&composition).unwrap()}]),
+        )
+        .await;
+    load(&mut client, &names).await;
+    // The monitor shows the clip without its composition until the shader of the merge is
+    // made, and the digest is of the frame that it settles on: half red and half blue.
+    let mixed = action(&mut client, "transport.frame_digest", json!({})).await;
+    let pixel = &mixed["pixels"][0];
+    let channel = |at: usize| pixel[at].as_u64().unwrap();
+    assert!((127..=128).contains(&channel(0)), "{mixed}");
+    assert_eq!(channel(1), 0, "{mixed}");
+    assert!((127..=128).contains(&channel(2)), "{mixed}");
+    assert_eq!(channel(3), 255, "{mixed}");
+}
+
+#[tokio::test]
 async fn timeline_transport_requires_a_monitor_and_hides_test_hooks_by_default() {
     let dir = project_dir();
     let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;

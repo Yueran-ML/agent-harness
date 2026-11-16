@@ -1144,6 +1144,22 @@ pub enum FusedKind {
     },
 }
 
+impl FusedKind {
+    /// The picture that the first input of a node of the kind reads, by its place in
+    /// [`Fused::nodes`]: of a Merge its background, of a Transform its one input. None of a
+    /// kind that has no input, and where the input reads no picture. It is the picture that
+    /// what cannot draw a kind hands on in its place, as a node that is passed through hands
+    /// on that of its first input.
+    #[must_use]
+    pub fn first_input(&self) -> Option<usize> {
+        match self {
+            Self::MediaIn | Self::Background { .. } => None,
+            Self::Merge { background, .. } => *background,
+            Self::Transform { input, .. } => *input,
+        }
+    }
+}
+
 /// The settings of a [`Merge`] at one moment, each that takes keys as the number that it is
 /// there.
 #[derive(Clone, Copy, Debug, PartialEq)]

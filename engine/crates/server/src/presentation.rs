@@ -92,7 +92,9 @@ pub fn layers(
         .zip(clips)
         .filter_map(|(layer, clip)| {
             let (_, origin, exact) = origins.iter().find(|(id, _, _)| id == clip)?;
-            let shown = match &layer.source {
+            // Of a layer that shows what comes out of a composition, by the source of its
+            // clip: the picture of the composition is of its shape.
+            let shown = match layer.source.own() {
                 // Two pictures that are mixed are of one size: that of the first.
                 Source::Picture(picture, rotation)
                 | Source::Between {
@@ -100,7 +102,9 @@ pub fn layers(
                     rotation,
                     ..
                 } => geometry::shown_size((picture.width, picture.height), *rotation),
-                Source::Color(_) | Source::Title(_) => (scene.width, scene.height),
+                Source::Color(_) | Source::Title(_) | Source::Fused(_) => {
+                    (scene.width, scene.height)
+                }
             };
             let fitted = geometry::fit(canvas, (f64::from(shown.0), f64::from(shown.1)));
             let place = geometry::placement(canvas, fitted, &layer.transform);

@@ -3912,11 +3912,76 @@ and `setting` as for a grade; `wrong_track` `fusion` (a composition on a clip of
 frame (`crates/model/src/resolve.rs`, `Layer::fusion`): the nodes that the picture of its
 `media_out` is made of, each after the nodes whose pictures it reads, each with its settings
 as the numbers that they are at the frame of the clip's keys. A node that nothing reads is not
-among them, and a node that is passed through is left out for the node that it hands on. **The
-compositor does not draw compositions yet**: until it does, the monitor, an export, a still, the
-scopes and a thumbnail show a clip that has a composition as they show its source, as a clip
-without one. A project keeps its compositions meanwhile, and the operations above work on
-them.
+among them, and a node that is passed through is left out for the node that it hands on.
+
+The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
+scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a
+composition as what comes out of it. (The tracker of a window reads the media of the clip
+itself, which is what a `media_in` shows.) A composition changes no place in the media: the
+same pictures are read for the clip as without it.
+
+**Where it is in the frame.** The source of the clip is read and decoded as it always is, and
+goes through its input transform (colour management, the Input LUT and the LUTs of the source
+clip): that is what a `media_in` shows. The nodes are drawn from it, each into a picture of its
+own. What comes into the `media_out` then takes the place of the source: the grade of the clip
+(its group's with it), its `crop` (of the picture of the composition as it is fitted to the
+timeline), its `transform`, its `composite` mode and its opacity, with its fades and
+transitions, are done to it as they are to a source, and its alpha goes with it. A clip whose
+`media_out` reads nothing shows nothing. A composition whose `media_out` shows its `media_in`,
+as the one that a clip has at first, is drawn as the clip is without a composition, to the
+bit, and at the same cost.
+
+**Space.** The pictures of a composition hold R, G, B and A **premultiplied** by the alpha, in
+the **working space of the timeline**, the one in which the layers of a frame are laid over
+each other: the values as they are coded there (R'G'B' of Rec.709 with its gamma where the
+project's colour is not managed; the working space of colour management where it is). They are
+kept as half floats: what is above 1 or below 0 stays as it is, and nothing is clamped between
+nodes. The mathematics of a `merge` is done on those values (`crates/compose/src/merge.rs`).
+The `color` of a `background` is taken as values **of that space, as they are**: it goes
+through no input transform (a clip of a colour, whose colour is of the space of graphics, does),
+and is premultiplied by its `a`. Of a title and of a clip of a colour, a `media_in` is the
+title or the colour on a transparent picture of the size of the timeline, through the input
+transform of graphics.
+
+**Sizes.** Every picture of a composition is of one size, that of the composition (above):
+what a `media_in` shows fills it; a `background` covers it; a `transform` gives a picture of
+the size that came in, and what it moves beyond the edges is cut; a `merge` gives a picture of
+the size of its background, and one whose `background` is not linked lays its foreground over
+a transparent picture of the size of the composition. The settings are shares of the picture,
+and the engine draws the pictures at the pixels that are seen: at the size of the composition
+where the clip is shown as large or larger; and at fewer pixels where it is shown smaller (a
+source larger than the timeline, a frame drawn smaller than the timeline, a clip whose
+`transform` makes it less than half as large), as large as it is fitted to the frame, so that a
+clip that is not made larger or smaller shows each pixel as the composition made it.
+
+**Placing.** A `transform` puts the middle of its picture at `center`, makes it `size` times
+as large about its middle and turns it by `angle` there, counter-clockwise; a picture that is
+flipped is flipped in its own frame first. A `merge` places its foreground the same way on its
+background, and then merges the two. A `size` of 0 leaves nothing: a `transform` then gives no
+picture, and a `merge` its background. What a picture does not cover is transparent.
+
+**Sampling.** A picture that is moved is read between its four nearest pixels (bilinear), and
+its edges are smoothed over a pixel, as a layer of the timeline is; where it is made smaller,
+each pixel is made of up to 8 × 8 points of it, weighed as a tent, as a picture drawn smaller
+is. There is no choice of filter (Fusion's Filter Method). A picture moved by a whole number of
+its pixels, flipped, or turned by a quarter turn about a middle that lies between pixels the
+same way across and down (a square picture, or one whose width and height are both even or both
+odd), is read at the middles of its pixels, and comes out as it was, pixel for pixel.
+
+**The merge.** Each pixel of the foreground as it lies is merged with the pixel of the
+background under it by `merge.rs`, in its order: Alpha Gain, the Apply Mode (the formulas of
+the composite modes of a Layer Mixer, with the weights of luma of the working space),
+Subtractive/Additive (read in the `normal` mode alone), Burn In, the operator, and Blend. A
+`merge` as it is at first is the over of a premultiplied foreground. A node that changes
+nothing costs nothing: a `transform` as it is at first, a `merge` whose `foreground` gives no
+picture or whose `blend` is 0 (it is its background), and a `merge` as it is at first with no
+`background` (it is its foreground).
+
+**While a shader is being made.** A monitor draws its frames without waiting for the shaders
+of the card. Until the one that lays a foreground over a background is made (once for each
+card, the first time a composition with a `merge` or a `transform` is shown), a clip is shown
+as its source, without its composition, and the frame is drawn again when it is made; an
+export, a still and a frame drawn off screen wait for it.
 
 ## Scopes
 
@@ -4186,7 +4251,8 @@ Color page alone, and turns it off as that page is left. A `--headless` engine a
 **`viewer.bypass`** `{"on": true | false, "monitor"?: "timeline"}` shows the timeline monitor's
 picture without its grades, or with them again: Bypass Color of the viewer's title bar (Bypass
 Color and Fusion, p. 2987; View › Bypass Color and Fusion; Shift-D on the Cut and Edit pages, pp.
-504, 550, which the desktop takes on the Color page too; this engine has no Fusion). Every
+504, 550, which the desktop takes on the Color page too; the compositions of clips are not
+bypassed here, see Compositions). Every
 grade is left out (each clip's, its group's pre-clip and post-clip grades, Shot Match with them,
 and the timeline's); the input and output transforms of colour management, the project's Input
 and Output LUTs and the Color Viewer LUT stay, so the picture is the media as the project

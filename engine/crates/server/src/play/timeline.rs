@@ -1564,7 +1564,8 @@ impl Worker {
     /// it was: a change of another timeline, of bins or of media that the timeline does not
     /// use keeps the pictures read ahead and the sound playing; one that changes only what is
     /// seen keeps the sound, and one that changes only what is heard keeps the pictures, as one
-    /// that changes only grades does. Gives whether anything of the timeline loaded changed.
+    /// that changes only grades, or the compositions of clips, does. Gives whether anything of
+    /// the timeline loaded changed.
     fn replace(&mut self, revision: u64, project: Arc<Project>) -> bool {
         let Some(id) = self.status.timeline.as_ref() else {
             return false;
@@ -2122,9 +2123,13 @@ impl Worker {
                     (source, color)
                 }
             };
-            // The composition of the clip at the frame (`layer.fusion`) is not drawn here
-            // yet: the compositor is given it in the next step, and until then the layer is
-            // drawn of its source, as that of a clip without a composition is.
+            // A clip that has a composition shows what comes out of it, made of its source.
+            let source = match layer.fusion {
+                Some(composition) => {
+                    crate::render::composed(&project, timeline, &clip, source, composition)
+                }
+                None => source,
+            };
             scene.layers.push(SceneLayer {
                 source,
                 transform: layer.transform.into(),
@@ -2473,8 +2478,10 @@ fn demand(project: &Project, timeline: &columbina_model::Timeline) -> BTreeMap<S
 }
 
 /// Whether a timeline shows the same pictures in `after` as it did in `before`: the same
-/// size and rate, tracks of picture (but for the grades of their clips), and media (with its
-/// proxies) under them. Subtitles, sound and grades are not pictures that are read ahead.
+/// size and rate, tracks of picture (but for the grades and the compositions of their clips),
+/// and media (with its proxies) under them. Subtitles, sound, grades and compositions are not
+/// pictures that are read ahead: a composition is drawn of the pictures of its clip, and
+/// changes no place in the media that is read.
 fn same_picture(
     before: &Project,
     was: &columbina_model::Timeline,
@@ -2491,6 +2498,7 @@ fn same_picture(
                 for clip in &mut track.clips {
                     clip.grade = Grade::default();
                     clip.group = None;
+                    clip.fusion = None;
                 }
                 track
             })
@@ -2504,7 +2512,9 @@ fn same_picture(
 }
 
 /// Whether a timeline is graded the same in `after` as in `before`: its grade, and the grades
-/// of each clip of its tracks of picture and of the group that the clip is in.
+/// of each clip of its tracks of picture and of the group that the clip is in. And whether
+/// each clip has the same composition, which is drawn, as a grade is, of the pictures that
+/// are read for the clip whatever it is: the frame is drawn again, and nothing is read anew.
 fn same_grades(
     before: &Project,
     was: &columbina_model::Timeline,
@@ -2523,7 +2533,7 @@ fn same_grades(
                     .as_ref()
                     .and_then(|id| project.groups.iter().find(|group| group.id == *id))
                     .map(|group| (&group.pre, &group.post));
-                (clip.id.as_str(), &clip.grade, group)
+                (clip.id.as_str(), &clip.grade, group, clip.fusion.as_ref())
             })
             .collect();
         (&timeline.grade, clips)
@@ -2532,10 +2542,15 @@ fn same_grades(
 }
 
 /// The grade of a timeline, and of each clip of its tracks of picture with the pre-clip and
-/// post-clip grades of its group.
+/// post-clip grades of its group, and its composition.
 type GradesOf<'p> = (
     &'p Grade,
-    Vec<(&'p str, &'p Grade, Option<(&'p Grade, &'p Grade)>)>,
+    Vec<(
+        &'p str,
+        &'p Grade,
+        Option<(&'p Grade, &'p Grade)>,
+        Option<&'p columbina_model::fusion::Composition>,
+    )>,
 );
 
 /// Whether a timeline sounds the same in `after` as in `before` from sample `from` to its end:
@@ -2764,6 +2779,34 @@ mod tests {
             digest_of_source: "0".repeat(64),
         });
         project
+    }
+
+    #[test]
+    fn a_change_of_a_composition_is_drawn_and_keeps_what_was_read_ahead() {
+        use columbina_model::fusion::{Composition, Kind, Node};
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let project = Project::sample();
+        assert!(worker.replace(0, Arc::new(project.clone())));
+        let read_ahead = worker.generation;
+        // A clip is given a composition: the frame is to be drawn again, of the pictures that
+        // were read, since a composition changes no place in the media.
+        let mut composed = project.clone();
+        composed.timelines[0].tracks[0].clips[0].fusion = Some(Composition::default());
+        assert!(worker.replace(0, Arc::new(composed.clone())));
+        assert_eq!(worker.generation, read_ahead);
+        // And so for a node more in it.
+        let mut another = composed.clone();
+        let composition = another.timelines[0].tracks[0].clips[0].fusion.as_mut();
+        composition
+            .unwrap()
+            .nodes
+            .push(Node::new("bg", Kind::Background));
+        assert!(worker.replace(0, Arc::new(another.clone())));
+        assert_eq!(worker.generation, read_ahead);
+        // The same composition again changes nothing.
+        assert!(!worker.replace(0, Arc::new(another)));
+        assert_eq!(worker.generation, read_ahead);
     }
 
     #[test]

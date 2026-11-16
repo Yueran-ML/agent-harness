@@ -9,6 +9,9 @@
 //! - [`color`]: the stages of colour of a frame, in the order of `DaVinci Resolve`: how a picture
 //!   is decoded ([`YuvCoding`]), and the input transform, grade, timeline grade and output
 //!   transform ([`Stage`]), with how later work plugs into them.
+//! - [`fusion`]: the composition of a clip, the graph of nodes that makes its picture, drawn
+//!   into textures of its own before the layer of the clip is laid on the canvas; and
+//!   [`merge`], the mathematics of its Merge node, on the processor.
 //! - [`geometry`]: where a layer is put, worked out without the card.
 //! - [`grade`]: a grade of the Color page at a frame, made into an operation of a [`Stage`].
 //! - [`neighbourhood`]: the filters of the pixels about each one that operations of colour read
@@ -23,6 +26,7 @@
 
 pub mod color;
 mod compose;
+pub mod fusion;
 pub mod geometry;
 mod gpu;
 pub mod grade;
@@ -51,6 +55,7 @@ pub use columbina_lut::Interpolation;
 /// the model.
 pub use columbina_model::grade::Composite;
 pub use compose::{ComposeError, Compositor, Scene, SceneLayer, Source, Target, WORKING_FORMAT};
+pub use fusion::Fusion;
 pub use geometry::{quarter_turns, Crop, Transform};
 #[doc(hidden)]
 pub use gpu::{card_for_tests, gpu_for_tests};

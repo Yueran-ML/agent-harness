@@ -17,12 +17,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use columbina_compose::{
-    Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform, YuvCoding,
+    Compositor, Fusion, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform, YuvCoding,
 };
 use columbina_media::{
     AudioSettings, Codec, ColorTags, ContentLight, Hardware, Mastering, MediaError, NativePicture,
     Picture, Quality, SoundWriter, VideoSettings, Writer,
 };
+use columbina_model::fusion::{self, Fused};
 use columbina_model::{resolve, Project, TrackKind};
 use serde::Deserialize;
 use serde_json::json;
@@ -996,9 +997,11 @@ pub(crate) fn scene_of(
                 (picture_source(read.picture, second, read.rotation), color)
             }
         };
-        // The composition of the clip at the frame (`layer.fusion`) is not drawn here yet:
-        // the compositor is given it in the next step, and until then the layer is drawn of
-        // its source, as that of a clip without a composition is.
+        // A clip that has a composition shows what comes out of it, made of its source.
+        let source = match layer.fusion {
+            Some(composition) => composed(project, timeline, &layer.clip, source, composition),
+            None => source,
+        };
         scene.layers.push(SceneLayer {
             source,
             transform: layer.transform.into(),
@@ -1009,6 +1012,48 @@ pub(crate) fn scene_of(
         });
     }
     Ok((scene, clips))
+}
+
+/// Whether a node of a composition whose kind the compositor does not draw was told of: it is
+/// told once, the first time one is met.
+static UNKNOWN_NODE_TOLD: AtomicBool = AtomicBool::new(false);
+
+/// What the layer of clip `clip` of `timeline` shows where the clip has a composition, for the
+/// preview and the export alike: what comes out of `composition`, the composition as it is at
+/// the frame, made of `source`, what the clip shows without it. The pictures of the composition
+/// are of the size of the source of the clip ([`fusion::size_of`]); of a clip that is not on the
+/// timeline, of the size of the timeline.
+///
+/// A node whose kind the compositor does not draw hands on the picture of its first input: the
+/// first such node met is logged, once.
+pub(crate) fn composed(
+    project: &Project,
+    timeline: &columbina_model::Timeline,
+    clip: &str,
+    source: Source,
+    composition: Fused,
+) -> Source {
+    let size = timeline
+        .tracks
+        .iter()
+        .flat_map(|track| &track.clips)
+        .find(|found| found.id == clip)
+        .map_or((timeline.width, timeline.height), |found| {
+            fusion::size_of(found, project, timeline)
+        });
+    let fused = Fusion {
+        source,
+        composition,
+        size,
+    };
+    let unknown = fused.unknown();
+    if !unknown.is_empty() && !UNKNOWN_NODE_TOLD.swap(true, Ordering::Relaxed) {
+        crate::log::log(
+            "fusion_node_not_drawn",
+            &json!({"timeline": timeline.id, "clip": clip, "nodes": unknown}),
+        );
+    }
+    Source::Fused(Box::new(fused))
 }
 
 /// What a layer of media shows, for the preview and the export alike: its picture, turned
@@ -1599,6 +1644,117 @@ mod tests {
             (bottom - between).abs_diff(height / 4) <= 3,
             "{between}, {bottom}"
         );
+    }
+
+    /// A clip that has a composition is exported as what comes out of it, its settings as
+    /// their keys make them at each frame: the white of a clip merged over a black Background
+    /// by a Blend that goes from nothing at the first frame of the clip to all of it at its
+    /// fifth is black, then grey, then white, lighter at each frame.
+    #[test]
+    fn an_export_draws_the_composition_of_a_clip_as_its_keys_make_it_at_each_frame() {
+        use columbina_model::fusion::{Composition, Input, Kind, Link, Node, NodeKind};
+        use columbina_model::project::Rgba;
+        use columbina_model::{Clip, Interp, Key, Param};
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let (width, height) = (640, 360);
+        let mut project = Project::sample();
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (width, height);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        let key = |frame, value| Key {
+            frame,
+            value,
+            interp: Interp::Linear,
+        };
+        let mut over = Node::new("over", Kind::Merge);
+        if let NodeKind::Merge(merge) = &mut over.kind {
+            merge.blend = Param::Keys(vec![key(0, 0.0), key(4, 1.0)]);
+        }
+        let mut composition = Composition {
+            nodes: vec![
+                Node::new("in", Kind::MediaIn),
+                Node::new("bg", Kind::Background),
+                over,
+                Node::new("out", Kind::MediaOut),
+            ],
+            links: vec![
+                Link::new("bg", "over", Input::Background),
+                Link::new("in", "over", Input::Foreground),
+                Link::new("over", "out", Input::Input),
+            ],
+        };
+        composition.sort_links();
+        let white = columbina_model::Source::Color {
+            color: Rgba([255, 255, 255, 255]),
+        };
+        let mut clip = Clip::new("c1", white, 0, 5);
+        clip.fusion = Some(composition);
+        timeline.tracks[0].clips = vec![clip];
+        let frames = exported(&project, 5, width, height);
+        // The red of the pixel in the middle of each frame.
+        let middle = ((height / 2 * width + width / 2) * 4) as usize;
+        let shown: Vec<u8> = frames.iter().map(|rgba| rgba[middle]).collect();
+        assert!(shown[0] <= 8, "{shown:?}");
+        assert!(shown[2].abs_diff(128) <= 8, "{shown:?}");
+        assert!(shown[4] >= 247, "{shown:?}");
+        assert!(shown.windows(2).all(|pair| pair[0] < pair[1]), "{shown:?}");
+        // Every pixel of a frame is of the one grey.
+        for (frame, rgba) in frames.iter().enumerate() {
+            for pixel in rgba.as_chunks::<4>().0 {
+                assert!(
+                    pixel[..3]
+                        .iter()
+                        .all(|value| value.abs_diff(shown[frame]) <= 3),
+                    "frame {frame}: {pixel:?}, not {}",
+                    shown[frame]
+                );
+            }
+        }
+    }
+
+    /// A clip with the composition that a clip has at first, a `MediaIn` that the `MediaOut`
+    /// shows, is exported as the clip without a composition is, frame for frame.
+    #[test]
+    fn an_export_of_a_clip_with_the_composition_that_it_has_at_first_is_that_of_the_clip() {
+        use columbina_model::fusion::Composition;
+        use columbina_model::project::{Rgba, TextAlign, TitleStyle};
+        use columbina_model::Clip;
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let (width, height) = (640, 360);
+        let mut project = Project::sample();
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (width, height);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        let title = columbina_model::Source::Title {
+            text: "Columbina".into(),
+            style: TitleStyle {
+                font: String::new(),
+                size: 48.0.into(),
+                color: Rgba([255, 255, 255, 255]),
+                x: 0.5.into(),
+                y: 0.5.into(),
+                align: TextAlign::Center,
+            },
+        };
+        timeline.tracks[0].clips = vec![Clip::new("c1", title, 0, 2)];
+        let plain = exported(&project, 2, width, height);
+        // The title is seen.
+        assert!(plain[0]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[0] > 128));
+        project.timelines[0].tracks[0].clips[0].fusion = Some(Composition::default());
+        let composed = exported(&project, 2, width, height);
+        assert!(composed == plain, "the frames are not those of the clip");
     }
 
     /// A clip at half its speed whose Retime Process is Frame Blend is exported so: a frame

@@ -1,8 +1,8 @@
 /**
  * A composition laid out as the node editor of the Fusion page draws it (DaVinci Resolve Reference
  * Manual 20, Ch. 67, pp. 1316–1365): each node a card with the inputs of its pictures down its left
- * side, its mask input on its lower edge and its one output at the middle of its right side, and
- * the links between them, from left to right.
+ * side, its mask input on its lower edge, the two matte inputs of a Delta Keyer on its upper edge
+ * and its one output at the middle of its right side, and the links between them, from left to right.
  *
  * A node that the project gives a place (its `pos`, where it was dragged to) stands there; the
  * editor places the others: a node that nothing feeds in the first column, every other one column
@@ -19,12 +19,14 @@ import {
 /**
  * The inputs of each kind of node, the first first, as the engine names them (PROTOCOL.md,
  * "Compositions"): the pictures of a node, and after them its `mask`, the effect mask of a Merge, a
- * Transform, a Background, a Blur and a Mosaic and the mask that comes into a mask node.
+ * Transform, a Background, a Blur, a Mosaic and a Delta Keyer and the mask that comes into a mask
+ * node. A Delta Keyer has its two mattes between its picture and its mask.
  */
 export const INPUTS: Record<FusionKind, readonly FusionInput[]> = {
   media_in: [], media_out: ['input'], merge: ['background', 'foreground', 'mask'], transform: ['input', 'mask'], background: ['mask'],
   rectangle: ['mask'], ellipse: ['mask'], polygon: ['mask'],
   blur: ['input', 'mask'], mosaic: ['input', 'mask'],
+  delta_keyer: ['input', 'garbage_matte', 'solid_matte', 'mask'],
 };
 
 /** The kinds of node that make a mask (PROTOCOL.md, "Masks"). */
@@ -36,18 +38,37 @@ export const isMaskKind = (kind: FusionKind): kind is MaskKind => kind === 'rect
 /** Whether a kind of node has a `mask` input. */
 export const hasMaskInput = (kind: FusionKind): boolean => INPUTS[kind].includes('mask');
 
-/** The inputs of a kind of node that are drawn down its left side: those of its pictures, which are all but its `mask`. */
-export const pictureInputs = (kind: FusionKind): readonly FusionInput[] => INPUTS[kind].filter(input => input !== 'mask');
+/**
+ * The inputs that take a matte (PROTOCOL.md, "The Delta Keyer"): the garbage matte and the solid
+ * matte of a Delta Keyer. As its effect mask, a matte is no picture that its node hands on.
+ */
+export const MATTE_INPUTS = ['garbage_matte', 'solid_matte'] as const;
+export type MatteInput = (typeof MATTE_INPUTS)[number];
+/** Whether an input takes a matte. */
+export const isMatteInput = (input: FusionInput | null): input is MatteInput => input === 'garbage_matte' || input === 'solid_matte';
+/** Whether an input takes a picture: every input but a `mask` and a matte. */
+export const isPictureInput = (input: FusionInput): boolean => input !== 'mask' && !isMatteInput(input);
+
+/** The inputs of a kind of node that are drawn down its left side: those of its pictures, which are all but its `mask` and its mattes. */
+export const pictureInputs = (kind: FusionKind): readonly FusionInput[] => INPUTS[kind].filter(isPictureInput);
+/** The inputs of a kind of node that take a matte, which are drawn on its upper edge: those of a Delta Keyer, and of no other kind. */
+export const matteInputs = (kind: FusionKind): readonly MatteInput[] => INPUTS[kind].filter(isMatteInput);
 
 /**
  * The input whose picture a node hands on where it is passed through or taken away: the first of its
- * pictures (the `background` of a Merge, the `input` of a Transform), of a mask node the mask that
- * comes into it, and none of a Background or a MediaIn, whose effect mask is no picture to hand on.
+ * pictures (the `background` of a Merge, the `input` of a Transform and of a Delta Keyer), of a mask
+ * node the mask that comes into it, and none of a Background or a MediaIn, whose effect mask is no
+ * picture to hand on.
  */
 export const handedOn = (kind: FusionKind): FusionInput | undefined => pictureInputs(kind)[0] ?? (isMaskKind(kind) ? 'mask' : undefined);
 
 /** How far from the left edge of a node its mask input lies, on the lower edge: clear of the badge of keys at the middle. */
 export const MASK_INSET = NODE_WIDTH / 4;
+/**
+ * How far from the left edge of a node each of its matte inputs lies, on the upper edge: the garbage
+ * matte a quarter of the way along, over the mask input, and the solid matte three quarters.
+ */
+export const MATTE_INSETS: Record<MatteInput, number> = { garbage_matte: MASK_INSET, solid_matte: NODE_WIDTH - MASK_INSET };
 
 /** Whether a kind of node has an output: every kind but MediaOut, whose picture goes back to the timeline. */
 export const hasOutput = (kind: FusionKind): boolean => kind !== 'media_out';
@@ -125,10 +146,11 @@ export function layoutComposition(composition: Composition, placed: Placed = {})
 /**
  * Where an input of a node is: those of its pictures spread down its left side, the first at the top
  * (a Merge's background above its foreground); its `mask` on its lower edge, a quarter of the way
- * along, wherever the others are.
+ * along, and the mattes of a Delta Keyer on its upper edge (`MATTE_INSETS`), wherever the others are.
  */
 export function inputPoint(placed: PlacedFusion, input: FusionInput): Point {
   if (input === 'mask') return { x: placed.x + MASK_INSET, y: placed.y + NODE_HEIGHT };
+  if (isMatteInput(input)) return { x: placed.x + MATTE_INSETS[input], y: placed.y };
   const inputs = pictureInputs(placed.node.kind);
   const at = Math.max(0, inputs.indexOf(input));
   return { x: placed.x, y: placed.y + (NODE_HEIGHT * (at + 1)) / (Math.max(1, inputs.length) + 1) };
@@ -146,29 +168,36 @@ export function linkEnds(layout: FusionLayout, link: FusionLink): { from: Point;
   return fromNode && toNode ? { from: outputPoint(fromNode), to: inputPoint(toNode, link.input) } : null;
 }
 
+/** The edge of a node that an input lies on where it is not on its left side: the lower one for a `mask`, the upper one for a matte. */
+type Edge = 'below' | 'above';
+const edgeOf = (input: FusionInput | null): Edge | null => (input === 'mask' ? 'below' : isMatteInput(input) ? 'above' : null);
+
 /**
- * The four points of the curve of a link into a `mask`: it leaves its output to the right, as every
- * link does, and comes into the mask input from below, where that input lies.
+ * The four points of the curve of a link into a `mask` or a matte: it leaves its output to the
+ * right, as every link does, and comes into the mask input from below, or into the matte input from
+ * above, where that input lies.
  */
-function maskCurve(from: Point, to: Point): [Point, Point, Point, Point] {
+function edgeCurve(from: Point, to: Point, edge: Edge): [Point, Point, Point, Point] {
   const bend = Math.max(24, Math.abs(to.x - from.x) / 2);
   const rise = Math.max(24, Math.abs(to.y - from.y) / 2);
-  return [from, { x: from.x + bend, y: from.y }, { x: to.x, y: to.y + rise }, to];
+  return [from, { x: from.x + bend, y: from.y }, { x: to.x, y: edge === 'below' ? to.y + rise : to.y - rise }, to];
 }
 const between = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 const written = (point: Point) => `${point.x} ${point.y}`;
 
-/** The path of a link into an input: the curve of the Color page's editor, but into a `mask` from below. */
+/** The path of a link into an input: the curve of the Color page's editor, but into a `mask` from below and into a matte from above. */
 export function fusionLinkPath(from: Point, to: Point, input: FusionInput | null): string {
-  if (input !== 'mask') return linkPath(from, to);
-  const [p0, p1, p2, p3] = maskCurve(from, to);
+  const edge = edgeOf(input);
+  if (edge === null) return linkPath(from, to);
+  const [p0, p1, p2, p3] = edgeCurve(from, to, edge);
   return `M ${written(p0)} C ${written(p1)}, ${written(p2)}, ${written(p3)}`;
 }
 
 /** The two halves of a link into an input, as paths, split at the middle of the curve of `fusionLinkPath` (see `linkHalves`). */
 export function fusionLinkHalves(from: Point, to: Point, input: FusionInput | null): [string, string] {
-  if (input !== 'mask') return linkHalves(from, to);
-  const [p0, p1, p2, p3] = maskCurve(from, to);
+  const edge = edgeOf(input);
+  if (edge === null) return linkHalves(from, to);
+  const [p0, p1, p2, p3] = edgeCurve(from, to, edge);
   const p01 = between(p0, p1); const p12 = between(p1, p2); const p23 = between(p2, p3);
   const p012 = between(p01, p12); const p123 = between(p12, p23);
   const middle = between(p012, p123);
@@ -180,8 +209,9 @@ export function fusionLinkHalves(from: Point, to: Point, input: FusionInput | nu
 
 /** The point of the curve of a link into an input at `t`, from 0 at its output to 1 at its input: the curve that `fusionLinkPath` draws. */
 function pointOnFusionLink(from: Point, to: Point, input: FusionInput, t: number): Point {
-  if (input !== 'mask') return pointOnLink(from, to, t);
-  const [p0, p1, p2, p3] = maskCurve(from, to);
+  const edge = edgeOf(input);
+  if (edge === null) return pointOnLink(from, to, t);
+  const [p0, p1, p2, p3] = edgeCurve(from, to, edge);
   const u = 1 - t;
   const along = (a: number, b: number, c: number, d: number) => u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
   return { x: along(p0.x, p1.x, p2.x, p3.x), y: along(p0.y, p1.y, p2.y, p3.y) };

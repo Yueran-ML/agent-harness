@@ -13,7 +13,7 @@ import type { Messages } from '../../messages/en';
 import { clipLocations } from '../timeline/selection';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { shownComposition, type FusionAt } from './edits';
-import { isPointSetting, keyOps, numbered, paramOf, pathOf, settingOf, settingsOf, wholeParam, type FusionSetting } from './settings';
+import { isPointSetting, keyerRefusals, keyOps, numbered, paramOf, pathOf, settingOf, settingsOf, wholeParam, type FusionSetting } from './settings';
 
 type SettingLabels = Messages['label']['studio']['fusionPage']['settings'];
 
@@ -28,14 +28,27 @@ export function settingNames(labels: SettingLabels): Record<string, string> {
     // A Blur, whose two sizes are named apart (but see `settingLabel`), and a Mosaic.
     'size.x': labels.blurSizeX, 'size.y': labels.blurSizeY,
     frequency: labels.pixelFrequency, aspect: labels.aspect, 'offset.x': labels.offsetX, 'offset.y': labels.offsetY,
+    // A Delta Keyer: the channels of its two colours are named with their colour.
+    'screen.r': labels.screenRed, 'screen.g': labels.screenGreen, 'screen.b': labels.screenBlue, gain: labels.gain, balance: labels.balance,
+    pre_blur: labels.preBlur, low: labels.thresholdLow, high: labels.thresholdHigh, erode_dilate: labels.erodeDilate, matte_blur: labels.matteBlur,
+    clean_foreground: labels.cleanForeground, clean_background: labels.cleanBackground,
+    'replace_color.r': labels.replaceRed, 'replace_color.g': labels.replaceGreen, 'replace_color.b': labels.replaceBlue,
+    spill_suppression: labels.spillSuppression,
   };
 }
 
 /** Whether a Blur has its X and Y locked: its `size.x` is its one Blur Size then, and its `size.y` is kept and not read. */
 const lockedBlur = (node: FusionNode | undefined): boolean => node !== undefined && node.kind === 'blur' && node.params.lock_xy === true;
 
-/** Whether a node keeps a setting and does not read it: the Blur Size down of a Blur whose X and Y are locked. */
-const unread = (node: FusionNode, setting: FusionSetting): boolean => setting.path === 'size.y' && lockedBlur(node);
+/** Whether a Delta Keyer fills nothing with its Replace Color: its Replace Mode is None or Source, and the colour is kept and not read. */
+const unfilled = (node: FusionNode): boolean => node.kind === 'delta_keyer' && (node.params.replace === 'none' || node.params.replace === 'source');
+
+/**
+ * Whether a node keeps a setting and does not read it: the Blur Size down of a Blur whose X and Y are locked, and the channels
+ * of the Replace Color of a Delta Keyer whose Replace Mode fills with no colour.
+ */
+const unread = (node: FusionNode, setting: FusionSetting): boolean => (setting.path === 'size.y' && lockedBlur(node))
+  || (setting.path.startsWith('replace_color.') && unfilled(node));
 
 /**
  * The name of a setting by its path, as the Inspector writes it: a number of a point of a Polygon
@@ -75,7 +88,8 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * setting of that node that takes keys, those with keys first (of the points of a Polygon, which
  * may be many, only the numbers that have keys: a key is put on one in the Inspector; and the Blur
  * Size down of a Blur whose X and Y are locked, which the node does not read, only where it has
- * keys, its Blur Size across being named Blur Size as the Inspector names it); with none or
+ * keys, its Blur Size across being named Blur Size as the Inspector names it; and so the channels
+ * of the Replace Color of a Delta Keyer whose Replace Mode fills with no colour); with none or
  * several chosen, the settings of every node that have keys, each named with its node.
  *
  * A drag of keys or of a handle is one gesture: each move sets the setting whole with
@@ -105,9 +119,11 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
   const labels = words.label.studio.fusionPage;
   const [selection, setSelection] = useState<CurveSelection>(NO_SELECTION);
   const { commit, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
+  // The refusals of a Delta Keyer that are of no one number (a key taken away may leave a screen colour that keys nothing) are said as the Inspector says them.
+  const overrides = keyerRefusals(words.hint.studio.fusionPage);
   const gesture = useAudioGesture({
     bridge, session, revision, identity: `${timeline.id}/${clip.id}/fusion-curves`, locked,
-    onFailure: (error) => { if (!isEmpty(error)) setRefusal(refusalOf(error, words.hint.studio)); },
+    onFailure: (error) => { if (!isEmpty(error)) setRefusal(refusalOf(error, words.hint.studio, overrides)); },
   });
   /** Whether a drag has begun a gesture that is still to be ended or taken back. */
   const dragging = useRef(false);
@@ -169,7 +185,7 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
         const setting = found ? settingOf(found, each.setting.path) : undefined;
         return found && setting ? keyOps(where, found, setting, each.param) : [];
       });
-    });
+    }, { overrides });
   };
   const cancel = () => {
     if (!dragging.current) return;

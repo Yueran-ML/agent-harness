@@ -745,14 +745,39 @@ export interface FusionBlur { filter: FusionBlurFilter; lock_xy: boolean; size: 
  * mask of the node is 1 over all of it.
  */
 export interface FusionMosaic { frequency: Param; aspect: Param; offset: { x: Param; y: Param }; whole_cells_only: boolean }
+/** What fills the part of a pixel that the key of a Delta Keyer took away and its matte gave back (Replace Mode). */
+export type FusionKeyerReplace = 'none' | 'source' | 'hard_color' | 'soft_color';
+/** How the spill of the screen is taken from the picture of a Delta Keyer (Spill Method), from the weakest. */
+export type FusionKeyerSpill = 'none' | 'rare' | 'medium' | 'well_done' | 'burnt';
+/** What comes out of a Delta Keyer (View Mode): its pre-matte, its matte, what the matte did to the key, or the keyed picture. */
+export type FusionKeyerView = 'pre_matte' | 'matte' | 'status' | 'final_result';
+/** A colour of a Delta Keyer, not premultiplied: each channel 0…65504, and a number or keys. */
+export interface FusionKeyerColor { r: Param; g: Param; b: Param }
 /**
- * An input of a node of a composition, by its name: `input` of a `media_out`, a `transform`, a `blur`
- * and a `mosaic`, the two pictures of a `merge`, and `mask`, the effect mask of a `merge`, a
- * `transform`, a `background`, a `blur` and a `mosaic` and the mask that comes into a mask node. A
- * `mask` reads the alpha of the picture linked to it (a mask node gives white premultiplied by its
- * mask); not linked, it is no mask.
+ * The settings of a Delta Keyer node (Reference Manual 20, pp. 2440–2448; PROTOCOL.md, "The Delta
+ * Keyer"), every one written: `screen`, the colour of the screen, of which one channel is to be
+ * above the other two; `gain`, 0…10, and `balance`, 0…1; `pre_blur`, `erode_dilate` (−100…100) and
+ * `matte_blur`, lengths in pixels of a picture 1080 high; `low` and `high`, the thresholds, 0…1,
+ * `low` at most `high`; `clean_foreground`, `clean_background` and `spill_suppression`, 0…1; and
+ * `replace_color`. The sixteen numbers take keys; `replace`, `garbage_invert` (the garbage matte
+ * read the other way round), `spill_method` and `view` take none.
  */
-export type FusionInput = 'input' | 'background' | 'foreground' | 'mask';
+export interface FusionDeltaKeyer {
+  screen: FusionKeyerColor; gain: Param; balance: Param; pre_blur: Param; low: Param; high: Param; erode_dilate: Param; matte_blur: Param;
+  clean_foreground: Param; clean_background: Param; replace: FusionKeyerReplace; replace_color: FusionKeyerColor; garbage_invert: boolean;
+  spill_method: FusionKeyerSpill; spill_suppression: Param; view: FusionKeyerView;
+}
+/**
+ * An input of a node of a composition, by its name: `input` of a `media_out`, a `transform`, a `blur`,
+ * a `mosaic` and a `delta_keyer`, the two pictures of a `merge`, and `mask`, the effect mask of a
+ * `merge`, a `transform`, a `background`, a `blur`, a `mosaic` and a `delta_keyer` and the mask that
+ * comes into a mask node. A `mask` reads the alpha of the picture linked to it (a mask node gives
+ * white premultiplied by its mask); not linked, it is no mask. `garbage_matte` and `solid_matte` are
+ * the two mattes of a `delta_keyer`, read as a `mask` is: where the garbage matte is 1 the matte of
+ * the keyer is made transparent, where the solid matte is 1 it is made solid, and the garbage matte
+ * wins; not linked, each is no matte.
+ */
+export type FusionInput = 'input' | 'background' | 'foreground' | 'mask' | 'garbage_matte' | 'solid_matte';
 /**
  * A node of a composition. Its id is unique within its composition only, and has no dot in it; its
  * `params` are those of its kind, and an object with no fields for `media_in` and `media_out`. The
@@ -769,7 +794,8 @@ export type FusionNode = { id: string; label: string; pass_through?: boolean; po
   | { kind: 'ellipse'; params: FusionEllipse }
   | { kind: 'polygon'; params: FusionPolygon }
   | { kind: 'blur'; params: FusionBlur }
-  | { kind: 'mosaic'; params: FusionMosaic });
+  | { kind: 'mosaic'; params: FusionMosaic }
+  | { kind: 'delta_keyer'; params: FusionDeltaKeyer });
 export type FusionKind = FusionNode['kind'];
 /** A link from the output of node `from` into the input `input` of node `to`. */
 export interface FusionLink { from: string; to: string; input: FusionInput }
@@ -787,7 +813,10 @@ export function firstComposition(): Composition {
   };
 }
 
-/** The links of a composition in the engine's one order: by `to`, as Rust orders strings, then by the name of the input. */
+/**
+ * The links of a composition in the engine's one order: by `to`, as Rust orders strings, then by the name of the input
+ * (`background`, `foreground`, `garbage_matte`, `input`, `mask`, `solid_matte`).
+ */
 export function sortFusionLinks(links: readonly FusionLink[]): FusionLink[] {
   return [...links].sort((a, b) => compareIds(a.to, b.to) || compareIds(a.input, b.input));
 }

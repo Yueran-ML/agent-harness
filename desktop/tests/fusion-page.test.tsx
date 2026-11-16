@@ -716,7 +716,7 @@ describe('the masks in the node editor of the Fusion page', () => {
     const groups = [...document.querySelectorAll<HTMLElement>('.fusion-add')];
     expect(groups.map(each => each.getAttribute('aria-label'))).toEqual(['Add Node', 'Effects', 'Masks']);
     expect(groups.map(each => [...each.querySelectorAll('button')].map(button => button.textContent))).toEqual([
-      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Blur', 'Mosaic'], ['Rectangle', 'Ellipse', 'Polygon'],
+      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Blur', 'Mosaic', 'Delta Keyer'], ['Rectangle', 'Ellipse', 'Polygon'],
     ]);
     // No node chosen: the mask is added with no links, and is the node chosen.
     bridge.call.mockClear();
@@ -1177,7 +1177,7 @@ describe('a Blur and a Mosaic in the node editor of the Fusion page', () => {
   it('adds each from their group of the tool bar: loose where no node is chosen, and after the node chosen on its picture', async () => {
     const { bridge } = await mount();
     const group = one('.fusion-add-effects');
-    expect([group.getAttribute('aria-label'), [...group.querySelectorAll('button')].map(button => button.textContent)]).toEqual(['Effects', ['Blur', 'Mosaic']]);
+    expect([group.getAttribute('aria-label'), [...group.querySelectorAll('button')].map(button => button.textContent)]).toEqual(['Effects', ['Blur', 'Mosaic', 'Delta Keyer']]);
     expect([marked('add-blur')!.title, marked('add-mosaic')!.title]).toEqual(['Add Node: Blur', 'Add Node: Mosaic']);
     // No node chosen: the Blur is added with no links, and is the node chosen.
     bridge.call.mockClear();
@@ -1444,6 +1444,384 @@ describe('a Blur and a Mosaic in the Spline Editor of the Fusion page', () => {
   });
 });
 
+/**
+ * `comp` and three nodes that nothing is linked to or from, each where the project puts it, so that it stays there when it is
+ * linked: the Delta Keyer n6 at 200,200, and left of it the Ellipse n7 at 40,180 and the Rectangle n8 at 40,280.
+ */
+const keyerComp = (): Composition => {
+  const made = comp();
+  return {
+    ...made,
+    nodes: [...made.nodes, newNode('delta_keyer', { x: 200, y: 200 }, 'n6'), newNode('ellipse', { x: 40, y: 180 }, 'n7'), newNode('rectangle', { x: 40, y: 280 }, 'n8')],
+  };
+};
+/**
+ * Where the middle of the card of the keyer of `keyerComp` and its ports are: its picture half way down its left side, its two
+ * mattes on its upper edge, a quarter and three quarters of its width (23 and 69 of 92) from its left, its effect mask on its
+ * lower edge and its output on its right; and the outputs of the two masks.
+ */
+const K = {
+  n6: { x: 246, y: 229 }, n6Garbage: { x: 223, y: 200 }, n6Solid: { x: 269, y: 200 }, n6Mask: { x: 223, y: 258 },
+  n7Out: { x: 132, y: 209 }, n8Out: { x: 132, y: 309 },
+};
+/** The numbers of a Delta Keyer, in the order of the Inspector, which is that of the catalog. */
+const KEYER_NUMBERS = [
+  'screen.r', 'screen.g', 'screen.b', 'gain', 'balance', 'pre_blur', 'low', 'high', 'erode_dilate', 'matte_blur', 'clean_foreground', 'clean_background',
+  'replace_color.r', 'replace_color.g', 'replace_color.b', 'spill_suppression',
+];
+
+describe('a Delta Keyer in the node editor of the Fusion page', () => {
+  const ports = (id: string) => [...nodeOf(id).querySelectorAll<SVGElement>('[data-port]')].map(each => each.dataset.port);
+  const linkDrawn = (name: string) => graph().querySelector<SVGElement>(`[data-link="${name}"]`);
+
+  it('draws its picture on its left, its two mattes on its upper edge, each in a colour of its own, its effect mask on its lower edge and its output on its right', async () => {
+    await mount(projectOf([timelineOf(keyerComp())]));
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n6', 'n7', 'n8']);
+    expect([nodeOf('n6').dataset.kind, placeOf('n6')]).toEqual(['delta_keyer', [200, 200]]);
+    // A card shows the first twelve characters of a name: the whole of it is in its title.
+    expect([...graph().querySelectorAll('[data-test="node-label"]')].map(each => each.textContent).slice(5)).toEqual(['Delta Keyer …', 'Ellipse 1', 'Rectangle 1']);
+    expect(ports('n6')).toEqual(['in:input', 'in:garbage_matte', 'in:solid_matte', 'in:mask', 'out']);
+    // The mattes point down into the card from its upper edge, and are named as Fusion names them.
+    const [garbage, solid] = [port('n6', 'in:garbage_matte'), port('n6', 'in:solid_matte')];
+    expect([garbage.dataset.input, garbage.getAttribute('d'), garbage.querySelector('title')!.textContent])
+      .toEqual(['garbage_matte', 'M 218 199 L 223 206 L 228 199 Z', 'Garbage Matte']);
+    expect([solid.dataset.input, solid.getAttribute('d'), solid.querySelector('title')!.textContent])
+      .toEqual(['solid_matte', 'M 264 199 L 269 206 L 274 199 Z', 'Solid Matte']);
+    // Its picture and its effect mask are where those of a Blur are: half way down its left side, and a quarter along its lower edge.
+    expect(port('n6', 'in:input').getAttribute('d')).toBe('M 199 224 L 206 229 L 199 234 Z');
+    expect(port('n6', 'in:mask').getAttribute('d')).toBe('M 218 259 L 223 252 L 228 259 Z');
+    expect([port('n6', 'out').getAttribute('x'), port('n6', 'out').getAttribute('y')]).toEqual(['287', '225']);
+    // No other kind has a matte input.
+    expect([ports('n3'), ports('n4'), ports('n7')]).toEqual([['in:input', 'in:mask', 'out'], ['in:background', 'in:foreground', 'in:mask', 'out'], ['in:mask', 'out']]);
+    // The colours of the two mattes are variables of the themes: of their inputs and of the links into them, which a link
+    // chosen or about to be replaced overrides by rules that come after. The stripe of the card is in the colour of the effects.
+    const css = readFileSync('src/studio/fusion/fusion.css', 'utf8');
+    const tokens = blockOf(readFileSync('src/ui/tokens.css', 'utf8'), ':root');
+    const colours = ['matte-garbage', 'matte-solid'].map(name => new RegExp(`--fusion-${name}: (#[0-9a-f]{6});`).exec(tokens)?.[1]);
+    expect(colours.every(colour => colour !== undefined)).toBe(true);
+    expect(new Set(colours).size).toBe(2);
+    for (const [input, name] of [['garbage_matte', 'matte-garbage'], ['solid_matte', 'matte-solid']]) {
+      expect(blockOf(css, `.fusion-page .fusion-port[data-input='${input}']`)).toContain(`fill: var(--fusion-${name});`);
+      expect(blockOf(css, `.fusion-page .fusion-link[data-input='${input}']`)).toContain(`stroke: var(--fusion-${name});`);
+      expect(css.indexOf(`.fusion-page .fusion-link[data-input='${input}'] {`)).toBeLessThan(css.indexOf(".fusion-page .fusion-link[data-hover='end'] {"));
+      expect(css.indexOf(`.fusion-page .fusion-link[data-input='${input}'] {`)).toBeLessThan(css.indexOf('.fusion-page .fusion-link[data-chosen],'));
+    }
+    expect(blockOf(css, ".fusion-page .fusion-node[data-kind='delta_keyer'] .fusion-node-stripe")).toContain('fill: var(--fusion-effect);');
+  });
+
+  it('links any output into a matte by a drag, the link drawn into it from above in its colour, and takes its end to another input or away', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(keyerComp())]));
+    bridge.call.mockClear();
+    // The Ellipse into the garbage matte.
+    dragFrom(port('n7', 'out'), K.n7Out, K.n6Garbage);
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'connect_fusion', ...AT, link: link('n7', 'n6', 'garbage_matte') }]]);
+    // The link is one of a matte: out of the output to the right, and into the input from above.
+    expect([linkDrawn('n7>n6:garbage_matte')!.dataset.input, linkDrawn('n7>n6:garbage_matte')!.getAttribute('d')])
+      .toEqual(['garbage_matte', 'M 132 209 C 177.5 209, 223 176, 223 200']);
+    // The Rectangle into the solid matte. The mattes of a node are in the order of the engine: the garbage matte, and the solid one last.
+    bridge.call.mockClear();
+    dragFrom(port('n8', 'out'), K.n8Out, K.n6Solid);
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'connect_fusion', ...AT, link: link('n8', 'n6', 'solid_matte') }]]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground', 'n7>n6:garbage_matte', 'n8>n6:solid_matte']);
+    expect([linkDrawn('n8>n6:solid_matte')!.dataset.input, linkDrawn('n8>n6:solid_matte')!.getAttribute('d')])
+      .toEqual(['solid_matte', 'M 132 309 C 200.5 309, 269 145.5, 269 200']);
+    // The nodes stay where the project put them.
+    expect([placeOf('n6'), placeOf('n7'), placeOf('n8')]).toEqual([[200, 200], [40, 180], [40, 280]]);
+    // The link that is there already is not sent again.
+    bridge.call.mockClear();
+    dragFrom(port('n8', 'out'), K.n8Out, K.n6Solid);
+    await settle();
+    expect(sent(bridge)).toEqual([]);
+    // A press on a matte input that has a link takes up the end of the link: let go on the effect mask of the keyer, the old
+    // link goes and the new one comes; and let go on nothing, the link goes.
+    dragFrom(port('n6', 'in:garbage_matte'), K.n6Garbage, K.n6Mask);
+    await settle();
+    dragFrom(port('n6', 'in:solid_matte'), K.n6Solid, { x: 420, y: 260 });
+    await settle();
+    expect(sent(bridge)).toEqual([
+      [{ op: 'disconnect_fusion', ...AT, to: 'n6', input: 'garbage_matte' }, { op: 'connect_fusion', ...AT, link: link('n7', 'n6', 'mask') }],
+      [{ op: 'disconnect_fusion', ...AT, to: 'n6', input: 'solid_matte' }],
+    ]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground', 'n7>n6:mask']);
+    expect(problem()).toBeNull();
+  });
+
+  it('is added from the group of the effects of the tool bar: loose where no node is chosen, and after the node chosen on its picture', async () => {
+    const { bridge } = await mount();
+    expect(marked('add-delta_keyer')!.title).toBe('Add Node: Delta Keyer');
+    // No node chosen: the keyer is added with no links, and is the node chosen.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-delta_keyer')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('delta_keyer') }]]);
+    expect([currentNode(), nodeOf('n10').dataset.kind, ports('n10')]).toEqual(['n10', 'delta_keyer', ['in:input', 'in:garbage_matte', 'in:solid_matte', 'in:mask', 'out']]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground']);
+    // The Transform chosen, which feeds the background of the Merge: the keyer goes in after it, the Transform into its
+    // `input` and it into the background, in the one operation, which is one step to undo.
+    choose('n3');
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-delta_keyer')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('delta_keyer'), links: [link('n3', '', 'input'), link('', 'n4', 'background')] }]]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'n3>n11:input', 'MediaIn1>n3:input', 'n11>n4:background', 'n5>n4:foreground']);
+    expect([currentNode(), nodeOf('n11').dataset.kind]).toEqual(['n11', 'delta_keyer']);
+    // A mask added with the keyer chosen goes into its effect mask, which nothing is linked into, and into neither of its mattes.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-ellipse')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n11', 'mask')] }]]);
+    expect(linksDrawn()).toContain('n12>n11:mask');
+    expect(linksDrawn().filter(name => name!.endsWith('_matte'))).toEqual([]);
+    expect(problem()).toBeNull();
+  });
+
+  it('is added from the right-click menu of a node after that node, and from Select Tool by its name, among the effects', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    fireEvent.contextMenu(card('n4'), { clientX: 380, clientY: 60 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add Node' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delta Keyer' }));
+    await settle();
+    expect(sent(bridge)).toEqual([[{
+      op: 'add_fusion_node', ...AT, node: newNode('delta_keyer', { x: 380, y: 60 }), links: [link('n4', '', 'input'), link('', 'MediaOut1', 'input')],
+    }]]);
+    expect(currentNode()).toBe('n10');
+    // Select Tool finds it by a part of its name, and says that it is one of the effects; taken, it goes in after the keyer chosen.
+    bridge.call.mockClear();
+    key(' ', { code: 'Space', shiftKey: true }); await settle();
+    const field = screen.getByRole('combobox', { name: 'Search tools' });
+    fireEvent.change(field, { target: { value: 'keyer' } });
+    const options = [...document.querySelectorAll<HTMLElement>('[data-test="select-tool-option"]')];
+    expect(options.map(each => [each.dataset.kind, each.querySelector('.fusion-select-tool-name')!.textContent, each.querySelector('.fusion-select-tool-group')?.textContent]))
+      .toEqual([['delta_keyer', 'Delta Keyer', 'Effects']]);
+    fireEvent.keyDown(field, { key: 'Enter' }); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('delta_keyer'), links: [link('n10', '', 'input'), link('', 'MediaOut1', 'input')] }]]);
+    // By the name that the engine gives it too, in every language.
+    expect(matchingTools('delta', en.label.studio.fusionPage.kinds)).toEqual(['delta_keyer']);
+    expect(matchingTools('delta_keyer', zhCN.label.studio.fusionPage.kinds)).toEqual(['delta_keyer']);
+    expect(matchingTools(zhCN.label.studio.fusionPage.kinds.delta_keyer, zhCN.label.studio.fusionPage.kinds)).toEqual(['delta_keyer']);
+  });
+
+  it('takes no node dropped on a link into one of its mattes', async () => {
+    // `comp`, the Blur n6 that nothing is linked to, at 28,212, the keyer n7 at 300,200 and the Ellipse n8 at 40,320, its garbage matte.
+    const made = comp();
+    const withMatte: Composition = {
+      nodes: [...made.nodes, newNode('blur', null, 'n6'), newNode('delta_keyer', { x: 300, y: 200 }, 'n7'), newNode('ellipse', { x: 40, y: 320 }, 'n8')],
+      links: [...made.links, link('n8', 'n7', 'garbage_matte')],
+    };
+    const { bridge } = await mount(projectOf([timelineOf(withMatte)]));
+    expect([placeOf('n6'), placeOf('n7'), placeOf('n8')]).toEqual([[28, 212], [300, 200], [40, 320]]);
+    bridge.call.mockClear();
+    // The link into the matte runs from 132,349 over the keyer and down into 323,200: its middle lies at 263.3,246.6.
+    const over = { x: 264, y: 247 };
+    fireEvent.pointerDown(card('n6'), { button: 0, clientX: M.n6.x, clientY: M.n6.y });
+    fireEvent.pointerMove(canvas(), { clientX: (M.n6.x + over.x) / 2, clientY: (M.n6.y + over.y) / 2 });
+    fireEvent.pointerMove(canvas(), { clientX: over.x, clientY: over.y });
+    expect([...graph().querySelectorAll<SVGElement>('[data-replacing]')].map(each => each.dataset.link)).toEqual([]);
+    fireEvent.pointerUp(canvas(), { clientX: over.x, clientY: over.y });
+    await settle();
+    // The Blur is moved, and nothing is linked.
+    expect(sent(bridge)).toEqual([
+      [{ op: 'set_fusion_node', ...AT, id: 'n6', pos: { x: 123, y: 215 } }], [{ op: 'set_fusion_node', ...AT, id: 'n6', pos: { x: 218, y: 218 } }],
+    ]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground', 'n8>n7:garbage_matte']);
+  });
+});
+
+describe('a Delta Keyer in the Inspector of the Fusion page', () => {
+  const checked = (name: string) => (row(name).querySelector('input') as HTMLInputElement).checked;
+  const select = (name: string) => row(name).querySelector('select')!;
+  const choices = (name: string) => [...select(name).options].map(each => each.textContent);
+  const labelOf = (name: string) => row(name).querySelector('label')!.textContent;
+  const withKeys = () => [...inspector().querySelectorAll<HTMLElement>('[data-keys]')].map(each => each.dataset.keys);
+  const keyedAt = (name: string) => keysOf(name)[1].dataset.keyed;
+  const swatch = (name: string) => row(name).querySelector<HTMLInputElement>('input[type="color"]')!;
+  const sections = () => [...inspector().querySelectorAll('h3.inspector-section')].map(each => each.textContent);
+  const keyer = (params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id: 'n6', params }];
+  const keyAt = (path: string, value: number, remove = 0) => ({ op: 'splice_fusion_keys', ...AT, path: `n6.${path}`, at: 0, remove, keys: [{ frame: 0, value, interp: 'linear' }] });
+  const shown = async () => {
+    const engine = await mount(projectOf([timelineOf(keyerComp())]));
+    press(card('n6'), K.n6);
+    return engine;
+  };
+  const whole = [
+    'label', 'view', 'screen', 'screen.r', 'screen.g', 'screen.b', 'gain', 'balance', 'pre_blur', 'low', 'high', 'erode_dilate', 'matte_blur', 'clean_foreground',
+    'clean_background', 'replace', 'replace_color', 'replace_color.r', 'replace_color.g', 'replace_color.b', 'garbage_invert', 'spill_method', 'spill_suppression',
+  ];
+
+  it('shows View Mode and then its settings in the sections of Fusion\'s tabs, with the defaults of the engine', async () => {
+    await shown();
+    expect([inspector().dataset.node, inspector().dataset.kind, marked('fusion-node-name')!.textContent]).toEqual(['n6', 'delta_keyer', 'Delta Keyer 1']);
+    expect(marked('fusion-no-settings')).toBeNull();
+    expect(fieldsShown()).toEqual(whole);
+    expect(sections()).toEqual(['Key', 'Matte', 'Fringe']);
+    expect(whole.slice(1).map(labelOf)).toEqual([
+      'View Mode', 'Background Color', 'Background Red', 'Background Green', 'Background Blue', 'Gain', 'Balance', 'Pre-Blur', 'Threshold Low', 'Threshold High',
+      'Erode/Dilate', 'Matte Blur', 'Clean Foreground', 'Clean Background', 'Replace Mode', 'Replace Color', 'Replace Red', 'Replace Green', 'Replace Blue',
+      'Invert Garbage Matte', 'Spill Method', 'Spill Suppression',
+    ]);
+    // The modes, as the engine names them and as Fusion orders them.
+    expect([select('view').value, choices('view')]).toEqual(['final_result', ['Pre Matte', 'Matte', 'Status', 'Final Result']]);
+    expect([select('replace').value, choices('replace')]).toEqual(['soft_color', ['None', 'Source', 'Hard Color', 'Soft Color']]);
+    expect([select('spill_method').value, choices('spill_method')]).toEqual(['medium', ['None', 'Rare', 'Medium', 'Well Done', 'Burnt']]);
+    // The numbers: a pure green screen, the thresholds at their ends, a mid grey to fill with; each with the three buttons of keys.
+    expect(KEYER_NUMBERS.map(name => box(name).value)).toEqual([
+      '0.000', '1.000', '0.000', '1.000', '0.500', '0.0', '0.000', '1.000', '0.0', '0.0', '0.000', '0.000', '0.500', '0.500', '0.500', '1.000',
+    ]);
+    expect(withKeys()).toEqual(KEYER_NUMBERS);
+    expect(keysOf('screen.g').map(each => each.getAttribute('aria-label')))
+      .toEqual(['Background Green: Previous keyframe', 'Background Green: Add keyframe', 'Background Green: Next keyframe']);
+    // The two colours as one, each a swatch.
+    expect([swatch('screen').value, swatch('replace_color').value]).toEqual(['#00ff00', '#808080']);
+    // The sliders are over the part of the range that is used day by day: a channel of a colour from 0 to 1 of its 65504, the
+    // Gain to 4 of its 10, and the lengths to 20 pixels of their 100, the Erode/Dilate either way.
+    const range = (name: string) => [slider(name).min, slider(name).max];
+    expect(['screen.g', 'replace_color.r', 'gain', 'balance', 'pre_blur', 'matte_blur', 'erode_dilate', 'low'].map(range))
+      .toEqual([['0', '1'], ['0', '1'], ['0', '4'], ['0', '1'], ['0', '20'], ['0', '20'], ['-20', '20'], ['0', '1']]);
+    // The Invert of the garbage matte says where the pointer rests on it that it needs a garbage matte linked.
+    expect([checked('garbage_invert'), row('garbage_invert').title]).toEqual([false, en.hint.studio.fusionPage.garbageInvert]);
+  });
+
+  it('sets its modes and its switch by a patch of the node, and its numbers within the range of the catalog', async () => {
+    const { bridge } = await shown();
+    bridge.call.mockClear();
+    fireEvent.change(select('view'), { target: { value: 'matte' } }); await settle();
+    fireEvent.change(select('spill_method'), { target: { value: 'burnt' } }); await settle();
+    fireEvent.click(row('garbage_invert').querySelector('input')!); await settle();
+    type('gain', '2.5'); await settle();
+    // Beyond the slider, which ends at 4, the field takes a Gain up to the 10 of the range, and no more.
+    type('gain', '99'); await settle();
+    type('balance', '0.25'); await settle();
+    type('pre_blur', '3'); await settle();
+    type('low', '0.2'); await settle();
+    type('high', '0.8'); await settle();
+    // Below 0 the matte is eroded: down to the 100 pixels of the range.
+    type('erode_dilate', '-250'); await settle();
+    type('matte_blur', '1.5'); await settle();
+    type('clean_foreground', '0.4'); await settle();
+    type('spill_suppression', '0.5'); await settle();
+    // A channel of a colour above 1, which its slider does not reach.
+    type('screen.r', '0.25'); await settle();
+    type('replace_color.b', '2'); await settle();
+    fireEvent.doubleClick(row('gain').querySelector('label')!); await settle();
+    expect(sent(bridge)).toEqual([
+      keyer({ view: 'matte' }), keyer({ spill_method: 'burnt' }), keyer({ garbage_invert: true }), keyer({ gain: 2.5 }), keyer({ gain: 10 }),
+      keyer({ balance: 0.25 }), keyer({ pre_blur: 3 }), keyer({ low: 0.2 }), keyer({ high: 0.8 }), keyer({ erode_dilate: -100 }), keyer({ matte_blur: 1.5 }),
+      keyer({ clean_foreground: 0.4 }), keyer({ spill_suppression: 0.5 }), keyer({ screen: { r: 0.25 } }), keyer({ replace_color: { b: 2 } }), keyer({ gain: 1 }),
+    ]);
+    expect([select('view').value, select('spill_method').value, checked('garbage_invert')]).toEqual(['matte', 'burnt', true]);
+    expect(['gain', 'erode_dilate', 'screen.r', 'replace_color.b'].map(name => box(name).value)).toEqual(['1.000', '-100.0', '0.250', '2.000']);
+  });
+
+  it('shows the Replace Color only while the Replace Mode fills with it', async () => {
+    const { bridge } = await shown();
+    const without = whole.filter(name => !name.startsWith('replace_color'));
+    bridge.call.mockClear();
+    fireEvent.change(select('replace'), { target: { value: 'source' } }); await settle();
+    expect(fieldsShown()).toEqual(without);
+    fireEvent.change(select('replace'), { target: { value: 'none' } }); await settle();
+    expect(fieldsShown()).toEqual(without);
+    expect(withKeys()).toEqual(KEYER_NUMBERS.filter(name => !name.startsWith('replace_color')));
+    fireEvent.change(select('replace'), { target: { value: 'hard_color' } }); await settle();
+    expect(fieldsShown()).toEqual(whole);
+    expect(sent(bridge)).toEqual([keyer({ replace: 'source' }), keyer({ replace: 'none' }), keyer({ replace: 'hard_color' })]);
+    // The colour was kept under the modes that do not read it.
+    expect([swatch('replace_color').value, box('replace_color.g').value]).toEqual(['#808080', '0.500']);
+  });
+
+  it('sets a colour chosen as one by one patch of the node, and puts its keys by the paths of its settings', async () => {
+    const { bridge } = await shown();
+    bridge.call.mockClear();
+    // From green to blue: the two channels that change go together, so that the engine never sees the grey between the two.
+    fireEvent.change(swatch('screen'), { target: { value: '#0000ff' } }); await settle();
+    fireEvent.change(swatch('replace_color'), { target: { value: '#ff8000' } }); await settle();
+    expect(sent(bridge)).toEqual([keyer({ screen: { g: 0, b: 1 } }), keyer({ replace_color: { r: 1, g: 0.502, b: 0 } })]);
+    expect(['screen.r', 'screen.g', 'screen.b', 'replace_color.g'].map(name => box(name).value)).toEqual(['0.000', '0.000', '1.000', '0.502']);
+    expect([swatch('screen').value, swatch('replace_color').value]).toEqual(['#0000ff', '#ff8000']);
+    // The diamond puts a key at the playhead, at frame 0, of the value that the setting has: each by its path in the node.
+    bridge.call.mockClear();
+    expect([keyedAt('screen.b'), keyedAt('gain')]).toEqual([undefined, undefined]);
+    fireEvent.click(keysOf('screen.b')[1]); await settle();
+    fireEvent.click(keysOf('gain')[1]); await settle();
+    fireEvent.click(keysOf('replace_color.g')[1]); await settle();
+    expect(sent(bridge)).toEqual([[keyAt('screen.b', 1)], [keyAt('gain', 1)], [keyAt('replace_color.g', 0.502)]]);
+    expect([keyedAt('screen.b'), keyedAt('gain'), keyedAt('replace_color.g'), keyedAt('balance'), keysOf('gain')[1].getAttribute('aria-pressed')])
+      .toEqual(['true', 'true', 'true', undefined, 'true']);
+    expect(nodeOf('n6').querySelector('[data-test="node-keyed"]')).not.toBeNull();
+    // A value typed where the key is changes the key.
+    bridge.call.mockClear();
+    type('gain', '2'); await settle();
+    expect(sent(bridge)).toEqual([[keyAt('gain', 2, 1)]]);
+    // A colour chosen as one: the channels without keys by the patch, and the one with keys as a key at the playhead.
+    bridge.call.mockClear();
+    fireEvent.change(swatch('screen'), { target: { value: '#00ff00' } }); await settle();
+    expect(sent(bridge)).toEqual([[...keyer({ screen: { g: 1 } }), keyAt('screen.b', 0, 1)]]);
+    // The diamond takes the key at the playhead away again: its last key leaves its value, as one number.
+    bridge.call.mockClear();
+    fireEvent.click(keysOf('gain')[1]); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_fusion_keys', ...AT, path: 'n6.gain', param: 2 }]]);
+    expect([keyedAt('gain'), keyedAt('screen.b')]).toEqual([undefined, 'true']);
+  });
+
+  it('says in its own words that a screen colour keys nothing and that the thresholds have crossed, and any other refusal as it is said elsewhere', async () => {
+    const { refuse } = await shown();
+    const said = () => marked('fusion-inspector-problem')?.textContent ?? null;
+    // A grey screen: no channel is above the other two.
+    refuse({ reason: 'out_of_range', what: 'delta_keyer.screen' });
+    type('screen.g', '0'); await settle();
+    expect(said()).toContain(en.hint.studio.fusionPage.keyerScreen);
+    expect(said()).not.toContain(en.hint.studio.edit.out_of_range);
+    fireEvent.click(marked('fusion-inspector-problem')!.querySelector('button')!);
+    expect(said()).toBeNull();
+    fireEvent.change(swatch('screen'), { target: { value: '#808080' } }); await settle();
+    expect(said()).toContain(en.hint.studio.fusionPage.keyerScreen);
+    // The lower threshold above the upper one: typed, and slid, which is a gesture.
+    refuse({ reason: 'out_of_range', what: 'delta_keyer.low' });
+    type('low', '0.9'); await settle();
+    expect(said()).toContain(en.hint.studio.fusionPage.keyerThreshold);
+    fireEvent.click(marked('fusion-inspector-problem')!.querySelector('button')!);
+    const high = slider('high');
+    fireEvent.pointerDown(high);
+    fireEvent.input(high, { target: { value: '0.1' } }); await settle();
+    fireEvent.change(high, { target: { value: '0.1' } }); await settle();
+    expect(said()).toContain(en.hint.studio.fusionPage.keyerThreshold);
+    // A number out of its range, which the fields do not let through, is said in the general words; and a change that changes nothing is not said.
+    refuse({ reason: 'out_of_range', what: 'delta_keyer.gain' });
+    type('gain', '3'); await settle();
+    expect(said()).toContain(en.hint.studio.edit.out_of_range);
+    refuse({ reason: 'empty' });
+    type('balance', '0.3'); await settle();
+    fireEvent.change(select('view'), { target: { value: 'status' } }); await settle();
+    expect(said()).toBeNull();
+  });
+});
+
+describe('a Delta Keyer in the Spline Editor of the Fusion page', () => {
+  const listed = () => [...document.querySelectorAll<HTMLElement>('[data-test="fusion-curves"] li[data-curve]')].map(each => each.dataset.curve);
+  const named = (curve: string) => one(`[data-test="fusion-curves"] li[data-curve="${curve}"]`).textContent ?? '';
+
+  it('lists its sixteen numbers by the names of the Inspector, and the channels of its Replace Color only while its Replace Mode reads them', async () => {
+    await mount(projectOf([timelineOf(keyerComp())]));
+    press(card('n6'), K.n6);
+    fireEvent.click(marked('toggle-spline')!);
+    expect(listed()).toEqual(KEYER_NUMBERS.map(path => `n6.${path}`));
+    const names = [
+      'Background Red', 'Background Green', 'Background Blue', 'Gain', 'Balance', 'Pre-Blur', 'Threshold Low', 'Threshold High', 'Erode/Dilate', 'Matte Blur',
+      'Clean Foreground', 'Clean Background', 'Replace Red', 'Replace Green', 'Replace Blue', 'Spill Suppression',
+    ];
+    expect(KEYER_NUMBERS.map((path, index) => named(`n6.${path}`).includes(names[index]))).toEqual(KEYER_NUMBERS.map(() => true));
+    // Under a Replace Mode that fills with no colour, the Replace Color is kept and not read: its channels are not listed.
+    fireEvent.change(row('replace').querySelector('select')!, { target: { value: 'source' } }); await settle();
+    expect(listed()).toEqual(KEYER_NUMBERS.filter(path => !path.startsWith('replace_color.')).map(path => `n6.${path}`));
+    // A setting that has keys comes first; and with no node chosen it is the one listed, named with its node.
+    fireEvent.click(keysOf('gain')[1]); await settle();
+    expect([listed()[0], listed()]).toEqual(['n6.gain', expect.arrayContaining(['n6.screen.g', 'n6.spill_suppression'])]);
+    expect(listed()).toHaveLength(13);
+    press(canvas(), { x: 590, y: 290 });
+    expect(listed()).toEqual(['n6.gain']);
+    expect(named('n6.gain')).toContain('Delta Keyer 1 · Gain');
+  });
+});
+
 describe('copying, cutting, pasting and duplicating nodes on the Fusion page', () => {
   /** A letter with Ctrl, or with what is given in its place. */
   const chord = (letter: string, fields: Record<string, unknown> = { ctrlKey: true }) => key(letter, { code: `Key${letter.toUpperCase()}`, ...fields });
@@ -1701,9 +2079,9 @@ describe('Select Tool on the Fusion page', () => {
     expect(dialog()).not.toBeNull();
     expect(document.activeElement).toBe(field());
     expect(screen.getByRole('listbox', { name: 'Select Tool' }).id).toBe(field().getAttribute('aria-controls'));
-    expect(kinds()).toEqual(['merge', 'transform', 'background', 'media_in', 'blur', 'mosaic', 'rectangle', 'ellipse', 'polygon']);
+    expect(kinds()).toEqual(['merge', 'transform', 'background', 'media_in', 'blur', 'mosaic', 'delta_keyer', 'rectangle', 'ellipse', 'polygon']);
     expect(options().map(each => each.querySelector('.fusion-select-tool-name')!.textContent))
-      .toEqual(['Merge', 'Transform', 'Background', 'MediaIn', 'Blur', 'Mosaic', 'Rectangle', 'Ellipse', 'Polygon']);
+      .toEqual(['Merge', 'Transform', 'Background', 'MediaIn', 'Blur', 'Mosaic', 'Delta Keyer', 'Rectangle', 'Ellipse', 'Polygon']);
     expect(options().every(each => each.getAttribute('role') === 'option')).toBe(true);
     expect([markedKind(), field().getAttribute('aria-activedescendant')]).toEqual(['merge', options()[0].id]);
     // Shift+Space was the editor's: the transport, which plays on Space, was not asked to.
@@ -1728,7 +2106,7 @@ describe('Select Tool on the Fusion page', () => {
     bridge.call.mockClear();
     shiftSpace();
     fireEvent.change(field(), { target: { value: 'e' } });
-    expect(kinds()).toEqual(['ellipse', 'merge', 'media_in', 'rectangle']);
+    expect(kinds()).toEqual(['ellipse', 'merge', 'media_in', 'delta_keyer', 'rectangle']);
     fireEvent.keyDown(field(), { key: 'ArrowUp' });
     expect(markedKind()).toBe('rectangle');
     fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
@@ -1816,7 +2194,7 @@ describe('a clip on a locked track on the Fusion page', () => {
     expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5']);
     expect([inspector().dataset.node, box('blend').value]).toEqual(['n4', '1.000']);
     // The buttons of the tool bar are off, and so is every field, switch and button of the Inspector that changes something.
-    expect([...document.querySelectorAll<HTMLButtonElement>('.fusion-add button')].map(each => each.disabled)).toEqual(Array.from({ length: 9 }, () => true));
+    expect([...document.querySelectorAll<HTMLButtonElement>('.fusion-add button')].map(each => each.disabled)).toEqual(Array.from({ length: 10 }, () => true));
     expect([box('blend').disabled, slider('blend').disabled, row('apply').querySelector('select')!.disabled, row('label').querySelector('input')!.disabled])
       .toEqual([true, true, true, true]);
     expect(keysOf('blend')[1].disabled).toBe(true);

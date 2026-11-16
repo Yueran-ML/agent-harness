@@ -13,17 +13,17 @@ import {
 } from '../src/studio/engine';
 import {
   ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addedNodes, addNode, connect, copyNodes, cutNodes, disconnect, duplicateNodes, fusionKey, insertOnLink,
-  insertPoint, isFirst, LEAST_POINTS, MOST_NODES, MOST_POINTS, moveNodes, newBackground, newMerge, newNode, newPolygon, newTransform, PASTE_OFFSET, pastedName,
-  pasteNodes, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes, roomFor, shownComposition, startPoints, togglePass,
-  withFirst,
+  insertPoint, isFirst, LEAST_POINTS, MOST_NODES, MOST_POINTS, moveNodes, newBackground, newDeltaKeyer, newMerge, newNode, newPolygon, newTransform, PASTE_OFFSET,
+  pastedName, pasteNodes, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes, roomFor, shownComposition, startPoints,
+  togglePass, withFirst,
 } from '../src/studio/fusion/edits';
 import {
-  fusionLinkHalves, fusionLinkNear, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, layoutComposition, linkEnds, linkName,
-  MASK_INSET, namesOf, nodesIn, outputPoint, pictureInputs, placesOf, portAt, portsOf,
+  fusionLinkHalves, fusionLinkNear, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, isMatteInput, isPictureInput,
+  layoutComposition, linkEnds, linkName, MASK_INSET, MATTE_INPUTS, MATTE_INSETS, matteInputs, namesOf, nodesIn, outputPoint, pictureInputs, placesOf, portAt, portsOf,
 } from '../src/studio/fusion/graph';
 import {
-  addKey, FUSION_SETTINGS, hasKeys, isPointSetting, keyOps, keyTimesOf, numbered, paramOf, pathOf, pointPath, putValue, removeKey, settingOf, settingsOf,
-  wholeParam, wholeValue,
+  addKey, FUSION_SETTINGS, hasKeys, isPointSetting, keyerRefusals, keyOps, keyTimesOf, numbered, paramOf, pathOf, pointPath, putValue, putValues, removeKey,
+  settingOf, settingsOf, wholeParam, wholeValue,
 } from '../src/studio/fusion/settings';
 import { clip, media, timeline } from './timeline-fixture';
 
@@ -213,7 +213,7 @@ describe('the layout of a composition', () => {
   it('names a node by its label, or by its kind and its number among those of its kind', () => {
     const kinds = {
       media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
-      rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic',
+      rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer',
     };
     const labelled: Composition = { ...comp(), nodes: [...comp().nodes.map(node => (node.id === 'n4' ? { ...node, label: 'Over the sky' } : node)), transform('n6')] };
     expect([...namesOf(labelled, kinds)]).toEqual([
@@ -598,8 +598,8 @@ describe('a Blur and a Mosaic', () => {
   });
 
   it('are added in a group of their own: loose where no node is chosen, and after the node chosen on their picture, in the one operation', () => {
-    expect(ADDABLE_EFFECTS).toEqual(['blur', 'mosaic']);
-    expect([...ADDABLE, ...ADDABLE_MASKS].some(kind => kind === 'blur' || kind === 'mosaic')).toBe(false);
+    expect(ADDABLE_EFFECTS).toEqual(['blur', 'mosaic', 'delta_keyer']);
+    expect([...ADDABLE, ...ADDABLE_MASKS].some(kind => kind === 'blur' || kind === 'mosaic' || kind === 'delta_keyer')).toBe(false);
     for (const kind of ADDABLE_EFFECTS) {
       // None chosen: with no links, at the place given, or where the editor lays it out.
       expect(addNode(AT, comp(), kind, null, { x: 10.4, y: 20.6 }), kind).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode(kind, { x: 10, y: 21 }) }]);
@@ -668,6 +668,229 @@ describe('a Blur and a Mosaic', () => {
     expect(putValue(AT, after, of(after, 'size.x'), 8, 12)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'b1.size.x', at: 0, remove: 1, keys: [keyAt(12, 8)] }]);
     expect(removeKey(AT, after, of(after, 'size.x'), 12)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'b1.size.x', param: 5 }]);
     expect(keyOps(AT, after, of(after, 'size.x'), 9)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'b1.size.x', param: 9 }]);
+  });
+});
+
+// A Delta Keyer (PROTOCOL.md, "The Delta Keyer"): it has a picture, `input`, a garbage matte, a solid matte and an effect mask.
+const keyer = (id: string): FusionNode => newNode('delta_keyer', null, id);
+/**
+ * MediaIn1 keyed by the Delta Keyer n6 and laid over the Background n5 by the Merge n4, into MediaOut1: the Ellipse n7 is the
+ * garbage matte of the keyer, the Rectangle n8 its solid matte and the Rectangle n9 its effect mask.
+ */
+const keying = (): Composition => ({
+  nodes: [mediaIn(), mediaOut(), merge('n4'), background('n5'), keyer('n6'), ellipse('n7'), rectangle('n8'), rectangle('n9')],
+  links: [
+    link('MediaIn1', 'n6'), link('n7', 'n6', 'garbage_matte'), link('n8', 'n6', 'solid_matte'), link('n9', 'n6', 'mask'),
+    link('n5', 'n4', 'background'), link('n6', 'n4', 'foreground'), link('n4', 'MediaOut1'),
+  ],
+});
+/** `comp` and a Delta Keyer, n6, that nothing is linked to or from. */
+const looseKeyer = (): Composition => ({ nodes: [...comp().nodes, keyer('n6')], links: comp().links });
+
+describe('a Delta Keyer', () => {
+  it('is made with every setting, as the engine writes a new one, and has its picture, its two mattes and its mask', () => {
+    const base = { label: '', pass_through: false, pos: null };
+    expect(newNode('delta_keyer', null, 'k1')).toStrictEqual({
+      id: 'k1', ...base, kind: 'delta_keyer', params: {
+        screen: { r: 0, g: 1, b: 0 }, gain: 1, balance: 0.5, pre_blur: 0, low: 0, high: 1, erode_dilate: 0, matte_blur: 0, clean_foreground: 0, clean_background: 0,
+        replace: 'soft_color', replace_color: { r: 0.5, g: 0.5, b: 0.5 }, garbage_invert: false, spill_method: 'medium', spill_suppression: 1, view: 'final_result',
+      },
+    });
+    expect(newNode('delta_keyer').params).toStrictEqual(newDeltaKeyer());
+    // The fields of its settings, in the order that the engine writes them in; and each new one has colours of its own.
+    expect(Object.keys(newDeltaKeyer())).toEqual([
+      'screen', 'gain', 'balance', 'pre_blur', 'low', 'high', 'erode_dilate', 'matte_blur', 'clean_foreground', 'clean_background',
+      'replace', 'replace_color', 'garbage_invert', 'spill_method', 'spill_suppression', 'view',
+    ]);
+    expect(newDeltaKeyer().screen).not.toBe(newDeltaKeyer().screen);
+    expect(INPUTS.delta_keyer).toEqual(['input', 'garbage_matte', 'solid_matte', 'mask']);
+    // Its one picture is its `input`: a matte is no picture, as its effect mask is none.
+    expect(pictureInputs('delta_keyer')).toEqual(['input']);
+    expect(matteInputs('delta_keyer')).toEqual(['garbage_matte', 'solid_matte']);
+    expect([hasOutput('delta_keyer'), hasMaskInput('delta_keyer'), isMaskKind('delta_keyer'), handedOn('delta_keyer')]).toEqual([true, true, false, 'input']);
+    expect([...MATTE_INPUTS]).toEqual(['garbage_matte', 'solid_matte']);
+    expect((['input', 'background', 'foreground', 'mask', 'garbage_matte', 'solid_matte'] as const).map(input => [isMatteInput(input), isPictureInput(input)]))
+      .toEqual([[false, true], [false, true], [false, true], [false, false], [true, false], [true, false]]);
+    expect(isMatteInput(null)).toBe(false);
+    // No other kind has a matte, and the pictures of the other kinds are what they were.
+    expect((Object.keys(INPUTS) as (keyof typeof INPUTS)[]).filter(kind => matteInputs(kind).length > 0)).toEqual(['delta_keyer']);
+    expect([pictureInputs('merge'), pictureInputs('blur'), pictureInputs('rectangle'), pictureInputs('media_out')]).toEqual([['background', 'foreground'], ['input'], [], ['input']]);
+  });
+
+  it('has the settings of the catalog of the engine, with its defaults, ranges and units', () => {
+    const catalog: Record<string, Entry[]> = JSON.parse(readFileSync('../engine/crates/model/tests/data/catalog.json', 'utf8'));
+    const entries = catalog.fusion_delta_keyer;
+    expect(entries).toHaveLength(16);
+    expect(FUSION_SETTINGS.delta_keyer.map(setting => ({ path: setting.path, default: setting.bounds.neutral, low: setting.bounds.low, high: setting.bounds.high, unit: setting.unit })))
+      .toEqual(entries.map(entry => ({ path: entry.path, default: entry.default, low: entry.low, high: entry.high, unit: entry.unit })));
+    expect(entries.every(entry => entry.page === 'fusion' && entry.palette === 'fusion' && entry.clock === 'source_frame')).toBe(true);
+    // A new keyer has every number at the default of the catalog; its modes, its switch and a colour whole are no settings.
+    const node = keyer('k1');
+    for (const setting of settingsOf(node)) expect(paramOf(node, setting), setting.path).toBe(setting.bounds.neutral);
+    expect(paths(node)).toEqual([
+      'screen.r', 'screen.g', 'screen.b', 'gain', 'balance', 'pre_blur', 'low', 'high', 'erode_dilate', 'matte_blur', 'clean_foreground', 'clean_background',
+      'replace_color.r', 'replace_color.g', 'replace_color.b', 'spill_suppression',
+    ]);
+    for (const path of ['replace', 'garbage_invert', 'spill_method', 'view', 'screen', 'replace_color']) expect(settingOf(node, path), path).toBeUndefined();
+    // Its lengths are counted as a Blur Size is, and a channel of a colour may be as much as a half float holds.
+    expect(['pre_blur', 'erode_dilate', 'matte_blur'].map(path => settingOf(node, path)!.unit)).toEqual(['pixels1080', 'pixels1080', 'pixels1080']);
+    expect(settingOf(node, 'screen.g')).toEqual({ path: 'screen.g', bounds: { neutral: 1, low: 0, high: 65504 }, unit: 'number' });
+    expect(settingOf(node, 'erode_dilate')!.bounds).toEqual({ neutral: 0, low: -100, high: 100 });
+  });
+
+  it('is added in the group of the effects: loose where no node is chosen, and after the node chosen on its picture, never on a matte', () => {
+    expect(ADDABLE_EFFECTS).toContain('delta_keyer');
+    expect(addNode(AT, comp(), 'delta_keyer', null, { x: 10.4, y: 20.6 })).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('delta_keyer', { x: 10, y: 21 }) }]);
+    // After the Transform, which feeds the background of the Merge: the Transform into its `input`, and it into the background.
+    expect(addNode(AT, comp(), 'delta_keyer', 'n3', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: newNode('delta_keyer'), links: [link('n3', '', 'input'), link('', 'n4', 'background')],
+    }]);
+    // A Blur after the keyer goes between it and the foreground that it feeds.
+    expect(addNode(AT, keying(), 'blur', 'n6', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: newNode('blur'), links: [link('n6', '', 'input'), link('', 'n4', 'foreground')],
+    }]);
+    // A Transform after the Ellipse that feeds the garbage matte goes between them: its picture is the matte.
+    expect(addNode(AT, keying(), 'transform', 'n7', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: newNode('transform'), links: [link('n7', '', 'input'), link('', 'n6', 'garbage_matte')],
+    }]);
+    // A mask added with the keyer chosen goes into its effect mask where that is free, though its mattes are free too; and loose where it is not.
+    expect(addNode(AT, looseKeyer(), 'rectangle', 'n6', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('rectangle'), links: [link('', 'n6', 'mask')] }]);
+    const unmasked: Composition = { ...keying(), links: keying().links.filter(each => each.input !== 'mask') };
+    expect(addNode(AT, unmasked, 'ellipse', 'n6', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n6', 'mask')] }]);
+    const unmatted: Composition = { ...keying(), links: keying().links.filter(each => !isMatteInput(each.input)) };
+    const taken = addNode(AT, unmatted, 'ellipse', 'n6', null);
+    expect(taken).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse') }]);
+    expect(taken[0]).not.toHaveProperty('links');
+  });
+
+  it('has its mattes linked, unlinked and taken to the other matte as any link is, and kept in the order of the engine', () => {
+    // The inputs of a node by their names: the garbage matte before the picture, and the solid matte after the mask.
+    expect(layoutComposition(keying()).links.map(linkName)).toEqual([
+      'n4>MediaOut1:input', 'n5>n4:background', 'n6>n4:foreground', 'n7>n6:garbage_matte', 'MediaIn1>n6:input', 'n9>n6:mask', 'n8>n6:solid_matte',
+    ]);
+    const unmatted: Composition = { ...keying(), links: keying().links.filter(each => !isMatteInput(each.input)) };
+    const linked = connect(AT, unmatted, link('n7', 'n6', 'garbage_matte'));
+    expect(linked).toEqual([{ op: 'connect_fusion', ...AT, link: link('n7', 'n6', 'garbage_matte') }]);
+    expect(applied(unmatted, linked).links.map(linkName)).toEqual([
+      'n4>MediaOut1:input', 'n5>n4:background', 'n6>n4:foreground', 'n7>n6:garbage_matte', 'MediaIn1>n6:input', 'n9>n6:mask',
+    ]);
+    // The link that is there already sends nothing; any output goes into a matte, and one that has a link gives it up to the new one.
+    expect(connect(AT, keying(), link('n7', 'n6', 'garbage_matte'))).toEqual([]);
+    const other = applied(keying(), connect(AT, keying(), link('n5', 'n6', 'solid_matte'))).links.map(linkName);
+    expect([other.includes('n5>n6:solid_matte'), other.includes('n8>n6:solid_matte')]).toEqual([true, false]);
+    expect(disconnect(AT, link('n8', 'n6', 'solid_matte'))).toEqual([{ op: 'disconnect_fusion', ...AT, to: 'n6', input: 'solid_matte' }]);
+    // The end of the link of the garbage matte taken to the solid matte: the old link goes and the new one comes.
+    const moved = reconnect(AT, link('n7', 'n6', 'garbage_matte'), { to: 'n6', input: 'solid_matte' });
+    expect(moved).toEqual([{ op: 'disconnect_fusion', ...AT, to: 'n6', input: 'garbage_matte' }, { op: 'connect_fusion', ...AT, link: link('n7', 'n6', 'solid_matte') }]);
+    const after = applied(keying(), moved).links.map(linkName);
+    expect([after.includes('n7>n6:solid_matte'), after.includes('n8>n6:solid_matte'), after.includes('n7>n6:garbage_matte')]).toEqual([true, false, false]);
+  });
+
+  it('is joined across by its picture alone where it is deleted: its mattes and its mask are not counted', () => {
+    // With all four of its inputs linked, one link comes into its picture: the MediaIn is linked to the foreground that it fed.
+    const removed = removeNodes(AT, keying(), ['n6']);
+    expect(removed).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n6', links: [link('MediaIn1', 'n4', 'foreground')] }]);
+    expect(applied(keying(), removed).links.map(linkName)).toEqual(['n4>MediaOut1:input', 'n5>n4:background', 'MediaIn1>n4:foreground']);
+    // With its mattes linked and its picture not, what it fed is left without a picture: a matte is not handed on.
+    const unfed: Composition = { ...keying(), links: keying().links.filter(each => each.to !== 'n6' || each.input !== 'input') };
+    expect(removeNodes(AT, unfed, ['n6'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n6' }]);
+    // A mask that feeds a matte, which nothing feeds, has nothing to join; a Transform between the two is joined across, into the matte.
+    expect(removeNodes(AT, keying(), ['n7'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n7' }]);
+    const through: Composition = {
+      nodes: [...keying().nodes, transform('n10')],
+      links: [...keying().links.filter(each => each.input !== 'garbage_matte'), link('n7', 'n10'), link('n10', 'n6', 'garbage_matte')],
+    };
+    expect(removeNodes(AT, through, ['n10'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n10', links: [link('n7', 'n6', 'garbage_matte')] }]);
+  });
+
+  it('takes a node dropped on the link into its picture, and none on a link into a matte or into its mask', () => {
+    const withBlur: Composition = { nodes: [...keying().nodes, newNode('blur', null, 'n10')], links: keying().links };
+    expect(insertOnLink(AT, withBlur, 'n10', link('n7', 'n6', 'garbage_matte'))).toEqual([]);
+    expect(insertOnLink(AT, withBlur, 'n10', link('n8', 'n6', 'solid_matte'))).toEqual([]);
+    expect(insertOnLink(AT, withBlur, 'n10', link('n9', 'n6', 'mask'))).toEqual([]);
+    expect(insertOnLink(AT, withBlur, 'n10', link('MediaIn1', 'n6'))).toEqual([
+      { op: 'connect_fusion', ...AT, link: link('MediaIn1', 'n10', 'input') }, { op: 'connect_fusion', ...AT, link: link('n10', 'n6', 'input') },
+    ]);
+    // A keyer that has no links goes into a link of a picture by its `input`; one that has a link, be it into a matte alone, does not.
+    expect(insertOnLink(AT, looseKeyer(), 'n6', link('n3', 'n4', 'background'))).toEqual([
+      { op: 'connect_fusion', ...AT, link: link('n3', 'n6', 'input') }, { op: 'connect_fusion', ...AT, link: link('n6', 'n4', 'background') },
+    ]);
+    const matted: Composition = { nodes: [...looseKeyer().nodes, ellipse('n7')], links: [...looseKeyer().links, link('n7', 'n6', 'solid_matte')] };
+    expect(insertOnLink(AT, matted, 'n6', link('n3', 'n4', 'background'))).toEqual([]);
+  });
+
+  it('has its matte inputs on the upper edge of its card, which leaves its picture, its mask and its output where those of a Blur are', () => {
+    const layout = layoutComposition(keying());
+    const placed = (id: string) => layout.nodes.find(each => each.node.id === id)!;
+    const six = placed('n6');
+    // What feeds a matte lies in a column left of the keyer, as what feeds its picture does.
+    expect([placed('n7').column, placed('n8').column, placed('n9').column, six.column, placed('n4').column]).toEqual([0, 0, 0, 1, 2]);
+    expect(inputPoint(six, 'input')).toEqual({ x: six.x, y: six.y + NODE_HEIGHT / 2 });
+    expect(inputPoint(six, 'mask')).toEqual({ x: six.x + MASK_INSET, y: six.y + NODE_HEIGHT });
+    expect(outputPoint(six)).toEqual({ x: six.x + NODE_WIDTH, y: six.y + NODE_HEIGHT / 2 });
+    // The garbage matte a quarter of the way along the upper edge, over the mask input, and the solid matte three quarters.
+    expect(MATTE_INSETS).toEqual({ garbage_matte: NODE_WIDTH / 4, solid_matte: (NODE_WIDTH * 3) / 4 });
+    expect(inputPoint(six, 'garbage_matte')).toEqual({ x: six.x + NODE_WIDTH / 4, y: six.y });
+    expect(inputPoint(six, 'solid_matte')).toEqual({ x: six.x + (NODE_WIDTH * 3) / 4, y: six.y });
+    const ports = (id: string) => portsOf(layout).filter(each => each.port.node === id).map(each => [each.port.side, each.port.input]);
+    expect(ports('n6')).toEqual([['in', 'input'], ['in', 'garbage_matte'], ['in', 'solid_matte'], ['in', 'mask'], ['out', null]]);
+    expect(portAt(layout, inputPoint(six, 'garbage_matte'))).toEqual({ node: 'n6', side: 'in', input: 'garbage_matte' });
+    expect(portAt(layout, inputPoint(six, 'solid_matte'))).toEqual({ node: 'n6', side: 'in', input: 'solid_matte' });
+    expect(linkEnds(layout, link('n8', 'n6', 'solid_matte'))).toEqual({ from: outputPoint(placed('n8')), to: inputPoint(six, 'solid_matte') });
+  });
+
+  it('has the links into its mattes drawn into them from above, and found on that curve', () => {
+    const from = { x: 0, y: 0 };
+    const to = { x: 100, y: 40 };
+    // Out of the output to the right, and down into the input: the last handle lies straight above it.
+    expect(fusionLinkPath(from, to, 'garbage_matte')).toBe('M 0 0 C 50 0, 100 16, 100 40');
+    expect(fusionLinkPath(from, to, 'solid_matte')).toBe(fusionLinkPath(from, to, 'garbage_matte'));
+    expect(fusionLinkHalves(from, to, 'solid_matte')).toEqual(['M 0 0 C 25 0, 50 4, 68.75 11', 'M 68.75 11 C 87.5 18, 100 28, 100 40']);
+    // A link into a mask comes from below still, and a link of a picture is as the Color page draws it.
+    expect(fusionLinkPath(from, to, 'mask')).toBe('M 0 0 C 50 0, 100 64, 100 40');
+    expect(fusionLinkPath(from, to, 'input')).toBe(linkPath(from, to));
+    const layout = layoutComposition(keying());
+    const matte = link('n7', 'n6', 'garbage_matte');
+    const ends = linkEnds(layout, matte)!;
+    const [x, y] = fusionLinkHalves(ends.from, ends.to, matte.input)[0].split(', ').at(-1)!.split(' ').map(Number);
+    expect(fusionLinkNear(layout, { x, y })).toEqual(matte);
+    // The editor asks for the links of pictures alone where a node is dragged over a link: a matte is none.
+    expect(fusionLinkNear(layout, { x, y }, each => isPictureInput(each.input))).toBeNull();
+  });
+
+  it('has a number set by a patch of the node and keyed by its path, and a colour set as one by one patch', () => {
+    const node = keyer('k1');
+    const of = (path: string) => settingOf(node, path)!;
+    const patch = (params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id: 'k1', params }];
+    expect(putValue(AT, node, of('gain'), 2.5, 0)).toEqual(patch({ gain: 2.5 }));
+    expect(putValue(AT, node, of('replace_color.b'), 0.2, 0)).toEqual(patch({ replace_color: { b: 0.2 } }));
+    expect(putValue(AT, node, of('erode_dilate'), -3.5, 0)).toEqual(patch({ erode_dilate: -3.5 }));
+    expect(putValue(AT, node, of('high'), 1, 0)).toEqual([]);
+    expect(pathOf(node, of('replace_color.b'))).toBe('k1.replace_color.b');
+    const keyed = addKey(AT, node, of('screen.g'), 12);
+    expect(keyed).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'k1.screen.g', at: 0, remove: 0, keys: [keyAt(12, 1)] }]);
+    const after = applied(withNode(node), keyed).nodes[2];
+    expect([hasKeys(node), hasKeys(after)]).toEqual([false, true]);
+    expect(removeKey(AT, after, of('screen.g'), 12)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'k1.screen.g', param: 1 }]);
+    // A colour as one, from green to blue: the two channels that change in one patch, so that the engine never sees the grey between them.
+    const colour = (red: number, green: number, blue: number) => [
+      { setting: of('screen.r'), value: red }, { setting: of('screen.g'), value: green }, { setting: of('screen.b'), value: blue },
+    ];
+    const blue = putValues(AT, node, colour(0, 0, 1), 0);
+    expect(blue).toEqual(patch({ screen: { g: 0, b: 1 } }));
+    const set = applied(withNode(node), blue).nodes[2];
+    expect(['screen.r', 'screen.g', 'screen.b'].map(path => paramOf(set, of(path)))).toEqual([0, 0, 1]);
+    expect(putValues(AT, node, colour(0, 1, 0), 0)).toEqual([]);
+    // A channel that has keys takes its value as a key at the frame, by its path, after the patch of the others.
+    expect(putValues(AT, after, colour(0, 0, 1), 12)).toEqual([
+      ...patch({ screen: { b: 1 } }), { op: 'splice_fusion_keys', ...AT, path: 'k1.screen.g', at: 0, remove: 1, keys: [keyAt(12, 0)] },
+    ]);
+    expect(putValues(AT, after, colour(0, 0, 0), 20)).toEqual([
+      { op: 'splice_fusion_keys', ...AT, path: 'k1.screen.g', at: 1, remove: 0, keys: [keyAt(20, 0)] },
+    ]);
+    // The two refusals that are of no one number are named by their reason and what the engine says they are of.
+    expect(keyerRefusals({ keyerScreen: 'screen', keyerThreshold: 'threshold' }))
+      .toEqual({ 'out_of_range:delta_keyer.screen': 'screen', 'out_of_range:delta_keyer.low': 'threshold' });
   });
 });
 

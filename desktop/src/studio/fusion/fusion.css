@@ -273,6 +273,11 @@
   fill: var(--fusion-effect);
 }
 
+/* A Delta Keyer is an effect on a picture too, and has the colour of the effects. */
+.fusion-page .fusion-node[data-kind='delta_keyer'] .fusion-node-stripe {
+  fill: var(--fusion-effect);
+}
+
 .fusion-page .fusion-node-name {
   font-size: calc(11px * var(--type));
   fill: var(--moon-0);
@@ -286,7 +291,8 @@
 
 /*
  * The ports: an input and an output plain, the background of a Merge orange and its foreground green, as in Fusion (p. 2162),
- * and the mask input of a node blue, on its lower edge.
+ * and the mask input of a node blue, on its lower edge. The two matte inputs of a Delta Keyer lie on its upper edge, each in a
+ * colour of its own: the garbage matte, which cuts away, and the solid matte, which keeps.
  */
 .fusion-page .fusion-port {
   fill: var(--moon-1);
@@ -304,9 +310,18 @@
   fill: var(--fusion-mask);
 }
 
+.fusion-page .fusion-port[data-input='garbage_matte'] {
+  fill: var(--fusion-matte-garbage);
+}
+
+.fusion-page .fusion-port[data-input='solid_matte'] {
+  fill: var(--fusion-matte-solid);
+}
+
 /*
- * The links are plain, and a link into a mask input is in the colour of masks; the half that would be taken along, a link
- * chosen and one that a drag would replace are said as on the Color page, by the rules after these, which win.
+ * The links are plain, a link into a mask input is in the colour of masks, and one into a matte input of a Delta Keyer in the
+ * colour of that matte; the half that would be taken along, a link chosen and one that a drag would replace are said as on the
+ * Color page, by the rules after these, which win.
  */
 .fusion-page .fusion-link {
   stroke: var(--moon-2);
@@ -314,6 +329,14 @@
 
 .fusion-page .fusion-link[data-input='mask'] {
   stroke: var(--fusion-mask);
+}
+
+.fusion-page .fusion-link[data-input='garbage_matte'] {
+  stroke: var(--fusion-matte-garbage);
+}
+
+.fusion-page .fusion-link[data-input='solid_matte'] {
+  stroke: var(--fusion-matte-solid);
 }
 
 .fusion-page .fusion-link[data-hover='end'] {

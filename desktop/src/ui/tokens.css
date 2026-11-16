@@ -47,8 +47,11 @@
   /* The kinds of nodes of a composition on the Fusion page, each a stripe on its card, and the two
      inputs of a Merge as Fusion colours them: the background orange, the foreground green. The
      masks, their input on a node and the links into it are blue, as Fusion's effect mask is. The
-     effects on a picture, a Blur and a Mosaic, have one colour too. They are seen on the card of
-     either theme, so both themes have the same. */
+     effects on a picture, a Blur, a Mosaic and a Delta Keyer, have one colour too. The two matte
+     inputs of a Delta Keyer and the links into them have a colour each: Fusion draws its garbage
+     matte grey and its solid matte white, which here are the colours of a plain link and of a
+     plain input, so the garbage matte, which cuts away, is a red and the solid matte, which
+     keeps, a teal. They are seen on the card of either theme, so both themes have the same. */
   --fusion-media-in: #5b9bd5;
   --fusion-media-out: #5b9bd5;
   --fusion-merge: #4fae7a;
@@ -58,6 +61,8 @@
   --fusion-input-foreground: #4fae7a;
   --fusion-mask: #3f7ff2;
   --fusion-effect: #d4708f;
+  --fusion-matte-garbage: #c8635f;
+  --fusion-matte-solid: #2fa9a3;
 
   /* The main button is the paper itself: light on the night. */
   --button: #eceae4;

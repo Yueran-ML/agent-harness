@@ -7,15 +7,15 @@
  *
  * The settings, their defaults and their ranges are those of the engine's catalog of the settings
  * that take keys (`engine/crates/model/tests/data/catalog.json`, `fusion_merge`, `fusion_transform`,
- * `fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur` and
- * `fusion_mosaic`; the tests hold the two together). A setting is named by its path in the `params` of its node, and in an
+ * `fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur`,
+ * `fusion_mosaic` and `fusion_delta_keyer`; the tests hold the two together). A setting is named by its path in the `params` of its node, and in an
  * operation by the id of the node, a dot, and that path (`n4.center.x`). The two numbers of a point
  * of a Polygon are settings each, named by the place of the point in the list of points, from 0
  * (`points.2.x`); the catalog writes them once, for every point (`points.*.x`). The keys are at the
  * frames that the other keys of the clip count (`keyFrameOf`). Each function here gives the
  * operations to send, and none where nothing would change. Pure.
  */
-import { getAt, patchAt, type Bounds } from '../color/corrector';
+import { getAt, patchAt, patchOf, type Bounds } from '../color/corrector';
 import { keyClockOf, shownKeyRange } from '../color/keyFrames';
 import type { Clip, FusionKind, FusionNode, Keyframe, Media, Op, Param, Timeline } from '../engine';
 import { frameOfKey, keyAt, mediaOf } from '../inspector/clipKeys';
@@ -25,8 +25,8 @@ import type { FusionAt } from './edits';
 
 /**
  * What a setting counts in, as the catalog names it: a plain number, a share of the width or of the
- * height of the picture, degrees counter-clockwise, pixels of a picture 1080 high (a Blur Size), or
- * pixels of the picture of the composition (an offset of a Mosaic).
+ * height of the picture, degrees counter-clockwise, pixels of a picture 1080 high (a Blur Size, and
+ * the lengths of a Delta Keyer), or pixels of the picture of the composition (an offset of a Mosaic).
  */
 export type FusionUnit = 'number' | 'widths' | 'heights' | 'degrees_counterclockwise' | 'pixels1080' | 'pixels';
 /** A setting of a node that takes keys: its path in the node's `params`, its default and its range, and its unit. */
@@ -47,6 +47,12 @@ const MASK_ANGLE = s('angle', 0, -36000, 36000, 'degrees_counterclockwise');
 /** The two numbers of every point of a Polygon, as the catalog writes them: the `*` is the place of the point. */
 const POINT_X = 'points.*.x';
 const POINT_Y = 'points.*.y';
+/** The most that a channel of a colour of a Delta Keyer may be: the greatest number of a half float, so that a colour picked from a picture of high dynamic range is kept. */
+const MOST_COLOR = 65504;
+/** The three channels of a colour of a Delta Keyer, each a setting: of its screen colour, and of its Replace Color. */
+const keyerColor = (name: string, r: number, g: number, b: number): FusionSetting[] => [
+  s(`${name}.r`, r, 0, MOST_COLOR), s(`${name}.g`, g, 0, MOST_COLOR), s(`${name}.b`, b, 0, MOST_COLOR),
+];
 
 /**
  * The settings of each kind of node that take keys, in the order of the catalog. A MediaIn and a
@@ -64,7 +70,23 @@ export const FUSION_SETTINGS: Record<Exclude<FusionKind, 'media_in' | 'media_out
   // The Blur Size is counted as the filters of the Color page are, in pixels of a picture 1080 high.
   blur: [s('size.x', 5, 0, 500, 'pixels1080'), s('size.y', 5, 0, 500, 'pixels1080'), s('blend', 1, 0, 1)],
   mosaic: [s('frequency', 32, 1, 16384), s('aspect', 1, 0.0625, 16), s('offset.x', 0, -16384, 16384, 'pixels'), s('offset.y', 0, -16384, 16384, 'pixels')],
+  // The sixteen numbers of a Delta Keyer, in the order of its `params`: its Pre-Blur, its Erode/Dilate and its Matte Blur are lengths, counted as a Blur Size is.
+  delta_keyer: [
+    ...keyerColor('screen', 0, 1, 0), s('gain', 1, 0, 10), s('balance', 0.5, 0, 1), s('pre_blur', 0, 0, 100, 'pixels1080'),
+    s('low', 0, 0, 1), s('high', 1, 0, 1), s('erode_dilate', 0, -100, 100, 'pixels1080'), s('matte_blur', 0, 0, 100, 'pixels1080'),
+    s('clean_foreground', 0, 0, 1), s('clean_background', 0, 0, 1), ...keyerColor('replace_color', 0.5, 0.5, 0.5), s('spill_suppression', 1, 0, 1),
+  ],
 };
+
+/**
+ * The sentences for the two refusals of a Delta Keyer that are of no one number (PROTOCOL.md, "The
+ * Delta Keyer"): a screen colour that has no channel above its other two, and a lower threshold
+ * above the upper one. Each is named as `refusalOf` takes a sentence for a refusal of one thing: by
+ * the reason, a colon, and what the engine says the refusal is of.
+ */
+export const keyerRefusals = (said: { keyerScreen: string; keyerThreshold: string }): Record<string, string> => ({
+  'out_of_range:delta_keyer.screen': said.keyerScreen, 'out_of_range:delta_keyer.low': said.keyerThreshold,
+});
 
 const NONE: readonly FusionSetting[] = [];
 
@@ -142,6 +164,25 @@ export function putValue(at: FusionAt, node: FusionNode, setting: FusionSetting,
   const found = keyAt(param, keyFrame);
   if (found) return found.key.value === value ? [] : [{ op: 'splice_fusion_keys', ...at, path, at: found.at, remove: 1, keys: [{ ...found.key, value }] }];
   return [{ op: 'splice_fusion_keys', ...at, path, at: placeOf(param.keys, keyFrame), remove: 0, keys: [{ frame: keyFrame, value, interp: 'linear' }] }];
+}
+
+/**
+ * Give several settings of a node values at a frame of their keys, together, as a colour chosen as
+ * one sets its three channels. Those that have no keys are set by **one** patch of the node, so that
+ * what the engine checks of them together (of the screen colour of a Delta Keyer, that one channel
+ * is above the other two) is checked of the colour as it is to be, and never of one half way
+ * between the two; those that have keys take the value as a key at the frame, each by its path.
+ * A setting that is at its value already is left out.
+ */
+export function putValues(at: FusionAt, node: FusionNode, values: readonly { setting: FusionSetting; value: number }[], keyFrame: number): Op[] {
+  const numbers: [string, number][] = [];
+  const keyed: Op[] = [];
+  for (const { setting, value } of values) {
+    const param = paramOf(node, setting);
+    if (typeof param !== 'number' || isPointSetting(setting)) keyed.push(...putValue(at, node, setting, value, keyFrame));
+    else if (param !== value) numbers.push([setting.path, value]);
+  }
+  return numbers.length > 0 ? [{ op: 'set_fusion_node', ...at, id: node.id, params: patchOf(numbers) }, ...keyed] : keyed;
 }
 
 /** Put a key at a frame of the keys of a setting, of the value that it has there; none where there is one. */

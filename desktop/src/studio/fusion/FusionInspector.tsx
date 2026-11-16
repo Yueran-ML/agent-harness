@@ -4,8 +4,8 @@ import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import { COMPOSITES } from '../color/nodeEdits';
 import {
-  EngineError, type Clip, type Composite, type FusionBlurFilter, type FusionFillMethod, type FusionMaskCommon, type FusionNode, type FusionPaintMode, type Media,
-  type Op, type Param, type Timeline,
+  EngineError, type Clip, type Composite, type FusionBlurFilter, type FusionFillMethod, type FusionKeyerReplace, type FusionKeyerSpill, type FusionKeyerView,
+  type FusionMaskCommon, type FusionNode, type FusionPaintMode, type Media, type Op, type Param, type Timeline,
 } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { keyAt, keyFrameOf } from '../inspector/clipKeys';
@@ -18,7 +18,8 @@ import { useAudioGesture } from '../timeline/useAudioGesture';
 import { insertPoint, LEAST_POINTS, MOST_POINTS, relabel, removePoint, shownComposition, withFirst, type FusionAt } from './edits';
 import { isMaskKind } from './graph';
 import {
-  addKey, isPointSetting, keyTimesOf, numbered, paramOf, pointPath, putValue, removeKey, settingOf, wholeParam, wholeValue, type FusionSetting,
+  addKey, isPointSetting, keyerRefusals, keyTimesOf, numbered, paramOf, pointPath, putValue, putValues, removeKey, settingOf, wholeParam, wholeValue,
+  type FusionSetting,
 } from './settings';
 
 /** How a setting is written and dragged: its decimals, how much a pixel of dragging changes it, its unit, and the range of its slider, where it has one. */
@@ -29,8 +30,16 @@ const PAINT_MODES: readonly FusionPaintMode[] = ['merge', 'add', 'subtract'];
 const FILLS: readonly FusionFillMethod[] = ['alternate', 'non_zero_winding'];
 /** The filters of a Blur, as the engine names them. */
 const FILTERS: readonly FusionBlurFilter[] = ['gaussian', 'box'];
+/** What a Delta Keyer shows, what it fills what the key took away with, and how it suppresses the spill, as the engine names them and in the order of Fusion's menus. */
+const VIEWS: readonly FusionKeyerView[] = ['pre_matte', 'matte', 'status', 'final_result'];
+const REPLACES: readonly FusionKeyerReplace[] = ['none', 'source', 'hard_color', 'soft_color'];
+const SPILLS: readonly FusionKeyerSpill[] = ['none', 'rare', 'medium', 'well_done', 'burnt'];
 /** The switches of the nodes, which take no keys: each a field of the `params` of its node. */
-type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy' | 'whole_cells_only';
+type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy' | 'whole_cells_only' | 'garbage_invert';
+/** The modes of a Delta Keyer, which take no keys: each a field of its `params` that is one of a few names. */
+type KeyerMode = 'view' | 'replace' | 'spill_method';
+/** The two colours of a Delta Keyer, each three settings: its `r`, its `g` and its `b`. */
+type KeyerColor = 'screen' | 'replace_color';
 
 /**
  * How each kind of setting is shown, by its unit in the catalog. A place is a share of the picture,
@@ -46,6 +55,13 @@ type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy'
  * its 500; the Pixel Frequency of a Mosaic one from 1 to 256 of its 16384; its Aspect one from a
  * quarter to four times of its sixteenth to sixteen; and an offset of its grid, in pixels of the
  * picture either way, is a field alone, since a slider of 16384 pixels each way would set nothing.
+ *
+ * So it is with a Delta Keyer. A channel of its screen colour or of its Replace Color may be as
+ * much as a half float holds (65504), for a colour of a picture of high dynamic range: its slider
+ * is from 0 to 1, and the field takes what lies above. Its Gain has a slider from 0 to 4 of its 10:
+ * a Gain of 4 keys a screen a quarter as bright as the colour picked. Its lengths (Pre-Blur and
+ * Matte Blur, each to 100 pixels of a picture 1080 high, and Erode/Dilate, 100 either way) have
+ * sliders to 20, and from 20 the one way to 20 the other: a matte is seldom moved by more.
  */
 function shapeOf(setting: FusionSetting): Shape {
   if (isPointSetting(setting)) return { digits: 3, scrub: 0.002 };
@@ -54,7 +70,11 @@ function shapeOf(setting: FusionSetting): Shape {
     return { digits: 3, scrub: 0.002, slider: { min: least, max: 1, step: 0.001 } };
   }
   if (setting.unit === 'degrees_counterclockwise') return { digits: 1, scrub: 0.5, unit: '°', slider: { min: -180, max: 180, step: 0.1 } };
+  // The lengths of a Delta Keyer, whose ranges end at 100, and a Blur Size, whose range ends at 500.
+  if (setting.unit === 'pixels1080' && setting.bounds.high <= 100) return { digits: 1, scrub: 0.1, slider: { min: setting.bounds.low < 0 ? -20 : 0, max: 20, step: 0.1 } };
   if (setting.unit === 'pixels1080') return { digits: 1, scrub: 0.1, slider: { min: 0, max: 100, step: 0.1 } };
+  if (setting.path.startsWith('screen.') || setting.path.startsWith('replace_color.')) return { digits: 3, scrub: 0.005, slider: { min: 0, max: 1, step: 0.001 } };
+  if (setting.path === 'gain') return { digits: 3, scrub: 0.005, slider: { min: 0, max: 4, step: 0.01 } };
   if (setting.unit === 'pixels') return { digits: 1, scrub: 1, unit: 'px' };
   if (setting.path === 'frequency') return { digits: 1, scrub: 0.5, slider: { min: 1, max: 256, step: 1 } };
   if (setting.path === 'aspect') return { digits: 3, scrub: 0.005, slider: { min: 0.25, max: 4, step: 0.01 } };
@@ -95,6 +115,16 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * - a Mosaic (the Mosaic Blur of Resolve FX, p. 3465): Pixel Frequency, Aspect, X Offset and
  *   Y Offset, and Whole Cells Only, which says where the pointer rests on it that it needs an
  *   effect mask;
+ * - a Delta Keyer (Reference Manual 20, pp. 2440–2448): View Mode first, and then its settings in
+ *   three sections, which are the tabs of Fusion's: Key (Background Color, the colour of the screen,
+ *   as one colour and as its three channels, Gain, Balance and Pre-Blur), Matte (the two Thresholds,
+ *   Erode/Dilate, Matte Blur, Clean Foreground and Clean Background, Replace Mode and, while that
+ *   mode reads it, Replace Color as one colour and as its three channels, and the Invert of the
+ *   garbage matte, which says where the pointer rests on it that it needs one linked) and Fringe
+ *   (Spill Method and Spill Suppression). A colour chosen as one sets its channels together
+ *   (`putValues`), so that the engine never checks a screen colour half way between two. The screen
+ *   colour is not picked in the viewer: the viewer shows what comes out of the MediaOut, as it is
+ *   shown, and not the picture that comes into the keyer;
  * - a MediaIn and a MediaOut: nothing but the name.
  *
  * Every number has the three buttons of keys beside it (to the key before, a key put or taken away
@@ -104,7 +134,10 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * the setting whole, the release ends it, and the whole is one step to undo. Every other change is
  * one transaction, worked out from the clip as the engine has it when it is sent, with the first
  * composition before it where the clip has none yet (`withFirst`). What the engine refuses is said
- * at the top; but not a change that changes nothing (`empty`), which is no failure.
+ * at the top; but not a change that changes nothing (`empty`), which is no failure. The two
+ * refusals of a Delta Keyer that are of no one number, a screen colour with no channel above its
+ * other two and a lower threshold above the upper one, are said in words of their own
+ * (`keyerRefusals`).
  *
  * Where the clip lies on a locked track (`locked`), the settings are shown and none is changed, as
  * in the Inspector of the Edit page (Reference Manual 20, p. 762): every field, switch and button
@@ -133,8 +166,12 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   const flipId = useId();
   const at: FusionAt = { timeline: timeline.id, clip: clip.id };
   const has = clip.fusion !== undefined;
-  const { commit, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
-  const failed = (error: unknown) => { if (!isEmpty(error)) setRefusal(refusalOf(error, words.hint.studio)); };
+  const { commit: send, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
+  // What the Inspector says better than the general sentences: the refusals of a Delta Keyer that are of no one number.
+  const overrides = keyerRefusals(said);
+  /** One transaction of the Inspector; what the engine refuses of it is said in the words of the Inspector. */
+  const commit = (made: Build) => send(made, { overrides });
+  const failed = (error: unknown) => { if (!isEmpty(error)) setRefusal(refusalOf(error, words.hint.studio, overrides)); };
   const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/${clip.id}/fusion/${node?.id ?? ''}`, locked, onFailure: failed });
   /** The setting that is dragged, as it was when the drag began, and the frame of its keys that the drag is at. */
   const dragged = useRef<{ path: string; initial: Param; keyFrame: number } | null>(null);
@@ -219,8 +256,9 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   };
 
   /**
-   * A switch of the node that takes no keys: a flip of a Transform, the Invert and the Solid of a mask, the Lock X/Y of a Blur
-   * and the Whole Cells Only of a Mosaic. `title` says more of it where the pointer rests on it.
+   * A switch of the node that takes no keys: a flip of a Transform, the Invert and the Solid of a mask, the Lock X/Y of a Blur,
+   * the Whole Cells Only of a Mosaic and the Invert of the garbage matte of a Delta Keyer. `title` says more of it where the
+   * pointer rests on it.
    */
   const flag = (field: Flag, label: string, checked: boolean, title?: string) => <div className="inspector-row" data-field={field} title={title}>
     <label htmlFor={`${flipId}-${field}`} className="inspector-label fusion-flag-label">{label}</label>
@@ -243,6 +281,28 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     {flag('invert', settings.invert, params.invert)}
     {flag('solid', settings.solid, params.solid)}
   </>;
+  /** A setting of the node at the playhead: a number where it has no keys, and what its keys make it there. */
+  const channel = (path: string) => { const setting = settingOf(shown, path); return setting ? valueAt(paramOf(shown, setting), keyFrame) : 0; };
+  /** A mode of a Delta Keyer, which takes no keys: one of a few names, set by a patch of the node where it is another. */
+  const keyerMode = <T extends string>(field: KeyerMode, label: string, value: T, options: readonly T[], names: Record<T, string>): ReactNode => <ChoiceField<T>
+    name={field} label={label} value={value} options={options.map(each => ({ value: each, label: names[each] }))}
+    onCommit={chosen => void commit(build((found, _keyFrame, where) => (found.kind === 'delta_keyer' && (found.params[field] as string) !== chosen
+      ? [{ op: 'set_fusion_node', ...where, id: found.id, params: { [field]: chosen } }] : [])))} />;
+  /**
+   * A colour of a Delta Keyer as one: its red, green and blue are set together, those without keys by one patch of the node and
+   * those with keys each where a value at the playhead goes (`putValues`). A channel above 1 is shown as 1: the field of the
+   * channel has it whole.
+   */
+  const keyerColor = (name: KeyerColor, label: string): ReactNode => {
+    const paths = [`${name}.r`, `${name}.g`, `${name}.b`];
+    return <ColorField name={name} label={label} value={`#${paths.map(path => hex(channel(path))).join('')}ff`} onCommit={(chosen) => {
+      const shares = [1, 3, 5].map(from => Number((Number.parseInt(chosen.slice(from, from + 2), 16) / 255).toFixed(3)));
+      void commit(build((found, keyFrameNow, where) => putValues(where, found, paths.flatMap((path, index) => {
+        const there = settingOf(found, path);
+        return there ? [{ setting: there, value: shares[index] }] : [];
+      }), keyFrameNow)));
+    }} />;
+  };
 
   let body: ReactNode;
   if (node.kind === 'merge') {
@@ -274,7 +334,6 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       {flag('flip_vertical', settings.flipVertical, node.params.flip_vertical)}
     </>;
   } else if (node.kind === 'background') {
-    const channel = (path: string) => { const setting = settingOf(shown, path); return setting ? valueAt(paramOf(shown, setting), keyFrame) : 0; };
     const colour = `#${hex(channel('color.r'))}${hex(channel('color.g'))}${hex(channel('color.b'))}ff`;
     body = <>
       {/* The colour as one: its red, green and blue are set together, each where a value at the playhead goes; its alpha is the fourth number. */}
@@ -372,6 +431,38 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       {number('offset.x', settings.offsetX)}
       {number('offset.y', settings.offsetY)}
       {flag('whole_cells_only', settings.wholeCellsOnly, node.params.whole_cells_only, said.wholeCells)}
+    </>;
+  } else if (node.kind === 'delta_keyer') {
+    const params = node.params;
+    // The Replace Color is read by the two modes that fill with it: under the others it is kept, and not shown.
+    const filled = params.replace === 'hard_color' || params.replace === 'soft_color';
+    body = <>
+      {keyerMode('view', settings.viewMode, params.view, VIEWS, labels.viewModes)}
+      <h3 className="inspector-section">{labels.keyerTabs.key}</h3>
+      {keyerColor('screen', settings.backgroundColor)}
+      {number('screen.r', settings.screenRed)}
+      {number('screen.g', settings.screenGreen)}
+      {number('screen.b', settings.screenBlue)}
+      {number('gain', settings.gain)}
+      {number('balance', settings.balance)}
+      {number('pre_blur', settings.preBlur)}
+      <h3 className="inspector-section">{labels.keyerTabs.matte}</h3>
+      {number('low', settings.thresholdLow)}
+      {number('high', settings.thresholdHigh)}
+      {number('erode_dilate', settings.erodeDilate)}
+      {number('matte_blur', settings.matteBlur)}
+      {number('clean_foreground', settings.cleanForeground)}
+      {number('clean_background', settings.cleanBackground)}
+      {keyerMode('replace', settings.replaceMode, params.replace, REPLACES, labels.replaceModes)}
+      {filled && keyerColor('replace_color', settings.replaceColor)}
+      {filled && number('replace_color.r', settings.replaceRed)}
+      {filled && number('replace_color.g', settings.replaceGreen)}
+      {filled && number('replace_color.b', settings.replaceBlue)}
+      {/* The Invert of the garbage matte says where the pointer rests on it that it needs a garbage matte linked. */}
+      {flag('garbage_invert', settings.garbageInvert, params.garbage_invert, said.garbageInvert)}
+      <h3 className="inspector-section">{labels.keyerTabs.fringe}</h3>
+      {keyerMode('spill_method', settings.spillMethod, params.spill_method, SPILLS, labels.spillMethods)}
+      {number('spill_suppression', settings.spillSuppression)}
     </>;
   } else {
     body = <p className="caption" data-test="fusion-no-settings">{said.noSettings}</p>;

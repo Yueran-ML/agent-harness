@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   applyOp, CopyMismatch, defaultColorSettings, emptyGrade, firstComposition, fixedOf, keptColor, mergePatch, SOUND_FIELDS,
   sortFusionLinks, sortLinks,
-  type Clip, type ClipTrack, type FusionBlur, type FusionLink, type FusionMosaic, type FusionNode, type FusionPolygon, type GradeNode, type Link, type Media,
-  type Op, type Project, type Timeline,
+  type Clip, type ClipTrack, type FusionBlur, type FusionDeltaKeyer, type FusionLink, type FusionMosaic, type FusionNode, type FusionPolygon, type GradeNode,
+  type Link, type Media, type Op, type Project, type Timeline,
 } from '../src/studio/engine';
 
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
@@ -278,6 +278,102 @@ describe('the Blur and the Mosaic of the compositions of the copy', () => {
     expect((nodeOf(offset, 'm1').params as FusionMosaic).offset).toStrictEqual({ x: 0, y: -6 });
     // What is no number, a pair of numbers whole, and a setting of another kind are not settings of the copy.
     for (const path of ['b1.filter', 'b1.lock_xy', 'b1.size', 'b1.frequency', 'm1.whole_cells_only', 'm1.offset', 'm1.blend']) {
+      expect(() => applyOp(project, { op: 'set_fusion_keys', ...AT, path, param: 0.5 }), path).toThrow(CopyMismatch);
+    }
+  });
+});
+
+describe('the Delta Keyer of the compositions of the copy', () => {
+  const at = (name: string) => structuredClone(examples.find(example => example.name === name)!);
+  const clipOf = (project: Project) => (project.timelines[0].tracks[0] as ClipTrack).clips[0];
+  const AT = { timeline: 't1', clip: 'c1' } as const;
+  /** A Delta Keyer as the engine writes a new one: every setting, none left out. */
+  const keyer: FusionNode = {
+    id: 'k1', kind: 'delta_keyer', label: '', pass_through: false, pos: null,
+    params: {
+      screen: { r: 0, g: 1, b: 0 }, gain: 1, balance: 0.5, pre_blur: 0, low: 0, high: 1, erode_dilate: 0, matte_blur: 0, clean_foreground: 0, clean_background: 0,
+      replace: 'soft_color', replace_color: { r: 0.5, g: 0.5, b: 0.5 }, garbage_invert: false, spill_method: 'medium', spill_suppression: 1, view: 'final_result',
+    },
+  };
+  /**
+   * The composition of a Merge, n9, over a Background, n10: the picture of the clip keyed by the keyer and laid over the Background
+   * in its place, with the Background the garbage matte of the keyer.
+   */
+  const keyed = (): Project => applyOp(at('set_fusion_node').before, {
+    op: 'add_fusion_node', ...AT, node: keyer,
+    links: [{ from: 'MediaIn1', to: 'k1', input: 'input' }, { from: 'n10', to: 'k1', input: 'garbage_matte' }, { from: 'k1', to: 'n9', input: 'foreground' }],
+  });
+  /** The project of the examples of a Delta Keyer: the keyer n12 that another program wrote, the Ellipse n11 its garbage matte. */
+  const written = () => at('set_fusion_node of the screen colour, the modes and the view of a delta keyer').before;
+  const nodeOf = (project: Project, id: string) => clipOf(project).fusion!.nodes.find(node => node.id === id)!;
+  const keys = (value: object) => Object.keys(value).sort();
+
+  it('names the mattes among the inputs as the engine orders them: the garbage matte before the picture, the solid matte after the mask', () => {
+    const links: FusionLink[] = [
+      { from: 'a', to: 'n12', input: 'solid_matte' }, { from: 'b', to: 'n12', input: 'mask' }, { from: 'c', to: 'n12', input: 'input' },
+      { from: 'd', to: 'n12', input: 'garbage_matte' }, { from: 'e', to: 'n9', input: 'foreground' }, { from: 'f', to: 'n9', input: 'background' },
+    ];
+    expect(sortFusionLinks(links).map(link => `${link.to}.${link.input}`))
+      .toEqual(['n12.garbage_matte', 'n12.input', 'n12.mask', 'n12.solid_matte', 'n9.background', 'n9.foreground']);
+    expect(clipOf(keyed()).fusion!.links.map(link => `${link.from}>${link.to}.${link.input}`)).toEqual([
+      'n9>MediaOut1.input', 'n10>k1.garbage_matte', 'MediaIn1>k1.input', 'n10>n9.background', 'k1>n9.foreground',
+    ]);
+    // The engine keeps them so: the composition that it wrote is in that order.
+    const fusion = clipOf(written()).fusion!;
+    expect(sortFusionLinks([...fusion.links].reverse())).toStrictEqual(fusion.links);
+    expect(fusion.links.filter(link => link.to === 'n12').map(link => `${link.from}.${link.input}`)).toEqual(['n11.garbage_matte', 'MediaIn1.input']);
+  });
+
+  it('has every setting that the engine writes of a keyer, by the same names, and no other', () => {
+    const params = nodeOf(written(), 'n12').params as FusionDeltaKeyer;
+    expect(nodeOf(written(), 'n12').kind).toBe('delta_keyer');
+    expect(keys(params)).toEqual(keys(keyer.params));
+    expect([keys(params.screen), keys(params.replace_color)]).toEqual([['b', 'g', 'r'], ['b', 'g', 'r']]);
+    // Of the kinds that each field is: a number or keys, one of a few names, or a switch.
+    const kindOf = (value: unknown) => (typeof value === 'object' ? keys(value as object).join() : typeof value);
+    expect(Object.entries(params).map(([name, value]) => [name, kindOf(value)]).sort())
+      .toEqual(Object.entries(keyer.params).map(([name, value]) => [name, kindOf(value)]).sort());
+    expect([params.replace, params.spill_method, params.view, params.garbage_invert]).toEqual(['soft_color', 'medium', 'final_result', true]);
+  });
+
+  it('adds a keyer with every setting, links its mattes in place of what an input had, and takes it away with its links', () => {
+    const project = keyed();
+    expect(clipOf(project).fusion!.nodes.map(node => node.kind)).toEqual(['media_in', 'media_out', 'merge', 'background', 'delta_keyer']);
+    expect(nodeOf(project, 'k1')).toStrictEqual(keyer);
+    const solid = applyOp(project, { op: 'connect_fusion', ...AT, link: { from: 'MediaIn1', to: 'k1', input: 'solid_matte' } });
+    expect(clipOf(solid).fusion!.links.filter(link => link.to === 'k1').map(link => `${link.from}.${link.input}`))
+      .toEqual(['n10.garbage_matte', 'MediaIn1.input', 'MediaIn1.solid_matte']);
+    const other = applyOp(solid, { op: 'connect_fusion', ...AT, link: { from: 'n10', to: 'k1', input: 'solid_matte' } });
+    expect(clipOf(other).fusion!.links.filter(link => link.input === 'solid_matte')).toEqual([{ from: 'n10', to: 'k1', input: 'solid_matte' }]);
+    const unlinked = applyOp(solid, { op: 'disconnect_fusion', ...AT, to: 'k1', input: 'garbage_matte' });
+    expect(clipOf(unlinked).fusion!.links.filter(link => link.to === 'k1').map(link => link.input)).toEqual(['input', 'solid_matte']);
+    expect(() => applyOp(unlinked, { op: 'disconnect_fusion', ...AT, to: 'k1', input: 'garbage_matte' })).toThrow(CopyMismatch);
+    // Taken away with the link to put in its place, a keyer leaves its picture to what it fed, and its mattes go with it.
+    const removed = applyOp(solid, { op: 'remove_fusion_node', ...AT, id: 'k1', links: [{ from: 'MediaIn1', to: 'n9', input: 'foreground' }] });
+    expect(clipOf(removed).fusion).toStrictEqual(clipOf(at('set_fusion_node').before).fusion);
+    expect(project).toStrictEqual(keyed());
+  });
+
+  it('sets its settings by a patch, a channel of a colour without the other two, and its numbers by their paths', () => {
+    const project = keyed();
+    const set = applyOp(project, {
+      op: 'set_fusion_node', ...AT, id: 'k1',
+      params: { screen: { r: 0.1, b: 0.9 }, gain: 2, replace: 'hard_color', garbage_invert: true, spill_method: 'burnt', view: 'status' },
+    });
+    expect(nodeOf(set, 'k1').params).toStrictEqual({
+      ...keyer.params, screen: { r: 0.1, g: 1, b: 0.9 }, gain: 2, replace: 'hard_color', garbage_invert: true, spill_method: 'burnt', view: 'status',
+    });
+    const gain = { keys: [{ frame: 0, value: 1, interp: 'linear' as const }, { frame: 24, value: 3, interp: 'linear' as const }] };
+    const keyedGain = applyOp(project, { op: 'set_fusion_keys', ...AT, path: 'k1.gain', param: gain });
+    expect((nodeOf(keyedGain, 'k1').params as FusionDeltaKeyer).gain).toStrictEqual(gain);
+    const spliced = applyOp(keyedGain, { op: 'splice_fusion_keys', ...AT, path: 'k1.gain', at: 1, remove: 1, keys: [] });
+    expect((nodeOf(spliced, 'k1').params as FusionDeltaKeyer).gain).toStrictEqual({ keys: [gain.keys[0]] });
+    const green = applyOp(project, { op: 'splice_fusion_keys', ...AT, path: 'k1.screen.g', at: 0, remove: 0, keys: [{ frame: 12, value: 1, interp: 'linear' }] });
+    expect((nodeOf(green, 'k1').params as FusionDeltaKeyer).screen).toStrictEqual({ r: 0, g: { keys: [{ frame: 12, value: 1, interp: 'linear' }] }, b: 0 });
+    const blue = applyOp(project, { op: 'set_fusion_keys', ...AT, path: 'k1.replace_color.b', param: 0.25 });
+    expect((nodeOf(blue, 'k1').params as FusionDeltaKeyer).replace_color).toStrictEqual({ r: 0.5, g: 0.5, b: 0.25 });
+    // What is no number, a colour whole, and a setting of another kind are not settings of the copy.
+    for (const path of ['k1.replace', 'k1.garbage_invert', 'k1.spill_method', 'k1.view', 'k1.screen', 'k1.replace_color', 'k1.screen.a', 'k1.blend']) {
       expect(() => applyOp(project, { op: 'set_fusion_keys', ...AT, path, param: 0.5 }), path).toThrow(CopyMismatch);
     }
   });

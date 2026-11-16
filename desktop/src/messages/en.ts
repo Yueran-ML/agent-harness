@@ -871,14 +871,18 @@ export const en = {
         spline: 'Spline', splineEditor: 'Spline Editor', closeSpline: 'Close Spline Editor',
         kinds: {
           media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
-          rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic',
+          rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer',
         },
-        inputs: { input: 'Input', background: 'Background', foreground: 'Foreground', mask: 'Effect Mask' },
+        inputs: {
+          input: 'Input', background: 'Background', foreground: 'Foreground', mask: 'Effect Mask',
+          /** The two mattes of a Delta Keyer (Reference Manual 20, p. 2441). */
+          garbage_matte: 'Garbage Matte', solid_matte: 'Solid Matte',
+        },
         output: 'Output', passThrough: 'Pass Through', passedThrough: 'Passed through', rename: 'Rename',
         resetComposition: 'Reset Fusion Composition', removeComposition: 'Remove Composition', nodeName: 'Name',
         /** The group of the masks in the tool bar of the node editor. */
         masks: 'Masks',
-        /** The group of the effects on a picture in the tool bar of the node editor: a Blur and a Mosaic. */
+        /** The group of the effects on a picture in the tool bar of the node editor: a Blur, a Mosaic and a Delta Keyer. */
         effects: 'Effects',
         /** The commands of the menus of the node editor on the nodes that are chosen. */
         copy: 'Copy', cut: 'Cut', paste: 'Paste', duplicate: 'Duplicate',
@@ -898,6 +902,16 @@ export const en = {
            */
           filter: 'Filter', lockXY: 'Lock X/Y', blurSize: 'Blur Size', blurSizeX: 'X Blur Size', blurSizeY: 'Y Blur Size',
           pixelFrequency: 'Pixel Frequency', aspect: 'Aspect', offsetX: 'X Offset', offsetY: 'Y Offset', wholeCellsOnly: 'Whole Cells Only',
+          /**
+           * The controls of a Delta Keyer (Reference Manual 20, pp. 2440–2448). The channels of its two colours are named with
+           * their colour, so that each has a name of its own beside its keys and in the Spline Editor.
+           */
+          viewMode: 'View Mode', backgroundColor: 'Background Color', screenRed: 'Background Red', screenGreen: 'Background Green',
+          screenBlue: 'Background Blue', gain: 'Gain', balance: 'Balance', preBlur: 'Pre-Blur', thresholdLow: 'Threshold Low',
+          thresholdHigh: 'Threshold High', erodeDilate: 'Erode/Dilate', matteBlur: 'Matte Blur', cleanForeground: 'Clean Foreground',
+          cleanBackground: 'Clean Background', replaceMode: 'Replace Mode', replaceColor: 'Replace Color', replaceRed: 'Replace Red',
+          replaceGreen: 'Replace Green', replaceBlue: 'Replace Blue', garbageInvert: 'Invert Garbage Matte', spillMethod: 'Spill Method',
+          spillSuppression: 'Spill Suppression',
         },
         /** How a mask is combined with the mask that comes into it. */
         paintModes: { merge: 'Merge', add: 'Add', subtract: 'Subtract' },
@@ -905,6 +919,14 @@ export const en = {
         fills: { alternate: 'Alternate', non_zero_winding: 'Non Zero Winding' },
         /** How a Blur takes the pixels about each one. */
         filters: { gaussian: 'Gaussian', box: 'Box' },
+        /** The tabs of a Delta Keyer, which are the sections of its settings in the Inspector. */
+        keyerTabs: { key: 'Key', matte: 'Matte', fringe: 'Fringe' },
+        /** What comes out of a Delta Keyer. */
+        viewModes: { pre_matte: 'Pre Matte', matte: 'Matte', status: 'Status', final_result: 'Final Result' },
+        /** What fills the part of a pixel that the key of a Delta Keyer took away and its matte gave back. */
+        replaceModes: { none: 'None', source: 'Source', hard_color: 'Hard Color', soft_color: 'Soft Color' },
+        /** How a Delta Keyer takes the spill of the screen from the picture, from the weakest. */
+        spillMethods: { none: 'None', rare: 'Rare', medium: 'Medium', well_done: 'Well Done', burnt: 'Burnt' },
       },
       /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
       colorPage: {
@@ -1821,6 +1843,12 @@ export const en = {
         tooManyNodes: 'A composition holds 256 nodes at most, so nothing was pasted.',
         /** Select Tool, where nothing that the editor adds is named as what was typed. */
         noTool: 'No tool matches what you typed.',
+        /** What the Invert of the garbage matte of a Delta Keyer does, said where the pointer rests on it. */
+        garbageInvert: 'Reads the garbage matte the other way round. With no garbage matte linked, this changes nothing.',
+        /** A screen colour of a Delta Keyer that the engine refused: none of its channels is above the other two. */
+        keyerScreen: 'The background color needs one channel above the other two, as a green or a blue has. A gray cannot be keyed.',
+        /** Thresholds of a Delta Keyer that the engine refused: the lower one is above the upper one. */
+        keyerThreshold: 'The low threshold cannot be above the high threshold.',
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

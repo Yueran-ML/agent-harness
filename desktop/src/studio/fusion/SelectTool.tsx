@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Blend, Circle, Droplet, Grid3x3, ImagePlus, Move, Pentagon, RectangleHorizontal, Square } from 'lucide-react';
+import { Blend, Circle, Contrast, Droplet, Grid3x3, ImagePlus, Move, Pentagon, RectangleHorizontal, Square } from 'lucide-react';
 import { keyOf, pickerKey } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { FusionKind } from '../engine';
@@ -13,7 +13,8 @@ export type AddableKind = Exclude<FusionKind, 'media_out'>;
 export const ADD_ICONS = {
   merge: Blend, transform: Move, background: Square, media_in: ImagePlus,
   rectangle: RectangleHorizontal, ellipse: Circle, polygon: Pentagon,
-  blur: Droplet, mosaic: Grid3x3,
+  // A Delta Keyer makes a matte: what is kept and what is not, as the two halves of the face.
+  blur: Droplet, mosaic: Grid3x3, delta_keyer: Contrast,
 } as const;
 
 /** Every kind that the editor adds, in the order of the tool bar: the nodes of a picture, the effects on one, the masks. */

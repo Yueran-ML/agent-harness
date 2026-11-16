@@ -11,12 +11,14 @@
  */
 import type { Key } from '../../app/keys';
 import {
-  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionBlur, type FusionEllipse, type FusionKind, type FusionLink,
-  type FusionMaskCommon, type FusionMerge, type FusionMosaic, type FusionNode, type FusionPoint, type FusionPolygon, type FusionRectangle, type FusionTransform,
-  type NodePos, type Op,
+  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionBlur, type FusionDeltaKeyer, type FusionEllipse, type FusionKind,
+  type FusionLink, type FusionMaskCommon, type FusionMerge, type FusionMosaic, type FusionNode, type FusionPoint, type FusionPolygon, type FusionRectangle,
+  type FusionTransform, type NodePos, type Op,
 } from '../engine';
 import { valueAt } from '../keyframes/value';
-import { handedOn, hasMaskInput, hasOutput, isMaskKind, layoutComposition, MASK_KINDS, pictureInputs, placesOf, type MaskKind } from './graph';
+import {
+  handedOn, hasMaskInput, hasOutput, isMaskKind, isMatteInput, isPictureInput, layoutComposition, MASK_KINDS, pictureInputs, placesOf, type MaskKind,
+} from './graph';
 
 /** The clip whose composition the operations change, as they name it. */
 export interface FusionAt { timeline: string; clip: string }
@@ -42,10 +44,10 @@ export function withFirst(at: FusionAt, has: boolean, ops: Op[]): Op[] {
 /** The kinds of node of a picture that the editor adds: a composition has exactly one MediaOut, so none is added. */
 export const ADDABLE: readonly Exclude<FusionKind, 'media_out'>[] = ['merge', 'transform', 'background', 'media_in'];
 /**
- * The effects on a picture that the editor adds, in a group of their own: a Blur and a Mosaic. Each has a picture, `input`, so
- * it goes in after the node chosen as a Transform does (`addNode`).
+ * The effects on a picture that the editor adds, in a group of their own: a Blur, a Mosaic and a Delta Keyer. Each has a picture,
+ * `input`, so it goes in after the node chosen as a Transform does (`addNode`).
  */
-export const ADDABLE_EFFECTS: readonly Extract<FusionKind, 'blur' | 'mosaic'>[] = ['blur', 'mosaic'];
+export const ADDABLE_EFFECTS: readonly Extract<FusionKind, 'blur' | 'mosaic' | 'delta_keyer'>[] = ['blur', 'mosaic', 'delta_keyer'];
 /** The masks that the editor adds, in a group of their own. */
 export const ADDABLE_MASKS: readonly MaskKind[] = MASK_KINDS;
 
@@ -70,6 +72,15 @@ export const newPolygon = (): FusionPolygon => ({ ...newMask(), center: { x: 0.5
 export const newBlur = (): FusionBlur => ({ filter: 'gaussian', lock_xy: true, size: { x: 5, y: 5 }, blend: 1 });
 /** The settings of a Mosaic as the engine makes a new one: 32 square cells across, the grid where it lies. */
 export const newMosaic = (): FusionMosaic => ({ frequency: 32, aspect: 1, offset: { x: 0, y: 0 }, whole_cells_only: false });
+/**
+ * The settings of a Delta Keyer as the engine makes a new one (PROTOCOL.md, "The Delta Keyer"): a pure green screen keyed at a
+ * Gain of 1, the thresholds at their ends and the matte as the key made it, what the key took filled softly with a mid grey,
+ * the spill suppressed whole by the Medium method, and the keyed picture shown.
+ */
+export const newDeltaKeyer = (): FusionDeltaKeyer => ({
+  screen: { r: 0, g: 1, b: 0 }, gain: 1, balance: 0.5, pre_blur: 0, low: 0, high: 1, erode_dilate: 0, matte_blur: 0, clean_foreground: 0, clean_background: 0,
+  replace: 'soft_color', replace_color: { r: 0.5, g: 0.5, b: 0.5 }, garbage_invert: false, spill_method: 'medium', spill_suppression: 1, view: 'final_result',
+});
 
 /** The most points that a Polygon may have (PROTOCOL.md, "Masks"). */
 export const MOST_POINTS = 128;
@@ -98,6 +109,7 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
     case 'polygon': return { ...base, kind, params: newPolygon() };
     case 'blur': return { ...base, kind, params: newBlur() };
     case 'mosaic': return { ...base, kind, params: newMosaic() };
+    case 'delta_keyer': return { ...base, kind, params: newDeltaKeyer() };
     default: return { ...base, kind, params: {} };
   }
 }
@@ -105,14 +117,16 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
 /**
  * Add a node. With `after`, a node that has an output, a node that has an input of a picture is
  * inserted after it: the links of the operation put the output of `after` into the first input of
- * the new node (`input` of a Transform, a Blur and a Mosaic, `background` of a Merge), and the output of the new node
- * into every input that `after` fed, each in the place of the link that was there. A node without
+ * the new node (`input` of a Transform, a Blur, a Mosaic and a Delta Keyer, `background` of a Merge), and the output
+ * of the new node into every input that `after` fed, each in the place of the link that was there. A node without
  * such an input (a Background, a MediaIn), or one added with no node chosen, is added with no links.
  *
  * A mask (a Rectangle, an Ellipse, a Polygon) is not put into the chain of the picture: as in
  * Fusion, where the node chosen has a `mask` input that nothing is linked into, the mask is linked
  * into it, in the same operation, and else it is added with no links. A Polygon begins with the
- * points of `startPoints`.
+ * points of `startPoints`. A mask added with a Delta Keyer chosen goes into its effect mask as into
+ * that of any node, never into one of its mattes: which of the two a mask is to be is not the
+ * editor's to say, so a matte is linked by hand.
  *
  * The new node is named by the empty id in its links, as `add_fusion_node` takes them.
  */
@@ -245,11 +259,12 @@ export function duplicateNodes(at: FusionAt, composition: Composition, ids: read
  * becomes `A → node.first` and `node → B.input`, the second in the place of the link that was
  * there. Only a node that has an input of a picture and an output and no link at all goes in so
  * (a mask, a Background and a MediaIn have no such input, the MediaOut no output), and only into a
- * link of a picture: a link into a `mask` is left as it is. Nothing otherwise.
+ * link of a picture: a link into a `mask`, or into a matte of a Delta Keyer, is left as it is.
+ * Nothing otherwise.
  */
 export function insertOnLink(at: FusionAt, composition: Composition, id: string, link: FusionLink): Op[] {
   const node = composition.nodes.find(each => each.id === id);
-  if (!node || !hasOutput(node.kind) || link.input === 'mask' || link.from === id || link.to === id) return [];
+  if (!node || !hasOutput(node.kind) || !isPictureInput(link.input) || link.from === id || link.to === id) return [];
   const first = pictureInputs(node.kind)[0];
   if (first === undefined || composition.links.some(each => each.from === id || each.to === id)) return [];
   if (!composition.links.some(each => each.from === link.from && each.to === link.to && each.input === link.input)) return [];
@@ -268,8 +283,9 @@ export function insertOnLink(at: FusionAt, composition: Composition, id: string,
  * is not counted among the links into it, since it is no picture that the node hands on: a
  * Transform with a mask is joined across as one without, and a Background with a mask leaves what
  * it fed without a picture; the mask that comes into a mask node is the picture that it hands on,
- * and is counted. Each node is taken away from the composition as the ones before it left it, as
- * the engine applies them.
+ * and is counted. The mattes of a Delta Keyer are not counted either: it is joined across by its
+ * `input` alone, and what fed its mattes is joined to nothing. Each node is taken away from the
+ * composition as the ones before it left it, as the engine applies them.
  */
 export function removeNodes(at: FusionAt, composition: Composition, ids: readonly string[]): Op[] {
   let now = composition;
@@ -278,7 +294,7 @@ export function removeNodes(at: FusionAt, composition: Composition, ids: readonl
     const node = now.nodes.find(each => each.id === id);
     if (!node || node.kind === 'media_out') continue;
     const passed = handedOn(node.kind);
-    const into = now.links.filter(link => link.to === id && (link.input !== 'mask' || passed === 'mask'));
+    const into = now.links.filter(link => link.to === id && !isMatteInput(link.input) && (link.input !== 'mask' || passed === 'mask'));
     const fed = now.links.filter(link => link.from === id);
     const links: FusionLink[] = into.length === 1 ? fed.map(link => ({ from: into[0].from, to: link.to, input: link.input })) : [];
     ops.push(links.length > 0 ? { op: 'remove_fusion_node', ...at, id, links } : { op: 'remove_fusion_node', ...at, id });

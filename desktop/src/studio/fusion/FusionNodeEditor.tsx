@@ -19,8 +19,8 @@ import {
   type FusionCommand,
 } from './edits';
 import {
-  fusionLinkHalves, fusionLinkNear, fusionLinkPath, hasMaskInput, hasOutput, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf, nodesIn, pictureInputs,
-  placesOf, portAt, portName, portPoint, type FusionLayout, type FusionPort, type PlacedFusion,
+  fusionLinkHalves, fusionLinkNear, fusionLinkPath, hasMaskInput, hasOutput, isPictureInput, layoutComposition, linkEnds, linkName, MASK_INSET, MATTE_INSETS,
+  matteInputs, namesOf, nodesIn, pictureInputs, placesOf, portAt, portName, portPoint, type FusionLayout, type FusionPort, type PlacedFusion,
 } from './graph';
 import { ADD_ICONS, SelectTool, TOOLS, type AddableKind } from './SelectTool';
 import { hasKeys } from './settings';
@@ -47,7 +47,9 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * A node of a composition: a card with a stripe in the colour of its kind and its name, the inputs
  * of its pictures down its left side (a Merge's background orange above its foreground green, as
  * in Fusion, p. 2162), its mask input blue on its lower edge, where it has one (the effect mask of
- * a Merge, a Transform, a Background, a Blur and a Mosaic, and the mask that comes into a mask), and its output at
+ * a Merge, a Transform, a Background, a Blur, a Mosaic and a Delta Keyer, and the mask that comes into a mask), the
+ * two matte inputs of a Delta Keyer on its upper edge, each in a colour of its own (the garbage matte a quarter of
+ * the way along, the solid matte three quarters), and its output at
  * the middle of its right side. A node that is passed through is drawn dimmed, and one whose
  * settings have keys has a badge. Drawn again only when what it shows changes: while one node is
  * dragged the others are left as they are.
@@ -80,6 +82,13 @@ const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chose
       return <path key={input} className="color-port fusion-port" data-input={input} data-port={port} data-lit={lit === port || undefined}
         d={`M ${x - 1} ${py - 5} L ${x + 6} ${py} L ${x - 1} ${py + 5} Z`}><title>{ports[input]}</title></path>;
     })}
+    {/* The matte inputs of a Delta Keyer point down into the card from its upper edge, each at the place that `inputPoint` gives it. */}
+    {matteInputs(node.kind).map((input) => {
+      const px = x + MATTE_INSETS[input];
+      const port = portName({ side: 'in', input });
+      return <path key={input} className="color-port fusion-port" data-input={input} data-port={port} data-lit={lit === port || undefined}
+        d={`M ${px - 5} ${y - 1} L ${px} ${y + 6} L ${px + 5} ${y - 1} Z`}><title>{ports[input]}</title></path>;
+    })}
     {/* The mask input points up into the card from its lower edge, at the place that `inputPoint` gives it. */}
     {hasMaskInput(node.kind) && <path className="color-port fusion-port" data-input="mask" data-port={maskPort} data-lit={lit === maskPort || undefined}
       d={`M ${maskX - 5} ${foot + 1} L ${maskX} ${foot - 6} L ${maskX + 5} ${foot + 1} Z`}><title>{ports.mask}</title></path>}
@@ -91,8 +100,9 @@ const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chose
 /**
  * A link of a composition, from an output to an input, with two halves to take hold of: either
  * chooses it when it is clicked, and the second takes its end along when it is dragged. A link into
- * a `mask` comes into it from below and is drawn in the colour of masks. Drawn again only when one
- * of its ends moves or what is said of it changes.
+ * a `mask` comes into it from below and is drawn in the colour of masks, and one into a matte of a
+ * Delta Keyer from above, in the colour of that matte. Drawn again only when one of its ends moves
+ * or what is said of it changes.
  */
 const LinkLine = memo(function LinkLine({ name, input, fromX, fromY, toX, toY, chosen, replacing, hover }: {
   name: string; input: FusionInput; fromX: number; fromY: number; toX: number; toY: number; chosen: boolean; replacing: boolean; hover: 'start' | 'end' | null;
@@ -134,11 +144,12 @@ const linkInto = (layout: FusionLayout, port: FusionPort) => layout.links.find(l
 
 /**
  * The link that the one node dragged would go into where it is let go at `point`: the link of a picture nearest the pointer,
- * as in the Color page's editor, where the node is one that goes into a link (`insertOnLink`); null otherwise.
+ * as in the Color page's editor, where the node is one that goes into a link (`insertOnLink`); null otherwise. A link into a
+ * `mask` or into a matte of a Delta Keyer is no link of a picture, and is passed over.
  */
 function linkUnder(at: FusionAt, composition: Composition, layout: FusionLayout, ids: readonly string[], point: Point): FusionLink | null {
   if (ids.length !== 1) return null;
-  const link = fusionLinkNear(layout, point, each => each.input !== 'mask' && each.from !== ids[0] && each.to !== ids[0]);
+  const link = fusionLinkNear(layout, point, each => isPictureInput(each.input) && each.from !== ids[0] && each.to !== ids[0]);
   return link !== null && insertOnLink(at, composition, ids[0], link).length > 0 ? link : null;
 }
 
@@ -151,7 +162,7 @@ function linkUnder(at: FusionAt, composition: Composition, layout: FusionLayout,
  * - a node added from the tool bar or from the right-click menu (Merge, Transform, Background,
  *   MediaIn), where the menu was opened; with one node chosen, a node that has an input goes in
  *   after it (`addNode`), and the new node is the one chosen; an effect on a picture (Blur, Mosaic,
- *   a group of their own in the tool bar) goes in after the node chosen in the same way; a mask
+ *   Delta Keyer, a group of their own in the tool bar) goes in after the node chosen in the same way; a mask
  *   (Rectangle, Ellipse, Polygon, a group of their own too) is linked into the `mask` of the node
  *   chosen instead, where that node has one and nothing is linked into it;
  * - a node chosen with a click, more with Ctrl+click or Shift+click or a box drawn round them, all
@@ -160,7 +171,8 @@ function linkUnder(at: FusionAt, composition: Composition, layout: FusionLayout,
  * - a link drawn from an output to an input, or from an input to an output; one into an input that
  *   has a link takes its place; the end of a link dragged to another input, or off to take the link
  *   away; a link chosen with a click and deleted with Delete or Backspace; the `mask` input of a
- *   node is an input as the others are, and any output goes into it;
+ *   node, and the garbage matte and the solid matte of a Delta Keyer, are inputs as the others are,
+ *   and any output goes into them;
  * - Delete deletes the nodes chosen, joining what fed each to what it fed where that is a single
  *   chain (`removeNodes`); the MediaOut stays; Ctrl+P passes the nodes chosen through; F2, a double
  *   click on its name, or its menu renames a node;

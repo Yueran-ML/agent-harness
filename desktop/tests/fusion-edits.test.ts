@@ -12,9 +12,9 @@ import {
   applyOp, firstComposition, type Composition, type FusionLink, type FusionNode, type FusionPoint, type Keyframe, type Op, type Project,
 } from '../src/studio/engine';
 import {
-  ADDABLE, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, insertPoint, isFirst, LEAST_POINTS, MOST_POINTS, moveNodes, newBackground, newMerge,
-  newNode, newPolygon, newTransform, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes, shownComposition, startPoints,
-  togglePass, withFirst,
+  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, insertPoint, isFirst, LEAST_POINTS, MOST_POINTS, moveNodes,
+  newBackground, newMerge, newNode, newPolygon, newTransform, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes,
+  shownComposition, startPoints, togglePass, withFirst,
 } from '../src/studio/fusion/edits';
 import {
   fusionLinkHalves, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf,
@@ -594,5 +594,78 @@ describe('a Blur and a Mosaic', () => {
     expect(paths(newNode('mosaic', null, 'm1'))).toEqual(['frequency', 'aspect', 'offset.x', 'offset.y']);
     expect(settingOf(newNode('blur', null, 'b1'), 'lock_xy')).toBeUndefined();
     expect(settingOf(newNode('mosaic', null, 'm1'), 'whole_cells_only')).toBeUndefined();
+  });
+
+  it('are added in a group of their own: loose where no node is chosen, and after the node chosen on their picture, in the one operation', () => {
+    expect(ADDABLE_EFFECTS).toEqual(['blur', 'mosaic']);
+    expect([...ADDABLE, ...ADDABLE_MASKS].some(kind => kind === 'blur' || kind === 'mosaic')).toBe(false);
+    for (const kind of ADDABLE_EFFECTS) {
+      // None chosen: with no links, at the place given, or where the editor lays it out.
+      expect(addNode(AT, comp(), kind, null, { x: 10.4, y: 20.6 }), kind).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode(kind, { x: 10, y: 21 }) }]);
+      const loose = addNode(AT, comp(), kind, null, null);
+      expect(loose, kind).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode(kind) }]);
+      expect(loose[0], kind).not.toHaveProperty('links');
+      // After the Transform, which feeds the background of the Merge: the Transform into its `input`, and it into the background.
+      expect(addNode(AT, comp(), kind, 'n3', null), kind).toEqual([{
+        op: 'add_fusion_node', ...AT, node: newNode(kind), links: [link('n3', '', 'input'), link('', 'n4', 'background')],
+      }]);
+      // After the Merge, before the MediaOut; and after a node that feeds several inputs, before every one of them.
+      expect(addNode(AT, comp(), kind, 'n4', null), kind).toEqual([{
+        op: 'add_fusion_node', ...AT, node: newNode(kind), links: [link('n4', '', 'input'), link('', 'MediaOut1', 'input')],
+      }]);
+      const fan: Composition = { nodes: [mediaIn(), mediaOut(), merge('n4')], links: [link('MediaIn1', 'n4', 'background'), link('MediaIn1', 'n4', 'foreground'), link('n4', 'MediaOut1')] };
+      expect(addNode(AT, fan, kind, 'MediaIn1', null)[0], kind).toMatchObject({
+        links: [link('MediaIn1', '', 'input'), link('', 'n4', 'background'), link('', 'n4', 'foreground')],
+      });
+      // After the Rectangle that feeds the mask of the Merge it goes between them, as a Transform does: its picture is the mask.
+      expect(addNode(AT, masked(), kind, 'n6', null), kind).toEqual([{
+        op: 'add_fusion_node', ...AT, node: newNode(kind), links: [link('n6', '', 'input'), link('', 'n4', 'mask')],
+      }]);
+      // Nothing goes after the MediaOut, nor after a node that is not there: loose.
+      for (const chosen of ['MediaOut1', 'gone']) expect(addNode(AT, comp(), kind, chosen, null), `${kind} after ${chosen}`).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode(kind) }]);
+    }
+    // It is never linked into a mask input, and a mask added with it chosen goes into its effect mask.
+    const blurred: Composition = { nodes: [...comp().nodes, newNode('blur', null, 'n6')], links: [...comp().links] };
+    expect(addNode(AT, blurred, 'ellipse', 'n6', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n6', 'mask')] }]);
+    // In the copy, once the engine has given the node its id: the one operation puts the Blur between the Transform and the Merge.
+    const [added] = addNode(AT, comp(), 'blur', 'n3', null) as Extract<Op, { op: 'add_fusion_node' }>[];
+    const own = (end: string) => (end === '' ? 'n9' : end);
+    const named: Op = { ...added, node: newNode('blur', null, 'n9'), links: (added.links ?? []).map(each => ({ ...each, from: own(each.from), to: own(each.to) })) };
+    const after = applied(comp(), [named]);
+    expect(after.nodes.map(node => node.id)).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n9']);
+    expect(after.links.map(linkName)).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n9>n4:background', 'n5>n4:foreground', 'n3>n9:input']);
+    // Taken away again, the Transform feeds the Merge as it did.
+    expect(removeNodes(AT, after, ['n9'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n9', links: [link('n3', 'n4', 'background')] }]);
+  });
+
+  it('have their numbers set by a patch of the node, which leaves the other number of a pair, and their keys by the path of the setting', () => {
+    const blur = newNode('blur', null, 'b1');
+    const mosaic = newNode('mosaic', null, 'm1');
+    const of = (node: FusionNode, path: string) => settingOf(node, path)!;
+    const patch = (id: string, params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id, params }];
+    const sized = putValue(AT, blur, of(blur, 'size.x'), 12, 0);
+    expect(sized).toEqual(patch('b1', { size: { x: 12 } }));
+    expect(applied(withNode(blur), sized).nodes[2].params).toEqual({ filter: 'gaussian', lock_xy: true, size: { x: 12, y: 5 }, blend: 1 });
+    expect(putValue(AT, blur, of(blur, 'size.y'), 7.5, 0)).toEqual(patch('b1', { size: { y: 7.5 } }));
+    expect(putValue(AT, blur, of(blur, 'blend'), 0.5, 0)).toEqual(patch('b1', { blend: 0.5 }));
+    expect(putValue(AT, blur, of(blur, 'size.y'), 5, 0)).toEqual([]);
+    expect(putValue(AT, mosaic, of(mosaic, 'frequency'), 64, 0)).toEqual(patch('m1', { frequency: 64 }));
+    expect(putValue(AT, mosaic, of(mosaic, 'aspect'), 2, 0)).toEqual(patch('m1', { aspect: 2 }));
+    const moved = putValue(AT, mosaic, of(mosaic, 'offset.y'), -40, 0);
+    expect(moved).toEqual(patch('m1', { offset: { y: -40 } }));
+    expect(applied(withNode(mosaic), moved).nodes[2].params).toEqual({ frequency: 32, aspect: 1, offset: { x: 0, y: -40 }, whole_cells_only: false });
+    expect(wholeValue(AT, blur, of(blur, 'size.x'), 5, 20, 0)).toEqual({ op: 'set_fusion_node', ...AT, id: 'b1', params: { size: { x: 20 } } });
+    expect(wholeParam(AT, mosaic, of(mosaic, 'offset.x'), 0)).toEqual({ op: 'set_fusion_node', ...AT, id: 'm1', params: { offset: { x: 0 } } });
+    // A key is put by the path of the setting, of the value that it has; the last key taken away leaves its value, as one number.
+    const keyed = addKey(AT, blur, of(blur, 'size.x'), 12);
+    expect(keyed).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'b1.size.x', at: 0, remove: 0, keys: [keyAt(12, 5)] }]);
+    expect(addKey(AT, mosaic, of(mosaic, 'offset.y'), 3)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'm1.offset.y', at: 0, remove: 0, keys: [keyAt(3, 0)] }]);
+    expect(addKey(AT, mosaic, of(mosaic, 'frequency'), 3)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'm1.frequency', at: 0, remove: 0, keys: [keyAt(3, 32)] }]);
+    const after = applied(withNode(blur), keyed).nodes[2];
+    expect(paramOf(after, of(after, 'size.x'))).toEqual({ keys: [keyAt(12, 5)] });
+    expect([hasKeys(blur), hasKeys(mosaic), hasKeys(after)]).toEqual([false, false, true]);
+    expect(putValue(AT, after, of(after, 'size.x'), 8, 12)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'b1.size.x', at: 0, remove: 1, keys: [keyAt(12, 8)] }]);
+    expect(removeKey(AT, after, of(after, 'size.x'), 12)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'b1.size.x', param: 5 }]);
+    expect(keyOps(AT, after, of(after, 'size.x'), 9)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'b1.size.x', param: 9 }]);
   });
 });

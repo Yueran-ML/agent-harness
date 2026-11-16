@@ -41,6 +41,11 @@ export function withFirst(at: FusionAt, has: boolean, ops: Op[]): Op[] {
 
 /** The kinds of node of a picture that the editor adds: a composition has exactly one MediaOut, so none is added. */
 export const ADDABLE: readonly Exclude<FusionKind, 'media_out'>[] = ['merge', 'transform', 'background', 'media_in'];
+/**
+ * The effects on a picture that the editor adds, in a group of their own: a Blur and a Mosaic. Each has a picture, `input`, so
+ * it goes in after the node chosen as a Transform does (`addNode`).
+ */
+export const ADDABLE_EFFECTS: readonly Extract<FusionKind, 'blur' | 'mosaic'>[] = ['blur', 'mosaic'];
 /** The masks that the editor adds, in a group of their own. */
 export const ADDABLE_MASKS: readonly MaskKind[] = MASK_KINDS;
 
@@ -100,7 +105,7 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
 /**
  * Add a node. With `after`, a node that has an output, a node that has an input of a picture is
  * inserted after it: the links of the operation put the output of `after` into the first input of
- * the new node (`input` of a Transform, `background` of a Merge), and the output of the new node
+ * the new node (`input` of a Transform, a Blur and a Mosaic, `background` of a Merge), and the output of the new node
  * into every input that `after` fed, each in the place of the link that was there. A node without
  * such an input (a Background, a MediaIn), or one added with no node chosen, is added with no links.
  *

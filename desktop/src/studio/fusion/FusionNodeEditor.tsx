@@ -13,8 +13,8 @@ import type { GradeEditing } from '../color/useGradeEditing';
 import { refusalText } from '../inspector/refusal';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import {
-  ADDABLE, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, isFirst, moveNodes, reconnect, relabel, removeComposition, removeNodes,
-  resetComposition, restoreNodes, togglePass, withFirst, type FusionAt, type FusionCommand,
+  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, isFirst, moveNodes, reconnect, relabel, removeComposition,
+  removeNodes, resetComposition, restoreNodes, togglePass, withFirst, type FusionAt, type FusionCommand,
 } from './edits';
 import {
   fusionLinkHalves, fusionLinkPath, hasMaskInput, hasOutput, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf, nodesIn, pictureInputs, placesOf, portAt,
@@ -35,7 +35,6 @@ const NO_PLACES: Placed = {};
 const ADD_ICONS = {
   merge: Blend, transform: Move, background: Square, media_in: ImagePlus,
   rectangle: RectangleHorizontal, ellipse: Circle, polygon: Pentagon,
-  // A Blur and a Mosaic have their faces here, and are not among the kinds that the editor adds yet.
   blur: Droplet, mosaic: Grid3x3,
 } as const;
 
@@ -51,7 +50,7 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * A node of a composition: a card with a stripe in the colour of its kind and its name, the inputs
  * of its pictures down its left side (a Merge's background orange above its foreground green, as
  * in Fusion, p. 2162), its mask input blue on its lower edge, where it has one (the effect mask of
- * a Merge, a Transform and a Background, and the mask that comes into a mask), and its output at
+ * a Merge, a Transform, a Background, a Blur and a Mosaic, and the mask that comes into a mask), and its output at
  * the middle of its right side. A node that is passed through is drawn dimmed, and one whose
  * settings have keys has a badge. Drawn again only when what it shows changes: while one node is
  * dragged the others are left as they are.
@@ -143,9 +142,10 @@ const linkInto = (layout: FusionLayout, port: FusionPort) => layout.links.find(l
  *
  * - a node added from the tool bar or from the right-click menu (Merge, Transform, Background,
  *   MediaIn), where the menu was opened; with one node chosen, a node that has an input goes in
- *   after it (`addNode`), and the new node is the one chosen; a mask (Rectangle, Ellipse, Polygon,
- *   a group of their own in the tool bar) is linked into the `mask` of the node chosen instead,
- *   where that node has one and nothing is linked into it;
+ *   after it (`addNode`), and the new node is the one chosen; an effect on a picture (Blur, Mosaic,
+ *   a group of their own in the tool bar) goes in after the node chosen in the same way; a mask
+ *   (Rectangle, Ellipse, Polygon, a group of their own too) is linked into the `mask` of the node
+ *   chosen instead, where that node has one and nothing is linked into it;
  * - a node chosen with a click, more with Ctrl+click or Shift+click or a box drawn round them, all
  *   with Ctrl+A; moved by dragging, which is one gesture: each move sends the places whole, the
  *   release ends it, and the whole is one step to undo (Escape takes it back);
@@ -516,8 +516,15 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
     if (port && press.from.input !== null) run(connect(at, composition, { from: port.node, to: press.from.node, input: press.from.input }));
   };
 
-  /** The items that add a node of each kind, the masks after the others, at a point of the graph or where the editor lays it out. */
-  const addItems = (pos: Point | null): MenuItem[] => [...ADDABLE, ...ADDABLE_MASKS].map(kind => ({ id: `add-${kind}`, label: labels.kinds[kind], run: () => add(kind, pos) }));
+  /** The items that add a node of each kind, the effects and then the masks after the others, at a point of the graph or where the editor lays it out. */
+  const addItems = (pos: Point | null): MenuItem[] => [...ADDABLE, ...ADDABLE_EFFECTS, ...ADDABLE_MASKS]
+    .map(kind => ({ id: `add-${kind}`, label: labels.kinds[kind], run: () => add(kind, pos) }));
+  /** The buttons of the tool bar that add a node of each of these kinds, where the editor lays it out. */
+  const addButtons = (kinds: readonly (keyof typeof ADD_ICONS)[]) => kinds.map((kind) => {
+    const Icon = ADD_ICONS[kind];
+    return <button key={kind} type="button" className="color-tool" title={`${menuWords.addNode}: ${labels.kinds[kind]}`} onClick={() => add(kind, null)}
+      data-test={`add-${kind}`}><Icon size={14} aria-hidden="true" />{labels.kinds[kind]}</button>;
+  });
   /** The menu of the background: Add Node ▸, the two commands of the whole composition, and the zoom. */
   const graphItems = (pos: Point | null): MenuItem[] => [
     { id: 'add-node', label: menuWords.addNode, items: addItems(pos) },
@@ -566,21 +573,11 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
   return <div className="color-nodes-body fusion-nodes-body">
     <div className="color-nodes-head fusion-nodes-head">
       <h2 className="overline">{colorLabels.nodeEditor}</h2>
-      <div className="fusion-add" role="group" aria-label={menuWords.addNode}>
-        {ADDABLE.map((kind) => {
-          const Icon = ADD_ICONS[kind];
-          return <button key={kind} type="button" className="color-tool" title={`${menuWords.addNode}: ${labels.kinds[kind]}`} onClick={() => add(kind, null)}
-            data-test={`add-${kind}`}><Icon size={14} aria-hidden="true" />{labels.kinds[kind]}</button>;
-        })}
-      </div>
+      <div className="fusion-add" role="group" aria-label={menuWords.addNode}>{addButtons(ADDABLE)}</div>
+      {/* The effects on a picture, in a group of their own: one added with a node chosen goes in after it, as a Transform does. */}
+      <div className="fusion-add fusion-add-effects" role="group" aria-label={labels.effects}>{addButtons(ADDABLE_EFFECTS)}</div>
       {/* The masks, in a group of their own: one added with a node chosen that has a free mask input is linked into it. */}
-      <div className="fusion-add fusion-add-masks" role="group" aria-label={labels.masks}>
-        {ADDABLE_MASKS.map((kind) => {
-          const Icon = ADD_ICONS[kind];
-          return <button key={kind} type="button" className="color-tool" title={`${menuWords.addNode}: ${labels.kinds[kind]}`} onClick={() => add(kind, null)}
-            data-test={`add-${kind}`}><Icon size={14} aria-hidden="true" />{labels.kinds[kind]}</button>;
-        })}
-      </div>
+      <div className="fusion-add fusion-add-masks" role="group" aria-label={labels.masks}>{addButtons(ADDABLE_MASKS)}</div>
       <span className="color-gap" />
       <input type="range" className="color-node-zoom" aria-label={menuWords.zoom} min={ZOOM_LEAST} max={ZOOM_MOST} step={0.05} value={zoom}
         onChange={event => setZoom(Number(event.target.value))} onPointerUp={event => event.currentTarget.blur()} data-test="node-zoom" />

@@ -117,7 +117,8 @@
   gap: 2px;
 }
 
-/* The masks are a group of their own after the other nodes, behind a line. */
+/* The effects and the masks are groups of their own after the other nodes, each behind a line. */
+.fusion-add-effects,
 .fusion-add-masks {
   padding-left: var(--s2);
   box-shadow: inset 1px 0 0 var(--line);
@@ -176,6 +177,12 @@
 .fusion-page .fusion-node[data-kind='ellipse'] .fusion-node-stripe,
 .fusion-page .fusion-node[data-kind='polygon'] .fusion-node-stripe {
   fill: var(--fusion-mask);
+}
+
+/* The effects on a picture, a Blur and a Mosaic, have one colour. */
+.fusion-page .fusion-node[data-kind='blur'] .fusion-node-stripe,
+.fusion-page .fusion-node[data-kind='mosaic'] .fusion-node-stripe {
+  fill: var(--fusion-effect);
 }
 
 .fusion-page .fusion-node-name {

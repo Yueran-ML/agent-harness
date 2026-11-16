@@ -79,6 +79,15 @@ const M = {
   n6: { x: 74, y: 241 }, n7: { x: 74, y: 333 }, n8: { x: 74, y: 425 }, n6Out: { x: 120, y: 241 }, n8Out: { x: 120, y: 425 },
   n3Mask: { x: 199, y: 86 }, n4Mask: { x: 347, y: 86 },
 };
+/**
+ * `comp` and two effects that nothing is linked to or from: the Blur n6 and the Mosaic n7. Laid out by the editor they stand in the
+ * first column under the Background n5, at 28,212 and 28,304, where the first two masks of `maskedComp` stand: `M.n6` and `M.n7`
+ * are the middles of their cards.
+ */
+const effectComp = (): Composition => {
+  const made = comp();
+  return { ...made, nodes: [...made.nodes, newNode('blur', null, 'n6'), newNode('mosaic', null, 'n7')] };
+};
 const m2: Media = { ...media, id: 'm2', name: 'Street' };
 /** V1: c1 (frames 0–99, with a composition where one is given) and c2 (100–199); V2 above it: c3 (50–149); and, where asked for, A1 with a clip of sound. */
 const timelineOf = (first: Composition | null = comp(), sound = false): Timeline => ({
@@ -687,11 +696,11 @@ describe('the masks in the node editor of the Fusion page', () => {
 
   it('adds a mask from its group of the tool bar: linked into the mask input of the node chosen where that is free, and loose otherwise', async () => {
     const { bridge } = await mount();
-    // The masks are a group of their own, after the nodes of a picture.
+    // The masks are a group of their own, after the nodes of a picture and the effects on one.
     const groups = [...document.querySelectorAll<HTMLElement>('.fusion-add')];
-    expect(groups.map(each => each.getAttribute('aria-label'))).toEqual(['Add Node', 'Masks']);
+    expect(groups.map(each => each.getAttribute('aria-label'))).toEqual(['Add Node', 'Effects', 'Masks']);
     expect(groups.map(each => [...each.querySelectorAll('button')].map(button => button.textContent))).toEqual([
-      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Rectangle', 'Ellipse', 'Polygon'],
+      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Blur', 'Mosaic'], ['Rectangle', 'Ellipse', 'Polygon'],
     ]);
     // No node chosen: the mask is added with no links, and is the node chosen.
     bridge.call.mockClear();
@@ -1128,6 +1137,294 @@ describe('the masks in the Spline Editor of the Fusion page', () => {
     expect(listed()).toEqual(settings.map(path => `n6.${path}`));
     const names = ['Level', 'Soft Edge', 'Border Width', 'Center X', 'Center Y', 'Width', 'Height', 'Corner Radius', 'Angle'];
     expect(settings.map((path, index) => named(`n6.${path}`)!.includes(names[index]))).toEqual(settings.map(() => true));
+  });
+});
+
+// A Blur and a Mosaic (PROTOCOL.md, "Blur and Mosaic"): each has a picture, `input`, and an effect mask.
+describe('a Blur and a Mosaic in the node editor of the Fusion page', () => {
+  const ports = (id: string) => [...nodeOf(id).querySelectorAll<SVGElement>('[data-port]')].map(each => each.dataset.port);
+
+  it('draws each as a card of its kind, with its picture on its left, its effect mask on its lower edge and its output on its right', async () => {
+    await mount(projectOf([timelineOf(effectComp())]));
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n6', 'n7']);
+    expect([nodeOf('n6').dataset.kind, nodeOf('n7').dataset.kind]).toEqual(['blur', 'mosaic']);
+    expect([placeOf('n6'), placeOf('n7')]).toEqual([[28, 212], [28, 304]]);
+    expect([...graph().querySelectorAll('[data-test="node-label"]')].map(each => each.textContent).slice(5)).toEqual(['Blur 1', 'Mosaic 1']);
+    expect([ports('n6'), ports('n7')]).toEqual([['in:input', 'in:mask', 'out'], ['in:input', 'in:mask', 'out']]);
+    // The two have one colour, a variable of the themes, on the stripe of their cards.
+    const css = readFileSync('src/studio/fusion/fusion.css', 'utf8');
+    expect(blockOf(readFileSync('src/ui/tokens.css', 'utf8'), ':root')).toMatch(/--fusion-effect: #[0-9a-f]{6};/);
+    expect(blockOf(css, ".fusion-page .fusion-node[data-kind='mosaic'] .fusion-node-stripe")).toContain('fill: var(--fusion-effect);');
+    expect(css).toContain(".fusion-page .fusion-node[data-kind='blur'] .fusion-node-stripe");
+  });
+
+  it('adds each from their group of the tool bar: loose where no node is chosen, and after the node chosen on its picture', async () => {
+    const { bridge } = await mount();
+    const group = one('.fusion-add-effects');
+    expect([group.getAttribute('aria-label'), [...group.querySelectorAll('button')].map(button => button.textContent)]).toEqual(['Effects', ['Blur', 'Mosaic']]);
+    expect([marked('add-blur')!.title, marked('add-mosaic')!.title]).toEqual(['Add Node: Blur', 'Add Node: Mosaic']);
+    // No node chosen: the Blur is added with no links, and is the node chosen.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-blur')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('blur') }]]);
+    expect([currentNode(), nodeOf('n10').dataset.kind]).toEqual(['n10', 'blur']);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground']);
+    // The Transform chosen, which feeds the background of the Merge: the Mosaic goes in after it, the Transform into its input
+    // and it into the background, in the one operation, which is one step to undo.
+    choose('n3');
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-mosaic')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('mosaic'), links: [link('n3', '', 'input'), link('', 'n4', 'background')] }]]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'n3>n11:input', 'MediaIn1>n3:input', 'n11>n4:background', 'n5>n4:foreground']);
+    expect([currentNode(), nodeOf('n11').dataset.kind]).toEqual(['n11', 'mosaic']);
+    // The Mosaic is the one chosen now: a Blur added goes between it and the Merge.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-blur')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('blur'), links: [link('n11', '', 'input'), link('', 'n4', 'background')] }]]);
+    expect([currentNode(), ports('n12')]).toEqual(['n12', ['in:input', 'in:mask', 'out']]);
+    // A mask added with the Blur chosen goes into its effect mask, which nothing is linked into.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-ellipse')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n12', 'mask')] }]]);
+    expect(linksDrawn()).toContain('n13>n12:mask');
+    expect(problem()).toBeNull();
+  });
+
+  it('adds each from the right-click menu where the menu was opened: loose from the menu of the background, and after the node from the menu of a node', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    fireEvent.contextMenu(canvas(), { clientX: 300, clientY: 250 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add Node' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mosaic' }));
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('mosaic', { x: 300, y: 250 }) }]]);
+    expect(placeOf('n10')).toEqual([300, 250]);
+    // From the menu of the Merge, the Blur goes in after it, before the MediaOut, and lies where the menu was opened.
+    bridge.call.mockClear();
+    fireEvent.contextMenu(card('n4'), { clientX: 380, clientY: 60 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add Node' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Blur' }));
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('blur', { x: 380, y: 60 }), links: [link('n4', '', 'input'), link('', 'MediaOut1', 'input')] }]]);
+  });
+});
+
+describe('a Blur and a Mosaic in the Inspector of the Fusion page', () => {
+  const checked = (name: string) => (row(name).querySelector('input') as HTMLInputElement).checked;
+  const select = (name: string) => row(name).querySelector('select')!;
+  const labelOf = (name: string) => row(name).querySelector('label')!.textContent;
+  const withKeys = () => [...inspector().querySelectorAll<HTMLElement>('[data-keys]')].map(each => each.dataset.keys);
+  const keyedAt = (name: string) => keysOf(name)[1].dataset.keyed;
+  const toggle = (name: string) => fireEvent.click(row(name).querySelector('input')!);
+  const blur = (params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id: 'n6', params }];
+  const mosaic = (params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id: 'n7', params }];
+  /** The settings of a node of the composition of the first clip, as the engine has them. */
+  const paramsIn = (project: Project, id: string) => (project.timelines[0].tracks[0] as { clips: { fusion?: Composition }[] }).clips[0].fusion!.nodes
+    .find(node => node.id === id)!.params;
+
+  it('shows the settings of a Blur, its Blur Size as one number while its X and Y are locked and as two when they are not', async () => {
+    const { bridge, project } = await mount(projectOf([timelineOf(effectComp())]));
+    press(card('n6'), M.n6);
+    expect([inspector().dataset.node, inspector().dataset.kind, marked('fusion-node-name')!.textContent]).toEqual(['n6', 'blur', 'Blur 1']);
+    expect(marked('fusion-no-settings')).toBeNull();
+    // A new Blur has its X and Y locked: one Blur Size, which is the `size.x` of the node, with its keys.
+    expect(fieldsShown()).toEqual(['label', 'filter', 'lock_xy', 'size.x', 'blend']);
+    expect(['filter', 'lock_xy', 'size.x', 'blend'].map(labelOf)).toEqual(['Filter', 'Lock X/Y', 'Blur Size', 'Blend']);
+    expect([select('filter').value, [...select('filter').options].map(each => each.textContent)]).toEqual(['gaussian', ['Gaussian', 'Box']]);
+    expect(checked('lock_xy')).toBe(true);
+    expect([box('size.x').value, box('blend').value]).toEqual(['5.0', '1.000']);
+    // The numbers have the three buttons of keys; the Filter and the switch take none.
+    expect(withKeys()).toEqual(['size.x', 'blend']);
+    expect(keysOf('size.x').map(each => each.getAttribute('aria-label'))).toEqual(['Blur Size: Previous keyframe', 'Blur Size: Add keyframe', 'Blur Size: Next keyframe']);
+    // The slider of a Blur Size ends at 100, as Fusion's does, though the field takes a size up to 500.
+    expect([slider('size.x').min, slider('size.x').max, slider('blend').min, slider('blend').max]).toEqual(['0', '100', '0', '1']);
+    // Unlocked: the switch alone is set, and the two sizes are shown apart, each with its keys.
+    bridge.call.mockClear();
+    toggle('lock_xy'); await settle();
+    expect(sent(bridge)).toEqual([blur({ lock_xy: false })]);
+    expect(checked('lock_xy')).toBe(false);
+    expect(fieldsShown()).toEqual(['label', 'filter', 'lock_xy', 'size.x', 'size.y', 'blend']);
+    expect(['size.x', 'size.y'].map(labelOf)).toEqual(['X Blur Size', 'Y Blur Size']);
+    expect([box('size.x').value, box('size.y').value]).toEqual(['5.0', '5.0']);
+    expect(withKeys()).toEqual(['size.x', 'size.y', 'blend']);
+    expect(keysOf('size.y').map(each => each.getAttribute('aria-label'))).toEqual(['Y Blur Size: Previous keyframe', 'Y Blur Size: Add keyframe', 'Y Blur Size: Next keyframe']);
+    bridge.call.mockClear();
+    type('size.y', '12'); await settle();
+    expect(sent(bridge)).toEqual([blur({ size: { y: 12 } })]);
+    expect(box('size.y').value).toBe('12.0');
+    // Locked again: the switch alone is set, nothing else is changed, and the size down is kept as it is.
+    bridge.call.mockClear();
+    toggle('lock_xy'); await settle();
+    expect(sent(bridge)).toEqual([blur({ lock_xy: true })]);
+    expect(fieldsShown()).toEqual(['label', 'filter', 'lock_xy', 'size.x', 'blend']);
+    expect([labelOf('size.x'), box('size.x').value, checked('lock_xy')]).toEqual(['Blur Size', '5.0', true]);
+    expect(paramsIn(project(), 'n6')).toEqual({ filter: 'gaussian', lock_xy: true, size: { x: 5, y: 12 }, blend: 1 });
+  });
+
+  it('sets the Filter and the numbers of a Blur within the range of the catalog, and puts the default back on a double click', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(effectComp())]));
+    press(card('n6'), M.n6);
+    bridge.call.mockClear();
+    fireEvent.change(select('filter'), { target: { value: 'box' } }); await settle();
+    type('size.x', '12.5'); await settle();
+    // Beyond the slider, which ends at 100, the field takes a size up to the 500 of the range, and no more.
+    type('size.x', '250'); await settle();
+    type('size.x', '999'); await settle();
+    type('blend', '0.5'); await settle();
+    fireEvent.doubleClick(row('size.x').querySelector('label')!); await settle();
+    expect(sent(bridge)).toEqual([
+      blur({ filter: 'box' }), blur({ size: { x: 12.5 } }), blur({ size: { x: 250 } }), blur({ size: { x: 500 } }), blur({ blend: 0.5 }), blur({ size: { x: 5 } }),
+    ]);
+    expect([select('filter').value, box('size.x').value, box('blend').value]).toEqual(['box', '5.0', '0.500']);
+  });
+
+  it('sends the Blur Size slid as one gesture, each move the setting whole', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(effectComp())]));
+    press(card('n6'), M.n6);
+    bridge.call.mockClear();
+    const size = slider('size.x');
+    fireEvent.pointerDown(size);
+    fireEvent.input(size, { target: { value: '20' } }); await settle();
+    fireEvent.input(size, { target: { value: '30' } }); await settle();
+    fireEvent.change(size, { target: { value: '30' } }); await settle();
+    const moves = applied(bridge);
+    // The release says the last value once more, to end the gesture.
+    expect(moves.map(each => each.ops)).toEqual([blur({ size: { x: 20 } }), blur({ size: { x: 30 } }), blur({ size: { x: 30 } })]);
+    expect(new Set(moves.map(each => each.gesture?.id)).size).toBe(1);
+    expect(moves.map(each => each.gesture!.end)).toEqual([undefined, undefined, true]);
+    expect(box('size.x').value).toBe('30.0');
+  });
+
+  it('puts a key on a number of a Blur with the diamond, by the path of the setting, and takes it away again', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(effectComp())]));
+    press(card('n6'), M.n6);
+    bridge.call.mockClear();
+    expect([keyedAt('size.x'), keyedAt('blend')]).toEqual([undefined, undefined]);
+    // The playhead is at frame 0, where the clip shows picture 0 of its media. Locked, the key of the Blur Size is on `size.x`.
+    fireEvent.click(keysOf('size.x')[1]); await settle();
+    fireEvent.click(keysOf('blend')[1]); await settle();
+    expect(sent(bridge)).toEqual([
+      [{ op: 'splice_fusion_keys', ...AT, path: 'n6.size.x', at: 0, remove: 0, keys: [{ frame: 0, value: 5, interp: 'linear' }] }],
+      [{ op: 'splice_fusion_keys', ...AT, path: 'n6.blend', at: 0, remove: 0, keys: [{ frame: 0, value: 1, interp: 'linear' }] }],
+    ]);
+    expect([keyedAt('size.x'), keyedAt('blend'), keysOf('size.x')[1].getAttribute('aria-pressed')]).toEqual(['true', 'true', 'true']);
+    expect(nodeOf('n6').querySelector('[data-test="node-keyed"]')).not.toBeNull();
+    // A value typed where the key is changes the key.
+    bridge.call.mockClear();
+    type('size.x', '8'); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'splice_fusion_keys', ...AT, path: 'n6.size.x', at: 0, remove: 1, keys: [{ frame: 0, value: 8, interp: 'linear' }] }]]);
+    // Unlocked, the size down takes keys of its own, and the size across keeps those that it has.
+    toggle('lock_xy'); await settle();
+    expect([keyedAt('size.x'), keyedAt('size.y')]).toEqual(['true', undefined]);
+    bridge.call.mockClear();
+    fireEvent.click(keysOf('size.y')[1]); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'splice_fusion_keys', ...AT, path: 'n6.size.y', at: 0, remove: 0, keys: [{ frame: 0, value: 5, interp: 'linear' }] }]]);
+    // The diamond takes the key at the playhead away again: its last key leaves its value, as one number.
+    bridge.call.mockClear();
+    fireEvent.click(keysOf('size.x')[1]); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_fusion_keys', ...AT, path: 'n6.size.x', param: 8 }]]);
+    expect([keyedAt('size.x'), keyedAt('size.y')]).toEqual([undefined, 'true']);
+  });
+
+  it('shows the settings of a Mosaic and sets them, each number within its range, its offsets by a field alone', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(effectComp())]));
+    press(card('n7'), M.n7);
+    expect([inspector().dataset.node, inspector().dataset.kind, marked('fusion-node-name')!.textContent]).toEqual(['n7', 'mosaic', 'Mosaic 1']);
+    expect(marked('fusion-no-settings')).toBeNull();
+    expect(fieldsShown()).toEqual(['label', 'frequency', 'aspect', 'offset.x', 'offset.y', 'whole_cells_only']);
+    const numbers = ['frequency', 'aspect', 'offset.x', 'offset.y'];
+    expect([...numbers, 'whole_cells_only'].map(labelOf)).toEqual(['Pixel Frequency', 'Aspect', 'X Offset', 'Y Offset', 'Whole Cells Only']);
+    expect(numbers.map(name => box(name).value)).toEqual(['32.0', '1.000', '0.0', '0.0']);
+    expect(withKeys()).toEqual(numbers);
+    expect(keysOf('offset.x').map(each => each.title)).toEqual(['Previous keyframe', 'Add keyframe', 'Next keyframe']);
+    // The sliders are over the part of the range that is used day by day; an offset, of 16384 pixels either way, has none.
+    expect([slider('frequency').min, slider('frequency').max, slider('aspect').min, slider('aspect').max]).toEqual(['1', '256', '0.25', '4']);
+    expect([row('offset.x').querySelector('input[type="range"]'), row('offset.y').querySelector('input[type="range"]')]).toEqual([null, null]);
+    // Whole Cells Only says where the pointer rests on it that it needs an effect mask.
+    expect([checked('whole_cells_only'), row('whole_cells_only').title]).toEqual([false, en.hint.studio.fusionPage.wholeCells]);
+    bridge.call.mockClear();
+    type('frequency', '64'); await settle();
+    // Beyond the range, the value is the end of the range: one cell across, and 16384.
+    type('frequency', '0'); await settle();
+    type('frequency', '99999'); await settle();
+    type('aspect', '2'); await settle();
+    type('aspect', '99'); await settle();
+    type('offset.x', '-120.5'); await settle();
+    type('offset.y', '99999'); await settle();
+    toggle('whole_cells_only'); await settle();
+    fireEvent.doubleClick(row('frequency').querySelector('label')!); await settle();
+    expect(sent(bridge)).toEqual([
+      mosaic({ frequency: 64 }), mosaic({ frequency: 1 }), mosaic({ frequency: 16384 }), mosaic({ aspect: 2 }), mosaic({ aspect: 16 }),
+      mosaic({ offset: { x: -120.5 } }), mosaic({ offset: { y: 16384 } }), mosaic({ whole_cells_only: true }), mosaic({ frequency: 32 }),
+    ]);
+    expect([...numbers.map(name => box(name).value), checked('whole_cells_only')]).toEqual(['32.0', '16.000', '-120.5', '16384.0', true]);
+    // A key on a number of a Mosaic, by the path of the setting, of the value that it has.
+    bridge.call.mockClear();
+    fireEvent.click(keysOf('offset.y')[1]); await settle();
+    fireEvent.click(keysOf('frequency')[1]); await settle();
+    expect(sent(bridge)).toEqual([
+      [{ op: 'splice_fusion_keys', ...AT, path: 'n7.offset.y', at: 0, remove: 0, keys: [{ frame: 0, value: 16384, interp: 'linear' }] }],
+      [{ op: 'splice_fusion_keys', ...AT, path: 'n7.frequency', at: 0, remove: 0, keys: [{ frame: 0, value: 32, interp: 'linear' }] }],
+    ]);
+    expect([keyedAt('offset.y'), keyedAt('frequency'), keyedAt('aspect')]).toEqual(['true', 'true', undefined]);
+    expect(nodeOf('n7').querySelector('[data-test="node-keyed"]')).not.toBeNull();
+  });
+
+  it('says nothing of a change that changes nothing, and says another refusal at its top', async () => {
+    const { refuse } = await mount(projectOf([timelineOf(effectComp())]));
+    // A value typed and a switch of a Mosaic that the engine takes for no change: neither is a failure.
+    press(card('n7'), M.n7);
+    refuse({ reason: 'empty' });
+    type('frequency', '64'); await settle();
+    toggle('whole_cells_only'); await settle();
+    expect(marked('fusion-inspector-problem')).toBeNull();
+    // Of a Blur: its Blur Size slid and let go where it was, a value typed, its switch and its Filter.
+    press(card('n6'), M.n6);
+    const size = slider('size.x');
+    fireEvent.pointerDown(size);
+    fireEvent.input(size, { target: { value: '20' } }); await settle();
+    fireEvent.change(size, { target: { value: '20' } }); await settle();
+    expect(marked('fusion-inspector-problem')).toBeNull();
+    type('blend', '0.5'); await settle();
+    toggle('lock_xy'); await settle();
+    fireEvent.change(select('filter'), { target: { value: 'box' } }); await settle();
+    expect(marked('fusion-inspector-problem')).toBeNull();
+    refuse({ reason: 'out_of_range' });
+    type('blend', '0.25'); await settle();
+    expect(marked('fusion-inspector-problem')!.textContent).toContain(en.hint.studio.edit.out_of_range);
+  });
+});
+
+describe('a Blur and a Mosaic in the Spline Editor of the Fusion page', () => {
+  const listed = () => [...document.querySelectorAll<HTMLElement>('[data-test="fusion-curves"] li[data-curve]')].map(each => each.dataset.curve);
+  const named = (curve: string) => one(`[data-test="fusion-curves"] li[data-curve="${curve}"]`).textContent ?? '';
+
+  it('lists the settings of each by the names of the Inspector, the Blur Size of a Blur as one while its X and Y are locked', async () => {
+    await mount(projectOf([timelineOf(effectComp())]));
+    press(card('n6'), M.n6);
+    fireEvent.click(marked('toggle-spline')!);
+    // Locked: the size down is kept and not read, so it is not listed, and the size across is the Blur Size.
+    expect(listed()).toEqual(['n6.size.x', 'n6.blend']);
+    expect([named('n6.size.x').includes('Blur Size'), named('n6.size.x').includes('X Blur Size'), named('n6.blend').includes('Blend')]).toEqual([true, false, true]);
+    // Unlocked: the two sizes, named apart.
+    fireEvent.click(row('lock_xy').querySelector('input')!); await settle();
+    expect(listed()).toEqual(['n6.size.x', 'n6.size.y', 'n6.blend']);
+    expect([named('n6.size.x').includes('X Blur Size'), named('n6.size.y').includes('Y Blur Size')]).toEqual([true, true]);
+    // A key on the size down, and locked again: the keys are kept, so the setting is listed still, with those that have keys first.
+    fireEvent.click(keysOf('size.y')[1]); await settle();
+    fireEvent.click(row('lock_xy').querySelector('input')!); await settle();
+    expect(listed()).toEqual(['n6.size.y', 'n6.size.x', 'n6.blend']);
+    expect([named('n6.size.y').includes('Y Blur Size'), named('n6.size.x').includes('X Blur Size')]).toEqual([true, false]);
+    // A Mosaic has no keys: its settings are listed all the same, for a key to be put on one.
+    press(card('n7'), M.n7);
+    const settings = ['frequency', 'aspect', 'offset.x', 'offset.y'];
+    expect(listed()).toEqual(settings.map(path => `n7.${path}`));
+    const names = ['Pixel Frequency', 'Aspect', 'X Offset', 'Y Offset'];
+    expect(settings.map((path, index) => named(`n7.${path}`).includes(names[index]))).toEqual(settings.map(() => true));
+    // None chosen: what has keys, of every node, each named with its node.
+    press(canvas(), { x: 590, y: 290 });
+    expect(listed()).toEqual(['n6.size.y']);
+    expect(named('n6.size.y')).toContain('Blur 1 · Y Blur Size');
   });
 });
 

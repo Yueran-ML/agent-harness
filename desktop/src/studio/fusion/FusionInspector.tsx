@@ -4,8 +4,8 @@ import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import { COMPOSITES } from '../color/nodeEdits';
 import {
-  EngineError, type Clip, type Composite, type FusionFillMethod, type FusionMaskCommon, type FusionNode, type FusionPaintMode, type Media, type Op, type Param,
-  type Timeline,
+  EngineError, type Clip, type Composite, type FusionBlurFilter, type FusionFillMethod, type FusionMaskCommon, type FusionNode, type FusionPaintMode, type Media,
+  type Op, type Param, type Timeline,
 } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { keyAt, keyFrameOf } from '../inspector/clipKeys';
@@ -27,6 +27,10 @@ interface Shape { digits: number; scrub: number; unit?: string; slider?: { min: 
 /** The ways that a mask is combined with the mask that comes into it, and the ways that a Polygon is filled, as the engine names them. */
 const PAINT_MODES: readonly FusionPaintMode[] = ['merge', 'add', 'subtract'];
 const FILLS: readonly FusionFillMethod[] = ['alternate', 'non_zero_winding'];
+/** The filters of a Blur, as the engine names them. */
+const FILTERS: readonly FusionBlurFilter[] = ['gaussian', 'box'];
+/** The switches of the nodes, which take no keys: each a field of the `params` of its node. */
+type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy' | 'whole_cells_only';
 
 /**
  * How each kind of setting is shown, by its unit in the catalog. A place is a share of the picture,
@@ -35,6 +39,13 @@ const FILLS: readonly FusionFillMethod[] = ['alternate', 'non_zero_winding'];
  * way to one the other; a number of a point of a Polygon has no slider, so that a list of points
  * stays short; an angle is in degrees, with a slider of one turn; a size has a slider up to five
  * times; every other setting is a number from 0 to 1.
+ *
+ * The settings of a Blur and of a Mosaic have ranges far wider than what is used day by day, so the
+ * slider of each is over that part and the field takes the rest (`NumberField` keeps the two
+ * apart): a Blur Size, in pixels of a picture 1080 high, has a slider to 100, as Fusion's has, of
+ * its 500; the Pixel Frequency of a Mosaic one from 1 to 256 of its 16384; its Aspect one from a
+ * quarter to four times of its sixteenth to sixteen; and an offset of its grid, in pixels of the
+ * picture either way, is a field alone, since a slider of 16384 pixels each way would set nothing.
  */
 function shapeOf(setting: FusionSetting): Shape {
   if (isPointSetting(setting)) return { digits: 3, scrub: 0.002 };
@@ -43,6 +54,10 @@ function shapeOf(setting: FusionSetting): Shape {
     return { digits: 3, scrub: 0.002, slider: { min: least, max: 1, step: 0.001 } };
   }
   if (setting.unit === 'degrees_counterclockwise') return { digits: 1, scrub: 0.5, unit: '°', slider: { min: -180, max: 180, step: 0.1 } };
+  if (setting.unit === 'pixels1080') return { digits: 1, scrub: 0.1, slider: { min: 0, max: 100, step: 0.1 } };
+  if (setting.unit === 'pixels') return { digits: 1, scrub: 1, unit: 'px' };
+  if (setting.path === 'frequency') return { digits: 1, scrub: 0.5, slider: { min: 1, max: 256, step: 1 } };
+  if (setting.path === 'aspect') return { digits: 3, scrub: 0.005, slider: { min: 0.25, max: 4, step: 0.01 } };
   if (setting.path === 'size') return { digits: 3, scrub: 0.005, slider: { min: 0, max: 5, step: 0.01 } };
   return { digits: 3, scrub: 0.005, slider: { min: setting.bounds.low, max: setting.bounds.high, step: 0.001 } };
 }
@@ -73,6 +88,13 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  *   the list is set whole, and the points that stay keep their keys). A polygon takes no more than
  *   128 points, and the page takes none away below three, which are the fewest that make a shape.
  *   Lengths are written as the engine counts them, in widths and heights of the picture;
+ * - a Blur (Reference Manual 20, Ch. 93): Filter, Lock X/Y, Blur Size and Blend. While its X and Y
+ *   are locked the Blur Size is one number, the `size.x` of the node, which the engine blurs across
+ *   and down by; unlocked it is two, X Blur Size and Y Blur Size. Lock X/Y sets the switch and
+ *   nothing else: the `size.y` of the node is kept as it is, and read again once it is unlocked;
+ * - a Mosaic (the Mosaic Blur of Resolve FX, p. 3465): Pixel Frequency, Aspect, X Offset and
+ *   Y Offset, and Whole Cells Only, which says where the pointer rests on it that it needs an
+ *   effect mask;
  * - a MediaIn and a MediaOut: nothing but the name.
  *
  * Every number has the three buttons of keys beside it (to the key before, a key put or taken away
@@ -188,8 +210,11 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     </Fragment>;
   };
 
-  /** A switch of the node that takes no keys: a flip of a Transform, the Invert and the Solid of a mask. */
-  const flag = (field: 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid', label: string, checked: boolean) => <div className="inspector-row" data-field={field}>
+  /**
+   * A switch of the node that takes no keys: a flip of a Transform, the Invert and the Solid of a mask, the Lock X/Y of a Blur
+   * and the Whole Cells Only of a Mosaic. `title` says more of it where the pointer rests on it.
+   */
+  const flag = (field: Flag, label: string, checked: boolean, title?: string) => <div className="inspector-row" data-field={field} title={title}>
     <label htmlFor={`${flipId}-${field}`} className="inspector-label fusion-flag-label">{label}</label>
     <span className="inspector-value">
       <input id={`${flipId}-${field}`} type="checkbox" checked={checked}
@@ -318,6 +343,27 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
           {number(pointPath(index, 'y'), numbered(settings.pointY, index))}
         </li>)}
       </ol>
+    </>;
+  } else if (node.kind === 'blur') {
+    const locked = node.params.lock_xy;
+    body = <>
+      <ChoiceField<FusionBlurFilter> name="filter" label={settings.filter} value={node.params.filter}
+        options={FILTERS.map(each => ({ value: each, label: labels.filters[each] }))}
+        onCommit={filter => void commit(build((found, _keyFrame, where) => (found.kind === 'blur' && found.params.filter !== filter
+          ? [{ op: 'set_fusion_node', ...where, id: found.id, params: { filter } }] : [])))} />
+      {flag('lock_xy', settings.lockXY, locked)}
+      {/* Locked, the one Blur Size is `size.x`, which the engine blurs across and down by; `size.y` is kept and not shown. */}
+      {number('size.x', locked ? settings.blurSize : settings.blurSizeX)}
+      {!locked && number('size.y', settings.blurSizeY)}
+      {number('blend', settings.blend)}
+    </>;
+  } else if (node.kind === 'mosaic') {
+    body = <>
+      {number('frequency', settings.pixelFrequency)}
+      {number('aspect', settings.aspect)}
+      {number('offset.x', settings.offsetX)}
+      {number('offset.y', settings.offsetY)}
+      {flag('whole_cells_only', settings.wholeCellsOnly, node.params.whole_cells_only, said.wholeCells)}
     </>;
   } else {
     body = <p className="caption" data-test="fusion-no-settings">{said.noSettings}</p>;

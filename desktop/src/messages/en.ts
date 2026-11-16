@@ -878,6 +878,8 @@ export const en = {
         resetComposition: 'Reset Fusion Composition', removeComposition: 'Remove Composition', nodeName: 'Name',
         /** The group of the masks in the tool bar of the node editor. */
         masks: 'Masks',
+        /** The group of the effects on a picture in the tool bar of the node editor: a Blur and a Mosaic. */
+        effects: 'Effects',
         settings: {
           apply: 'Apply Mode', operator: 'Operator', over: 'Over', subtractiveAdditive: 'Subtractive - Additive', alphaGain: 'Alpha Gain', burnIn: 'Burn In',
           blend: 'Blend', centerX: 'Center X', centerY: 'Center Y', size: 'Size', angle: 'Angle', flipHorizontal: 'Flip Horizontal',
@@ -886,11 +888,19 @@ export const en = {
           level: 'Level', softEdge: 'Soft Edge', borderWidth: 'Border Width', paintMode: 'Paint Mode', invert: 'Invert', solid: 'Solid',
           width: 'Width', height: 'Height', cornerRadius: 'Corner Radius', fill: 'Fill Method',
           points: 'Points', point: 'Point {n}', pointX: 'Point {n} X', pointY: 'Point {n} Y', addPoint: 'Add Point', removePoint: 'Remove Point',
+          /**
+           * The controls of a Blur (Reference Manual 20, Chapter 93): its Blur Size is one number while its X and Y are locked, and
+           * two when they are not. And those of a Mosaic (the Mosaic Blur of Resolve FX, p. 3465).
+           */
+          filter: 'Filter', lockXY: 'Lock X/Y', blurSize: 'Blur Size', blurSizeX: 'X Blur Size', blurSizeY: 'Y Blur Size',
+          pixelFrequency: 'Pixel Frequency', aspect: 'Aspect', offsetX: 'X Offset', offsetY: 'Y Offset', wholeCellsOnly: 'Whole Cells Only',
         },
         /** How a mask is combined with the mask that comes into it. */
         paintModes: { merge: 'Merge', add: 'Add', subtract: 'Subtract' },
         /** Which regions of a Polygon are inside it. */
         fills: { alternate: 'Alternate', non_zero_winding: 'Non Zero Winding' },
+        /** How a Blur takes the pixels about each one. */
+        filters: { gaussian: 'Gaussian', box: 'Box' },
       },
       /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
       colorPage: {
@@ -1801,6 +1811,8 @@ export const en = {
         noCurves: 'No setting has keyframes yet. Select a node to see the curves of its settings.',
         /** A Polygon of fewer than three points is a mask of nothing. */
         fewPoints: 'A polygon needs three points at least to be a mask.',
+        /** What Whole Cells Only of a Mosaic does, said where the pointer rests on it. */
+        wholeCells: 'Only the cells that the effect mask covers whole are shown as cells. With no effect mask linked, this changes nothing.',
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

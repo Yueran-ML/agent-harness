@@ -25,21 +25,41 @@ export function settingNames(labels: SettingLabels): Record<string, string> {
     'color.r': labels.red, 'color.g': labels.green, 'color.b': labels.blue, 'color.a': labels.alpha,
     level: labels.level, soft_edge: labels.softEdge, border_width: labels.borderWidth,
     width: labels.width, height: labels.height, corner_radius: labels.cornerRadius,
+    // A Blur, whose two sizes are named apart (but see `settingLabel`), and a Mosaic.
+    'size.x': labels.blurSizeX, 'size.y': labels.blurSizeY,
+    frequency: labels.pixelFrequency, aspect: labels.aspect, 'offset.x': labels.offsetX, 'offset.y': labels.offsetY,
   };
 }
 
+/** Whether a Blur has its X and Y locked: its `size.x` is its one Blur Size then, and its `size.y` is kept and not read. */
+const lockedBlur = (node: FusionNode | undefined): boolean => node !== undefined && node.kind === 'blur' && node.params.lock_xy === true;
+
+/** Whether a node keeps a setting and does not read it: the Blur Size down of a Blur whose X and Y are locked. */
+const unread = (node: FusionNode, setting: FusionSetting): boolean => setting.path === 'size.y' && lockedBlur(node);
+
 /**
  * The name of a setting by its path, as the Inspector writes it: a number of a point of a Polygon
- * with the number of its point, from 1 (`points.2.x` is Point 3 X); a path that has no name, as it is.
+ * with the number of its point, from 1 (`points.2.x` is Point 3 X); the `size.x` of a Blur (`node`)
+ * whose X and Y are locked, which is its one Blur Size; a path that has no name, as it is.
  */
-export function settingLabel(labels: SettingLabels, path: string): string {
+export function settingLabel(labels: SettingLabels, path: string, node?: FusionNode): string {
   const point = /^points\.(\d+)\.(x|y)$/.exec(path);
   if (point) return numbered(point[2] === 'x' ? labels.pointX : labels.pointY, Number(point[1]));
+  if (path === 'size.x' && lockedBlur(node)) return labels.blurSize;
   return settingNames(labels)[path] ?? path;
 }
 
-/** How the values of a setting are written beside the graph: an angle in degrees, every other setting as the number that it is. */
-const displayOf = (setting: FusionSetting): CurveDisplay => (setting.unit === 'degrees_counterclockwise' ? { factor: 1, unit: '°', digits: 1 } : { factor: 1, unit: '', digits: 3 });
+/**
+ * How the values of a setting are written beside the graph: an angle in degrees, a Blur Size to a
+ * tenth as the Inspector writes it, an offset of a Mosaic in pixels, every other setting as the
+ * number that it is.
+ */
+function displayOf(setting: FusionSetting): CurveDisplay {
+  if (setting.unit === 'degrees_counterclockwise') return { factor: 1, unit: '°', digits: 1 };
+  if (setting.unit === 'pixels1080') return { factor: 1, unit: '', digits: 1 };
+  if (setting.unit === 'pixels') return { factor: 1, unit: 'px', digits: 1 };
+  return { factor: 1, unit: '', digits: 3 };
+}
 
 /** A setting of a node that the editor draws, with the node and the setting that its curve is of. */
 interface Drawn { curve: Curve; node: FusionNode; setting: FusionSetting }
@@ -53,7 +73,9 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * the Curve Editor of the Edit page (`CurveEditor`) on the settings of the nodes of the current
  * clip's composition, over the frames that their keys count. With one node chosen it lists every
  * setting of that node that takes keys, those with keys first (of the points of a Polygon, which
- * may be many, only the numbers that have keys: a key is put on one in the Inspector); with none or
+ * may be many, only the numbers that have keys: a key is put on one in the Inspector; and the Blur
+ * Size down of a Blur whose X and Y are locked, which the node does not read, only where it has
+ * keys, its Blur Size across being named Blur Size as the Inspector names it); with none or
  * several chosen, the settings of every node that have keys, each named with its node.
  *
  * A drag of keys or of a handle is one gesture: each move sets the setting whole with
@@ -89,17 +111,18 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
   const dragging = useRef(false);
   const at: FusionAt = { timeline: timeline.id, clip: clip.id };
 
-  const settingName = (path: string) => settingLabel(labels.settings, path);
-  // One node chosen: all that it has, but of the points of a Polygon, which may be many, those that have keys. Else what has keys, of every node.
+  const settingName = (owner: FusionNode, path: string) => settingLabel(labels.settings, path, owner);
+  // One node chosen: all that it has, but of the points of a Polygon, which may be many, and of what the node does not read (the
+  // Blur Size down of a Blur whose X and Y are locked), those that have keys. Else what has keys, of every node.
   const of = node !== null ? [node] : composition.nodes;
   const drawn: Drawn[] = of.flatMap(each => settingsOf(each)
-    .filter(setting => (node !== null && !isPointSetting(setting)) || typeof paramOf(each, setting) === 'object')
+    .filter(setting => (node !== null && !isPointSetting(setting) && !unread(each, setting)) || typeof paramOf(each, setting) === 'object')
     .map(setting => ({ node: each, setting })))
     .map(({ node: each, setting }, index): Drawn => ({
       node: each, setting,
       curve: {
         id: pathOf(each, setting), color: CURVE_COLORS[index % CURVE_COLORS.length], param: paramOf(each, setting), bounds: setting.bounds, display: displayOf(setting),
-        label: node !== null ? settingName(setting.path) : `${names.get(each.id) ?? each.id} · ${settingName(setting.path)}`,
+        label: node !== null ? settingName(each, setting.path) : `${names.get(each.id) ?? each.id} · ${settingName(each, setting.path)}`,
       },
     }));
   const byId = new Map(drawn.map(each => [each.curve.id, each]));

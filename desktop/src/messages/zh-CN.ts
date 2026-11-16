@@ -750,6 +750,7 @@ export const zhCN: Messages = {
         output: '输出', passThrough: '直通', passedThrough: '已直通', rename: '重命名',
         resetComposition: '重置 Fusion 合成', removeComposition: '移除合成', nodeName: '名称',
         masks: '遮罩',
+        effects: '特效',
         settings: {
           apply: '应用模式', operator: '运算符', over: '覆盖', subtractiveAdditive: '减法 - 加法', alphaGain: 'Alpha 增益', burnIn: '加深',
           blend: '混合', centerX: '中心 X', centerY: '中心 Y', size: '大小', angle: '角度', flipHorizontal: '水平翻转',
@@ -757,9 +758,12 @@ export const zhCN: Messages = {
           level: '级别', softEdge: '柔边', borderWidth: '边框宽度', paintMode: '绘制模式', invert: '反转', solid: '实心',
           width: '宽度', height: '高度', cornerRadius: '圆角半径', fill: '填充方式',
           points: '点', point: '第 {n} 点', pointX: '第 {n} 点 X', pointY: '第 {n} 点 Y', addPoint: '添加点', removePoint: '移除点',
+          filter: '滤镜', lockXY: '锁定 X/Y', blurSize: '模糊大小', blurSizeX: 'X 模糊大小', blurSizeY: 'Y 模糊大小',
+          pixelFrequency: '像素频率', aspect: '宽高比', offsetX: 'X 偏移', offsetY: 'Y 偏移', wholeCellsOnly: '仅完整单元格',
         },
         paintModes: { merge: '合并', add: '相加', subtract: '相减' },
         fills: { alternate: '交替', non_zero_winding: '非零环绕' },
+        filters: { gaussian: '高斯', box: '方框' },
       },
       colorPage: {
         viewerZoom: '检视器缩放', viewerFit: '适合窗口', matching: '正在匹配选中的片段…',
@@ -1563,6 +1567,7 @@ export const zhCN: Messages = {
         noSettings: '这个节点没有自己的设置。',
         noCurves: '还没有设置带关键帧。选中一个节点，查看它各项设置的曲线。',
         fewPoints: '多边形至少要有三个点，才能成为遮罩。',
+        wholeCells: '只有被效果遮罩完全覆盖的单元格才显示为马赛克。没有连接效果遮罩时，这个开关不起作用。',
       },
       colorPage: {
         noClip: '播放头处没有片段。',

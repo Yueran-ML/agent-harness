@@ -799,6 +799,7 @@ export const ja: Messages = {
         output: '出力', passThrough: 'パススルー', passedThrough: 'パススルー中', rename: '名前を変更',
         resetComposition: 'Fusion コンポジションをリセット', removeComposition: 'コンポジションを削除', nodeName: '名前',
         masks: 'マスク',
+        effects: 'エフェクト',
         settings: {
           apply: '適用モード', operator: 'オペレーター', over: 'オーバー', subtractiveAdditive: '減算 - 加算', alphaGain: 'アルファゲイン', burnIn: 'バーンイン',
           blend: 'ブレンド', centerX: '中心 X', centerY: '中心 Y', size: 'サイズ', angle: '角度', flipHorizontal: '左右反転',
@@ -806,9 +807,12 @@ export const ja: Messages = {
           level: 'レベル', softEdge: 'ソフトエッジ', borderWidth: 'ボーダー幅', paintMode: 'ペイントモード', invert: '反転', solid: 'ソリッド',
           width: '幅', height: '高さ', cornerRadius: '角の半径', fill: '塗りつぶし方法',
           points: 'ポイント', point: 'ポイント {n}', pointX: 'ポイント {n} X', pointY: 'ポイント {n} Y', addPoint: 'ポイントを追加', removePoint: 'ポイントを削除',
+          filter: 'フィルター', lockXY: 'X/Y をロック', blurSize: 'ブラーサイズ', blurSizeX: 'X ブラーサイズ', blurSizeY: 'Y ブラーサイズ',
+          pixelFrequency: 'ピクセル周波数', aspect: 'アスペクト', offsetX: 'X オフセット', offsetY: 'Y オフセット', wholeCellsOnly: '完全なセルのみ',
         },
         paintModes: { merge: 'マージ', add: '加算', subtract: '減算' },
         fills: { alternate: '交互', non_zero_winding: '非ゼロワインディング' },
+        filters: { gaussian: 'ガウス', box: 'ボックス' },
       },
       colorPage: {
         viewerZoom: 'ビューアのズーム', viewerFit: '全体を表示', matching: '選択したクリップをマッチしています…',
@@ -1642,6 +1646,7 @@ export const ja: Messages = {
         noSettings: 'このノードには固有の設定がありません。',
         noCurves: 'キーフレームのある設定はまだありません。ノードを選択すると、その設定のカーブが表示されます。',
         fewPoints: 'ポリゴンは、ポイントが 3 つ以上ないとマスクになりません。',
+        wholeCells: 'エフェクトマスクが全体を覆っているセルだけがモザイクになります。エフェクトマスクが接続されていないときは、何も変わりません。',
       },
       colorPage: {
         noClip: '再生ヘッドの位置にクリップがありません。',

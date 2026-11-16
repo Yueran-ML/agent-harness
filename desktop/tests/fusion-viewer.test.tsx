@@ -143,13 +143,21 @@ function fakeEngine(given: Project) {
 }
 const tab = (name: string) => screen.getByRole('tab', { name });
 const open = async (name: string) => { fireEvent.click(tab(name)); await settle(); await draw(); await settle(); };
-/** The studio on its engine, on the Fusion page. */
-async function mount(project: Project = projectOf()) {
+/** The studio on its engine, on the Fusion page unless the test goes there itself. */
+async function mount(project: Project = projectOf(), page: 'Fusion' | null = 'Fusion') {
   const engine = fakeEngine(project);
   render(<Studio cwd="F:/film" engine={{ ...engine, native: true }} language="en" onClose={() => {}} />);
   await settle();
-  await open('Fusion');
+  if (page) await open(page);
   return engine;
+}
+/** Go to the Edit page and choose a clip there, by a press on it in the timeline. */
+async function chooseOnEdit(id: string) {
+  await open('Edit');
+  const picture = document.querySelector<HTMLElement>(`[data-clip="${id}"]`)!;
+  fireEvent.pointerDown(picture, { button: 0, pointerId: 1, clientX: 400, clientY: 120 });
+  fireEvent.pointerUp(picture, { button: 0, pointerId: 1, clientX: 400, clientY: 120 });
+  await settle();
 }
 
 interface Sent { ops: unknown[]; revision?: number; gesture?: { id: string; end?: boolean } }
@@ -244,6 +252,66 @@ describe('the Fusion view of the timeline monitor', () => {
     // Off already, it is not turned off again as the page is left.
     await open('Media');
     expect(views(bridge)).toHaveLength(4);
+  });
+});
+
+describe('the playhead as the Fusion page comes to show a clip that it does not lie on', () => {
+  const seeks = (bridge: Calls) => calls(bridge, 'transport.seek');
+  const clipShown = () => marked('fusion-clip-name')!.dataset.clip;
+
+  it('goes to the first frame of the clip chosen on the Edit page, once, before the view of that clip is asked for', async () => {
+    const { bridge, notify } = await mount(projectOf(), null);
+    // The playhead stands at frame 0, on c1; c2 begins at frame 100.
+    await chooseOnEdit('c2');
+    bridge.call.mockClear();
+    await open('Fusion');
+    expect(clipShown()).toBe('c2');
+    expect(seeks(bridge)).toEqual([{ monitor: 'timeline', frame: 100, scrubbing: false }]);
+    // The view is asked for the clip chosen alone, and after the playhead was sent to it.
+    expect(views(bridge)).toEqual([{ clip: 'c2' }]);
+    const asked = bridge.call.mock.calls.map(([method]) => method);
+    expect(asked.indexOf('transport.seek')).toBeLessThan(asked.indexOf('viewer.fusion'));
+    // Once for the pin: the playhead moved off the clip afterwards is left where it is, and the clip under it is the one shown.
+    await notify({ frame: 20, shown: 20 }); await settle();
+    expect(clipShown()).toBe('c1');
+    await notify({ frame: 120, shown: 120 }); await settle();
+    expect(clipShown()).toBe('c2');
+    expect(seeks(bridge)).toHaveLength(1);
+    expect(views(bridge)).toEqual([{ clip: 'c2' }, { clip: 'c1' }, { clip: 'c2' }]);
+  });
+
+  it('is left where it is where it lies on the clip chosen already', async () => {
+    const { bridge } = await mount(projectOf(), null);
+    await chooseOnEdit('c1');
+    bridge.call.mockClear();
+    await open('Fusion');
+    expect(clipShown()).toBe('c1');
+    expect(seeks(bridge)).toEqual([]);
+    expect(views(bridge)).toEqual([{ clip: 'c1' }]);
+  });
+
+  it('is not moved while the timeline plays, nor once it has stopped', async () => {
+    const { bridge, notify } = await mount(projectOf(), null);
+    await chooseOnEdit('c2');
+    await notify({ playing: true }); await settle();
+    bridge.call.mockClear();
+    await open('Fusion');
+    // The clip chosen is shown until the playhead moves; then the clip under the playhead, as it plays.
+    expect(clipShown()).toBe('c2');
+    await notify({ frame: 1, shown: 1 }); await settle();
+    expect(clipShown()).toBe('c1');
+    await notify({ playing: false }); await settle();
+    expect(seeks(bridge)).toEqual([]);
+    expect(views(bridge)).toEqual([{ clip: 'c2' }, { clip: 'c1' }]);
+  });
+
+  it('is sent once by Next, which goes to the clip itself, and not again for the clip that it pins', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    fireEvent.click(marked('fusion-next-clip')!); await settle();
+    expect(clipShown()).toBe('c2');
+    expect(seeks(bridge)).toEqual([{ monitor: 'timeline', frame: 100, scrubbing: false }]);
+    expect(views(bridge)).toEqual([{ clip: 'c2' }]);
   });
 });
 

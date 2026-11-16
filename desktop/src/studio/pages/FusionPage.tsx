@@ -91,7 +91,9 @@ interface Props {
  *
  * The clip is the one at the playhead on the topmost enabled video track, or the one clip of
  * picture chosen on the Edit page (`fusionClip`); the bar names it, and goes to the clip before and
- * after it. Where there is none, the page says so. Another timeline, or another engine, begins
+ * after it. A clip chosen on the Edit page that the playhead does not lie on has the playhead taken
+ * to its first frame as the page is entered, as Previous and Next take it, so that the viewer has
+ * its picture to show; but not while the timeline plays. Where there is none, the page says so. Another timeline, or another engine, begins
  * anew: nothing chosen of the one before is kept. A clip on a locked track is shown, and nothing of
  * its composition is changed: the node editor, the Inspector and the Spline Editor are told so.
  */
@@ -147,6 +149,30 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
     ? composition.nodes.find(each => each.id === selection.current) ?? null : null;
   const names = useMemo(() => (composition === null ? new Map<string, string>() : namesOf(composition, labels.kinds)), [composition, labels.kinds]);
 
+  const seek = timelineMonitor.seek;
+  /** Go to a clip: it is the one shown, and the playhead goes to its first frame. */
+  const go = useCallback((to: ColorClip | null) => {
+    if (to === null) return;
+    pinnedAt.current = to.clip.start;
+    setPin(to.clip.id);
+    seek(to.clip.start, false);
+  }, [seek]);
+  // A clip pinned that the playhead does not lie on (the one chosen on the Edit page, as the page is entered): the playhead goes to
+  // its first frame, as Previous and Next take it there, so that the viewer has the picture of the clip to show. Once for each
+  // pin, when the frame of the playhead is first known, and before the view of the clip is asked for; and not while the timeline
+  // plays, which is not stopped for it: the clip under the playhead is the one shown then, as soon as the playhead has moved.
+  const sought = useRef<string | null>(null);
+  const frameKnown = frame !== null;
+  const playingNow = timelineState?.playing ?? false;
+  useEffect(() => {
+    if (pin === null || frame === null || sought.current === pin) return;
+    const pinned = shown.find(each => each.clip.id === pin) ?? null;
+    if (pinned === null) return;
+    sought.current = pin;
+    if (playingNow || covers(pinned.clip, frame)) return;
+    go(pinned);
+  }, [pin, frameKnown, go]);
+
   // The node that the viewer shows, of the composition of a clip: another clip begins with what comes out of its composition, and
   // a node that is taken away, or the MediaOut, is the output too.
   const [viewing, setViewing] = useState<{ clip: string; node: string } | null>(null);
@@ -182,14 +208,6 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
     return () => window.removeEventListener('keydown', down);
   }, [step]);
 
-  const seek = timelineMonitor.seek;
-  /** Go to a clip: it is the one shown, and the playhead goes to its first frame. */
-  const go = useCallback((to: ColorClip | null) => {
-    if (to === null) return;
-    pinnedAt.current = to.clip.start;
-    setPin(to.clip.id);
-    seek(to.clip.start, false);
-  }, [seek]);
   const before = stepClip(shown, current, frame ?? 0, -1);
   const after = stepClip(shown, current, frame ?? 0, 1);
 

@@ -272,7 +272,7 @@ describe('the clip of the Fusion page', () => {
     fireEvent.pointerUp(picture, { button: 0, pointerId: 1, clientX: 400, clientY: 120 });
     await settle();
     await open('Fusion');
-    // The playhead stands at frame 0, where c1 is; the clip chosen is shown all the same.
+    // The playhead stood at frame 0, where c1 is; the clip chosen is shown all the same, and the playhead is taken to its first frame.
     expect(clipShown().dataset.clip).toBe('c3');
     await notify({ frame: 10, shown: 10 });
     expect(clipShown().dataset.clip).toBe('c1');

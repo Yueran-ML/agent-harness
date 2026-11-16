@@ -46,14 +46,18 @@
 //!   of one colour each ([`Mosaic`]).
 //! - `rectangle`, `ellipse` and `polygon`, one input each, `mask`: the masks ([`Rectangle`],
 //!   [`Ellipse`], [`Polygon`]; see Masks below).
+//! - `delta_keyer`, the inputs `input`, `garbage_matte` and `solid_matte`, and its effect
+//!   mask, `mask`: its picture keyed, the screen that it was shot against made transparent
+//!   ([`DeltaKeyer`]; see The Delta Keyer below).
 //!
 //! An input that is not linked gives no picture: a transparent one of the size of the
-//! composition; but a `mask` that is not linked is no mask at all (see Masks). A node that is
+//! composition; but a `mask` that is not linked is no mask at all (see Masks), and a
+//! `garbage_matte` or a `solid_matte` that is not linked is no matte. A node that is
 //! passed through (Fusion's Pass Through, Ctrl-P) hands on the picture of its first input as
-//! it is ([`Kind::through`]): a Merge its background, a Transform, a Blur and a Mosaic their
-//! picture, and a mask node the mask that comes into it. A node that has no such input, a
-//! `media_in` or a `background`, then gives none: the effect mask of a node is not a picture
-//! that it hands on.
+//! it is ([`Kind::through`]): a Merge its background, a Transform, a Blur, a Mosaic and a
+//! Delta Keyer their picture, and a mask node the mask that comes into it. A node that has no
+//! such input, a `media_in` or a `background`, then gives none: the effect mask of a node is
+//! not a picture that it hands on, and neither are the mattes of a Delta Keyer.
 //!
 //! # Masks
 //!
@@ -78,8 +82,9 @@
 //!
 //! What a mask does to the node whose `mask` it comes into, which the compositor is held to:
 //!
-//! - A node that has a picture to hand on (a `transform`, a `blur` and a `mosaic`, their
-//!   `input`; a `merge`, its `background`): where the mask is 1 its result is its own, where
+//! - A node that has a picture to hand on (a `transform`, a `blur`, a `mosaic` and a
+//!   `delta_keyer`, their `input`; a `merge`, its `background`): where the mask is 1 its
+//!   result is its own, where
 //!   it is 0 it is the picture of that first input as it came in (transparent where that is
 //!   not linked), and between them the two are mixed by the value of the mask, channel by
 //!   channel: `first + (own − first) · mask`. (A `mosaic` with Whole Cells Only reads its
@@ -123,6 +128,48 @@
 //! a cell is shown only where the mask is 1 over all of it, and every other cell is the
 //! picture as it came in. Without a mask every cell is shown, and Whole Cells Only changes
 //! nothing.
+//!
+//! # The Delta Keyer
+//!
+//! A Delta Keyer is Fusion's keyer of green and blue screens (Reference Manual 20,
+//! pp. 2440–2448, and its use pp. 1664–1668), with the controls of its Key, Matte and Fringe
+//! tabs that the mathematics of the keyer of the compositor has. Its settings are those of
+//! that mathematics, by the same names, in the same units, within the same ranges and with
+//! the same values at first; what each makes of a pixel is told there. The tabs of the
+//! advanced tier (Pre Matte, Tuning, the shape and the colour of the fringe) are not kept.
+//!
+//! What is done to the picture that comes into `input`, in this order:
+//!
+//! 1. **The key.** The picture, blurred by Pre-Blur where that is above 0, is compared with
+//!    the screen colour (Background Color), by Gain and Balance: the pre-matte, 1 where the
+//!    picture is kept and 0 where it is the screen.
+//! 2. **The matte.** The pre-matte goes through the thresholds (`low` and `high`), then
+//!    Erode/Dilate, then the Matte Blur, then Clean Foreground and Clean Background.
+//! 3. **The mattes that come in.** Where the solid matte is 1 the matte is made 1, and then
+//!    where the garbage matte is 1 the matte is made 0: the garbage matte wins where both are
+//!    1 (ours). With `garbage_invert` the garbage matte is read the other way round.
+//! 4. **The result.** The screen is taken from the picture by the pre-matte, the spill is
+//!    suppressed by Spill Method and Spill Suppression, and what the matte gave back is
+//!    filled as Replace Mode says. The alpha is the matte.
+//! 5. **The view.** `view` says what comes out: the pre-matte, the matte (as it is before the
+//!    solid and garbage mattes), the status or the final result. It is a setting of the node,
+//!    kept with the project, as Fusion keeps it.
+//!
+//! A `garbage_matte` and a `solid_matte` read the alpha of the picture that is linked to
+//! them, as a `mask` does, whatever made it; one that is not linked, or whose link brings no
+//! picture, is not there, and `garbage_invert` of no garbage matte is nothing. The effect
+//! mask limits the node as it limits every node that hands a picture on.
+//!
+//! The lengths are counted as those of a Blur are: Pre-Blur and Matte Blur are the standard
+//! deviations of Gaussians, and Erode/Dilate the radius of a box, in pixels of a picture 1080
+//! pixels high. Erode/Dilate below 0 takes from the matte (erodes) and above 0 adds to it
+//! (dilates).
+//!
+//! Two things are checked of numbers that have no keys, since keys cannot be checked at
+//! every frame. The screen colour is to have one channel above its other two by
+//! [`LEAST_DOMINANCE`]: with keys, at a frame where it has none the keyer keys nothing, and
+//! every pixel is kept. And `low` is to be at most `high`: with keys, at a frame where they
+//! have crossed the matte is a step at `low`, solid above it and transparent at it and below.
 //!
 //! # Coordinates
 //!
@@ -236,14 +283,45 @@ pub mod bounds {
     /// X Offset and Y Offset of a Mosaic (p. 3465), in pixels of the picture: none at first;
     /// as far either way as the widest picture is wide.
     pub const MOSAIC_OFFSET: Bounds = Bounds::new(0.0, -16_384.0, 16_384.0);
+    /// The red and the blue of the Background Color of a Delta Keyer (p. 2443), the colour of
+    /// the screen: none at first; from 0 to the largest value that a picture holds. Those of
+    /// the mathematics of the keyer of the compositor, which is held to them, as the others of
+    /// a Delta Keyer are.
+    pub const KEYER_SCREEN: Bounds = Bounds::new(0.0, 0.0, 65_504.0);
+    /// The green of the Background Color of a Delta Keyer: 1 at first, a pure green screen.
+    pub const KEYER_SCREEN_GREEN: Bounds = Bounds::new(1.0, 0.0, 65_504.0);
+    /// Gain of a Delta Keyer (p. 2443): 1 at first; 0 keys nothing.
+    pub const KEYER_GAIN: Bounds = Bounds::new(1.0, 0.0, 10.0);
+    /// Balance of a Delta Keyer (p. 2443): a half at first; from 0, the lesser of the other
+    /// two channels, to 1, the greater.
+    pub const KEYER_BALANCE: Bounds = Bounds::new(0.5, 0.0, 1.0);
+    /// Pre-Blur (p. 2443) and Matte Blur (p. 2445) of a Delta Keyer, in pixels of a picture
+    /// 1080 high: none at first.
+    pub const KEYER_BLUR: Bounds = Bounds::new(0.0, 0.0, 100.0);
+    /// The lower threshold of a Delta Keyer (p. 2445): 0 at first, which leaves the matte as
+    /// the key made it.
+    pub const KEYER_LOW: Bounds = Bounds::new(0.0, 0.0, 1.0);
+    /// The upper threshold of a Delta Keyer (p. 2445): 1 at first.
+    pub const KEYER_HIGH: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// Erode/Dilate of a Delta Keyer (p. 2445), in pixels of a picture 1080 high: none at
+    /// first; below 0 it erodes the matte and above 0 it dilates it.
+    pub const KEYER_ERODE_DILATE: Bounds = Bounds::new(0.0, -100.0, 100.0);
+    /// Clean Foreground and Clean Background of a Delta Keyer (p. 2445): none at first.
+    pub const KEYER_CLEAN: Bounds = Bounds::new(0.0, 0.0, 1.0);
+    /// The red, the green and the blue of the Replace Color of a Delta Keyer (p. 2445): a mid
+    /// grey at first.
+    pub const KEYER_REPLACE_COLOR: Bounds = Bounds::new(0.5, 0.0, 65_504.0);
+    /// Spill Suppression of a Delta Keyer (p. 2446): 1, all that the method takes, at first;
+    /// 0 takes none.
+    pub const KEYER_SPILL_SUPPRESSION: Bounds = Bounds::new(1.0, 0.0, 1.0);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Kinds, inputs and links
 // ---------------------------------------------------------------------------------------------
 
-/// The kinds of node, as they are named in `kind`. Others are to come: the Delta Keyer, the
-/// Tracker and Text+.
+/// The kinds of node, as they are named in `kind`. Others are to come: the Tracker and
+/// Text+.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -268,6 +346,8 @@ pub enum Kind {
     Blur,
     /// A picture laid out in cells of one colour each.
     Mosaic,
+    /// A picture keyed: the screen that it was shot against made transparent.
+    DeltaKeyer,
 }
 
 impl Kind {
@@ -285,12 +365,14 @@ impl Kind {
             Self::Polygon => "polygon",
             Self::Blur => "blur",
             Self::Mosaic => "mosaic",
+            Self::DeltaKeyer => "delta_keyer",
         }
     }
 
     /// The inputs that a node of the kind has: its pictures, and after them its effect mask,
     /// `mask`, which every kind has but `media_in` and `media_out`. A mask node has that one
-    /// alone: the mask that comes into it.
+    /// alone: the mask that comes into it. A Delta Keyer has its two mattes between its
+    /// picture and its mask.
     #[must_use]
     pub fn inputs(self) -> &'static [Input] {
         match self {
@@ -299,6 +381,12 @@ impl Kind {
             Self::Transform | Self::Blur | Self::Mosaic => &[Input::Input, Input::Mask],
             Self::Merge => &[Input::Background, Input::Foreground, Input::Mask],
             Self::Background | Self::Rectangle | Self::Ellipse | Self::Polygon => &[Input::Mask],
+            Self::DeltaKeyer => &[
+                Input::Input,
+                Input::GarbageMatte,
+                Input::SolidMatte,
+                Input::Mask,
+            ],
         }
     }
 
@@ -310,7 +398,9 @@ impl Kind {
     pub fn through(self) -> Option<Input> {
         match self {
             Self::MediaIn | Self::Background => None,
-            Self::MediaOut | Self::Transform | Self::Blur | Self::Mosaic => Some(Input::Input),
+            Self::MediaOut | Self::Transform | Self::Blur | Self::Mosaic | Self::DeltaKeyer => {
+                Some(Input::Input)
+            }
             Self::Merge => Some(Input::Background),
             Self::Rectangle | Self::Ellipse | Self::Polygon => Some(Input::Mask),
         }
@@ -335,16 +425,22 @@ impl Kind {
 #[non_exhaustive]
 pub enum Input {
     /// The one input of a node that has one picture: of `media_out`, of `transform`, of
-    /// `blur` and of `mosaic`.
+    /// `blur` and of `mosaic`; and the picture that a `delta_keyer` keys.
     Input,
     /// The background of a Merge (the orange input of an editor).
     Background,
     /// The foreground of a Merge (the green one).
     Foreground,
+    /// The garbage matte of a `delta_keyer`: where it is 1 the matte is made transparent. It
+    /// reads the alpha of the picture that is linked to it; not linked, it is not there.
+    GarbageMatte,
+    /// The solid matte of a `delta_keyer`: where it is 1 the matte is made solid. It reads
+    /// the alpha of the picture that is linked to it; not linked, it is not there.
+    SolidMatte,
     /// The effect mask of a node (the blue input of an editor): the mask that limits a
-    /// `merge`, a `transform`, a `background`, a `blur` or a `mosaic`, and the mask that
-    /// comes into a mask node. It reads the alpha of the picture that is linked to it; not
-    /// linked, it is no mask.
+    /// `merge`, a `transform`, a `background`, a `blur`, a `mosaic` or a `delta_keyer`, and
+    /// the mask that comes into a mask node. It reads the alpha of the picture that is linked
+    /// to it; not linked, it is no mask.
     Mask,
 }
 
@@ -356,6 +452,8 @@ impl Input {
             Self::Input => "input",
             Self::Background => "background",
             Self::Foreground => "foreground",
+            Self::GarbageMatte => "garbage_matte",
+            Self::SolidMatte => "solid_matte",
             Self::Mask => "mask",
         }
     }
@@ -1368,6 +1466,323 @@ impl Mosaic {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The Delta Keyer
+// ---------------------------------------------------------------------------------------------
+
+/// The least by which one channel of the screen colour of a [`DeltaKeyer`] is above its other
+/// two: that of the mathematics of the keyer of the compositor, which is held to it. Ours.
+pub const LEAST_DOMINANCE: f32 = 1e-4;
+
+/// A colour of a [`DeltaKeyer`]: its red, its green and its blue, each a number or keys. A
+/// channel is from 0, and may be above 1, as a colour of a picture may.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyColor {
+    /// Red.
+    pub r: Param,
+    /// Green.
+    pub g: Param,
+    /// Blue.
+    pub b: Param,
+}
+
+impl KeyColor {
+    /// A colour that is the same on every frame.
+    #[must_use]
+    pub fn new(r: f64, g: f64, b: f64) -> Self {
+        Self {
+            r: r.into(),
+            g: g.into(),
+            b: b.into(),
+        }
+    }
+
+    /// Its red, its green and its blue.
+    fn channels(&self) -> [&Param; 3] {
+        [&self.r, &self.g, &self.b]
+    }
+
+    fn at(&self, frame: f64) -> [f64; 3] {
+        self.channels().map(|channel| channel.value_at(frame))
+    }
+}
+
+/// How strongly a [`DeltaKeyer`] suppresses the spill of its screen (Spill Method, p. 2446),
+/// from the weakest. It is written `"none"`, `"rare"`, `"medium"`, `"well_done"` or
+/// `"burnt"`, and takes no keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpillMethod {
+    /// No spill suppression.
+    None,
+    /// The lightest.
+    Rare,
+    /// The one that the manual gives for green screens. Every Delta Keyer has it at first.
+    #[default]
+    Medium,
+    /// The one that the manual gives for blue screens.
+    WellDone,
+    /// The strongest, for the shots that give the most trouble.
+    Burnt,
+}
+
+/// What fills the part of a pixel that the key of a [`DeltaKeyer`] took away and its matte
+/// gave back (Replace Mode, p. 2445). It is written `"none"`, `"source"`, `"hard_color"` or
+/// `"soft_color"`, and takes no keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplaceMode {
+    /// Nothing.
+    None,
+    /// The colour of the picture itself.
+    Source,
+    /// The Replace Color.
+    HardColor,
+    /// The Replace Color, by how much of the colour of the screen was taken away. Every Delta
+    /// Keyer has it at first.
+    #[default]
+    SoftColor,
+}
+
+/// What comes out of a [`DeltaKeyer`] (View Mode, p. 2442). It is written `"pre_matte"`,
+/// `"matte"`, `"status"` or `"final_result"`, and takes no keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyerView {
+    /// The matte that the key made, before the thresholds: white where the picture is kept.
+    PreMatte,
+    /// The matte, as it is before the solid and the garbage mattes.
+    Matte,
+    /// What is solid, what is transparent, what is in between, and what the matte changed.
+    Status,
+    /// The keyed picture, ready to be laid over another. Every Delta Keyer has it at first.
+    #[default]
+    FinalResult,
+}
+
+/// The settings of a Delta Keyer (pp. 2440–2448): those of the mathematics of the keyer of
+/// the compositor, by the same names, in the order of what is done with them (see the
+/// [module](self), The Delta Keyer).
+///
+/// The screen colour is to have one channel above its other two by [`LEAST_DOMINANCE`], and
+/// `low` is to be at most `high`: both are checked where the numbers have no keys.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeltaKeyer {
+    /// Background Color (p. 2443): the colour of the screen, picked from the picture.
+    pub screen: KeyColor,
+    /// Gain (p. 2443): more of it makes more of what is of the screen colour transparent.
+    pub gain: Param,
+    /// Balance (p. 2443): in what shares the two channels that are not the screen's are
+    /// compared with it, from 0, the lesser, to 1, the greater.
+    pub balance: Param,
+    /// Pre-Blur (p. 2443): how far the picture is blurred before it is keyed, the standard
+    /// deviation of a Gaussian in pixels of a picture 1080 high. The colours that come out
+    /// are not blurred.
+    pub pre_blur: Param,
+    /// The lower threshold (p. 2445): a matte at or below it is transparent.
+    pub low: Param,
+    /// The upper threshold (p. 2445): a matte at or above it is solid.
+    pub high: Param,
+    /// Erode/Dilate (p. 2445): how far the matte is eroded, below 0, or dilated, above it,
+    /// the radius of a box in pixels of a picture 1080 high.
+    pub erode_dilate: Param,
+    /// Matte Blur (p. 2445): how far the matte is blurred, the standard deviation of a
+    /// Gaussian in pixels of a picture 1080 high.
+    pub matte_blur: Param,
+    /// Clean Foreground (p. 2445): how much the holes of the solid part of the matte are
+    /// filled, from 0 to 1.
+    pub clean_foreground: Param,
+    /// Clean Background (p. 2445): how much the specks of the transparent part of the matte
+    /// are taken away, from 0 to 1.
+    pub clean_background: Param,
+    /// Replace Mode (p. 2445).
+    pub replace: ReplaceMode,
+    /// Replace Color (p. 2445).
+    pub replace_color: KeyColor,
+    /// Invert of the Garbage Matte: the garbage matte is read the other way round, so that
+    /// the matte is made transparent where the picture linked to it is not. It takes no
+    /// keys, and is nothing where no garbage matte is linked.
+    pub garbage_invert: bool,
+    /// Spill Method (p. 2446).
+    pub spill_method: SpillMethod,
+    /// Spill Suppression (p. 2446): from 0, none, to 1, all that the method takes.
+    pub spill_suppression: Param,
+    /// View Mode (p. 2442): what comes out of the node.
+    pub view: KeyerView,
+}
+
+impl Default for DeltaKeyer {
+    /// A pure green screen keyed with a Gain of 1 and a Balance of a half; a matte left as
+    /// the key made it; the spill suppressed whole by Medium, and Soft Color with a mid grey;
+    /// the final result shown.
+    fn default() -> Self {
+        Self {
+            screen: KeyColor {
+                r: bounds::KEYER_SCREEN.param(),
+                g: bounds::KEYER_SCREEN_GREEN.param(),
+                b: bounds::KEYER_SCREEN.param(),
+            },
+            gain: bounds::KEYER_GAIN.param(),
+            balance: bounds::KEYER_BALANCE.param(),
+            pre_blur: bounds::KEYER_BLUR.param(),
+            low: bounds::KEYER_LOW.param(),
+            high: bounds::KEYER_HIGH.param(),
+            erode_dilate: bounds::KEYER_ERODE_DILATE.param(),
+            matte_blur: bounds::KEYER_BLUR.param(),
+            clean_foreground: bounds::KEYER_CLEAN.param(),
+            clean_background: bounds::KEYER_CLEAN.param(),
+            replace: ReplaceMode::SoftColor,
+            replace_color: KeyColor {
+                r: bounds::KEYER_REPLACE_COLOR.param(),
+                g: bounds::KEYER_REPLACE_COLOR.param(),
+                b: bounds::KEYER_REPLACE_COLOR.param(),
+            },
+            garbage_invert: false,
+            spill_method: SpillMethod::Medium,
+            spill_suppression: bounds::KEYER_SPILL_SUPPRESSION.param(),
+            view: KeyerView::FinalResult,
+        }
+    }
+}
+
+/// How far the greatest channel of a screen colour is above the greater of its other two, as
+/// the mathematics of the keyer of the compositor works it out, in floats of 32 bits: green
+/// is before blue and blue before red where two are alike.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "channels of a colour, as the compositor takes them"
+)]
+fn dominance(screen: [f64; 3]) -> f32 {
+    let [red, green, blue] = screen.map(|channel| channel as f32);
+    let (main, first, second) = if green >= red && green >= blue {
+        (green, red, blue)
+    } else if blue >= red {
+        (blue, red, green)
+    } else {
+        (red, green, blue)
+    };
+    let (least, most) = (first.min(second), first.max(second));
+    main - (least + (most - least))
+}
+
+impl DeltaKeyer {
+    /// Its settings at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> DeltaKeyed {
+        DeltaKeyed {
+            screen: self.screen.at(frame),
+            gain: self.gain.value_at(frame),
+            balance: self.balance.value_at(frame),
+            pre_blur: self.pre_blur.value_at(frame),
+            low: self.low.value_at(frame),
+            high: self.high.value_at(frame),
+            erode_dilate: self.erode_dilate.value_at(frame),
+            matte_blur: self.matte_blur.value_at(frame),
+            clean_foreground: self.clean_foreground.value_at(frame),
+            clean_background: self.clean_background.value_at(frame),
+            replace: self.replace,
+            replace_color: self.replace_color.at(frame),
+            garbage_invert: self.garbage_invert,
+            spill_method: self.spill_method,
+            spill_suppression: self.spill_suppression.value_at(frame),
+            view: self.view,
+        }
+    }
+
+    /// The bounds of its settings that take keys, in the order of its `params`, each with
+    /// the name that it is refused by.
+    const BOUNDS: [(&'static str, Bounds); 16] = [
+        ("delta_keyer.screen.r", bounds::KEYER_SCREEN),
+        ("delta_keyer.screen.g", bounds::KEYER_SCREEN_GREEN),
+        ("delta_keyer.screen.b", bounds::KEYER_SCREEN),
+        ("delta_keyer.gain", bounds::KEYER_GAIN),
+        ("delta_keyer.balance", bounds::KEYER_BALANCE),
+        ("delta_keyer.pre_blur", bounds::KEYER_BLUR),
+        ("delta_keyer.low", bounds::KEYER_LOW),
+        ("delta_keyer.high", bounds::KEYER_HIGH),
+        ("delta_keyer.erode_dilate", bounds::KEYER_ERODE_DILATE),
+        ("delta_keyer.matte_blur", bounds::KEYER_BLUR),
+        ("delta_keyer.clean_foreground", bounds::KEYER_CLEAN),
+        ("delta_keyer.clean_background", bounds::KEYER_CLEAN),
+        ("delta_keyer.replace_color.r", bounds::KEYER_REPLACE_COLOR),
+        ("delta_keyer.replace_color.g", bounds::KEYER_REPLACE_COLOR),
+        ("delta_keyer.replace_color.b", bounds::KEYER_REPLACE_COLOR),
+        (
+            "delta_keyer.spill_suppression",
+            bounds::KEYER_SPILL_SUPPRESSION,
+        ),
+    ];
+
+    /// Check that each setting is within its bounds, as a number or at each key; and, of
+    /// numbers that have no keys, that the lower threshold is at most the upper and that the
+    /// screen colour has one channel above its other two.
+    fn check(&self) -> Result<(), OpError> {
+        for ((what, range), (_, setting)) in Self::BOUNDS.into_iter().zip(self.settings()) {
+            range.check(what, setting)?;
+        }
+        if let (Param::Fixed(low), Param::Fixed(high)) = (&self.low, &self.high) {
+            if low > high {
+                return Err(OpError::OutOfRange {
+                    what: "delta_keyer.low",
+                });
+            }
+        }
+        if let [Param::Fixed(red), Param::Fixed(green), Param::Fixed(blue)] = self.screen.channels()
+        {
+            if dominance([*red, *green, *blue]) < LEAST_DOMINANCE {
+                return Err(OpError::OutOfRange {
+                    what: "delta_keyer.screen",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn settings(&self) -> [(&'static str, &Param); 16] {
+        [
+            ("screen.r", &self.screen.r),
+            ("screen.g", &self.screen.g),
+            ("screen.b", &self.screen.b),
+            ("gain", &self.gain),
+            ("balance", &self.balance),
+            ("pre_blur", &self.pre_blur),
+            ("low", &self.low),
+            ("high", &self.high),
+            ("erode_dilate", &self.erode_dilate),
+            ("matte_blur", &self.matte_blur),
+            ("clean_foreground", &self.clean_foreground),
+            ("clean_background", &self.clean_background),
+            ("replace_color.r", &self.replace_color.r),
+            ("replace_color.g", &self.replace_color.g),
+            ("replace_color.b", &self.replace_color.b),
+            ("spill_suppression", &self.spill_suppression),
+        ]
+    }
+
+    fn settings_mut(&mut self) -> [(&'static str, &mut Param); 16] {
+        [
+            ("screen.r", &mut self.screen.r),
+            ("screen.g", &mut self.screen.g),
+            ("screen.b", &mut self.screen.b),
+            ("gain", &mut self.gain),
+            ("balance", &mut self.balance),
+            ("pre_blur", &mut self.pre_blur),
+            ("low", &mut self.low),
+            ("high", &mut self.high),
+            ("erode_dilate", &mut self.erode_dilate),
+            ("matte_blur", &mut self.matte_blur),
+            ("clean_foreground", &mut self.clean_foreground),
+            ("clean_background", &mut self.clean_background),
+            ("replace_color.r", &mut self.replace_color.r),
+            ("replace_color.g", &mut self.replace_color.g),
+            ("replace_color.b", &mut self.replace_color.b),
+            ("spill_suppression", &mut self.spill_suppression),
+        ]
+    }
+}
+
 /// Settings that are named by fixed paths, as a list that settings named otherwise may be
 /// added to.
 fn named<P>(settings: impl IntoIterator<Item = (&'static str, P)>) -> Vec<(Cow<'static, str>, P)> {
@@ -1405,6 +1820,8 @@ pub enum NodeKind {
     Blur(Blur),
     /// A picture laid out in cells of one colour each.
     Mosaic(Mosaic),
+    /// A picture keyed: the screen that it was shot against made transparent.
+    DeltaKeyer(DeltaKeyer),
 }
 
 /// The settings of a kind that has none, as they are written: `{}`.
@@ -1427,6 +1844,7 @@ impl NodeKind {
             Self::Polygon(_) => Kind::Polygon,
             Self::Blur(_) => Kind::Blur,
             Self::Mosaic(_) => Kind::Mosaic,
+            Self::DeltaKeyer(_) => Kind::DeltaKeyer,
         }
     }
 
@@ -1444,6 +1862,7 @@ impl NodeKind {
             Kind::Polygon => Self::Polygon(Polygon::default()),
             Kind::Blur => Self::Blur(Blur::default()),
             Kind::Mosaic => Self::Mosaic(Mosaic::default()),
+            Kind::DeltaKeyer => Self::DeltaKeyer(DeltaKeyer::default()),
         }
     }
 
@@ -1469,6 +1888,7 @@ impl NodeKind {
             Kind::Polygon => Self::Polygon(serde_json::from_value(params)?),
             Kind::Blur => Self::Blur(serde_json::from_value(params)?),
             Kind::Mosaic => Self::Mosaic(serde_json::from_value(params)?),
+            Kind::DeltaKeyer => Self::DeltaKeyer(serde_json::from_value(params)?),
         })
     }
 
@@ -1489,12 +1909,15 @@ impl NodeKind {
             Self::Polygon(params) => serde_json::to_value(params),
             Self::Blur(params) => serde_json::to_value(params),
             Self::Mosaic(params) => serde_json::to_value(params),
+            Self::DeltaKeyer(params) => serde_json::to_value(params),
         };
         value.expect("the settings of a node are written as JSON")
     }
 
-    /// Check its settings: each within its bounds, as a number or at each key; and of a
-    /// Polygon, that it has no more points than it may.
+    /// Check its settings: each within its bounds, as a number or at each key; of a Polygon,
+    /// that it has no more points than it may; and of a Delta Keyer, that its thresholds are
+    /// in order and its screen colour has a channel above its other two, where they have no
+    /// keys.
     pub(crate) fn check(&self) -> Result<(), OpError> {
         match self {
             Self::MediaIn | Self::MediaOut => Ok(()),
@@ -1506,6 +1929,7 @@ impl NodeKind {
             Self::Polygon(polygon) => polygon.check(),
             Self::Blur(blur) => blur.check(),
             Self::Mosaic(mosaic) => mosaic.check(),
+            Self::DeltaKeyer(keyer) => keyer.check(),
         }
     }
 
@@ -1521,6 +1945,7 @@ impl NodeKind {
             Self::Polygon(polygon) => polygon.settings(),
             Self::Blur(blur) => named(blur.settings()),
             Self::Mosaic(mosaic) => named(mosaic.settings()),
+            Self::DeltaKeyer(keyer) => named(keyer.settings()),
         }
     }
 
@@ -1536,6 +1961,7 @@ impl NodeKind {
             Self::Polygon(polygon) => polygon.settings_mut(),
             Self::Blur(blur) => named(blur.settings_mut()),
             Self::Mosaic(mosaic) => named(mosaic.settings_mut()),
+            Self::DeltaKeyer(keyer) => named(keyer.settings_mut()),
         }
     }
 
@@ -1581,9 +2007,10 @@ impl NodeKind {
 ///
 /// It is written `{"id", "kind", "label", "pass_through", "pos", "params"}`, where `params` is
 /// what a node of its kind is set by: a [`Merge`], a [`Transform`], a [`Background`], a
-/// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`] or a [`Mosaic`], and an object with
-/// no fields for `media_in` and `media_out`. `pass_through` and `pos` are always written, and
-/// may be left out where a node is read: they are then `false` and `null`.
+/// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`], a [`Mosaic`] or a
+/// [`DeltaKeyer`], and an object with no fields for `media_in` and `media_out`.
+/// `pass_through` and `pos` are always written, and may be left out where a node is read:
+/// they are then `false` and `null`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     /// What it is known by in its composition: `n` and a number where the engine made it. It
@@ -1650,6 +2077,7 @@ impl Serialize for Node {
             NodeKind::Polygon(params) => node.serialize_field("params", params)?,
             NodeKind::Blur(params) => node.serialize_field("params", params)?,
             NodeKind::Mosaic(params) => node.serialize_field("params", params)?,
+            NodeKind::DeltaKeyer(params) => node.serialize_field("params", params)?,
         }
         node.end()
     }
@@ -1977,6 +2405,13 @@ impl Composition {
                 mask: read(Input::Mask),
                 settings: mosaic.at(frame),
             },
+            NodeKind::DeltaKeyer(keyer) => FusedKind::DeltaKeyer {
+                input: read(Input::Input),
+                garbage_matte: read(Input::GarbageMatte),
+                solid_matte: read(Input::SolidMatte),
+                mask: read(Input::Mask),
+                settings: keyer.at(frame),
+            },
         };
         let at = nodes.len();
         nodes.push(FusedNode {
@@ -2017,11 +2452,12 @@ pub fn size_of(clip: &Clip, project: &Project, timeline: &Timeline) -> (u32, u32
 /// `MediaOut` is made of, each with its settings as the numbers that they are at the frame.
 ///
 /// The nodes are in an order in which each comes after those whose pictures it reads, its
-/// pictures before its mask, and a node names the one that an input reads by its place in
-/// the list. Only the nodes that the `MediaOut` depends on are there, each once: a node whose
-/// picture is not read is left out, and so is one that is passed through, whose place is
-/// taken by the node that it hands on. A node that is read as a mask alone is depended on,
-/// and is there. The `MediaOut` itself is not in the list: `output` is what it shows.
+/// pictures before its mask (and the mattes of a Delta Keyer between them), and a node names
+/// the one that an input reads by its place in the list. Only the nodes that the `MediaOut`
+/// depends on are there, each once: a node whose picture is not read is left out, and so is
+/// one that is passed through, whose place is taken by the node that it hands on. A node
+/// that is read as a mask or as a matte alone is depended on, and is there. The `MediaOut`
+/// itself is not in the list: `output` is what it shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fused {
     /// The nodes, each after those that it reads.
@@ -2044,7 +2480,7 @@ pub struct FusedNode {
 /// by its place in [`Fused::nodes`], which is before that of the node; none is no picture, a
 /// transparent one of the size of the composition. But a `mask` that is none is no mask: the
 /// node is not limited (see Masks of the [module](self)). One that names a node reads the
-/// alpha of its picture.
+/// alpha of its picture. So it is with the two mattes of a Delta Keyer.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum FusedKind {
@@ -2131,15 +2567,31 @@ pub enum FusedKind {
         /// How it is laid out.
         settings: Mosaicked,
     },
+    /// A picture keyed: the screen that it was shot against made transparent.
+    DeltaKeyer {
+        /// The picture that is keyed.
+        input: Option<usize>,
+        /// The picture whose alpha is the garbage matte: where it is 1 the matte is made
+        /// transparent. None where there is none.
+        garbage_matte: Option<usize>,
+        /// The picture whose alpha is the solid matte: where it is 1 the matte is made
+        /// solid. None where there is none.
+        solid_matte: Option<usize>,
+        /// Its effect mask: what the keyer shows where it is 1, the picture as it came in
+        /// where it is 0. None where it has none.
+        mask: Option<usize>,
+        /// How it is keyed.
+        settings: DeltaKeyed,
+    },
 }
 
 impl FusedKind {
     /// The picture that the first input of a node of the kind reads, by its place in
-    /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur and a Mosaic their
-    /// one input, and of a mask node the mask that comes into it. None of a kind that has no such input, and
-    /// where the input reads no picture. It is the picture that a node that is passed through
-    /// hands on ([`Kind::through`]), and that what cannot draw a kind may hand on in its
-    /// place.
+    /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur, a Mosaic and a
+    /// Delta Keyer their picture, and of a mask node the mask that comes into it. None of a
+    /// kind that has no such input, and where the input reads no picture. It is the picture
+    /// that a node that is passed through hands on ([`Kind::through`]), and that what cannot
+    /// draw a kind may hand on in its place.
     #[must_use]
     pub fn first_input(&self) -> Option<usize> {
         match self {
@@ -2147,7 +2599,8 @@ impl FusedKind {
             Self::Merge { background, .. } => *background,
             Self::Transform { input, .. }
             | Self::Blur { input, .. }
-            | Self::Mosaic { input, .. } => *input,
+            | Self::Mosaic { input, .. }
+            | Self::DeltaKeyer { input, .. } => *input,
             Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
             | Self::Polygon { mask, .. } => *mask,
@@ -2156,8 +2609,9 @@ impl FusedKind {
 
     /// The mask that the `mask` input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform, of a Background, of a
-    /// Blur and of a Mosaic, and the mask that comes into a mask node. None of a `MediaIn`,
-    /// which has no such input, and where the input is not linked or brings no picture.
+    /// Blur, of a Mosaic and of a Delta Keyer, and the mask that comes into a mask node. None
+    /// of a `MediaIn`, which has no such input, and where the input is not linked or brings
+    /// no picture.
     #[must_use]
     pub fn mask(&self) -> Option<usize> {
         match self {
@@ -2169,8 +2623,42 @@ impl FusedKind {
             | Self::Ellipse { mask, .. }
             | Self::Polygon { mask, .. }
             | Self::Blur { mask, .. }
-            | Self::Mosaic { mask, .. } => *mask,
+            | Self::Mosaic { mask, .. }
+            | Self::DeltaKeyer { mask, .. } => *mask,
         }
+    }
+
+    /// The pictures that the inputs of a node of the kind read, each by its place in
+    /// [`Fused::nodes`], in the order of the inputs of the kind ([`Kind::inputs`]): its
+    /// pictures, the two mattes of a Delta Keyer, and its mask last. An input that reads no
+    /// picture is left out. They are the nodes that the node depends on, each of which is
+    /// before it in the list.
+    #[must_use]
+    pub fn reads(&self) -> Vec<usize> {
+        let inputs: Vec<Option<usize>> = match self {
+            Self::MediaIn => vec![],
+            Self::Background { mask, .. }
+            | Self::Rectangle { mask, .. }
+            | Self::Ellipse { mask, .. }
+            | Self::Polygon { mask, .. } => vec![*mask],
+            Self::Merge {
+                background,
+                foreground,
+                mask,
+                ..
+            } => vec![*background, *foreground, *mask],
+            Self::Transform { input, mask, .. }
+            | Self::Blur { input, mask, .. }
+            | Self::Mosaic { input, mask, .. } => vec![*input, *mask],
+            Self::DeltaKeyer {
+                input,
+                garbage_matte,
+                solid_matte,
+                mask,
+                ..
+            } => vec![*input, *garbage_matte, *solid_matte, *mask],
+        };
+        inputs.into_iter().flatten().collect()
     }
 }
 
@@ -2306,6 +2794,44 @@ pub struct Mosaicked {
     pub whole_cells_only: bool,
 }
 
+/// The settings of a [`DeltaKeyer`] at one moment, each that takes keys as the number that it
+/// is there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeltaKeyed {
+    /// Background Color, the colour of the screen: its red, its green and its blue.
+    pub screen: [f64; 3],
+    /// Gain.
+    pub gain: f64,
+    /// Balance.
+    pub balance: f64,
+    /// Pre-Blur, in pixels of a picture 1080 pixels high.
+    pub pre_blur: f64,
+    /// The lower threshold.
+    pub low: f64,
+    /// The upper threshold.
+    pub high: f64,
+    /// Erode/Dilate, in pixels of a picture 1080 pixels high: below 0 it erodes.
+    pub erode_dilate: f64,
+    /// Matte Blur, in pixels of a picture 1080 pixels high.
+    pub matte_blur: f64,
+    /// Clean Foreground.
+    pub clean_foreground: f64,
+    /// Clean Background.
+    pub clean_background: f64,
+    /// Replace Mode.
+    pub replace: ReplaceMode,
+    /// Replace Color: its red, its green and its blue.
+    pub replace_color: [f64; 3],
+    /// Whether the garbage matte is read the other way round.
+    pub garbage_invert: bool,
+    /// Spill Method.
+    pub spill_method: SpillMethod,
+    /// Spill Suppression.
+    pub spill_suppression: f64,
+    /// View Mode: what comes out of the node.
+    pub view: KeyerView,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -2429,6 +2955,7 @@ mod tests {
                    "params": {"color": {"r": 0, "g": 0, "b": 0, "a": 1}, "type": "solid"}}),
             json!({"id": "a", "kind": "blur", "label": "", "params": {}}),
             json!({"id": "a", "kind": "delta_keyer", "label": "", "params": {}}),
+            json!({"id": "a", "kind": "tracker", "label": "", "params": {}}),
             json!({"id": "a", "kind": "media_in", "label": "", "params": {}, "enabled": true}),
         ] {
             assert!(
@@ -2464,6 +2991,19 @@ mod tests {
             assert_eq!(filter.through(), Some(Input::Input));
             assert!(!filter.is_mask());
         }
+        // A Delta Keyer has its picture, its two mattes and its effect mask, hands on its
+        // picture, and makes no mask.
+        assert_eq!(
+            Kind::DeltaKeyer.inputs(),
+            &[
+                Input::Input,
+                Input::GarbageMatte,
+                Input::SolidMatte,
+                Input::Mask
+            ]
+        );
+        assert_eq!(Kind::DeltaKeyer.through(), Some(Input::Input));
+        assert!(!Kind::DeltaKeyer.is_mask());
         assert_eq!(Kind::MediaIn.through(), None);
         assert_eq!(Kind::Background.through(), None);
         assert_eq!(Kind::MediaOut.through(), Some(Input::Input));
@@ -2480,6 +3020,7 @@ mod tests {
             Kind::Polygon,
             Kind::Blur,
             Kind::Mosaic,
+            Kind::DeltaKeyer,
         ] {
             // What is handed on is an input of the kind, and its mask comes after its pictures.
             let inputs = kind.inputs();
@@ -2502,10 +3043,14 @@ mod tests {
             Input::Input,
             Input::Background,
             Input::Foreground,
+            Input::GarbageMatte,
+            Input::SolidMatte,
             Input::Mask,
         ] {
             assert_eq!(serde_json::to_value(input).unwrap(), json!(input.name()));
         }
+        assert_eq!(Input::GarbageMatte.name(), "garbage_matte");
+        assert_eq!(Input::SolidMatte.name(), "solid_matte");
     }
 
     #[test]
@@ -2808,6 +3353,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "the paths of each kind")]
     fn the_settings_that_take_keys_are_named_by_their_paths() {
         let paths = |kind: Kind| NodeKind::new(kind).settings();
         assert_eq!(paths(Kind::MediaIn), [] as [&str; 0]);
@@ -2864,6 +3410,27 @@ mod tests {
         assert_eq!(
             paths(Kind::Mosaic),
             ["frequency", "aspect", "offset.x", "offset.y"]
+        );
+        assert_eq!(
+            paths(Kind::DeltaKeyer),
+            [
+                "screen.r",
+                "screen.g",
+                "screen.b",
+                "gain",
+                "balance",
+                "pre_blur",
+                "low",
+                "high",
+                "erode_dilate",
+                "matte_blur",
+                "clean_foreground",
+                "clean_background",
+                "replace_color.r",
+                "replace_color.g",
+                "replace_color.b",
+                "spill_suppression"
+            ]
         );
         // A Polygon has the two numbers of each point that it has, after the others.
         let fixed = [
@@ -3708,6 +4275,420 @@ mod tests {
         *mosaic.setting_mut("offset.y").unwrap() = keys(&[(0, -16_384.0), (9, 16_384.0)]);
         assert_eq!(mosaic.check(), Ok(()));
         assert!(mosaic.is_animated());
+    }
+
+    /// The composition of `merged` with the picture of its Transform keyed by `key`, into
+    /// `out`: the Rectangle `g` is its garbage matte, the Ellipse `s` its solid matte and the
+    /// Ellipse `e` its effect mask.
+    fn keyed() -> Composition {
+        let mut composition = merged();
+        composition.links.retain(|link| link.to != "out");
+        composition.nodes.push(Node::new("key", Kind::DeltaKeyer));
+        composition.nodes.push(Node::new("g", Kind::Rectangle));
+        composition.nodes.push(Node::new("s", Kind::Ellipse));
+        composition.nodes.push(Node::new("e", Kind::Ellipse));
+        composition.links.extend([
+            Link::new("move", "key", Input::Input),
+            Link::new("g", "key", Input::GarbageMatte),
+            Link::new("s", "key", Input::SolidMatte),
+            Link::new("e", "key", Input::Mask),
+            Link::new("key", "out", Input::Input),
+        ]);
+        composition.sort_links();
+        composition
+    }
+
+    #[test]
+    fn a_delta_keyer_is_written_with_every_setting_and_read_back() {
+        let written = serde_json::to_value(Node::new("k", Kind::DeltaKeyer)).unwrap();
+        assert_eq!(
+            written,
+            json!({
+                "id": "k", "kind": "delta_keyer", "label": "", "pass_through": false,
+                "pos": null,
+                "params": {
+                    "screen": {"r": 0.0, "g": 1.0, "b": 0.0}, "gain": 1.0, "balance": 0.5,
+                    "pre_blur": 0.0, "low": 0.0, "high": 1.0, "erode_dilate": 0.0,
+                    "matte_blur": 0.0, "clean_foreground": 0.0, "clean_background": 0.0,
+                    "replace": "soft_color", "replace_color": {"r": 0.5, "g": 0.5, "b": 0.5},
+                    "garbage_invert": false, "spill_method": "medium",
+                    "spill_suppression": 1.0, "view": "final_result",
+                },
+            })
+        );
+        let read: Node = serde_json::from_value(written.clone()).unwrap();
+        assert_eq!(read, Node::new("k", Kind::DeltaKeyer));
+        // Each spelling of what is no number, and keys of a setting, as they are written.
+        for (setting, spellings) in [
+            (
+                "replace",
+                &["none", "source", "hard_color", "soft_color"][..],
+            ),
+            (
+                "spill_method",
+                &["none", "rare", "medium", "well_done", "burnt"][..],
+            ),
+            (
+                "view",
+                &["pre_matte", "matte", "status", "final_result"][..],
+            ),
+        ] {
+            for spelling in spellings {
+                let mut node = written.clone();
+                node["params"][setting] = json!(spelling);
+                let read: Node = serde_json::from_value(node.clone()).unwrap();
+                assert_eq!(serde_json::to_value(&read).unwrap(), node, "{setting}");
+            }
+            let mut node = written.clone();
+            node["params"][setting] = json!("other");
+            assert!(serde_json::from_value::<Node>(node).is_err(), "{setting}");
+        }
+        let mut moving = written.clone();
+        moving["params"]["screen"]["b"] =
+            json!({"keys": [{"frame": 0, "value": 0.25, "interp": "hold"}]});
+        moving["params"]["garbage_invert"] = json!(true);
+        let read: Node = serde_json::from_value(moving.clone()).unwrap();
+        let NodeKind::DeltaKeyer(keyer) = &read.kind else {
+            panic!("it is a delta keyer")
+        };
+        assert!(keyer.garbage_invert && keyer.screen.b.is_animated());
+        assert_eq!(serde_json::to_value(&read).unwrap(), moving);
+        // A setting that is left out, one that is not known, and one written another way
+        // are refused, as those of the other kinds are.
+        let wrong = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut node = written.clone();
+            change(&mut node["params"]);
+            serde_json::from_value::<Node>(node).is_err()
+        };
+        for setting in [
+            "screen",
+            "pre_blur",
+            "garbage_invert",
+            "view",
+            "replace_color",
+        ] {
+            assert!(
+                wrong(&|params| {
+                    params.as_object_mut().unwrap().remove(setting);
+                }),
+                "{setting}"
+            );
+        }
+        assert!(wrong(&|params| params["screen"] = json!(0.5)));
+        assert!(wrong(&|params| params["screen"]["a"] = json!(1.0)));
+        assert!(wrong(&|params| params["fringe_gamma"] = json!(1.0)));
+        assert!(wrong(&|params| params["garbage_invert"] = json!(0)));
+        assert!(!wrong(&|params| params["gain"] = json!(2)));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a keyer as it is at a frame, after what it reads, and as it is passed through"
+    )]
+    fn a_delta_keyer_at_a_frame_is_its_numbers_there_after_its_picture_its_mattes_and_its_mask() {
+        let mut composition = keyed();
+        assert_eq!(composition.check(), Ok(()));
+        if let NodeKind::DeltaKeyer(keyer) = &mut composition.nodes[5].kind {
+            keyer.screen = KeyColor::new(0.125, 0.5, 0.25);
+            keyer.gain = keys(&[(0, 1.0), (10, 3.0)]);
+            keyer.low = keys(&[(0, 0.0), (10, 0.5)]);
+            keyer.replace_color.b = keys(&[(0, 0.5), (10, 1.5)]);
+            keyer.erode_dilate = Param::Fixed(-2.0);
+            keyer.garbage_invert = true;
+            keyer.spill_method = SpillMethod::Burnt;
+            keyer.replace = ReplaceMode::HardColor;
+            keyer.view = KeyerView::Status;
+        }
+        assert_eq!(composition.check(), Ok(()));
+        assert!(composition.is_animated());
+        let fused = composition.at(5.0);
+        // Its picture, then its garbage matte, its solid matte and its mask, and then it.
+        assert_eq!(
+            ids(&fused),
+            ["bg", "in", "over", "move", "g", "s", "e", "key"]
+        );
+        assert_eq!(fused.output, Some(7));
+        assert_eq!(
+            fused.nodes[7].kind,
+            FusedKind::DeltaKeyer {
+                input: Some(3),
+                garbage_matte: Some(4),
+                solid_matte: Some(5),
+                mask: Some(6),
+                settings: DeltaKeyed {
+                    screen: [0.125, 0.5, 0.25],
+                    gain: 2.0,
+                    balance: 0.5,
+                    pre_blur: 0.0,
+                    low: 0.25,
+                    high: 1.0,
+                    erode_dilate: -2.0,
+                    matte_blur: 0.0,
+                    clean_foreground: 0.0,
+                    clean_background: 0.0,
+                    replace: ReplaceMode::HardColor,
+                    replace_color: [0.5, 0.5, 1.0],
+                    garbage_invert: true,
+                    spill_method: SpillMethod::Burnt,
+                    spill_suppression: 1.0,
+                    view: KeyerView::Status,
+                },
+            }
+        );
+        assert_eq!(fused.nodes[7].kind.first_input(), Some(3));
+        assert_eq!(fused.nodes[7].kind.mask(), Some(6));
+        assert_eq!(fused.nodes[7].kind.reads(), [3, 4, 5, 6]);
+        assert_eq!(fused.nodes[2].kind.reads(), [0, 1]);
+        assert_eq!(fused.nodes[1].kind.reads(), [] as [usize; 0]);
+        // The keys are moved with the frames that they count, as those of the others are.
+        let later = composition.with_key_frames(&|frame| frame + 5);
+        assert_eq!(later.at(10.0), composition.at(5.0));
+        // A node that is read as a matte alone is depended on: with no mask and no solid
+        // matte, the Rectangle is there still, and the Ellipses are not.
+        let mut garbage = composition.clone();
+        garbage
+            .links
+            .retain(|link| link.input != Input::SolidMatte && link.input != Input::Mask);
+        let fused = garbage.at(0.0);
+        assert_eq!(ids(&fused), ["bg", "in", "over", "move", "g", "key"]);
+        assert_eq!(fused.nodes[5].kind.reads(), [3, 4]);
+        assert!(matches!(
+            fused.nodes[5].kind,
+            FusedKind::DeltaKeyer {
+                input: Some(3),
+                garbage_matte: Some(4),
+                solid_matte: None,
+                mask: None,
+                ..
+            }
+        ));
+        // A matte whose link brings no picture is not there: a mask node that is passed
+        // through and has nothing to hand on.
+        garbage.nodes[6].pass_through = true;
+        let fused = garbage.at(0.0);
+        assert_eq!(ids(&fused), ["bg", "in", "over", "move", "key"]);
+        assert_eq!(fused.nodes[4].kind.reads(), [3]);
+        // Passed through, it hands on its picture, and neither its mattes nor its mask.
+        composition.nodes[5].pass_through = true;
+        let fused = composition.at(5.0);
+        assert_eq!(ids(&fused), ["bg", "in", "over", "move"]);
+        assert_eq!(fused, merged().at(5.0));
+        // One whose picture is not linked reads none, and is there still.
+        let mut bare = keyed();
+        bare.links
+            .retain(|link| link.target() != ("key", Input::Input));
+        let fused = bare.at(0.0);
+        assert_eq!(ids(&fused), ["g", "s", "e", "key"]);
+        assert_eq!(fused.nodes[3].kind.first_input(), None);
+        assert_eq!(fused.nodes[3].kind.reads(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn a_delta_keyer_has_its_picture_its_two_mattes_and_its_mask_and_they_make_no_loop() {
+        let with = |link: Link| {
+            let mut composition = keyed();
+            composition
+                .links
+                .retain(|had| had.target() != link.target());
+            composition.links.push(link);
+            composition.sort_links();
+            composition.check()
+        };
+        // Any picture may be a matte, as any may be a mask.
+        for input in [
+            Input::Input,
+            Input::GarbageMatte,
+            Input::SolidMatte,
+            Input::Mask,
+        ] {
+            assert_eq!(with(Link::new("in", "key", input)), Ok(()), "{input:?}");
+        }
+        for input in [Input::Background, Input::Foreground] {
+            assert_eq!(
+                with(Link::new("in", "key", input)),
+                Err(OpError::NoInput {
+                    node: "key".into(),
+                    input
+                })
+            );
+        }
+        // No other kind has a matte.
+        for to in ["in", "bg", "over", "move", "g", "s", "out"] {
+            for input in [Input::GarbageMatte, Input::SolidMatte] {
+                assert_eq!(
+                    with(Link::new("e", to, input)),
+                    Err(OpError::NoInput {
+                        node: to.into(),
+                        input
+                    }),
+                    "{to}"
+                );
+            }
+        }
+        // A loop through a matte is a loop: of one node, and of several.
+        assert_eq!(
+            with(Link::new("key", "key", Input::GarbageMatte)),
+            Err(OpError::Loop { node: "key".into() })
+        );
+        assert!(matches!(
+            with(Link::new("key", "s", Input::Mask)),
+            Err(OpError::Loop { .. })
+        ));
+        // And a matte takes one link.
+        let mut twice = keyed();
+        twice.links.push(Link::new("e", "key", Input::SolidMatte));
+        twice.sort_links();
+        assert_eq!(
+            twice.check(),
+            Err(OpError::InputLinked {
+                node: "key".into(),
+                input: Input::SolidMatte
+            })
+        );
+        // The links of a keyer are kept by the names of its inputs.
+        let order: Vec<&str> = keyed()
+            .links
+            .iter()
+            .filter(|link| link.to == "key")
+            .map(|link| link.input.name())
+            .collect();
+        assert_eq!(order, ["garbage_matte", "input", "mask", "solid_matte"]);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a refusal for each setting of a keyer, and for its screen and its thresholds"
+    )]
+    fn a_setting_of_a_delta_keyer_is_refused_out_of_its_range_by_its_kind_and_its_path() {
+        let node = NodeKind::new(Kind::DeltaKeyer);
+        assert_eq!(node.check(), Ok(()));
+        for path in node.settings() {
+            let entry = crate::catalog::of_fusion(Kind::DeltaKeyer, &path).expect("it is listed");
+            let what = format!("delta_keyer.{path}");
+            for (end, (value, fits)) in [
+                (entry.low, true),
+                (entry.high, true),
+                (entry.low - 0.001, false),
+                (entry.high + 0.001, false),
+                (f64::NAN, false),
+                (f64::INFINITY, false),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut set = node.clone();
+                *set.setting_mut(&path).expect("it takes keys") = Param::Fixed(value);
+                match set.check() {
+                    Ok(()) => assert!(fits, "{what} at {value}"),
+                    // The green of the screen at its least leaves no channel above the other
+                    // two.
+                    Err(OpError::OutOfRange {
+                        what: "delta_keyer.screen",
+                    }) => {
+                        assert_eq!((path.as_str(), end), ("screen.g", 0));
+                    }
+                    Err(OpError::OutOfRange { what: named }) => {
+                        assert!(!fits, "{what} at {value}");
+                        assert_eq!(named, what);
+                    }
+                    Err(other) => panic!("{what} at {value}: {other:?}"),
+                }
+            }
+            // And at each key: keys that are not in the order of their frames are refused.
+            let mut unordered = node.clone();
+            *unordered.setting_mut(&path).expect("it takes keys") =
+                keys(&[(5, entry.default), (5, entry.default)]);
+            assert!(
+                matches!(unordered.check(), Err(OpError::OutOfRange { .. })),
+                "{what}"
+            );
+        }
+        let with = |change: &dyn Fn(&mut DeltaKeyer)| {
+            let mut keyer = DeltaKeyer::default();
+            change(&mut keyer);
+            NodeKind::DeltaKeyer(keyer).check()
+        };
+        let screen = Err(OpError::OutOfRange {
+            what: "delta_keyer.screen",
+        });
+        // A screen colour has one channel above its other two: a grey has none, and neither
+        // has one whose two greatest channels are alike.
+        for colour in [[0.5, 0.5, 0.5], [0.0, 0.0, 0.0], [0.2, 0.6, 0.6]] {
+            let [r, g, b] = colour;
+            assert_eq!(
+                with(&|keyer| keyer.screen = KeyColor::new(r, g, b)),
+                screen,
+                "{colour:?}"
+            );
+        }
+        // Any channel may be the one: a blue screen, a red one, and a green one as a camera
+        // sees it; and a channel may be above 1.
+        for colour in [
+            [0.0, 0.0, 1.0],
+            [0.7, 0.1, 0.15],
+            [0.08, 0.45, 0.12],
+            [4.0, 0.5, 0.25],
+            [0.2, 0.6, 0.5],
+        ] {
+            let [r, g, b] = colour;
+            assert_eq!(
+                with(&|keyer| keyer.screen = KeyColor::new(r, g, b)),
+                Ok(()),
+                "{colour:?}"
+            );
+        }
+        assert!((dominance([0.2, 0.6, 0.5]) - 0.1).abs() < 1e-6);
+        assert_eq!(dominance([0.5, 0.5, 0.5]), 0.0);
+        // With keys the screen colour is not checked: at a frame where it has no such
+        // channel the keyer keys nothing.
+        assert_eq!(
+            with(&|keyer| keyer.screen.g = keys(&[(0, 1.0), (10, 0.0)])),
+            Ok(())
+        );
+        // The thresholds are in order, where they have no keys; alike will do.
+        let low = Err(OpError::OutOfRange {
+            what: "delta_keyer.low",
+        });
+        assert_eq!(
+            with(&|keyer| {
+                keyer.low = Param::Fixed(0.6);
+                keyer.high = Param::Fixed(0.4);
+            }),
+            low
+        );
+        assert_eq!(
+            with(&|keyer| {
+                keyer.low = Param::Fixed(0.5);
+                keyer.high = Param::Fixed(0.5);
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            with(&|keyer| {
+                keyer.low = keys(&[(0, 0.0), (10, 0.9)]);
+                keyer.high = Param::Fixed(0.4);
+            }),
+            Ok(())
+        );
+        // What is no number takes no keys.
+        let mut keyer = NodeKind::new(Kind::DeltaKeyer);
+        for path in [
+            "screen",
+            "replace",
+            "replace_color",
+            "garbage_invert",
+            "spill_method",
+            "view",
+            "screen.a",
+            "size.x",
+        ] {
+            assert!(keyer.setting_mut(path).is_none(), "{path}");
+        }
+        *keyer.setting_mut("replace_color.b").unwrap() = keys(&[(0, 0.0), (9, 65_504.0)]);
+        assert_eq!(keyer.check(), Ok(()));
+        assert!(keyer.is_animated());
     }
 
     #[test]

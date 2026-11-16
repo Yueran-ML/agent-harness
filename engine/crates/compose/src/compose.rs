@@ -828,6 +828,10 @@ enum Pipe {
     /// A pass of a Mosaic of the composition of a clip (`fusion_mosaic.wgsl`): the colours
     /// of its cells, across or down, or its picture drawn from them.
     FusionMosaic,
+    /// A pass of a Delta Keyer of the composition of a clip (`fusion_keyer.wgsl`): its
+    /// matte, that matte drawn anew by a control that reads the pixels about each one, or
+    /// its picture.
+    FusionKeyer,
 }
 
 impl Pipe {
@@ -836,7 +840,11 @@ impl Pipe {
     fn is_fused(self) -> bool {
         matches!(
             self,
-            Pipe::Fusion | Pipe::FusionMask | Pipe::FusionBlur | Pipe::FusionMosaic
+            Pipe::Fusion
+                | Pipe::FusionMask
+                | Pipe::FusionBlur
+                | Pipe::FusionMosaic
+                | Pipe::FusionKeyer
         )
     }
 
@@ -983,9 +991,9 @@ struct StageWork {
 /// And, for the layers of clips that have compositions, what is drawn into textures before any
 /// of that: the passes, in the order they are drawn; the sources of those clips, each drawn
 /// alone; the uniforms of the passes that lay a foreground over a background, of those that
-/// draw masks, of those that mix a blurred picture and of those of mosaics; the sides of the
-/// polygons of those masks, one after another; and the passes of the filters of the Blurs.
-/// A frame without such a layer has none of them.
+/// draw masks, of those that mix a blurred picture, of those of mosaics and of those of
+/// keyers; the sides of the polygons of those masks, one after another; and the passes of
+/// the filters of the Blurs and of the keyers. A frame without such a layer has none of them.
 #[derive(Default)]
 struct Layered {
     draws: Vec<Draw>,
@@ -997,8 +1005,9 @@ struct Layered {
     sources: Vec<Alone>,
     lays: Vec<[f32; fusion::PARAMS]>,
     sides: Vec<[f32; 4]>,
-    /// The passes of the filters of the Blurs of the compositions, in the order they are
-    /// drawn: their uniforms go with those of the filters of the neighbourhoods.
+    /// The passes of the filters of the Blurs and of the Delta Keyers of the compositions,
+    /// in the order they are drawn: their uniforms go with those of the filters of the
+    /// neighbourhoods.
     filters: Vec<Pass>,
     /// The textures of the compositions drawn so far that no pass after reads: those of the
     /// compositions of the layers after are drawn into them.
@@ -1067,6 +1076,24 @@ enum Offscreen {
         pictures: [Option<wgpu::Texture>; 3],
         target: wgpu::Texture,
     },
+    /// A pass of a Delta Keyer, by the uniform of this number among those of the frame: it
+    /// reads up to six pictures, in the order in which `fusion_keyer.wgsl` binds them.
+    Key {
+        uniform: usize,
+        pictures: [Option<wgpu::Texture>; 6],
+        target: wgpu::Texture,
+    },
+}
+
+/// The pictures of a Delta Keyer of a composition: the picture that it keys, the pictures
+/// whose alphas are its garbage matte, its solid matte and its effect mask, where it has
+/// them, and the texture of the composition that it is drawn into.
+struct KeyerPictures {
+    source: wgpu::Texture,
+    garbage: Option<wgpu::Texture>,
+    solid: Option<wgpu::Texture>,
+    mask: Option<wgpu::Texture>,
+    target: wgpu::Texture,
 }
 
 /// What a layer of a clip that has a composition shows.
@@ -1104,19 +1131,32 @@ enum Role {
     /// The canvas as it is before a layer that is blended with it is drawn.
     Backdrop,
     /// The picture of a Blur of a composition, blurred: what the second pass of its filter
-    /// makes, which the pass that mixes it reads at once.
+    /// makes, which the pass that mixes it reads at once. And the matte of a Delta Keyer
+    /// filtered for one of its controls, which the pass that draws the matte anew reads at
+    /// once.
     Blurred,
     /// The colours of the cells of a Mosaic of a composition, a texel each.
     Cells,
     /// The least of the key of a Mosaic of a composition over each of its cells, a texel
     /// each.
     Leasts,
+    /// The picture of a Delta Keyer of a composition blurred by its Pre-Blur: what the
+    /// second pass of that filter makes, which the passes of the keyer that key read.
+    Keyed,
+    /// The matte of a Delta Keyer of a composition, drawn alone: what the controls that read
+    /// the pixels about each one filter, and draw anew into the other of this and
+    /// [`Role::Refined`], turn by turn.
+    Matte,
+    /// The matte of a Delta Keyer of a composition, drawn anew.
+    Refined,
 }
 
 /// The textures of neighbourhoods, kept from frame to frame by their sizes: those lent to a
 /// frame, each to one use, and those shared within it by the passes that draw into them one
 /// after another, one of each size for each [`Role`]. The pictures of the compositions of
-/// clips are drawn into textures lent from them too (`fusion.rs`).
+/// clips are drawn into textures lent from them too (`fusion.rs`). A texture that is shared
+/// is read before the next pass that draws into it: the passes of a node of a composition
+/// that draw into shared textures are all drawn before those of the next node.
 #[derive(Default)]
 struct Spares {
     kept: HashMap<(u32, u32), Vec<(wgpu::Texture, u64)>>,
@@ -1775,6 +1815,89 @@ impl Compositor {
         Ok(())
     }
 
+    /// Key the pixels of the first of `pictures` by a Delta Keyer of `settings` on the card,
+    /// into `target`: every pass of the keyer as a composition draws it, for the tests that
+    /// hold its shader to [`crate::keyer::node_picture`]. The others of `pictures` are the
+    /// pictures whose alphas are its garbage matte, its solid matte and its effect mask,
+    /// none where it has none. All are of the size of the preview `target`, row after row,
+    /// and are given to the card as they are, floats of 32 bits.
+    ///
+    /// # Errors
+    /// The card was lost; the target is not a preview of this card, or a picture is not of
+    /// its size; the keyer changes nothing, and so has no pass; or the pipeline of the
+    /// passes cannot be made.
+    #[doc(hidden)]
+    pub fn key_for_tests(
+        &mut self,
+        pictures: [Option<&[[f32; 4]]>; 4],
+        settings: &columbina_model::fusion::DeltaKeyed,
+        target: &Target,
+    ) -> Result<(), ComposeError> {
+        if let Some(why) = self.gpu.lost_reason() {
+            return Err(ComposeError::Lost(why));
+        }
+        let (width, height) = target.size();
+        let pixels = width as usize * height as usize;
+        let sized = pictures
+            .iter()
+            .flatten()
+            .all(|picture| picture.len() == pixels);
+        let [Some(picture), garbage, solid, mask] = pictures else {
+            return Err(ComposeError::Target("a keyer keys a picture".into()));
+        };
+        if !Arc::ptr_eq(&self.gpu, &target.gpu) || target.export.is_some() || !sized {
+            return Err(ComposeError::Target(
+                "pictures of the size of a preview of this card are keyed into it".into(),
+            ));
+        }
+        let linked = [garbage.is_some(), solid.is_some(), mask.is_some()];
+        let Some(keying) = fusion::keying(settings, linked, (width, height)) else {
+            return Err(ComposeError::Target(
+                "a keyer that changes nothing has no pass".into(),
+            ));
+        };
+        let not_made = || ComposeError::Color("the pipeline of keyers is not made".into());
+        let key = (Pipe::FusionKeyer, fusion::FORMAT, None);
+        self.keep_made();
+        if !self
+            .pipeline(key.0, key.1, key.2)
+            .map_err(ComposeError::Color)?
+        {
+            self.finish_compiling();
+            if !self
+                .pipeline(key.0, key.1, key.2)
+                .map_err(ComposeError::Color)?
+            {
+                return Err(not_made());
+            }
+        }
+        if self.filter.is_none() {
+            self.filter = Some(filter_pipeline(self.gpu.device(), &self.filter_layout));
+        }
+        let texture = |pixels: &[[f32; 4]]| fusion::floats(&self.gpu, width, pixels);
+        let keyed = KeyerPictures {
+            source: texture(picture),
+            garbage: garbage.map(texture),
+            solid: solid.map(texture),
+            mask: mask.map(texture),
+            target: wgpu::Texture::clone(&target.texture),
+        };
+        let mut laid = Layered::default();
+        self.keyer_passes(&mut laid, &keying, keyed);
+        let filters = self.write_filter_uniforms(&laid.filters);
+        let lays = self.write_lays(&laid.lays, &[]);
+        let mut encoder =
+            self.gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("columbina key"),
+                });
+        self.draw_offscreen(&mut encoder, &laid.offscreen, &[], &[], &lays, &filters);
+        self.gpu.queue().submit([encoder.finish()]);
+        self.spares.settle(self.frame);
+        Ok(())
+    }
+
     /// How many texts laid out it keeps: for the tests, that a title whose size changes at
     /// every frame leaves no more of them than a few.
     #[doc(hidden)]
@@ -2196,8 +2319,8 @@ impl Compositor {
     /// Draw the passes of the compositions of a frame into their textures, in their order:
     /// the sources of the clips alone, by their `calls`, and the passes of their nodes, those
     /// that lay a foreground over a background, those that draw masks, those that mix a
-    /// blurred picture and those of mosaics by the uniforms at `lays`, and those of the
-    /// filters of Blurs by the uniforms at `filters`.
+    /// blurred picture, those of mosaics and those of keyers by the uniforms at `lays`, and
+    /// those of the filters of Blurs and of keyers by the uniforms at `filters`.
     #[allow(
         clippy::too_many_lines,
         reason = "each kind of pass of a composition, one after another"
@@ -2213,6 +2336,7 @@ impl Compositor {
     ) {
         let laying = (Pipe::Fusion, fusion::FORMAT, None);
         let masking = (Pipe::FusionMask, fusion::FORMAT, None);
+        let keying = (Pipe::FusionKeyer, fusion::FORMAT, None);
         for pass in offscreen {
             match pass {
                 Offscreen::Source(number) => {
@@ -2294,6 +2418,21 @@ impl Compositor {
                     let [first, second, third] = pictures;
                     let read = [first.as_ref(), second.as_ref(), third.as_ref()];
                     card.read(self.gpu.device(), encoder, pipeline, *offset, read, target);
+                }
+                Offscreen::Key {
+                    uniform,
+                    pictures,
+                    target,
+                } => {
+                    let (Some(card), Some(pipeline), Some(offset)) = (
+                        &self.fusion,
+                        self.pipelines.get(&keying),
+                        lays.get(*uniform),
+                    ) else {
+                        continue;
+                    };
+                    let read = pictures.each_ref().map(Option::as_ref);
+                    card.key(self.gpu.device(), encoder, pipeline, *offset, read, target);
                 }
             }
             self.fusion_passes += 1;
@@ -3467,21 +3606,23 @@ impl Compositor {
             Reads::Pass(_) => {}
         }
         // The pipelines of its passes: that of those that lay, that of those that draw
-        // masks, that of those that mix a blurred picture and that of those of mosaics, each
-        // asked for where the composition has such a pass, all before any is waited for, so
-        // that they are made side by side.
+        // masks, that of those that mix a blurred picture, that of those of mosaics and that
+        // of those of keyers, each asked for where the composition has such a pass, all
+        // before any is waited for, so that they are made side by side.
         let pipes: Vec<Pipe> = [
             (plan.lays(), Pipe::Fusion),
             (plan.masks(), Pipe::FusionMask),
             (plan.blurs(), Pipe::FusionBlur),
             (plan.mosaics(), Pipe::FusionMosaic),
+            (plan.keys(), Pipe::FusionKeyer),
         ]
         .into_iter()
         .filter_map(|(needed, pipe)| needed.then_some(pipe))
         .collect();
-        // A Blur is blurred by the filters of the neighbourhoods, whose pipeline is made at
-        // once, as it is for a grade.
-        if plan.blurs() && self.filter.is_none() {
+        // A Blur is blurred by the filters of the neighbourhoods, and so are the picture and
+        // the matte of a keyer that reads the pixels about each one: their pipeline is made
+        // at once, as it is for a grade.
+        if plan.filters() && self.filter.is_none() {
             self.filter = Some(filter_pipeline(self.gpu.device(), &self.filter_layout));
         }
         if !pipes.is_empty() {
@@ -3606,6 +3747,25 @@ impl Compositor {
                     };
                     let pictures = (source, read(*key), target);
                     self.mosaic_passes(laid, grid, *whole, pictures);
+                }
+                fusion::Pass::Key {
+                    input,
+                    garbage,
+                    solid,
+                    mask,
+                    keying,
+                } => {
+                    let Some(source) = read(*input) else {
+                        continue;
+                    };
+                    let pictures = KeyerPictures {
+                        source,
+                        garbage: read(*garbage),
+                        solid: read(*solid),
+                        mask: read(*mask),
+                        target,
+                    };
+                    self.keyer_passes(laid, keying, pictures);
                 }
             }
         }
@@ -3735,6 +3895,96 @@ impl Compositor {
             target,
         });
         laid.lays.push(fusion::shown_uniform(grid, keyed));
+    }
+
+    /// Put the two passes of a filter of the neighbourhoods among those of the frame
+    /// (`laid`): `filter`, across from `from` into `between` and down from that into `to`.
+    fn filter_into(
+        laid: &mut Layered,
+        filter: &[Pass; 2],
+        from: &wgpu::Texture,
+        between: &wgpu::Texture,
+        to: &wgpu::Texture,
+    ) {
+        laid.offscreen.push(Offscreen::Filter {
+            uniform: laid.filters.len(),
+            from: from.clone(),
+            to: between.clone(),
+        });
+        laid.offscreen.push(Offscreen::Filter {
+            uniform: laid.filters.len() + 1,
+            from: between.clone(),
+            to: to.clone(),
+        });
+        laid.filters.extend_from_slice(filter);
+    }
+
+    /// Put the passes of a Delta Keyer of a composition among those of the frame (`laid`),
+    /// as `keying` has them (`fusion.rs`, The Delta Keyer).
+    ///
+    /// With a Pre-Blur, the two passes of its filter over the picture, into a texture that
+    /// the passes which key read. With controls of the matte that read the pixels about
+    /// each one, the pass that draws the matte of the key alone, and for each of them the
+    /// two passes of its filter over the matte and the pass that draws the matte anew, from
+    /// one texture into another and back, turn by turn. And the pass that makes the
+    /// picture, which reads the picture, what the Pre-Blur made, the matte that the last
+    /// control drew, and the mattes and the mask that come into the node. All the textures
+    /// but that of the picture and those of `pictures` are of those that the passes of a
+    /// frame share: each is read by the passes of this keyer alone, before any other pass
+    /// draws into it.
+    fn keyer_passes(
+        &mut self,
+        laid: &mut Layered,
+        keying: &fusion::Keying,
+        pictures: KeyerPictures,
+    ) {
+        let KeyerPictures {
+            source,
+            garbage,
+            solid,
+            mask,
+            target,
+        } = pictures;
+        let size = (target.width(), target.height());
+        let soft = keying.pre_blur.as_ref().map(|filter| {
+            let between = self
+                .spares
+                .shared(&self.gpu, filter[0].target, Role::Between);
+            let soft = self.spares.shared(&self.gpu, filter[1].target, Role::Keyed);
+            Self::filter_into(laid, filter, &source, &between, &soft);
+            soft
+        });
+        let mut matte = None;
+        if !keying.stages.is_empty() {
+            let mut current = self.spares.shared(&self.gpu, size, Role::Matte);
+            let mut other = self.spares.shared(&self.gpu, size, Role::Refined);
+            laid.offscreen.push(Offscreen::Key {
+                uniform: laid.lays.len(),
+                pictures: [Some(source.clone()), soft.clone(), None, None, None, None],
+                target: current.clone(),
+            });
+            laid.lays.push(keying.matte);
+            for stage in &keying.stages {
+                let [across, down] = &stage.filter;
+                let between = self.spares.shared(&self.gpu, across.target, Role::Between);
+                let around = self.spares.shared(&self.gpu, down.target, Role::Blurred);
+                Self::filter_into(laid, &stage.filter, &current, &between, &around);
+                laid.offscreen.push(Offscreen::Key {
+                    uniform: laid.lays.len(),
+                    pictures: [Some(current.clone()), Some(around), None, None, None, None],
+                    target: other.clone(),
+                });
+                laid.lays.push(stage.uniform);
+                std::mem::swap(&mut current, &mut other);
+            }
+            matte = Some(current);
+        }
+        laid.offscreen.push(Offscreen::Key {
+            uniform: laid.lays.len(),
+            pictures: [Some(source), soft, matte, garbage, solid, mask],
+            target,
+        });
+        laid.lays.push(keying.uniform);
     }
 
     /// The source of the clip of the layer numbered `index`, to be drawn alone over a texture
@@ -4092,9 +4342,9 @@ impl Compositor {
     /// colour or none, is made: one with a program is asked of the builder if it is not (and is
     /// not made yet as this returns); one without, the compositor's own shader, is made at once.
     /// But those of the passes of compositions ([`Pipe::Fusion`], whose shader has the maths of
-    /// every composite mode in it, [`Pipe::FusionMask`], [`Pipe::FusionBlur`] and
-    /// [`Pipe::FusionMosaic`]) are asked of the builder too: a frame that is drawn without
-    /// waiting is not held up by them.
+    /// every composite mode in it, [`Pipe::FusionMask`], [`Pipe::FusionBlur`],
+    /// [`Pipe::FusionMosaic`] and [`Pipe::FusionKeyer`]) are asked of the builder too: a frame
+    /// that is drawn without waiting is not held up by them.
     ///
     /// # Errors
     /// The code of the program is not WGSL that the card takes, or reads what is not bound.
@@ -4159,6 +4409,11 @@ impl Compositor {
             Pipe::FusionMosaic => match &self.fusion {
                 Some(card) => (fusion::mosaic_shader(), &card.layout),
                 None => return Err("a mosaic of a composition has nothing to bind it".into()),
+            },
+            // The passes of a keyer bind a layout of their own: a uniform and six pictures.
+            Pipe::FusionKeyer => match &self.fusion {
+                Some(card) => (fusion::keyer_shader(), &card.keyer_layout),
+                None => return Err("a keyer of a composition has nothing to bind it".into()),
             },
         };
         // What binds the canvas under a layer that is blended: a texture, as a stage reads one.

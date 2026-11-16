@@ -1323,9 +1323,11 @@ pub enum OpError {
     /// Of a composition ([`crate::fusion`]): `fusion_nodes` (more nodes than it may have),
     /// `fusion_id` (the id of a node with a dot in it), and a setting of a node by its kind
     /// and its path, such as `merge.blend`, `transform.center.x`, `background.color.a`,
-    /// `ellipse.soft_edge`, `blur.size.x` or `mosaic.frequency`; of a Polygon,
-    /// `polygon.points` (more points than it may have) and `polygon.points.x` or
-    /// `polygon.points.y` (a number of one of its points).
+    /// `ellipse.soft_edge`, `blur.size.x`, `mosaic.frequency` or `delta_keyer.gain`; of a
+    /// Polygon, `polygon.points` (more points than it may have) and `polygon.points.x` or
+    /// `polygon.points.y` (a number of one of its points); and of a Delta Keyer,
+    /// `delta_keyer.screen` (a screen colour with no channel above its other two) and
+    /// `delta_keyer.low` (a lower threshold above the upper one).
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.

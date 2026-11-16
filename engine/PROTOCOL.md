@@ -3768,9 +3768,10 @@ and is `n` + `next_id` where the engine makes it. `label` is at most 100 charact
 `{x, y}` or `null`, where the node lies in the node editor, as a node of a grade has it (see
 Grades). `pass_through` is Fusion's Pass Through (Ctrl-P): a node that is passed through hands
 on the picture of its **first** input as it is (a `merge` its `background`, a `transform`, a
-`blur` and a `mosaic` their `input`, a mask node the mask that comes into it), and one that has
-no such input, a `media_in` or a `background`, then gives no picture: the effect mask of a node
-is not a picture that it hands on. The engine always writes `pass_through` and `pos`, and reads a node without
+`blur`, a `mosaic` and a `delta_keyer` their `input`, a mask node the mask that comes into it),
+and one that has no such input, a `media_in` or a `background`, then gives no picture: the
+effect mask of a node is not a picture that it hands on, and neither are the mattes of a
+`delta_keyer`. The engine always writes `pass_through` and `pos`, and reads a node without
 them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 `fusion_nodes`).
 
@@ -3786,11 +3787,13 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 | `polygon` | `mask` | yes | the mask of a polygon of straight sides, below (Masks) |
 | `blur` | `input`, `mask` | yes | its picture blurred, below (Blur and Mosaic) |
 | `mosaic` | `input`, `mask` | yes | its picture laid out in cells of one colour each, below (Blur and Mosaic) |
+| `delta_keyer` | `input`, `garbage_matte`, `solid_matte`, `mask` | yes | its picture keyed, the screen that it was shot against made transparent, below (The Delta Keyer) |
 
 An input that is not linked gives no picture: a transparent one of the size of the
-composition; but a `mask` that is not linked is **no mask** (Masks, below). The other kinds
-(the keyers, the Tracker, Text+) are not there yet: a `kind` or an `input` that is not listed
-cannot be read.
+composition; but a `mask` that is not linked is **no mask** (Masks, below), and a
+`garbage_matte` or a `solid_matte` that is not linked is no matte (The Delta Keyer, below).
+The other kinds (the Tracker, Text+) are not there yet: a `kind` or an `input` that is not
+listed cannot be read.
 
 **Links.** A link `{from, to, input}` goes from the output of node `from` into the input
 `input` of node `to`. An output may feed any number of inputs; an input takes at most one link
@@ -3798,7 +3801,8 @@ cannot be read.
 `media_out`, which has no output, `no_output`; a node that is not there is `missing` `node`.
 Links never make a loop (`loop`), through a `mask` neither. Links have no types: any output
 may go into any input. **Links are kept in one order**, by `to` (compared as strings, byte by
-byte) and then by the name of `input` (so `background`, `foreground`, `input`, `mask`); the
+byte) and then by the name of `input` (so `background`, `foreground`, `garbage_matte`, `input`,
+`mask`, `solid_matte`); the
 engine sorts the links of every composition it is given and of every project it reads, and a
 client copy must keep them so to stay equal to the engine's.
 
@@ -3832,13 +3836,14 @@ settings these are, by the same names):
 Each of these numbers is a number or `{"keys": [...]}`, as a setting of a grade is (see
 Grades), and is refused out of its range as `out_of_range` with `what` the kind and the path:
 `merge.blend`, `merge.center.x`, `transform.size`, `background.color.a`, `ellipse.soft_edge`,
-`blur.size.x`, `mosaic.frequency`.
+`blur.size.x`, `mosaic.frequency`, `delta_keyer.gain`.
 The ranges are the engine's own (the manual gives none but that of a Corner Radius); they are
 listed with the defaults and the units under `fusion_merge`, `fusion_transform`,
-`fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur` and
-`fusion_mosaic` in `crates/model/tests/data/catalog.json` (page and palette `fusion`; an angle
-is in `degrees_counterclockwise`, a Blur Size in `pixels1080`, pixels of a picture 1080 high,
-and an offset of a mosaic in `pixels`, pixels of the picture of the composition). Every field
+`fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur`,
+`fusion_mosaic` and `fusion_delta_keyer` in `crates/model/tests/data/catalog.json` (page and
+palette `fusion`; an angle is in `degrees_counterclockwise`, a Blur Size and the lengths of a
+keyer in `pixels1080`, pixels of a picture 1080 high, and an offset of a mosaic in `pixels`,
+pixels of the picture of the composition). Every field
 of the `params` of a node is written, and all of them must be there where a node is given whole
 (`add_fusion_node`, `set_fusion`).
 
@@ -3889,8 +3894,9 @@ of one channel):
 
 What a mask does to the node whose `mask` it comes into:
 
-- a `transform`, a `blur`, a `mosaic` and a `merge`, which have a picture to hand on (`input`;
-  of a `merge`, `background`): where the mask is 1 the result is the node's own, where it is 0
+- a `transform`, a `blur`, a `mosaic`, a `delta_keyer` and a `merge`, which have a picture to
+  hand on (`input`; of a `merge`, `background`): where the mask is 1 the result is the node's
+  own, where it is 0
   it is the picture of that first input as it came in (transparent where that is not linked),
   and between them the two are mixed by the value of the mask, channel by channel:
   `first + (own − first) · mask` (a `mosaic` with `whole_cells_only` reads its mask cell by
@@ -3937,6 +3943,79 @@ middle across and down. The cells are squares, or rectangles by `aspect`: there 
 Shape. The effect mask is the key of the mosaic: each pixel is `input + (cell − input) · mask`,
 `cell` the colour of its cell, which is the mean of all of the cell, what the mask does not
 cover too. Without a mask every cell is shown.
+
+**The Delta Keyer.** A `delta_keyer` is Fusion's keyer of green and blue screens (Reference
+Manual 20, pp. 2440–2448, and its use pp. 1664–1668), with the controls of its Key, Matte and
+Fringe tabs. Its settings are those of the mathematics of the keyer
+(`crates/compose/src/keyer.rs`, which gives the formulas and says what each makes of a pixel),
+by the same names, in the same units, within the same ranges and with the same values at
+first. The manual publishes neither the formulas nor the ranges nor the defaults: they are the
+engine's own. The tabs of the advanced tier (Pre Matte, Tuning, the shape and the colour of
+the fringe) are not kept. Its `params`, all of which are written:
+
+| field | default | range |
+|---|---|---|
+| `screen.r`, `screen.g`, `screen.b` | 0, 1, 0 | 0…65504 each: Background Color, the colour of the screen, picked from the picture. One channel is to be above the other two by 0.0001 (`out_of_range` `delta_keyer.screen`): any colour that has one will do, a blue or a red screen too |
+| `gain` | 1 | 0…10: Gain; more of it makes more of what is of the screen colour transparent, and 0 keys nothing |
+| `balance` | 0.5 | 0…1: Balance, in what shares the two channels that are not the screen's are compared with it, from the lesser of them to the greater |
+| `pre_blur` | 0 | 0…100: Pre-Blur, the standard deviation of the Gaussian that the picture is blurred by before it is keyed, in pixels of a picture **1080 pixels high**, as a Blur Size is. The colours that come out are not blurred |
+| `low`, `high` | 0, 1 | 0…1 each: the lower and the upper Threshold; a matte at or below `low` is made transparent, one at or above `high` solid, and the levels between them keep their places. `low` is to be at most `high` (`out_of_range` `delta_keyer.low`) |
+| `erode_dilate` | 0 | −100…100: Erode/Dilate, the radius of the box that the matte is eroded over, below 0, or dilated over, above 0, in pixels of a picture 1080 pixels high |
+| `matte_blur` | 0 | 0…100: Matte Blur, the standard deviation of the Gaussian that the matte is blurred by, in pixels of a picture 1080 pixels high |
+| `clean_foreground` | 0 | 0…1: Clean Foreground, how much the holes of what is solid are filled |
+| `clean_background` | 0 | 0…1: Clean Background, how much the specks of what is transparent are taken away |
+| `replace` | `soft_color` | Replace Mode, what fills the part of a pixel that the key took away and the matte gave back: `none`, `source` (the colour of the picture itself), `hard_color` (the Replace Color) or `soft_color` (the Replace Color, by how much of the colour of the screen was taken away); it takes no keys |
+| `replace_color.r`, `replace_color.g`, `replace_color.b` | 0.5 each | 0…65504 each: Replace Color |
+| `garbage_invert` | `false` | Invert of the Garbage Matte: the garbage matte is read the other way round; nothing where no garbage matte is linked; it takes no keys |
+| `spill_method` | `medium` | Spill Method, from the weakest: `none`, `rare`, `medium` (the one that the manual gives for green screens), `well_done` (for blue ones) or `burnt`; it takes no keys |
+| `spill_suppression` | 1 | 0…1: Spill Suppression, how much of what the method takes is taken |
+| `view` | `final_result` | View Mode, what comes out of the node: `pre_matte`, `matte`, `status` or `final_result`. It is a setting of the node, kept with the project, as Fusion keeps it; it takes no keys |
+
+The sixteen numbers take keys, each by its path (`n9.screen.g`, `n9.gain`, `n9.low`,
+`n9.replace_color.b`); the modes, the view and `garbage_invert` take none. Two things are
+checked of **numbers that have no keys** alone, since keys cannot be checked at every frame:
+
+- the screen colour is refused where none of its channels is above the other two; with keys, at
+  a frame where it has none **the keyer keys nothing**: every pixel is kept (its spill is
+  suppressed still);
+- `low` above `high` is refused; with keys, at a frame where they have crossed the matte is a
+  **step at `low`**: solid above it, and transparent at it and below.
+
+What is done to the picture that comes into `input`, in this order:
+
+1. The key: the picture, through the Pre-Blur where that is above 0, is compared with the
+   screen colour by Gain and Balance, which gives the pre-matte: 1 where the picture is kept
+   and 0 where it is the screen.
+2. The matte: the pre-matte through the thresholds; then Erode/Dilate; then the Matte Blur;
+   then Clean Foreground and Clean Background.
+3. The mattes that come in: where the `solid_matte` is 1 the matte is made 1, `m + (1 − m) · s`;
+   then where the `garbage_matte` is 1 the matte is made 0, `m · (1 − g)` (with
+   `garbage_invert`, `g` is 1 less what is linked). The garbage matte wins where both are 1
+   (the engine's own order).
+4. The result: the screen is taken from the picture by the pre-matte, the spill is suppressed,
+   and what the matte gave back is filled as `replace` says. The alpha is the matte.
+5. The view: `pre_matte` shows the pre-matte and `matte` the matte **before** the solid and
+   garbage mattes (p. 2442), both as opaque pictures of grey; `status` shows, opaque, what is
+   solid (white), transparent (black) and in between (grey), in green where the matte made a
+   pixel more opaque than the key did and in red where it made it less; `final_result` is the
+   keyed picture, premultiplied. `status` and `final_result` are of the matte after the solid
+   and garbage mattes.
+6. The effect mask, as of every node that hands a picture on:
+   `first + (own − first) · mask`, `own` what the view shows.
+
+A `garbage_matte` and a `solid_matte` read the **alpha** of the picture that is linked to
+them, within 0 and 1, as a `mask` does, whatever made it: a mask node, or any picture. One
+that is not linked, or whose link brings no picture, is not there. A node that is read as a
+matte alone is one that the picture depends on, and a loop through a matte is a `loop`. No
+other kind has these inputs (`no_input`).
+
+The picture that comes in is premultiplied. Its colour is that not premultiplied (black where
+its alpha is not above 0), and the final result is made of that colour and then multiplied,
+all four channels, by the alpha that came in: a picture that is seen through in part is keyed
+as what is seen of it, and its alpha is the matte times the alpha that it had. The mattes and
+the status are opaque whatever that alpha. **The values are keyed as they are**, in the
+working space of the timeline: where the project is not colour managed they are coded with
+their gamma, and the keyer makes nothing of linear light of them.
 
 **Frames of keys.** The keys of a composition count the frames that the other keys of its clip
 count (Frames of keys, in Grades): of media, the frames of the media, so that a key stays on
@@ -4019,8 +4098,10 @@ same `$name`; later operations name it where they name a node, and at the start 
 `missing` also names `fusion` (the composition of a clip that has none), and `node`, `link`
 and `setting` as for a grade; `wrong_track` `fusion` (a composition on a clip of sound);
 `loop`, `taken` `node`, `params`; and `out_of_range` `fusion_nodes`, `fusion_id`, `label`,
-`pos`, `links`, `polygon.points` (more points than a polygon may have) and the settings of
-nodes by kind and path (of a point of a polygon, `polygon.points.x` and `polygon.points.y`).
+`pos`, `links`, `polygon.points` (more points than a polygon may have), `delta_keyer.screen`
+(a screen colour with no channel above its other two), `delta_keyer.low` (a lower threshold
+above the upper one, too) and the settings of nodes by kind and path (of a point of a polygon,
+`polygon.points.x` and `polygon.points.y`).
 
 ### Compositions in the picture
 
@@ -4030,7 +4111,9 @@ frame (`crates/model/src/resolve.rs`, `Layer::fusion`): the nodes that the pictu
 as the numbers that they are at the frame of the clip's keys. A node that nothing reads is not
 among them, and a node that is passed through is left out for the node that it hands on. A node
 names its mask as it names its pictures, after them; a `mask` that is not linked, or that
-brings no picture, is none, and a node that is read as a mask alone is among them.
+brings no picture, is none, and a node that is read as a mask alone is among them. So it is
+with the `garbage_matte` and the `solid_matte` of a `delta_keyer`, which it names between its
+picture and its mask.
 
 **The masks are drawn.** A `rectangle`, an `ellipse` and a `polygon` are each drawn into a
 picture of the composition: white premultiplied by the value of the mask, which is that of
@@ -4082,6 +4165,42 @@ Neither is drawn, and each is its input at no cost, where it changes nothing: a 
 whose `input` gives no picture gives none. A composition without a `blur` and without a
 `mosaic` is drawn as it was before there were any, by the same passes and to the bit.
 
+**A Delta Keyer is drawn.** A `delta_keyer` is drawn by a shader that is held to
+`crates/compose/src/keyer.rs` (`fusion_keyer.wgsl`): one pass makes its picture, of the key,
+the thresholds, the mattes that come in, the result, the view and the effect mask, as told
+above. It is within a thousandth of the mathematics, of a pixel from 0 to 1, and of its size
+where it is above 1. The mattes and the mask are read as a `mask` is: the alpha of the picture
+at the pixel, within 0 and 1, and a matte that is linked to a node which gives no picture as
+the compositor draws it is not there. Where its effect mask is 1 the pixel is what the view
+shows, to the bit, and where it is 0 it is that of the picture as it came in.
+
+The controls that read the pixels about each one are done with the filters that a `blur` is
+blurred by (`neighbourhood.rs`) and with the mathematics of Matte Finesse of a qualifier (see
+Grades), neither of which is written a second time: with a `pre_blur`, two passes blur the
+picture, and the key is taken of that, read between its points; with an `erode_dilate`, a
+`matte_blur` or a clean, one pass draws the matte of the key alone, and each of the three, in
+that order, costs three more: the two passes of its filter over the matte (a box of the
+radius of `erode_dilate`; a Gaussian of `matte_blur`; the Gaussian of 3 pixels of a picture
+1080 high that Clean Black and Clean White of a qualifier have), and one that draws the matte
+anew. `erode_dilate` is a pass of the Morph Operation of a qualifier (Grow above 0, Shrink
+below), `matte_blur` its Blur Radius with no In/Out Ratio, `clean_foreground` its Clean White
+and `clean_background` its Clean Black. The lengths are made pixels of the picture as it is
+drawn (Sizes, below). The matte is kept in half floats between two of them: it is within a
+hundredth of the mathematics, and within four hundredths at the pixels where `erode_dilate`
+takes it through its edge.
+
+A `delta_keyer` costs from one pass to thirteen. A control at 0 costs none, and a keyer that
+keys nothing (a `gain` of 0, or a screen colour that keys have left with no channel above its
+other two) reads no pixel about another. It is not drawn, and is its input at no cost, where
+it changes nothing: its `view` is `final_result`, it keys nothing, its `low` is below 1, it
+has no `garbage_matte`, and it suppresses no spill (`spill_method` `none`, or
+`spill_suppression` 0), whatever its `solid_matte` and its mask. One whose `input` gives no
+picture gives none, whatever its `view`. A composition without a `delta_keyer` is drawn as it
+was before there were any, by the same passes and to the bit.
+
+No colour is converted for a keyer: it keys the pictures of the composition as they are, in
+the working space of the timeline (Space, below).
+
 The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
 scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a
 composition as what comes out of it. (The tracker of a window reads the media of the clip
@@ -4113,8 +4232,8 @@ transform of graphics.
 
 **Sizes.** Every picture of a composition is of one size, that of the composition (above):
 what a `media_in` shows fills it; a `background` covers it; a `transform` gives a picture of
-the size that came in, and what it moves beyond the edges is cut (a `blur` and a `mosaic` give
-one of the size that came in too); a `merge` gives a picture of
+the size that came in, and what it moves beyond the edges is cut (a `blur`, a `mosaic` and a
+`delta_keyer` give one of the size that came in too); a `merge` gives a picture of
 the size of its background, and one whose `background` is not linked lays its foreground over
 a transparent picture of the size of the composition. The settings are shares of the picture,
 and the engine draws the pictures at the pixels that are seen: at the size of the composition
@@ -4154,9 +4273,9 @@ card, the first time a composition with a `merge` or a `transform` is shown), an
 draws masks (once for each card, the first time a composition with a mask node, or with a
 `background` that has a mask, is shown), a clip is shown as its source, without its
 composition, and the frame is drawn again when they are made; an export, a still and a frame
-drawn off screen wait for them. So it is with the one that mixes a blurred picture and the one
-of the mosaics, each made the first time a composition with a `blur` or a `mosaic` that is
-drawn is shown.
+drawn off screen wait for them. So it is with the one that mixes a blurred picture, the one
+of the mosaics and the one of the keyers, each made the first time a composition with a
+`blur`, a `mosaic` or a `delta_keyer` that is drawn is shown.
 
 ## Scopes
 

@@ -2221,7 +2221,93 @@ fn fusion_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 }],
             },
         ),
+        (
+            "add_fusion_node of a delta keyer with its settings, its garbage matte an ellipse",
+            masked(),
+            keyer_node(),
+        ),
+        (
+            "set_fusion_node of the screen colour, the modes and the view of a delta keyer",
+            {
+                let mut setup = masked();
+                setup.push(keyer_node());
+                setup
+            },
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n12".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "screen": {"r": 0.1}, "replace": "source", "spill_method": "well_done",
+                    "garbage_invert": false, "view": "matte",
+                })),
+            },
+        ),
+        (
+            "set_fusion_keys of the gain of a delta keyer",
+            {
+                let mut setup = masked();
+                setup.push(keyer_node());
+                setup
+            },
+            Op::SetFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n12.gain".into(),
+                param: Param::Keys(vec![
+                    Key {
+                        frame: 0,
+                        value: 1.0,
+                        interp: Interp::Linear,
+                    },
+                    Key {
+                        frame: 24,
+                        value: 3.0,
+                        interp: Interp::Linear,
+                    },
+                ]),
+            },
+        ),
+        (
+            "connect_fusion of the solid matte of a delta keyer",
+            {
+                let mut setup = masked();
+                setup.push(keyer_node());
+                setup
+            },
+            Op::ConnectFusion {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                link: fusion::Link::new("n10", "n12", Input::SolidMatte),
+            },
+        ),
     ]
+}
+
+/// Add a Delta Keyer, n12 after `masked`, as another program writes one: every setting, the
+/// picture of c1 keyed and laid over the Background by the Merge n9 in its place, and the
+/// Ellipse n11 its garbage matte, read the other way round.
+fn keyer_node() -> Op {
+    written_op(serde_json::json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {
+            "id": "", "kind": "delta_keyer", "label": "Green screen", "params": {
+                "screen": {"r": 0.08, "g": 0.45, "b": 0.12}, "gain": 1.5, "balance": 0.5,
+                "pre_blur": 0, "low": 0.1, "high": 0.9, "erode_dilate": 0, "matte_blur": 0,
+                "clean_foreground": 0, "clean_background": 0, "replace": "soft_color",
+                "replace_color": {"r": 0.5, "g": 0.5, "b": 0.5}, "garbage_invert": true,
+                "spill_method": "medium", "spill_suppression": 1, "view": "final_result",
+            },
+        },
+        "links": [
+            {"from": "MediaIn1", "to": "", "input": "input"},
+            {"from": "n11", "to": "", "input": "garbage_matte"},
+            {"from": "", "to": "n9", "input": "foreground"},
+        ],
+    }))
 }
 
 /// Add a Blur, n11 after `merge_node` and `background_node`, between the Merge n9 and the

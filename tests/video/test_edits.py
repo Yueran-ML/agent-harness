@@ -701,6 +701,139 @@ async def test_the_fake_engine_keeps_a_blur_and_a_mosaic_of_a_composition(tmp_pa
         )
 
 
+async def test_the_fake_engine_keeps_a_delta_keyer_of_a_composition(tmp_path: Path) -> None:
+    def composition(fake: fake_engine.Fake) -> Any:
+        return fake.project["timelines"][0]["tracks"][0]["clips"][0]["fusion"]
+
+    def node(name: str, kind: str, **params: Any) -> dict[str, Any]:
+        return {"id": name, "kind": kind, "label": "", "params": params}
+
+    def links(fake: fake_engine.Fake) -> list[tuple[str, str, str]]:
+        return [(link["from"], link["to"], link["input"]) for link in composition(fake)["links"]]
+
+    def params(fake: fake_engine.Fake, name: str) -> Any:
+        return next(each for each in composition(fake)["nodes"] if each["id"] == name)["params"]
+
+    def at_first() -> dict[str, Any]:
+        # Every setting is written, as the engine writes a node: none is left out.
+        return {
+            "screen": {"r": 0.0, "g": 1.0, "b": 0.0},
+            "gain": 1.0,
+            "balance": 0.5,
+            "pre_blur": 0.0,
+            "low": 0.0,
+            "high": 1.0,
+            "erode_dilate": 0.0,
+            "matte_blur": 0.0,
+            "clean_foreground": 0.0,
+            "clean_background": 0.0,
+            "replace": "soft_color",
+            "replace_color": {"r": 0.5, "g": 0.5, "b": 0.5},
+            "garbage_invert": False,
+            "spill_method": "medium",
+            "spill_suppression": 1.0,
+            "view": "final_result",
+        }
+
+    keyer = node("", "delta_keyer", **at_first())
+    rising = {
+        "keys": [
+            {"frame": 0, "value": 1.0, "interp": "linear"},
+            {"frame": 24, "value": 3.0, "interp": "linear"},
+        ]
+    }
+    async with served(tmp_path / "film") as fake:
+        async with await Engine.attach(tmp_path / "film", program=fake_engine.__file__) as one:
+            await one.apply(
+                [edits.add_timeline("Cut", Rate(num=25, den=1), tracks=[edits.track("video")])]
+            )
+            await one.apply([edits.insert("t1", of_color("#000000ff", 50), 0)])
+            at = {
+                "timeline": "t1",
+                "clip": fake.project["timelines"][0]["tracks"][0]["clips"][0]["id"],
+            }
+            colour = {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}
+            first = {
+                "nodes": [node("bg", "background", **colour), node("out", "media_out")],
+                "links": [{"from": "bg", "to": "out", "input": "input"}],
+            }
+            await one.apply([{"op": "set_fusion", **at, "value": first}])
+
+            # A keyer of the background goes to the media_out in its place, the background its
+            # garbage matte and its effect mask too.
+            into = [
+                {"from": "bg", "to": "", "input": "input"},
+                {"from": "", "to": "out", "input": "input"},
+                {"from": "bg", "to": "", "input": "garbage_matte"},
+                {"from": "bg", "to": "", "input": "mask"},
+            ]
+            await one.apply([{"op": "add_fusion_node", **at, "node": keyer, "links": into}])
+            k = composition(fake)["nodes"][-1]["id"]
+            kinds = [each["kind"] for each in composition(fake)["nodes"]]
+            assert kinds == ["background", "media_out", "delta_keyer"]
+            assert params(fake, k) == at_first()
+            # Its solid matte is linked as another input is.
+            solid = {"from": "bg", "to": k, "input": "solid_matte"}
+            await one.apply([{"op": "connect_fusion", **at, "link": solid}])
+            # The links are in the engine's order: by the node, then by the name of the input.
+            into_keyer = [
+                ("bg", k, "garbage_matte"),
+                ("bg", k, "input"),
+                ("bg", k, "mask"),
+                ("bg", k, "solid_matte"),
+            ]
+            assert links(fake) == sorted(
+                [(k, "out", "input"), *into_keyer],
+                key=lambda link: (link[1], link[2]),
+            )
+            assert [link for link in links(fake) if link[1] == k] == into_keyer
+
+            # A number is keyed by its path in the params of its node.
+            path = f"{k}.gain"
+            await one.apply([{"op": "set_fusion_keys", **at, "path": path, "param": rising}])
+            assert params(fake, k)["gain"] == rising
+            taken = {"op": "splice_fusion_keys", **at, "path": path, "at": 1, "remove": 1}
+            await one.apply([{**taken, "keys": []}])
+            assert params(fake, k)["gain"] == {"keys": [rising["keys"][0]]}
+            green = {"op": "set_fusion_keys", **at, "path": f"{k}.screen.g", "param": 0.45}
+            await one.apply([green])
+            assert params(fake, k)["screen"] == {"r": 0.0, "g": 0.45, "b": 0.0}
+            blue = {"op": "set_fusion_keys", **at, "path": f"{k}.replace_color.b", "param": 0.25}
+            await one.apply([blue])
+            assert params(fake, k)["replace_color"] == {"r": 0.5, "g": 0.5, "b": 0.25}
+            low = {"op": "set_fusion_keys", **at, "path": f"{k}.low", "param": 0.125}
+            await one.apply([low])
+            assert params(fake, k)["low"] == 0.125
+
+            # The other settings are set by a patch, which leaves what it does not name.
+            patch = {
+                "replace": "source",
+                "spill_method": "well_done",
+                "garbage_invert": True,
+                "view": "matte",
+                "erode_dilate": -2.5,
+            }
+            await one.apply([{"op": "set_fusion_node", **at, "id": k, "params": patch}])
+            assert params(fake, k) == {
+                **at_first(),
+                "screen": {"r": 0.0, "g": 0.45, "b": 0.0},
+                "gain": {"keys": [rising["keys"][0]]},
+                "low": 0.125,
+                "erode_dilate": -2.5,
+                "replace": "source",
+                "replace_color": {"r": 0.5, "g": 0.5, "b": 0.25},
+                "garbage_invert": True,
+                "spill_method": "well_done",
+                "view": "matte",
+            }
+
+            # A matte of a keyer is unlinked as another input is.
+            await one.apply([{"op": "disconnect_fusion", **at, "to": k, "input": "solid_matte"}])
+
+        left = [(k, "out", "input"), *into_keyer[:3]]
+        assert links(fake) == sorted(left, key=lambda link: (link[1], link[2]))
+
+
 def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> None:
     opening = Keys(keys=[Key(frame=0, value=1.0), Key(frame=20, value=0.0)])
 

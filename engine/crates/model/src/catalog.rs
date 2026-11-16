@@ -31,8 +31,9 @@
 //!
 //! And it lists what the nodes of the composition of a clip hold, of the Fusion page
 //! ([`fusion`]): the settings of a Merge, of a Transform, of a Background, of the masks (a
-//! Rectangle, an Ellipse and a Polygon), of a Blur and of a Mosaic, in Fusion's own units
-//! ([`crate::fusion`]), each with the bounds that the model checks it against.
+//! Rectangle, an Ellipse and a Polygon), of a Blur, of a Mosaic and of a Delta Keyer, in
+//! Fusion's own units ([`crate::fusion`]), each with the bounds that the model checks it
+//! against.
 //! [`crate::ops::Op::SetFusionKeys`] takes their paths, after the id of the node.
 
 use std::sync::OnceLock;
@@ -484,7 +485,8 @@ fn mask(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Transform
         | Kind::Background
         | Kind::Blur
-        | Kind::Mosaic => &[],
+        | Kind::Mosaic
+        | Kind::DeltaKeyer => &[],
     }
 }
 
@@ -520,8 +522,39 @@ fn filter(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Background
         | Kind::Rectangle
         | Kind::Ellipse
-        | Kind::Polygon => &[],
+        | Kind::Polygon
+        | Kind::DeltaKeyer => &[],
     }
+}
+
+/// The settings of a Delta Keyer of a composition that take keys, in the order of its
+/// `params`. Its Pre-Blur, its Erode/Dilate and its Matte Blur are in pixels of a picture
+/// 1080 high, as a Blur Size is; the channels of its colours are numbers from 0, as those of
+/// a picture are.
+fn keyer() -> &'static [Entry] {
+    use crate::fusion::bounds as f;
+    use Unit::{Number, Pixels1080};
+    static KEYER: OnceLock<Vec<Entry>> = OnceLock::new();
+    KEYER.get_or_init(|| {
+        fused(&[
+            ("screen.r", f::KEYER_SCREEN, Number),
+            ("screen.g", f::KEYER_SCREEN_GREEN, Number),
+            ("screen.b", f::KEYER_SCREEN, Number),
+            ("gain", f::KEYER_GAIN, Number),
+            ("balance", f::KEYER_BALANCE, Number),
+            ("pre_blur", f::KEYER_BLUR, Pixels1080),
+            ("low", f::KEYER_LOW, Number),
+            ("high", f::KEYER_HIGH, Number),
+            ("erode_dilate", f::KEYER_ERODE_DILATE, Pixels1080),
+            ("matte_blur", f::KEYER_BLUR, Pixels1080),
+            ("clean_foreground", f::KEYER_CLEAN, Number),
+            ("clean_background", f::KEYER_CLEAN, Number),
+            ("replace_color.r", f::KEYER_REPLACE_COLOR, Number),
+            ("replace_color.g", f::KEYER_REPLACE_COLOR, Number),
+            ("replace_color.b", f::KEYER_REPLACE_COLOR, Number),
+            ("spill_suppression", f::KEYER_SPILL_SUPPRESSION, Number),
+        ])
+    })
 }
 
 /// The settings of a node of a composition of a kind that take keys
@@ -566,6 +599,7 @@ pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
         }),
         Kind::Rectangle | Kind::Ellipse | Kind::Polygon => mask(kind),
         Kind::Blur | Kind::Mosaic => filter(kind),
+        Kind::DeltaKeyer => keyer(),
     }
 }
 
@@ -881,7 +915,7 @@ mod tests {
     }
 
     /// The kinds of node of a composition.
-    const FUSION_KINDS: [crate::fusion::Kind; 10] = [
+    const FUSION_KINDS: [crate::fusion::Kind; 11] = [
         crate::fusion::Kind::MediaIn,
         crate::fusion::Kind::MediaOut,
         crate::fusion::Kind::Merge,
@@ -892,6 +926,7 @@ mod tests {
         crate::fusion::Kind::Polygon,
         crate::fusion::Kind::Blur,
         crate::fusion::Kind::Mosaic,
+        crate::fusion::Kind::DeltaKeyer,
     ];
 
     /// A node of a kind as a new one is set; but a Polygon, which has no points at first,
@@ -974,6 +1009,20 @@ mod tests {
         assert_eq!(fusion(crate::fusion::Kind::Polygon).len(), 9);
         assert_eq!(fusion(crate::fusion::Kind::Blur).len(), 3);
         assert_eq!(fusion(crate::fusion::Kind::Mosaic).len(), 4);
+        assert_eq!(fusion(crate::fusion::Kind::DeltaKeyer).len(), 16);
+        let keyer = crate::fusion::Kind::DeltaKeyer;
+        for path in [
+            "screen",
+            "replace",
+            "replace_color",
+            "garbage_invert",
+            "spill_method",
+            "view",
+            "size.x",
+        ] {
+            assert!(of_fusion(keyer, path).is_none(), "{path}");
+        }
+        assert!(of_fusion(crate::fusion::Kind::Blur, "gain").is_none());
         assert!(of_fusion(crate::fusion::Kind::Blur, "lock_xy").is_none());
         assert!(of_fusion(crate::fusion::Kind::Blur, "filter").is_none());
         assert!(of_fusion(crate::fusion::Kind::Blur, "size").is_none());
@@ -1017,12 +1066,23 @@ mod tests {
                     .unwrap();
                 assert_eq!(first, &json!(entry.default), "{kind:?} {}", entry.path);
                 let step = (entry.high - entry.low) * 1e-9;
-                for (value, taken) in [
+                for (end, (value, taken)) in [
                     (entry.low, true),
                     (entry.high, true),
                     (entry.low - step, false),
                     (entry.high + step, false),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    // The screen colour of a keyer is also to have one channel above its
+                    // other two: its green at its least, the others being none, leaves none.
+                    let grey = kind == crate::fusion::Kind::DeltaKeyer
+                        && entry.path == "screen.g"
+                        && end == 0;
+                    if grey {
+                        continue;
+                    }
                     let mut changed = whole.clone();
                     put(&mut changed, &path, json!(value));
                     let node = NodeKind::from_params(kind, changed).unwrap();
@@ -1060,6 +1120,26 @@ mod tests {
             (frequency.default, frequency.low, frequency.high),
             (32.0, 1.0, 16_384.0)
         );
+        // The lengths of a Delta Keyer are counted as a Blur Size is, and the channels of its
+        // colours as those of a picture are, which may be above 1.
+        let keyer = crate::fusion::Kind::DeltaKeyer;
+        for (path, wanted) in [
+            ("pre_blur", (0.0, 0.0, 100.0, Unit::Pixels1080)),
+            ("matte_blur", (0.0, 0.0, 100.0, Unit::Pixels1080)),
+            ("erode_dilate", (0.0, -100.0, 100.0, Unit::Pixels1080)),
+            ("screen.g", (1.0, 0.0, 65_504.0, Unit::Number)),
+            ("screen.b", (0.0, 0.0, 65_504.0, Unit::Number)),
+            ("replace_color.r", (0.5, 0.0, 65_504.0, Unit::Number)),
+            ("gain", (1.0, 0.0, 10.0, Unit::Number)),
+            ("high", (1.0, 0.0, 1.0, Unit::Number)),
+        ] {
+            let entry = of_fusion(keyer, path).unwrap();
+            assert_eq!(
+                (entry.default, entry.low, entry.high, entry.unit),
+                wanted,
+                "{path}"
+            );
+        }
         let angle = of_fusion(merge, "angle").unwrap();
         assert_eq!(
             serde_json::to_value(angle).unwrap(),

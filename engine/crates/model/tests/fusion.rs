@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 
 use columbina_model::edit::copy_clips;
 use columbina_model::fusion::{
-    BlurFilter, Blurred, Composition, FillMethod, Fused, FusedKind, FusedNode, Input, Kind, Link,
-    Mosaicked, Node, NodeKind, PaintMode, Point, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS,
+    BlurFilter, Blurred, Composition, DeltaKeyed, FillMethod, Fused, FusedKind, FusedNode, Input,
+    KeyerView, Kind, Link, Mosaicked, Node, NodeKind, PaintMode, Point, ReplaceMode, SpillMethod,
+    MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS,
 };
 use columbina_model::grade::{Composite, Interp, Key, Param, Pos, LONGEST_LABEL};
 use columbina_model::resolve::{video_at, Layer};
@@ -2975,6 +2976,775 @@ fn a_change_of_a_blur_or_of_a_mosaic_that_changes_nothing_makes_no_step() {
     history
         .change(
             vec![Change::Op(set_params("n5", json!({"size": {"y": 9.0}})))],
+            "desktop",
+            |change, _| change,
+        )
+        .unwrap();
+    assert_ne!(history.project(), &before);
+    history.undo("desktop").unwrap().unwrap();
+    assert_eq!(history.project(), &before);
+}
+
+// The Delta Keyer.
+
+/// The sample of `merged` with the picture of c1 keyed by the Delta Keyer n5 before the Merge
+/// n3 lays it over the Background n4: `next_id` is 6.
+fn keyed() -> Project {
+    let mut project = merged();
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::DeltaKeyer),
+            vec![
+                Link::new(MEDIA_IN, "", Input::Input),
+                Link::new("", "n3", Input::Foreground),
+            ],
+        ),
+    );
+    assert_eq!(project.next_id, 6);
+    project
+}
+
+/// `keyed` with an Ellipse, n6, as the garbage matte of the keyer, and a Rectangle, n7, as
+/// its solid matte: `next_id` is 8.
+fn matted() -> Project {
+    let mut project = keyed();
+    for (kind, input) in [
+        (Kind::Ellipse, Input::GarbageMatte),
+        (Kind::Rectangle, Input::SolidMatte),
+    ] {
+        applied(
+            &mut project,
+            add(Node::new("", kind), vec![Link::new("", "n5", input)]),
+        );
+    }
+    assert_eq!(project.next_id, 8);
+    project
+}
+
+/// The Delta Keyer n5 of c1.
+fn keyer_of(project: &Project) -> &columbina_model::fusion::DeltaKeyer {
+    match &composition(project, "c1").node("n5").unwrap().kind {
+        NodeKind::DeltaKeyer(keyer) => keyer,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a keyer as it is written, read, written by another program and taken away"
+)]
+fn a_delta_keyer_is_added_with_every_setting_written_and_is_read_back() {
+    let mut project = keyed();
+    let written = serde_json::to_value(composition(&project, "c1")).unwrap();
+    assert_eq!(
+        written["nodes"][4],
+        json!({
+            "id": "n5", "kind": "delta_keyer", "label": "", "pass_through": false, "pos": null,
+            "params": {
+                "screen": {"r": 0.0, "g": 1.0, "b": 0.0}, "gain": 1.0, "balance": 0.5,
+                "pre_blur": 0.0, "low": 0.0, "high": 1.0, "erode_dilate": 0.0,
+                "matte_blur": 0.0, "clean_foreground": 0.0, "clean_background": 0.0,
+                "replace": "soft_color", "replace_color": {"r": 0.5, "g": 0.5, "b": 0.5},
+                "garbage_invert": false, "spill_method": "medium", "spill_suppression": 1.0,
+                "view": "final_result",
+            },
+        })
+    );
+    // The picture of the clip is its first input, and it is the foreground of the Merge.
+    assert_eq!(
+        written["links"],
+        json!([
+            {"from": "n3", "to": "MediaOut1", "input": "input"},
+            {"from": "n4", "to": "n3", "input": "background"},
+            {"from": "n5", "to": "n3", "input": "foreground"},
+            {"from": "MediaIn1", "to": "n5", "input": "input"},
+        ])
+    );
+    // To the byte, in the order of its settings.
+    let nodes = &composition(&project, "c1").nodes;
+    assert_eq!(
+        serde_json::to_string(&nodes[4]).unwrap(),
+        concat!(
+            r#"{"id":"n5","kind":"delta_keyer","label":"","pass_through":false,"pos":null,"#,
+            r#""params":{"screen":{"r":0.0,"g":1.0,"b":0.0},"gain":1.0,"balance":0.5,"#,
+            r#""pre_blur":0.0,"low":0.0,"high":1.0,"erode_dilate":0.0,"matte_blur":0.0,"#,
+            r#""clean_foreground":0.0,"clean_background":0.0,"replace":"soft_color","#,
+            r#""replace_color":{"r":0.5,"g":0.5,"b":0.5},"garbage_invert":false,"#,
+            r#""spill_method":"medium","spill_suppression":1.0,"view":"final_result"}}"#,
+        )
+    );
+    // A project with it is read back as it was written, and written the same again.
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    assert_eq!(serde_json::to_string(&read).unwrap(), text);
+    let value = serde_json::to_value(&project).unwrap();
+    assert_eq!(Project::from_value(value).unwrap(), project);
+    // A keyer as another program writes it, with every setting, its garbage matte the
+    // Background and its mask the keyer before it.
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "delta_keyer", "label": "Blue screen", "params": {
+            "screen": {"r": 0.1, "g": 0.15, "b": 0.5}, "gain": 2, "balance": 0.25,
+            "pre_blur": 3, "low": 0.1, "high": 0.9, "erode_dilate": -1.5, "matte_blur": 2,
+            "clean_foreground": 0.2, "clean_background": 0.1, "replace": "hard_color",
+            "replace_color": {"r": 0.4, "g": 0.3, "b": 0.2}, "garbage_invert": true,
+            "spill_method": "well_done", "spill_suppression": 0.5, "view": "status",
+        }},
+        "links": [
+            {"from": "n4", "to": "", "input": "garbage_matte"},
+            {"from": "n5", "to": "", "input": "mask"},
+        ],
+    }))
+    .unwrap();
+    let (done, inverse) = applied(&mut project, op);
+    assert_eq!(inverse, remove("n6", Some(vec![])));
+    let Op::AddFusionNode { node, links, .. } = done else {
+        panic!("a node was added")
+    };
+    assert_eq!(node.id, "n6");
+    assert_eq!(
+        links,
+        [
+            Link::new("n4", "n6", Input::GarbageMatte),
+            Link::new("n5", "n6", Input::Mask),
+        ]
+    );
+    let NodeKind::DeltaKeyer(blue) = &node.kind else {
+        panic!("n6 is a delta keyer")
+    };
+    assert_eq!(blue.screen.b, Param::Fixed(0.5));
+    assert_eq!(blue.gain, Param::Fixed(2.0));
+    assert_eq!(blue.erode_dilate, Param::Fixed(-1.5));
+    assert_eq!(blue.replace, ReplaceMode::HardColor);
+    assert_eq!(blue.replace_color.g, Param::Fixed(0.3));
+    assert_eq!(blue.spill_method, SpillMethod::WellDone);
+    assert_eq!(blue.view, KeyerView::Status);
+    assert!(blue.garbage_invert);
+    // One whose settings are not all there, or that has a setting that a keyer has not,
+    // cannot be read.
+    let whole = serde_json::to_value(Node::new("", Kind::DeltaKeyer)).unwrap()["params"].clone();
+    for setting in [
+        "screen",
+        "gain",
+        "balance",
+        "pre_blur",
+        "low",
+        "high",
+        "erode_dilate",
+        "matte_blur",
+        "clean_foreground",
+        "clean_background",
+        "replace",
+        "replace_color",
+        "garbage_invert",
+        "spill_method",
+        "spill_suppression",
+        "view",
+    ] {
+        let mut params = whole.clone();
+        params.as_object_mut().unwrap().remove(setting);
+        let node = json!({"id": "", "kind": "delta_keyer", "label": "", "params": params});
+        assert!(serde_json::from_value::<Node>(node).is_err(), "{setting}");
+    }
+    let mut more = whole.clone();
+    more["fringe_gamma"] = json!(1.0);
+    let node = json!({"id": "", "kind": "delta_keyer", "label": "", "params": more});
+    assert!(serde_json::from_value::<Node>(node).is_err());
+    let node = json!({"id": "", "kind": "delta_keyer", "label": "", "params": whole});
+    assert!(serde_json::from_value::<Node>(node).is_ok());
+    // Taken away again, the first with the link that takes its place, they leave the
+    // composition as it was before them, and written as it was: one without a keyer is
+    // written as it always was.
+    applied(&mut project, remove("n6", None));
+    let bridge = vec![Link::new(MEDIA_IN, "n3", Input::Foreground)];
+    applied(&mut project, remove("n5", Some(bridge)));
+    let before = merged();
+    assert_eq!(composition(&project, "c1"), composition(&before, "c1"));
+    assert_eq!(
+        serde_json::to_string(composition(&project, "c1")).unwrap(),
+        serde_json::to_string(composition(&before, "c1")).unwrap()
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a refusal for each setting of a keyer, for its screen and for its thresholds"
+)]
+fn the_settings_of_a_delta_keyer_are_those_of_its_kind_within_their_ranges() {
+    let mut project = keyed();
+    for (patch, what) in [
+        (json!({"screen": {"r": -0.1}}), "delta_keyer.screen.r"),
+        (json!({"screen": {"r": 65505}}), "delta_keyer.screen.r"),
+        (json!({"screen": {"g": -0.5}}), "delta_keyer.screen.g"),
+        (json!({"screen": {"g": 70000}}), "delta_keyer.screen.g"),
+        (json!({"screen": {"b": -1}}), "delta_keyer.screen.b"),
+        (json!({"screen": {"b": 65504.5}}), "delta_keyer.screen.b"),
+        (json!({"gain": -0.1}), "delta_keyer.gain"),
+        (json!({"gain": 10.5}), "delta_keyer.gain"),
+        (json!({"balance": -0.1}), "delta_keyer.balance"),
+        (json!({"balance": 1.1}), "delta_keyer.balance"),
+        (json!({"pre_blur": -1}), "delta_keyer.pre_blur"),
+        (json!({"pre_blur": 100.5}), "delta_keyer.pre_blur"),
+        (json!({"low": -0.1}), "delta_keyer.low"),
+        (json!({"low": 1.1}), "delta_keyer.low"),
+        (json!({"high": -0.1}), "delta_keyer.high"),
+        (json!({"high": 1.1}), "delta_keyer.high"),
+        (json!({"erode_dilate": -100.5}), "delta_keyer.erode_dilate"),
+        (json!({"erode_dilate": 101}), "delta_keyer.erode_dilate"),
+        (json!({"matte_blur": -0.5}), "delta_keyer.matte_blur"),
+        (json!({"matte_blur": 101}), "delta_keyer.matte_blur"),
+        (
+            json!({"clean_foreground": -0.1}),
+            "delta_keyer.clean_foreground",
+        ),
+        (
+            json!({"clean_foreground": 1.5}),
+            "delta_keyer.clean_foreground",
+        ),
+        (
+            json!({"clean_background": -0.1}),
+            "delta_keyer.clean_background",
+        ),
+        (
+            json!({"clean_background": 1.5}),
+            "delta_keyer.clean_background",
+        ),
+        (
+            json!({"replace_color": {"r": -0.1}}),
+            "delta_keyer.replace_color.r",
+        ),
+        (
+            json!({"replace_color": {"g": 65505}}),
+            "delta_keyer.replace_color.g",
+        ),
+        (
+            json!({"replace_color": {"b": -2}}),
+            "delta_keyer.replace_color.b",
+        ),
+        (
+            json!({"spill_suppression": -0.1}),
+            "delta_keyer.spill_suppression",
+        ),
+        (
+            json!({"spill_suppression": 1.5}),
+            "delta_keyer.spill_suppression",
+        ),
+        // A screen colour has one channel above its other two.
+        (json!({"screen": {"g": 0}}), "delta_keyer.screen"),
+        (
+            json!({"screen": {"r": 0.5, "g": 0.5, "b": 0.5}}),
+            "delta_keyer.screen",
+        ),
+        (json!({"screen": {"b": 1}}), "delta_keyer.screen"),
+        // And the lower threshold is at most the upper.
+        (json!({"low": 0.6, "high": 0.4}), "delta_keyer.low"),
+    ] {
+        assert_eq!(
+            refused(&project, set_params("n5", patch.clone())),
+            range(what),
+            "{patch}"
+        );
+    }
+    // What is not a setting of the kind, or not written as one, is refused.
+    for patch in [
+        json!({"replace": "colour"}),
+        json!({"spill_method": "raw"}),
+        json!({"view": "intermediate_result"}),
+        json!({"garbage_invert": 1}),
+        json!({"screen": 0.5}),
+        json!({"screen": {"a": 1.0}}),
+        json!({"replace_color": {"a": 1.0}}),
+        json!({"size": {"x": 5.0}}),
+        json!({"fringe_gamma": 1.0}),
+        json!({"solid_invert": true}),
+    ] {
+        let error = refused(&project, set_params("n5", patch.clone()));
+        assert!(
+            matches!(&error, OpError::Params { node, .. } if node == "n5"),
+            "{patch}: {error:?}"
+        );
+    }
+    // What is given is set, and set back by the inverse.
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({
+                "screen": {"r": 0.08, "g": 0.45, "b": 0.12}, "gain": 2, "replace": "hard_color",
+                "spill_method": "burnt", "garbage_invert": true, "view": "status",
+            }),
+        ),
+    );
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({
+            "screen": {"r": 0.0, "g": 1.0, "b": 0.0}, "gain": 1.0, "replace": "soft_color",
+            "spill_method": "medium", "garbage_invert": false, "view": "final_result",
+        }))
+    );
+    let keyer = keyer_of(&project);
+    assert_eq!(keyer.screen.r, Param::Fixed(0.08));
+    assert_eq!(keyer.screen.g, Param::Fixed(0.45));
+    assert_eq!(keyer.screen.b, Param::Fixed(0.12));
+    assert_eq!(keyer.gain, Param::Fixed(2.0));
+    assert_eq!(keyer.balance, Param::Fixed(0.5));
+    assert_eq!(keyer.replace, ReplaceMode::HardColor);
+    assert_eq!(keyer.spill_method, SpillMethod::Burnt);
+    assert_eq!(keyer.view, KeyerView::Status);
+    assert!(keyer.garbage_invert);
+    // The ends of each range are within it; thresholds alike will do; and any channel may
+    // be the one of the screen, above 1 too.
+    for patch in [
+        json!({"gain": 0, "balance": 0, "pre_blur": 100, "erode_dilate": -100, "matte_blur": 100}),
+        json!({"gain": 10, "balance": 1, "pre_blur": 0, "erode_dilate": 100, "matte_blur": 0}),
+        json!({"clean_foreground": 1, "clean_background": 1, "spill_suppression": 0}),
+        json!({"low": 0.5, "high": 0.5}),
+        json!({"low": 0, "high": 0}),
+        json!({"low": 1, "high": 1}),
+        json!({"screen": {"r": 0, "g": 0, "b": 65504}}),
+        json!({"screen": {"r": 4, "g": 0.5, "b": 0.25}}),
+        json!({"replace_color": {"r": 0, "g": 65504, "b": 0}}),
+        json!({"replace": "none", "spill_method": "none", "view": "pre_matte"}),
+        json!({"replace": "source", "spill_method": "rare", "view": "matte"}),
+    ] {
+        applied(&mut project, set_params("n5", patch));
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a key for each setting of a keyer, and what its keys are not held to"
+)]
+fn the_keys_of_a_delta_keyer_are_set_by_the_paths_of_its_settings() {
+    let mut project = keyed();
+    // The first keys of a setting that had none are done as the keys set whole.
+    let mut first = project.clone();
+    let (done, inverse) = applied(&mut first, splice("n5.gain", 0, 0, vec![key(3, 2.5)]));
+    assert_eq!(done, set_keys("c1", "n5.gain", keys(&[(3, 2.5)])));
+    assert_eq!(inverse, set_keys("c1", "n5.gain", Param::Fixed(1.0)));
+    for (path, value) in [
+        ("n5.screen.r", 0.25),
+        ("n5.screen.g", 0.75),
+        ("n5.screen.b", 0.125),
+        ("n5.gain", 3.0),
+        ("n5.balance", 0.25),
+        ("n5.pre_blur", 12.0),
+        ("n5.low", 0.25),
+        ("n5.high", 0.75),
+        ("n5.erode_dilate", -4.0),
+        ("n5.matte_blur", 6.0),
+        ("n5.clean_foreground", 0.5),
+        ("n5.clean_background", 0.25),
+        ("n5.replace_color.r", 0.75),
+        ("n5.replace_color.g", 0.25),
+        ("n5.replace_color.b", 2.0),
+        ("n5.spill_suppression", 0.5),
+    ] {
+        let rising = keys(&[(0, 1.0), (9, value)]);
+        let (done, inverse) = applied(&mut project, set_keys("c1", path, rising.clone()));
+        assert_eq!(done, set_keys("c1", path, rising));
+        assert!(
+            matches!(
+                &inverse,
+                Op::SetFusionKeys {
+                    param: Param::Fixed(_),
+                    ..
+                }
+            ),
+            "{path}: {inverse:?}"
+        );
+    }
+    assert!(composition(&project, "c1").is_animated());
+    // A key is put in place of another, and taken back.
+    let (done, inverse) = applied(
+        &mut project,
+        splice("n5.replace_color.b", 1, 1, vec![key(5, 3.0)]),
+    );
+    assert_eq!(done, splice("n5.replace_color.b", 1, 1, vec![key(5, 3.0)]));
+    assert_eq!(
+        inverse,
+        splice("n5.replace_color.b", 1, 1, vec![key(9, 2.0)])
+    );
+    let keyer = keyer_of(&project);
+    assert_eq!(keyer.replace_color.b, keys(&[(0, 1.0), (5, 3.0)]));
+    assert_eq!(keyer.screen.g, keys(&[(0, 1.0), (9, 0.75)]));
+    assert_eq!(keyer.gain, keys(&[(0, 1.0), (9, 3.0)]));
+    assert_eq!(keyer.low, keys(&[(0, 1.0), (9, 0.25)]));
+    assert_eq!(keyer.erode_dilate, keys(&[(0, 1.0), (9, -4.0)]));
+    // The keys are moved with the frames that they count, as the others are.
+    let later = composition(&project, "c1").with_key_frames(&|frame| frame + 100);
+    let NodeKind::DeltaKeyer(moved) = &later.node("n5").unwrap().kind else {
+        panic!("n5 is a delta keyer")
+    };
+    assert_eq!(moved.gain, keys(&[(100, 1.0), (109, 3.0)]));
+    assert_eq!(moved.screen.b, keys(&[(100, 1.0), (109, 0.125)]));
+    // What is no number takes no keys, and a kind has its own settings only.
+    for path in [
+        "n5.screen",
+        "n5.screen.a",
+        "n5.replace",
+        "n5.replace_color",
+        "n5.garbage_invert",
+        "n5.spill_method",
+        "n5.view",
+        "n5.size.x",
+        "n5.blend",
+        "n3.gain",
+        "n4.screen.g",
+    ] {
+        assert_eq!(
+            refused(&project, set_keys("c1", path, Param::Fixed(0.5))),
+            missing("setting", path),
+            "{path}"
+        );
+        assert_eq!(
+            refused(&project, splice(path, 0, 0, vec![key(0, 0.5)])),
+            missing("setting", path),
+            "{path}"
+        );
+    }
+    // What is put is checked as the node is.
+    assert_eq!(
+        refused(&project, set_keys("c1", "n5.gain", Param::Fixed(10.5))),
+        range("delta_keyer.gain")
+    );
+    assert_eq!(
+        refused(
+            &project,
+            set_keys("c1", "n5.screen.g", keys(&[(0, 1.0), (5, -0.5)]))
+        ),
+        range("delta_keyer.screen.g")
+    );
+    assert_eq!(
+        refused(&project, splice("n5.low", 2, 0, vec![key(20, 1.5)])),
+        range("delta_keyer.low")
+    );
+    assert_eq!(
+        refused(
+            &project,
+            splice("n5.replace_color.r", 2, 0, vec![key(20, -1.0)])
+        ),
+        range("delta_keyer.replace_color.r")
+    );
+    // Numbers that have no keys are held to more: a screen colour with no channel above its
+    // other two, and thresholds out of their order, are refused.
+    let mut fixed = keyed();
+    assert_eq!(
+        refused(&fixed, set_keys("c1", "n5.screen.g", Param::Fixed(0.0))),
+        range("delta_keyer.screen")
+    );
+    assert_eq!(
+        refused(&fixed, set_keys("c1", "n5.screen.r", Param::Fixed(1.0))),
+        range("delta_keyer.screen")
+    );
+    applied(&mut fixed, set_keys("c1", "n5.high", Param::Fixed(0.5)));
+    assert_eq!(
+        refused(&fixed, set_keys("c1", "n5.low", Param::Fixed(0.75))),
+        range("delta_keyer.low")
+    );
+    // But keys are not, since they cannot be checked at every frame: a screen colour whose
+    // green falls to nothing, and a lower threshold that rises past the upper.
+    applied(
+        &mut fixed,
+        set_keys("c1", "n5.screen.g", keys(&[(0, 1.0), (20, 0.0)])),
+    );
+    applied(
+        &mut fixed,
+        set_keys("c1", "n5.low", keys(&[(0, 0.0), (20, 1.0)])),
+    );
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20,
+    // where the screen is black and the thresholds have crossed. That is what the
+    // compositor is given; what it makes of it is told with it: there the keyer keys
+    // nothing.
+    let fused = layer_at(&fixed, 20).fusion.unwrap();
+    let settings = fused
+        .nodes
+        .iter()
+        .find_map(|node| match &node.kind {
+            FusedKind::DeltaKeyer { settings, .. } => Some(*settings),
+            _ => None,
+        })
+        .expect("the layer draws its keyer");
+    assert_eq!(settings.screen, [0.0, 0.0, 0.0]);
+    assert_eq!((settings.low, settings.high), (1.0, 0.5));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each input of a keyer, and each kind that has no matte"
+)]
+fn a_delta_keyer_takes_a_picture_two_mattes_and_a_mask_and_no_other_kind_takes_a_matte() {
+    let mut project = keyed();
+    // An Ellipse, n6, is the garbage matte of the keyer.
+    let (_, inverse) = applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n5", Input::GarbageMatte)],
+        ),
+    );
+    assert_eq!(inverse, remove("n6", Some(vec![])));
+    // It is its solid matte and its mask too: one output may feed several inputs.
+    for input in [Input::SolidMatte, Input::Mask] {
+        let (done, inverse) = applied(&mut project, connect(Link::new("n6", "n5", input)));
+        assert_eq!(done, connect(Link::new("n6", "n5", input)));
+        assert_eq!(inverse, disconnect("n5", input));
+    }
+    // Any picture may be a matte, in place of the one that the input had.
+    let (_, inverse) = applied(
+        &mut project,
+        connect(Link::new("n4", "n5", Input::SolidMatte)),
+    );
+    assert_eq!(inverse, connect(Link::new("n6", "n5", Input::SolidMatte)));
+    applied(
+        &mut project,
+        connect(Link::new(MEDIA_IN, "n5", Input::GarbageMatte)),
+    );
+    applied(
+        &mut project,
+        connect(Link::new("n6", "n5", Input::GarbageMatte)),
+    );
+    // A keyer has no background and no foreground; and no other kind has a matte.
+    for input in [Input::Background, Input::Foreground] {
+        assert_eq!(
+            refused(&project, connect(Link::new(MEDIA_IN, "n5", input))),
+            OpError::NoInput {
+                node: "n5".into(),
+                input
+            }
+        );
+    }
+    for node in [MEDIA_IN, MEDIA_OUT, "n3", "n4", "n6"] {
+        for input in [Input::GarbageMatte, Input::SolidMatte] {
+            assert_eq!(
+                refused(&project, connect(Link::new("n6", node, input))),
+                OpError::NoInput {
+                    node: node.into(),
+                    input
+                },
+                "{node}"
+            );
+        }
+    }
+    let filters = filtered();
+    for node in ["n5", "n6"] {
+        assert_eq!(
+            refused(
+                &filters,
+                connect(Link::new(MEDIA_IN, node, Input::GarbageMatte))
+            ),
+            OpError::NoInput {
+                node: node.into(),
+                input: Input::GarbageMatte
+            }
+        );
+    }
+    // A node that is added with a link into a matte of a kind that has none is refused too.
+    let wrong = add(
+        Node::new("", Kind::Ellipse),
+        vec![Link::new("", "n5", Input::SolidMatte)],
+    );
+    assert_eq!(
+        refused(&filters, wrong),
+        OpError::NoInput {
+            node: "n5".into(),
+            input: Input::SolidMatte
+        }
+    );
+    // A loop through a matte is a loop: of one node, and of several.
+    assert_eq!(
+        refused(
+            &project,
+            connect(Link::new("n5", "n5", Input::GarbageMatte))
+        ),
+        OpError::Loop { node: "n5".into() }
+    );
+    for (from, to, input) in [
+        ("n3", "n5", Input::GarbageMatte),
+        ("n3", "n5", Input::SolidMatte),
+        ("n5", "n6", Input::Mask),
+        ("n3", "n6", Input::Mask),
+    ] {
+        assert!(
+            matches!(
+                refused(&project, connect(Link::new(from, to, input))),
+                OpError::Loop { .. }
+            ),
+            "{from} into {to}"
+        );
+    }
+    // A matte is unlinked as another input is.
+    let (_, inverse) = applied(&mut project, disconnect("n5", Input::GarbageMatte));
+    assert_eq!(inverse, connect(Link::new("n6", "n5", Input::GarbageMatte)));
+    assert_eq!(
+        refused(&project, disconnect("n5", Input::GarbageMatte)),
+        missing("link", "n5")
+    );
+    // The links of a keyer are kept by the names of its inputs.
+    applied(&mut project, inverse);
+    let into: Vec<&str> = composition(&project, "c1")
+        .links
+        .iter()
+        .filter(|link| link.to == "n5")
+        .map(|link| link.input.name())
+        .collect();
+    assert_eq!(into, ["garbage_matte", "input", "mask", "solid_matte"]);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a keyer as a layer has it, after what it reads, and as it is passed through"
+)]
+fn a_delta_keyer_of_a_layer_is_its_numbers_at_the_frame_after_what_it_reads() {
+    let at = |id: &str, mask: Option<usize>| (id.to_owned(), mask);
+    assert_eq!(
+        drawn(&keyed()),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n5", None),
+            at("n3", None)
+        ]
+    );
+    // An Ellipse, n6, that is read as its garbage matte alone is among the nodes, after its
+    // picture; and a Rectangle, n7, its solid matte, after that.
+    let mut project = matted();
+    assert_eq!(
+        drawn(&project),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n6", None),
+            at("n7", None),
+            at("n5", None),
+            at("n3", None)
+        ]
+    );
+    // The Ellipse is its mask too: it is there once.
+    applied(&mut project, connect(Link::new("n6", "n5", Input::Mask)));
+    assert_eq!(drawn(&project)[4], at("n5", Some(2)));
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20.
+    applied(
+        &mut project,
+        set_keys("c1", "n5.gain", keys(&[(10, 1.0), (30, 3.0)])),
+    );
+    applied(
+        &mut project,
+        set_keys("c1", "n5.screen.b", keys(&[(10, 0.0), (30, 0.5)])),
+    );
+    applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({
+                "low": 0.125, "high": 0.875, "pre_blur": 4, "erode_dilate": -2,
+                "matte_blur": 3, "clean_foreground": 0.5, "clean_background": 0.25,
+                "balance": 0.75, "replace": "source", "replace_color": {"r": 0.25},
+                "garbage_invert": true, "spill_method": "rare", "spill_suppression": 0.5,
+                "view": "matte",
+            }),
+        ),
+    );
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    assert_eq!(fused.output, Some(5));
+    assert_eq!(
+        fused.nodes[4].kind,
+        FusedKind::DeltaKeyer {
+            input: Some(1),
+            garbage_matte: Some(2),
+            solid_matte: Some(3),
+            mask: Some(2),
+            settings: DeltaKeyed {
+                screen: [0.0, 1.0, 0.25],
+                gain: 2.0,
+                balance: 0.75,
+                pre_blur: 4.0,
+                low: 0.125,
+                high: 0.875,
+                erode_dilate: -2.0,
+                matte_blur: 3.0,
+                clean_foreground: 0.5,
+                clean_background: 0.25,
+                replace: ReplaceMode::Source,
+                replace_color: [0.25, 0.5, 0.5],
+                garbage_invert: true,
+                spill_method: SpillMethod::Rare,
+                spill_suppression: 0.5,
+                view: KeyerView::Matte,
+            },
+        }
+    );
+    assert_eq!(fused.nodes[4].kind.first_input(), Some(1));
+    assert_eq!(fused.nodes[4].kind.mask(), Some(2));
+    assert_eq!(fused.nodes[4].kind.reads(), [1, 2, 3, 2]);
+    assert_eq!(fused.nodes[5].kind.reads(), [0, 4]);
+    // A matte that is unlinked is not there, and the node that it read is not drawn where
+    // nothing else reads it.
+    let mut bare = project.clone();
+    applied(&mut bare, disconnect("n5", Input::SolidMatte));
+    assert_eq!(
+        drawn(&bare),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n6", None),
+            at("n5", Some(2)),
+            at("n3", None)
+        ]
+    );
+    // A keyer that is passed through hands on its picture, and neither its mattes nor its
+    // mask: the Merge lays the picture of the clip, as it did before the keyer.
+    applied(&mut project, passed_through("n5"));
+    assert_eq!(drawn(&project), drawn(&merged()));
+    assert_eq!(
+        drawn(&project),
+        [at("n4", None), at(MEDIA_IN, None), at("n3", None)]
+    );
+    // One that is taken away with the link to put in its place leaves its picture to what
+    // it fed.
+    let mut joined = matted();
+    let bridge = vec![Link::new(MEDIA_IN, "n3", Input::Foreground)];
+    let (_, inverse) = applied(&mut joined, remove("n5", Some(bridge)));
+    assert!(matches!(&inverse, Op::AddFusionNode { links, .. } if links.len() == 4));
+    assert_eq!(drawn(&joined), drawn(&merged()));
+}
+
+#[test]
+fn a_change_of_a_delta_keyer_that_changes_nothing_makes_no_step() {
+    let mut history = History::new(matted());
+    let revision = history.revision();
+    for op in [
+        set_params(
+            "n5",
+            json!({
+                "screen": {"g": 1.0}, "replace": "soft_color", "spill_method": "medium",
+                "garbage_invert": false, "view": "final_result", "high": 1.0,
+            }),
+        ),
+        set_params("n5", json!({"replace_color": {"b": 0.5}})),
+        set_keys("c1", "n5.gain", Param::Fixed(1.0)),
+        set_keys("c1", "n5.screen.r", Param::Fixed(0.0)),
+        connect(Link::new("n6", "n5", Input::GarbageMatte)),
+        connect(Link::new("n7", "n5", Input::SolidMatte)),
+    ] {
+        let nothing = history.change(vec![Change::Op(op.clone())], "desktop", |change, _| change);
+        assert_eq!(nothing.err(), Some(TransactionError::Empty), "{op:?}");
+    }
+    assert_eq!(history.revision(), revision);
+    assert!(!history.can_undo());
+    // One that changes something is a step, and is undone: the view too, which is a setting
+    // of the node.
+    let before = history.project().clone();
+    history
+        .change(
+            vec![Change::Op(set_params("n5", json!({"view": "status"})))],
             "desktop",
             |change, _| change,
         )

@@ -45,6 +45,9 @@
 //! - a Blur (`Pass::Blur`) and a Mosaic (`Pass::Mosaic`) are each a picture of the
 //!   composition made through textures of their own, in three passes of the card, or five:
 //!   see Blur and Mosaic below;
+//! - a Delta Keyer (`Pass::Key`) is a picture of the composition made by one pass of
+//!   `fusion_keyer.wgsl`, and through textures of its own before it where it reads the
+//!   pixels about each one: see The Delta Keyer below;
 //! - a node that changes nothing is no pass: its picture is that of its input. So is a
 //!   Transform as it is at first, a Merge whose foreground gives no picture or whose Blend is
 //!   0 (its background), and a Merge as it is at first over no background (its foreground):
@@ -53,9 +56,10 @@
 //!
 //! A composition whose `MediaOut` shows its `MediaIn`, as the one that a clip has at first
 //! does, has no pass at all: its layer is drawn as that of a clip without a composition, to
-//! the bit. One of `n` nodes, none of them a Blur or a Mosaic, costs `n` passes at the most,
-//! and one more for its source; and a composition without a Blur and without a Mosaic is
-//! drawn by the passes that it was drawn by before there were any, to the bit.
+//! the bit. One of `n` nodes, none of them a Blur, a Mosaic or a Delta Keyer, costs `n`
+//! passes at the most, and one more for its source; and a composition without a Blur,
+//! without a Mosaic and without a Delta Keyer is drawn by the passes that it was drawn by
+//! before there were any, to the bit.
 //!
 //! The textures are those of the neighbourhoods of grades ([`crate::neighbourhood`]), kept from
 //! frame to frame by their size: a pass draws into one that no pass after it reads
@@ -171,15 +175,72 @@
 //!
 //! A Mosaic is no pass, and is its input, where its cells are a pixel wide and a pixel high,
 //! whatever its mask; and one of no picture is no picture.
+//!
+//! # The Delta Keyer
+//!
+//! What a Delta Keyer is is told with the model ([`columbina_model::fusion`], The Delta
+//! Keyer), and its mathematics is [`crate::keyer`], which the shader is held to
+//! (`fusion_keyer.wgsl`): what the node makes of a pixel is [`crate::keyer::node_pixel`], and
+//! of a picture [`crate::keyer::node_picture`].
+//!
+//! The pictures are keyed **as they are**, in the working space of the timeline: where the
+//! project is not managed they are coded with their gamma, and nothing here makes them of
+//! linear light, which the mathematics of the keyer speaks of. No colour is converted in a
+//! pass of a keyer.
+//!
+//! A keyer that reads no pixel about another is one pass, which reads its picture, its
+//! garbage matte, its solid matte and its effect mask at the pixel: more pictures than a
+//! pass that lays reads, so that its passes bind a layout of their own, of a uniform and six
+//! pictures. Its uniform is of the size of the others, and lies with them: the four rows of
+//! [`crate::keyer::Keyer::uniform`], what the pass reads in the place that those leave free,
+//! and a fifth row of what the pass makes, the view, and how a filtered texture is read.
+//!
+//! The controls that read the pixels about each one are done with the filters of the
+//! neighbourhoods of grades ([`crate::neighbourhood`]), as a Blur is, through textures that
+//! the passes of a frame share:
+//!
+//! - with a Pre-Blur, the picture goes through the two passes of a Gaussian first, and the key
+//!   is taken of what they made, read between its texels (two passes more);
+//! - with an Erode/Dilate, a Matte Blur or a Clean, the matte of the key is drawn alone into
+//!   a texture (one pass more), white premultiplied by it; and each of the three, in that
+//!   order, filters that texture by two passes and draws the matte anew from it and from what
+//!   the filter made (three passes more each: a box for Erode/Dilate, a Gaussian for the
+//!   Matte Blur, and the Gaussian of the Cleans of a qualifier). The pass that makes the
+//!   picture then reads the matte that the last of them drew.
+//!
+//! So a keyer costs from one pass to thirteen. A control at 0 costs none; and a keyer that
+//! keys nothing (a Gain of 0, or a screen colour that keys have left with no channel above
+//! its other two) reads no pixel about another, its matte being one level all over, which
+//! those controls leave as it is. The lengths are in pixels of a picture
+//! [`crate::color::REFERENCE_HEIGHT`] high, as a Blur Size is, so that a keyer drawn smaller
+//! is the same share of its picture.
+//!
+//! The matte is kept in half floats between two of those controls, and the card writes a
+//! half float to the nearest or towards 0: a matte that went through them is within a step
+//! of a half float of the one of the processor at each, but for the pixels where an
+//! Erode/Dilate takes it through its edge, a twentieth of the box wide, where such a step of
+//! its mean is twenty of the matte.
+//!
+//! A keyer is no pass, and is its input, where it changes nothing: its view is the final
+//! result, it keys nothing, its thresholds leave a solid matte solid (the lower is below 1),
+//! it has no garbage matte, and it suppresses no spill (its method is None, or its Spill
+//! Suppression 0); whatever its solid matte, which has nothing to fill, and whatever its
+//! effect mask. Any other is a pass: with a garbage matte it takes from the alpha, with a
+//! spill method it changes the colours though it keys nothing, and a view of a matte is a
+//! picture of its own. One of no picture is no picture, whatever its view.
+//!
+//! A `garbage_matte` or a `solid_matte` that names a node which gives no picture here is not
+//! there, as a `mask` that does is no mask.
 
 use columbina_model::fusion::{
-    self as model, Blurred, Fused, FusedKind, Merged, Mosaicked, Transformed,
+    self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, Transformed,
 };
 
 use crate::color::Filter;
 use crate::geometry::{fit, raster_scale, samples, Affine};
 use crate::gpu::Gpu;
 use crate::grade::layout;
+use crate::keyer::{self, Finesse, Keyer, View};
 use crate::mask::{self, Common, FillMethod, PaintMode, Placed, Shape};
 use crate::merge::{Operator, Settings};
 use crate::mosaic::{self, Grid};
@@ -197,6 +258,9 @@ const BLUR_SHADER: &str = include_str!("fusion_blur.wgsl");
 
 /// The shader of the passes of a Mosaic.
 const MOSAIC_SHADER: &str = include_str!("fusion_mosaic.wgsl");
+
+/// The shader of the passes of a Delta Keyer.
+const KEYER_SHADER: &str = include_str!("fusion_keyer.wgsl");
 
 /// The format of the pictures of a composition: that of the canvas, half floats, which keep
 /// what is above 1 and below 0.
@@ -238,6 +302,48 @@ const CELLS_DOWN: f32 = 1.0;
 /// What the uniform of `fusion_mosaic.wgsl` has as what the pass makes (`kind.x`) for the
 /// pass that draws the picture from the colours of its cells.
 const CELLS_SHOWN: f32 = 2.0;
+
+/// The place in the uniform of `fusion_keyer.wgsl` of what a pass of a keyer reads (`key.w`),
+/// a sum of the `READS_…` below: the one that the four rows of
+/// [`crate::keyer::Keyer::uniform`] leave free.
+const READS_AT: usize = 7;
+
+/// The place in the uniform of `fusion_keyer.wgsl` of its fifth row (`made`): what the pass
+/// makes, the view of the node, and the texels of a filtered texture to a pixel of the
+/// picture, across and down.
+const MADE_AT: usize = 16;
+
+/// A pass of a keyer reads a garbage matte.
+const READS_GARBAGE: f32 = 1.0;
+
+/// It reads the garbage matte the other way round.
+const READS_GARBAGE_INVERTED: f32 = 2.0;
+
+/// It reads a solid matte.
+const READS_SOLID: f32 = 4.0;
+
+/// It reads an effect mask.
+const READS_MASK: f32 = 8.0;
+
+/// It reads the matte that the passes before it drew.
+const READS_MATTE: f32 = 16.0;
+
+/// It keys the picture blurred by a Pre-Blur.
+const READS_BLURRED: f32 = 32.0;
+
+/// What the uniform of `fusion_keyer.wgsl` has as what the pass makes (`made.x`) for the pass
+/// that draws the matte of the key alone; the pass that makes the picture has 0.
+const KEY_MATTE: f32 = 1.0;
+
+/// The same for the pass that draws the matte anew through Erode/Dilate.
+const KEY_ERODED: f32 = 2.0;
+
+/// The same for the pass that draws the matte anew through the Matte Blur.
+const KEY_SOFTENED: f32 = 3.0;
+
+/// The same for the pass that draws the matte anew through Clean Foreground and Clean
+/// Background.
+const KEY_CLEANED: f32 = 4.0;
 
 /// How the pass of a Mosaic that draws the picture is keyed (`kind.z` of the uniform of
 /// `fusion_mosaic.wgsl`).
@@ -294,6 +400,7 @@ fn is_drawn(kind: &FusedKind) -> bool {
             | FusedKind::Polygon { .. }
             | FusedKind::Blur { .. }
             | FusedKind::Mosaic { .. }
+            | FusedKind::DeltaKeyer { .. }
     )
 }
 
@@ -479,22 +586,73 @@ pub(crate) enum Pass {
         /// 1 over all of it. Never where there is no key.
         whole: bool,
     },
+    /// A Delta Keyer: its picture keyed by a pass of `fusion_keyer.wgsl`, which makes one
+    /// picture of the composition; and before it, where the keyer reads the pixels about
+    /// each one, the passes of filters of the neighbourhoods and those that draw its matte,
+    /// into textures of their own ([`Keying`]).
+    Key {
+        /// The picture that is keyed: never nothing.
+        input: Reads,
+        /// The picture whose alpha is the garbage matte; nothing where there is none.
+        garbage: Reads,
+        /// The picture whose alpha is the solid matte; nothing where there is none.
+        solid: Reads,
+        /// The picture whose alpha is the effect mask of the node; nothing where it has none.
+        mask: Reads,
+        /// What its passes are drawn with.
+        keying: Box<Keying>,
+    },
+}
+
+/// A control of the matte of a keyer that reads the pixels about each one (Erode/Dilate, the
+/// Matte Blur, or the Cleans): the two passes of its filter over the matte, across and down,
+/// and the uniform of the pass of `fusion_keyer.wgsl` that draws the matte anew from the
+/// matte and from what they made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Stage {
+    pub filter: [neighbourhood::Pass; 2],
+    pub uniform: [f32; PARAMS],
+}
+
+/// What the passes of a Delta Keyer are drawn with, over a picture of the size that the
+/// pictures are drawn at.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Keying {
+    /// The two passes of the filter of its Pre-Blur over its picture; none where it has
+    /// none, and the key is of the picture as it is.
+    pub pre_blur: Option<[neighbourhood::Pass; 2]>,
+    /// The controls of its matte that read the pixels about each one, in the order in which
+    /// they are done; none where every one of them is at 0, and the matte is that of the key.
+    pub stages: Vec<Stage>,
+    /// The uniform of the pass that draws the matte of the key alone, which is drawn where
+    /// there are stages.
+    pub matte: [f32; PARAMS],
+    /// The uniform of the pass that makes the picture.
+    pub uniform: [f32; PARAMS],
 }
 
 impl Pass {
     /// The pictures that the pass reads: nothing in the places of those that it has not.
-    fn reads(&self) -> [Reads; 3] {
+    fn reads(&self) -> [Reads; 4] {
+        let none = Reads::Nothing;
         match self {
-            Pass::Fill(_) => [Reads::Nothing; 3],
+            Pass::Fill(_) => [none; 4],
             Pass::Lay {
                 background,
                 foreground,
                 mask,
                 ..
-            } => [*background, *foreground, *mask],
-            Pass::Mask { incoming, .. } => [*incoming, Reads::Nothing, Reads::Nothing],
-            Pass::Blur { input, mask, .. } => [*input, *mask, Reads::Nothing],
-            Pass::Mosaic { input, key, .. } => [*input, *key, Reads::Nothing],
+            } => [*background, *foreground, *mask, none],
+            Pass::Mask { incoming, .. } => [*incoming, none, none, none],
+            Pass::Blur { input, mask, .. } => [*input, *mask, none, none],
+            Pass::Mosaic { input, key, .. } => [*input, *key, none, none],
+            Pass::Key {
+                input,
+                garbage,
+                solid,
+                mask,
+                ..
+            } => [*input, *garbage, *solid, *mask],
         }
     }
 
@@ -543,6 +701,19 @@ impl Pass {
                 key: renumbered(key),
                 grid,
                 whole,
+            },
+            Pass::Key {
+                input,
+                garbage,
+                solid,
+                mask,
+                keying,
+            } => Pass::Key {
+                input: renumbered(input),
+                garbage: renumbered(garbage),
+                solid: renumbered(solid),
+                mask: renumbered(mask),
+                keying,
             },
         }
     }
@@ -603,6 +774,24 @@ impl Plan {
         self.passes
             .iter()
             .any(|pass| matches!(pass, Pass::Mosaic { .. }))
+    }
+
+    /// Whether a pass of it is a Delta Keyer, which needs the pipeline of
+    /// `fusion_keyer.wgsl`.
+    pub(crate) fn keys(&self) -> bool {
+        self.passes
+            .iter()
+            .any(|pass| matches!(pass, Pass::Key { .. }))
+    }
+
+    /// Whether a pass of it goes through a filter of the neighbourhoods, which needs their
+    /// pipeline: a Blur, and a Delta Keyer that reads the pixels about each one.
+    pub(crate) fn filters(&self) -> bool {
+        self.passes.iter().any(|pass| match pass {
+            Pass::Blur { .. } => true,
+            Pass::Key { keying, .. } => keying.pre_blur.is_some() || !keying.stages.is_empty(),
+            Pass::Fill(_) | Pass::Lay { .. } | Pass::Mask { .. } | Pass::Mosaic { .. } => false,
+        })
     }
 
     /// The textures of its passes: a pass draws into one that no pass from it on reads, and
@@ -735,6 +924,25 @@ pub(crate) fn plan(
                 read(*mask),
                 settings,
                 (size, nominal),
+                &mut passes,
+            ),
+            // A matte that names a node which gives no picture is not there, as a mask is
+            // no mask.
+            FusedKind::DeltaKeyer {
+                input,
+                garbage_matte,
+                solid_matte,
+                mask,
+                settings,
+            } => keyed(
+                [
+                    read(*input),
+                    read(*garbage_matte),
+                    read(*solid_matte),
+                    read(*mask),
+                ],
+                settings,
+                size,
                 &mut passes,
             ),
             other => match mask::of_node(other) {
@@ -1148,6 +1356,161 @@ pub(crate) fn shown_uniform(grid: &Grid, keyed: Keyed) -> [f32; PARAMS] {
     uniform
 }
 
+/// The picture of a Delta Keyer of the first of `pictures`, the others being the pictures
+/// whose alphas are its garbage matte, its solid matte and its effect mask (nothing: it has
+/// none), drawn `size` pixels large: none where it is given none; that of its input where it
+/// changes nothing ([`keying`]); and else a pass.
+fn keyed(
+    pictures: [Reads; 4],
+    settings: &DeltaKeyed,
+    size: (u32, u32),
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    let [input, garbage, solid, mask] = pictures;
+    if input == Reads::Nothing {
+        return Reads::Nothing;
+    }
+    let linked = [garbage, solid, mask].map(|reads| reads != Reads::Nothing);
+    match keying(settings, linked, size) {
+        None => input,
+        Some(keying) => drawn(
+            passes,
+            Pass::Key {
+                input,
+                garbage,
+                solid,
+                mask,
+                keying: Box::new(keying),
+            },
+        ),
+    }
+}
+
+/// Whether a keyer of `k` that shows `view`, with a garbage matte or without one, is its
+/// picture as it came in: it shows the final result, it keys nothing, its thresholds leave a
+/// solid matte solid, it suppresses no spill, and no garbage matte takes from it. Its solid
+/// matte has then nothing to fill, and its effect mask mixes its picture with itself.
+#[allow(
+    clippy::float_cmp,
+    reason = "a Gain and a spill that are 0 themselves, and the solid end of a matte"
+)]
+fn keys_nothing(k: &Keyer, view: View, garbage: bool) -> bool {
+    view == View::FinalResult
+        && !garbage
+        && k.gain == 0.0
+        && k.spill == 0.0
+        && keyer::thresholds(k, 1.0) == 1.0
+}
+
+/// How many texels of a filtered texture, which has `filtered` of them, lie to a pixel of a
+/// picture of `size` pixels, across and down.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "sizes of textures, which a float holds"
+)]
+fn texels(filtered: (u32, u32), size: (u32, u32)) -> [f32; 2] {
+    [
+        filtered.0 as f32 / size.0.max(1) as f32,
+        filtered.1 as f32 / size.1.max(1) as f32,
+    ]
+}
+
+/// A control of the matte of a keyer that is drawn by the pass that makes `made`
+/// ([`KEY_ERODED`], [`KEY_SOFTENED`] or [`KEY_CLEANED`]), with the two `numbers` that the pass
+/// reads and the two passes of its `filter` over a matte of `size` pixels.
+fn stage(
+    made: f32,
+    numbers: [f32; 2],
+    filter: [neighbourhood::Pass; 2],
+    size: (u32, u32),
+) -> Stage {
+    let mut uniform = [0.0; PARAMS];
+    uniform[..2].copy_from_slice(&numbers);
+    uniform[MADE_AT] = made;
+    uniform[MADE_AT + 2..].copy_from_slice(&texels(filter[1].target, size));
+    Stage { filter, uniform }
+}
+
+/// What the passes of a Delta Keyer of `settings` are drawn with, for pictures drawn `size`
+/// pixels large; `linked` says whether it has a garbage matte, a solid matte and an effect
+/// mask. None where the keyer changes nothing, and is its picture as it came in.
+///
+/// The settings are taken as [`crate::keyer::Node`] and [`Keyer::of`] take them. The controls
+/// that read the pixels about each one are each there where they are not at 0, and none of
+/// them where the keyer keys nothing: their lengths are in pixels of a picture 1080 high.
+#[allow(
+    clippy::float_cmp,
+    reason = "an Erode/Dilate that is 0 itself, which does nothing"
+)]
+pub(crate) fn keying(settings: &DeltaKeyed, linked: [bool; 3], size: (u32, u32)) -> Option<Keying> {
+    let node = keyer::Node::from(settings);
+    let k = node.keyer();
+    let [garbage, solid, limited] = linked;
+    if keys_nothing(&k, node.view, garbage) {
+        return None;
+    }
+    // A matte of one level all over is left as it is by whatever reads the pixels about one.
+    let finesse = if k.gain > 0.0 {
+        node.finesse.held()
+    } else {
+        Finesse::default()
+    };
+    let per = units(size);
+    let gaussian = |sigma: f32| {
+        let filter = Filter::Gaussian { sigma: [sigma; 2] };
+        neighbourhood::passes(filter, per, size)
+    };
+    let pre_blur = (finesse.pre_blur > 0.0).then(|| gaussian(finesse.pre_blur));
+    let mut stages = Vec::new();
+    if finesse.erode_dilate != 0.0 {
+        let radius = [finesse.erode_dilate.abs(); 2];
+        let filter = neighbourhood::passes(Filter::Box { radius }, per, size);
+        let grow = f32::from(finesse.erode_dilate > 0.0);
+        let numbers = [grow, keyer::MORPH_EDGE];
+        stages.push(stage(KEY_ERODED, numbers, filter, size));
+    }
+    if finesse.matte_blur > 0.0 {
+        let filter = gaussian(finesse.matte_blur);
+        stages.push(stage(KEY_SOFTENED, [0.0; 2], filter, size));
+    }
+    if finesse.clean_foreground > 0.0 || finesse.clean_background > 0.0 {
+        let filter = neighbourhood::passes(layout::clean_filter(), per, size);
+        let numbers = [finesse.clean_background, finesse.clean_foreground];
+        stages.push(stage(KEY_CLEANED, numbers, filter, size));
+    }
+    let reads = [
+        (garbage, READS_GARBAGE),
+        (garbage && node.garbage_invert, READS_GARBAGE_INVERTED),
+        (solid, READS_SOLID),
+        (limited, READS_MASK),
+        (!stages.is_empty(), READS_MATTE),
+        (pre_blur.is_some(), READS_BLURRED),
+    ];
+    let mut uniform = [0.0; PARAMS];
+    uniform[..MADE_AT].copy_from_slice(&k.uniform());
+    uniform[READS_AT] = reads
+        .into_iter()
+        .filter_map(|(read, flag)| read.then_some(flag))
+        .sum();
+    uniform[MADE_AT + 1] = match node.view {
+        View::PreMatte => 0.0,
+        View::Matte => 1.0,
+        View::Status => 2.0,
+        View::FinalResult => 3.0,
+    };
+    if let Some(filter) = &pre_blur {
+        uniform[MADE_AT + 2..].copy_from_slice(&texels(filter[1].target, size));
+    }
+    let mut matte = uniform;
+    matte[MADE_AT] = KEY_MATTE;
+    Some(Keying {
+        pre_blur,
+        stages,
+        matte,
+        uniform,
+    })
+}
+
 /// The settings of a Merge of the model as the mathematics takes them
 /// ([`Settings::held`]).
 #[allow(
@@ -1300,10 +1663,18 @@ pub(crate) fn mosaic_shader() -> String {
     MOSAIC_SHADER.to_owned()
 }
 
+/// The shader of the passes of a Delta Keyer: `fusion_keyer.wgsl`, as it is. The passes
+/// that filter its picture and its matte are those of `neighbourhood.wgsl`, by the pipeline
+/// of the filters of neighbourhoods.
+pub(crate) fn keyer_shader() -> String {
+    KEYER_SHADER.to_owned()
+}
+
 /// The pipeline of the passes that lay, of the shader `source` ([`shader`]), of those that
-/// draw masks ([`mask_shader`]), of that which mixes a blurred picture ([`blur_shader`]) or
-/// of those of a Mosaic ([`mosaic_shader`]), `layout` binding what they read: it writes each
-/// pixel as it makes it, into a texture of [`FORMAT`].
+/// draw masks ([`mask_shader`]), of that which mixes a blurred picture ([`blur_shader`]), of
+/// those of a Mosaic ([`mosaic_shader`]) or of those of a Delta Keyer ([`keyer_shader`]),
+/// `layout` binding what they read: it writes each pixel as it makes it, into a texture of
+/// [`FORMAT`].
 pub(crate) fn pipeline(
     device: &wgpu::Device,
     source: &str,
@@ -1418,6 +1789,10 @@ pub(crate) struct Card {
     /// What binds the uniform of a pass that draws a mask, the mask that comes into it and
     /// the sides of the polygons of the frame.
     pub mask_layout: wgpu::BindGroupLayout,
+    /// What binds the uniform of a pass of a Delta Keyer and the six pictures that it may
+    /// read: its picture, what a filter made, the matte that the passes before it drew, and
+    /// the pictures of its garbage matte, of its solid matte and of its effect mask.
+    pub keyer_layout: wgpu::BindGroupLayout,
     /// A texel of nothing: the background of a pass that has none, and what is bound in the
     /// place of a mask where there is none, which is not read.
     nothing: wgpu::TextureView,
@@ -1478,9 +1853,22 @@ impl Card {
                 buffer(2, storage, false, SIDE_SIZE),
             ],
         });
+        let keyer_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("columbina keyer of a composition"),
+            entries: &[
+                buffer(0, wgpu::BufferBindingType::Uniform, true, PARAMS_SIZE),
+                picture(1),
+                picture(2),
+                picture(3),
+                picture(4),
+                picture(5),
+                picture(6),
+            ],
+        });
         Card {
             layout,
             mask_layout,
+            keyer_layout,
             nothing: nothing(gpu),
             uniform: uniform_buffer(device, u64::from(slot) * 4),
             sides: sides_buffer(device, FIRST_SIDES * SIDE_SIZE),
@@ -1635,6 +2023,37 @@ impl Card {
         draw(encoder, pipeline, &bind, offset, target);
     }
 
+    /// Draw a pass of a Delta Keyer into `target`, by `pipeline` and the uniform at `offset`.
+    /// `pictures` are bound in their order: the picture as it came in (or, of a pass that
+    /// draws the matte anew, the matte so far), what a filter made, the matte that the passes
+    /// before drew, and the pictures whose alphas are the garbage matte, the solid matte and
+    /// the effect mask of the node; a texel of nothing in the place of one that the pass has
+    /// not, which it does not read.
+    pub(crate) fn key(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        offset: u32,
+        pictures: [Option<&wgpu::Texture>; 6],
+        target: &wgpu::Texture,
+    ) {
+        let views = pictures.map(|picture| self.view(picture));
+        let mut entries = vec![self.params()];
+        for (binding, view) in (1..).zip(&views) {
+            entries.push(wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("columbina keyer of a composition"),
+            layout: &self.keyer_layout,
+            entries: &entries,
+        });
+        draw(encoder, pipeline, &bind, offset, target);
+    }
+
     /// What binds the uniform of a pass: a slot of the buffer of the uniforms of the frame,
     /// which the offset of the pass chooses.
     fn params(&self) -> wgpu::BindGroupEntry<'_> {
@@ -1750,6 +2169,10 @@ mod tests {
 
     use super::*;
     use crate::grade::REC709_LUMA;
+
+    /// A keyer that is a pass: what makes it one, the mattes and the mask that it reads, and
+    /// what is set of a keyer that changes nothing.
+    type KeyerPass = (&'static str, [Option<usize>; 3], fn(&mut DeltaKeyed));
 
     const SIZE: (u32, u32) = (16, 8);
 
@@ -3201,6 +3624,435 @@ mod tests {
             [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]
         );
         assert_eq!(resting[12..16], [1.0, 1.0, 0.0, 1.0]);
+    }
+
+    /// A Delta Keyer of the picture at `input`, as it is at first but for what `set` sets,
+    /// with the nodes at `mattes` linked into its garbage matte, its solid matte and its
+    /// effect mask.
+    fn delta(
+        input: Option<usize>,
+        mattes: [Option<usize>; 3],
+        set: impl FnOnce(&mut DeltaKeyed),
+    ) -> FusedKind {
+        let mut settings = model::DeltaKeyer::default().at(0.0);
+        set(&mut settings);
+        let [garbage_matte, solid_matte, mask] = mattes;
+        FusedKind::DeltaKeyer {
+            input,
+            garbage_matte,
+            solid_matte,
+            mask,
+            settings,
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a keyer alone, and one with its mattes and its mask, and what each is given"
+    )]
+    fn a_delta_keyer_is_a_pass_of_its_numbers_that_reads_its_picture_its_mattes_and_its_mask() {
+        assert!(is_drawn(&delta(None, [None; 3], |_| {})));
+        let plan = planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("key", delta(Some(0), [None; 3], |_| {})),
+            ],
+            Some(1),
+        );
+        assert_eq!(plan.output, Reads::Pass(0));
+        assert!(plan.keys() && plan.reads_source() && !plan.filters());
+        assert!(!plan.blurs() && !plan.lays() && !plan.masks() && !plan.mosaics());
+        let [Pass::Key {
+            input,
+            garbage,
+            solid,
+            mask,
+            keying,
+        }] = plan.passes.as_slice()
+        else {
+            panic!("a keyer");
+        };
+        assert_eq!(
+            [*input, *garbage, *solid, *mask],
+            [
+                Reads::Source,
+                Reads::Nothing,
+                Reads::Nothing,
+                Reads::Nothing
+            ]
+        );
+        // It reads no pixel about another: no filter, and no matte drawn before it.
+        assert_eq!(keying.pre_blur, None);
+        assert_eq!(keying.stages, [] as [Stage; 0]);
+        // The four rows of the keyer of its settings, with what it reads in the place that
+        // they leave free: nothing but its picture. And what it makes: the picture, of the
+        // final result.
+        let uniform = keying.uniform;
+        let rows = Keyer::of(&keyer::Settings::default()).uniform();
+        assert_eq!(uniform[..READS_AT], rows[..READS_AT]);
+        assert_eq!(uniform[READS_AT + 1..MADE_AT], rows[READS_AT + 1..]);
+        assert_eq!(uniform[..4], [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(uniform[4..8], [1.0, 1.0, 0.5, 0.0]);
+        assert_eq!(uniform[8..12], [0.0, 1.0, 0.5, 1.0]);
+        assert_eq!(uniform[12..16], [0.5, 0.5, 0.5, 3.0]);
+        assert_eq!(uniform[MADE_AT..], [0.0, 3.0, 0.0, 0.0]);
+        assert_eq!(u64::try_from(uniform.len() * 4).unwrap(), PARAMS_SIZE);
+        // One picture of the composition.
+        assert_eq!(
+            plan.slots(),
+            Slots {
+                source: Some(0),
+                passes: vec![1],
+                count: 2
+            }
+        );
+        // With a garbage matte read the other way round, a solid matte and a mask: each is
+        // read by the pass, after it is drawn; and the view of the node goes with it.
+        let plan = planned(
+            vec![
+                node("g", rectangle(None)),
+                node("s", ellipse(None)),
+                node("e", ellipse(None)),
+                node("in", FusedKind::MediaIn),
+                node(
+                    "key",
+                    delta(Some(3), [Some(0), Some(1), Some(2)], |keyer| {
+                        keyer.garbage_invert = true;
+                        keyer.view = model::KeyerView::Status;
+                    }),
+                ),
+            ],
+            Some(4),
+        );
+        assert_eq!(plan.passes.len(), 4);
+        assert!(plan.keys() && plan.masks() && !plan.filters());
+        let Pass::Key {
+            input,
+            garbage,
+            solid,
+            mask,
+            keying,
+        } = &plan.passes[3]
+        else {
+            panic!("a keyer");
+        };
+        assert_eq!(
+            [*input, *garbage, *solid, *mask],
+            [
+                Reads::Source,
+                Reads::Pass(0),
+                Reads::Pass(1),
+                Reads::Pass(2)
+            ]
+        );
+        let all = READS_GARBAGE + READS_GARBAGE_INVERTED + READS_SOLID + READS_MASK;
+        assert_eq!(keying.uniform[READS_AT], all);
+        assert_eq!(keying.uniform[MADE_AT..], [0.0, 2.0, 0.0, 0.0]);
+        assert_eq!(
+            plan.slots(),
+            Slots {
+                source: Some(0),
+                passes: vec![1, 2, 3, 4],
+                count: 5
+            }
+        );
+        // The invert of a garbage matte that is not there is nothing; and a matte that names
+        // a node which gives no picture is not there, as a mask is no mask.
+        let plan = planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("clear", background([1.0, 1.0, 1.0, 0.0])),
+                node(
+                    "key",
+                    delta(Some(0), [Some(1); 3], |keyer| keyer.garbage_invert = true),
+                ),
+            ],
+            Some(2),
+        );
+        let [Pass::Key {
+            garbage,
+            solid,
+            mask,
+            keying,
+            ..
+        }] = plan.passes.as_slice()
+        else {
+            panic!("a keyer");
+        };
+        assert_eq!([*garbage, *solid, *mask], [Reads::Nothing; 3]);
+        assert_eq!(keying.uniform[READS_AT], 0.0);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each keyer that changes nothing, and each that seems to and does not"
+    )]
+    fn a_delta_keyer_that_changes_nothing_is_its_input_and_no_pass() {
+        // In each graph an Ellipse, which may be a matte or the mask, is at 0 and the
+        // `MediaIn` at 1.
+        let with = |kind: FusedKind| {
+            planned(
+                vec![
+                    node("e", ellipse(None)),
+                    node("in", FusedKind::MediaIn),
+                    node("key", kind),
+                ],
+                Some(2),
+            )
+        };
+        let idle: fn(&mut DeltaKeyed) = |keyer| {
+            keyer.gain = 0.0;
+            keyer.spill_method = model::SpillMethod::None;
+        };
+        // A Gain of 0 and no spill method, the final result shown: the picture as it came
+        // in, whatever its solid matte, which has nothing to fill, and whatever its mask;
+        // neither is drawn then.
+        for mattes in [
+            [None; 3],
+            [None, Some(0), None],
+            [None, None, Some(0)],
+            [None, Some(0), Some(0)],
+        ] {
+            let plan = with(delta(Some(1), mattes, idle));
+            assert_eq!(plan.passes, [] as [Pass; 0], "{mattes:?}");
+            assert_eq!(plan.output, Reads::Source, "{mattes:?}");
+        }
+        // The same with a Spill Suppression of 0 in place of no method; with every control
+        // that reads the pixels about each one set, and any replace mode; with a screen
+        // colour that has no channel above its other two, which keys nothing; and with a
+        // Gain and a Spill Suppression that are no numbers.
+        let others: [fn(&mut DeltaKeyed); 4] = [
+            |keyer| {
+                keyer.gain = 0.0;
+                keyer.spill_suppression = 0.0;
+            },
+            |keyer| {
+                keyer.gain = 0.0;
+                keyer.spill_method = model::SpillMethod::None;
+                keyer.pre_blur = 5.0;
+                keyer.erode_dilate = -3.0;
+                keyer.matte_blur = 4.0;
+                keyer.clean_foreground = 0.5;
+                keyer.clean_background = 0.5;
+                keyer.replace = model::ReplaceMode::Source;
+            },
+            |keyer| {
+                keyer.screen = [0.5; 3];
+                keyer.spill_method = model::SpillMethod::None;
+            },
+            |keyer| {
+                keyer.gain = f64::NAN;
+                keyer.spill_suppression = f64::NAN;
+            },
+        ];
+        for (at, set) in others.into_iter().enumerate() {
+            let plan = with(delta(Some(1), [None; 3], set));
+            assert_eq!(plan.passes, [] as [Pass; 0], "{at}");
+            assert_eq!(plan.output, Reads::Source, "{at}");
+        }
+        // But it is a pass with a garbage matte, which takes from the alpha; where it
+        // suppresses spill, which changes the colours though nothing is keyed; where it
+        // shows a matte, a picture of its own; where its thresholds are both 1, which leave
+        // nothing solid; and where it keys.
+        let passes: [KeyerPass; 5] = [
+            ("a garbage matte", [Some(0), None, None], idle),
+            ("a spill method", [None; 3], |keyer| keyer.gain = 0.0),
+            ("a view of the matte", [None; 3], |keyer| {
+                keyer.gain = 0.0;
+                keyer.spill_method = model::SpillMethod::None;
+                keyer.view = model::KeyerView::Matte;
+            }),
+            ("thresholds that are both 1", [None; 3], |keyer| {
+                keyer.gain = 0.0;
+                keyer.spill_method = model::SpillMethod::None;
+                keyer.low = 1.0;
+                keyer.high = 1.0;
+            }),
+            ("a gain", [None; 3], |keyer| {
+                keyer.spill_method = model::SpillMethod::None;
+            }),
+        ];
+        for (what, mattes, set) in passes {
+            let plan = with(delta(Some(1), mattes, set));
+            assert!(plan.keys(), "{what}");
+            assert_eq!(plan.output, Reads::Pass(plan.passes.len() - 1), "{what}");
+            // A keyer that keys nothing reads no pixel about another.
+            assert!(!plan.filters(), "{what}");
+        }
+        // A keyer of no picture is no picture, whatever its view and its mattes.
+        for view in [
+            model::KeyerView::PreMatte,
+            model::KeyerView::Matte,
+            model::KeyerView::Status,
+            model::KeyerView::FinalResult,
+        ] {
+            let nothing = with(delta(None, [Some(0); 3], |keyer| keyer.view = view));
+            assert_eq!(nothing, Plan::default(), "{view:?}");
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each control of a keyer that reads the pixels about each one, and all of them"
+    )]
+    fn the_controls_of_a_keyer_about_a_pixel_are_filters_of_the_neighbourhoods_and_none_at_0() {
+        let full = (1920, 1080);
+        let drawn_at = |size: (u32, u32), set: fn(&mut DeltaKeyed)| {
+            let plan = plan_of(
+                vec![
+                    node("in", FusedKind::MediaIn),
+                    node("key", delta(Some(0), [None; 3], set)),
+                ],
+                Some(1),
+                size,
+                true,
+            );
+            let [Pass::Key { keying, .. }] = plan.passes.as_slice() else {
+                panic!("a keyer");
+            };
+            let reads = keying.pre_blur.is_some() || !keying.stages.is_empty();
+            assert_eq!(plan.filters(), reads);
+            // One picture of the composition, whatever textures of its own it is made
+            // through.
+            assert_eq!(
+                plan.slots(),
+                Slots {
+                    source: Some(0),
+                    passes: vec![1],
+                    count: 2
+                }
+            );
+            (**keying).clone()
+        };
+        let with = |set: fn(&mut DeltaKeyed)| drawn_at(full, set);
+        let gaussian = |sigma: f32| {
+            let filter = Filter::Gaussian { sigma: [sigma; 2] };
+            neighbourhood::passes(filter, 1.0, full)
+        };
+        // As it is at first: none of them. The pass that would draw the matte of the key
+        // alone has the numbers of the pass that makes the picture, and makes the matte.
+        let first = with(|_| {});
+        assert_eq!((first.pre_blur, first.stages.len()), (None, 0));
+        assert_eq!(first.uniform[READS_AT], 0.0);
+        assert_eq!(first.matte[..MADE_AT], first.uniform[..MADE_AT]);
+        assert_eq!(first.matte[MADE_AT..], [KEY_MATTE, 3.0, 0.0, 0.0]);
+        // A Pre-Blur: in a picture 1080 high it is so many pixels, a Gaussian of 5, which is
+        // taken at a pixel of two and read at half a texel to a pixel.
+        let soft = with(|keyer| keyer.pre_blur = 5.0);
+        assert_eq!(soft.pre_blur, Some(gaussian(5.0)));
+        assert_eq!(soft.stages.len(), 0);
+        assert_eq!(soft.uniform[READS_AT], READS_BLURRED);
+        assert_eq!(soft.uniform[MADE_AT..], [0.0, 3.0, 0.5, 0.5]);
+        assert_eq!(soft.matte[MADE_AT..], [KEY_MATTE, 3.0, 0.5, 0.5]);
+        // Every control of the matte: Erode/Dilate, the Matte Blur and the Cleans, in that
+        // order, each with the two passes of its filter and what the pass after them reads.
+        let every = with(|keyer| {
+            keyer.erode_dilate = -3.0;
+            keyer.matte_blur = 2.0;
+            keyer.clean_foreground = 0.25;
+            keyer.clean_background = 0.5;
+        });
+        assert_eq!(every.pre_blur, None);
+        assert_eq!(every.uniform[READS_AT], READS_MATTE);
+        assert_eq!(every.uniform[MADE_AT..], [0.0, 3.0, 0.0, 0.0]);
+        let [eroded, softened, cleaned] = every.stages.as_slice() else {
+            panic!("three controls");
+        };
+        let boxed = neighbourhood::passes(Filter::Box { radius: [3.0; 2] }, 1.0, full);
+        assert_eq!(eroded.filter, boxed);
+        assert_eq!(eroded.uniform[..2], [0.0, keyer::MORPH_EDGE]);
+        assert_eq!(eroded.uniform[MADE_AT..], [KEY_ERODED, 0.0, 1.0, 1.0]);
+        assert_eq!(softened.filter, gaussian(2.0));
+        assert_eq!(softened.uniform[..2], [0.0, 0.0]);
+        assert_eq!(softened.uniform[MADE_AT..], [KEY_SOFTENED, 0.0, 1.0, 1.0]);
+        let clean = neighbourhood::passes(layout::clean_filter(), 1.0, full);
+        assert_eq!(cleaned.filter, clean);
+        assert_eq!(cleaned.uniform[..2], [0.5, 0.25]);
+        assert_eq!(cleaned.uniform[MADE_AT..], [KEY_CLEANED, 0.0, 1.0, 1.0]);
+        for stage in &every.stages {
+            assert_eq!(stage.uniform[2..MADE_AT], [0.0; 14]);
+            assert_eq!(u64::try_from(stage.uniform.len() * 4).unwrap(), PARAMS_SIZE);
+        }
+        // Above 0 Erode/Dilate grows the matte; a box of 12 pixels is taken at a pixel of
+        // two.
+        let grown = with(|keyer| keyer.erode_dilate = 12.0);
+        assert_eq!(grown.stages.len(), 1);
+        assert_eq!(grown.stages[0].uniform[..2], [1.0, keyer::MORPH_EDGE]);
+        assert_eq!(grown.stages[0].uniform[MADE_AT + 2..], [0.5, 0.5]);
+        // Either Clean alone is the control.
+        let specks = with(|keyer| keyer.clean_background = 0.5);
+        assert_eq!(specks.stages.len(), 1);
+        assert_eq!(specks.stages[0].uniform[..2], [0.5, 0.0]);
+        // All of them: a keyer of thirteen passes of the card.
+        let all = with(|keyer| {
+            keyer.pre_blur = 5.0;
+            keyer.erode_dilate = 2.0;
+            keyer.matte_blur = 2.0;
+            keyer.clean_foreground = 0.5;
+        });
+        assert_eq!((all.pre_blur.is_some(), all.stages.len()), (true, 3));
+        assert_eq!(all.uniform[READS_AT], READS_MATTE + READS_BLURRED);
+        // A keyer that keys nothing reads no pixel about another, whatever they are set to:
+        // it is one pass, which suppresses the spill.
+        let idle = with(|keyer| {
+            keyer.gain = 0.0;
+            keyer.pre_blur = 5.0;
+            keyer.erode_dilate = -3.0;
+            keyer.matte_blur = 2.0;
+            keyer.clean_foreground = 1.0;
+        });
+        assert_eq!((idle.pre_blur, idle.stages.len()), (None, 0));
+        assert_eq!(idle.uniform[READS_AT], 0.0);
+        // Drawn at half the size, they reach half as many pixels: the same share of the
+        // picture.
+        let small = (960, 540);
+        let half = drawn_at(small, |keyer| {
+            keyer.pre_blur = 5.0;
+            keyer.erode_dilate = -3.0;
+        });
+        let sigma = Filter::Gaussian { sigma: [5.0; 2] };
+        assert_eq!(
+            half.pre_blur,
+            Some(neighbourhood::passes(sigma, 0.5, small))
+        );
+        let radius = Filter::Box { radius: [3.0; 2] };
+        assert_eq!(
+            half.stages[0].filter,
+            neighbourhood::passes(radius, 0.5, small)
+        );
+        assert_eq!(half.uniform[MADE_AT + 2..], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn the_shader_of_a_keyer_binds_its_six_pictures_and_has_the_numbers_of_the_maths() {
+        let shader = keyer_shader();
+        assert_eq!(shader.matches("@vertex").count(), 1);
+        assert_eq!(shader.matches("@fragment").count(), 1);
+        assert_eq!(shader.matches("var<uniform> params:").count(), 1);
+        for binding in 0..7 {
+            let bound = format!("@group(0) @binding({binding}) var");
+            assert_eq!(shader.matches(&bound).count(), 1, "{bound}");
+        }
+        assert!(!shader.contains("@binding(7)"));
+        // No sampler: every picture is read texel by texel.
+        assert!(!shader.contains("textureSample"));
+        // The numbers of the maths, which the shader is held to.
+        let largest = format!("const KEYER_LARGEST: f32 = {:.1};", keyer::LARGEST);
+        assert!(shader.contains(&largest), "{largest}");
+        assert!(shader.contains("const KEYER_STATUS_TOLERANCE: f32 = 0.00390625;"));
+        assert_eq!(keyer::STATUS_TOLERANCE, 0.003_906_25);
+        // The shaders of the other passes are as they were: they have nothing of it.
+        for other in [
+            super::shader(),
+            mask_shader(),
+            blur_shader(),
+            mosaic_shader(),
+        ] {
+            assert!(!other.contains("keyer_") && !other.contains("KEYER_"));
+        }
     }
 
     #[test]

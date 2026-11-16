@@ -79,15 +79,57 @@
 //! finite number, and a filter that reads a matte or a result reads nothing that spreads. A
 //! pre-matte or a matte given that is not a number is read as 0.
 //!
-//! # What is not here
+//! # What reads the pixels about a pixel
 //!
-//! Whatever reads the pixels about a pixel. The Delta Keyer's Pre-Blur, Erode/Dilate, Blur, Clean
-//! Foreground and Clean Background (pp. 2443, 2445) are what Matte Finesse does to the key of a
-//! qualifier with its Pre-Filter, Morph Operation, Blur Radius, Clean White and Clean Black
-//! (pp. 3178–3181; `clean`, `spread` and `morph` of [`crate::grade::maths`], over the filters of
-//! [`crate::neighbourhood`]), and are to be done with those: [`pre_matte`] is given the picture
-//! blurred, the matte goes through them, and [`result_with`] is given the pre-matte and the matte
-//! that they made. The garbage and solid mattes (p. 2440) change the matte in the same place.
+//! The Delta Keyer's Pre-Blur, Erode/Dilate, Blur, Clean Foreground and Clean Background
+//! (pp. 2443, 2445) are what Matte Finesse does to the key of a qualifier with its Pre-Filter,
+//! Morph Operation, Blur Radius, Clean White and Clean Black (pp. 3178–3181; `clean`, `spread`
+//! and `morph` of [`crate::grade::maths`], over the filters of [`crate::neighbourhood`]), and
+//! are done with those, which are not written a second time ([`Finesse`], [`mattes`]):
+//!
+//! 1. **Pre-Blur**: [`pre_matte`] is given the picture through a Gaussian of that standard
+//!    deviation, premultiplied as it is filtered and then not. The colours of [`result_with`]
+//!    are those of the picture as it is.
+//! 2. The pre-matte through the **thresholds** is the matte.
+//! 3. **Erode/Dilate** ([`eroded`]): a pass of Morph Operation over a box of that radius, which
+//!    shrinks the matte below 0 and grows it above.
+//! 4. **Matte Blur** ([`softened`]): the matte through a Gaussian of that standard deviation,
+//!    as Blur Radius with no In/Out Ratio.
+//! 5. **Clean Foreground** and **Clean Background** ([`cleaned`]): Clean White and Clean Black,
+//!    which fill the holes of what is solid and take away the specks of what is transparent,
+//!    over the Gaussian that they have there.
+//!
+//! A length is in pixels of a picture 1080 high, as the reach of a filter is. Each of them at
+//! 0 does nothing; and a keyer that keys nothing (a Gain of 0) reads no pixel about another,
+//! its matte being one level all over, which they leave as it is.
+//!
+//! # The node of a composition
+//!
+//! The Delta Keyer node of the composition of a clip ([`columbina_model::fusion`]) keeps these
+//! settings, by these names, in these units, within these ranges and with these values at
+//! first ([`of_node`] gives those of a node at one moment). What it makes of a pixel
+//! ([`node_pixel`]), which the shader of the compositor is held to:
+//!
+//! - **The picture** that comes in is premultiplied. Its colour is that not premultiplied, and
+//!   black where its alpha is not above 0 ([`unpremultiplied`]); the final result is made of
+//!   that colour and then multiplied, all four channels, by the alpha that came in, so that a
+//!   picture that is seen through in part is keyed as what is seen of it, and its alpha is the
+//!   matte times the alpha that it had. An opaque picture is keyed as the formulas above have
+//!   it, to the bit. The values are keyed **as they are**, in the working space of the
+//!   timeline: where the project is not colour managed they are coded with their gamma and are
+//!   not of linear light, and nothing here makes them so.
+//! - **The solid and garbage mattes** (p. 2440, [`met`]) change the matte after all of the
+//!   above: first where the solid matte is 1 the matte is made 1, `m + (1 − m) s`; then where
+//!   the garbage matte is 1 the matte is made 0, `m (1 − g)`. So the garbage matte wins where
+//!   both are 1 (ours). Each is the alpha of a picture, within 0 and 1; the garbage matte may
+//!   be read the other way round, `1 − g`; one that is not there changes nothing.
+//! - **The view**: Pre Matte shows the pre-matte, Matte the matte before the solid and garbage
+//!   mattes (p. 2442), Status and Final Result are of the matte after them. The mattes and
+//!   the status are opaque pictures, whatever the alpha that came in.
+//! - **The effect mask** mixes what the view shows with the pixel as it came in:
+//!   `first + (own − first) · mask`, the pixel as it came in where the mask is 0 and what the
+//!   view shows where it is 1, both to the bit.
+//!
 //! The tabs of the advanced tier are not kept: Pre Matte (a keyer of ranges of colour, with a
 //! clean plate), Tuning, Restore Fringe, the gamma, size, shape and colour of the fringe, and
 //! the colour balance reference.
@@ -97,10 +139,31 @@
     reason = "the maths of a shader: exact comparisons with neutral settings and ends of a matte"
 )]
 
-use crate::grade::maths::Rgb;
+use columbina_model::fusion::{self as model, DeltaKeyed, FusedKind};
+
+use crate::color::Filter;
+use crate::grade::layout as at;
+use crate::grade::maths::{self, Params, Rgb};
+use crate::neighbourhood::{self, Image};
 
 /// A colour and its alpha: R, G and B, premultiplied, and A.
 pub type Rgba = [f32; 4];
+
+/// The most Pre-Blur and the most Matte Blur, in pixels of a picture 1080 high. Ours: the
+/// manual gives no range.
+pub const MOST_BLUR: f32 = 100.0;
+
+/// The most Erode/Dilate, either way, in pixels of a picture 1080 high. Ours.
+pub const MOST_ERODE_DILATE: f32 = 100.0;
+
+/// How much of the box of Erode/Dilate about a pixel is to be in the matte for the pixel to be
+/// grown into it, or out of it for the pixel to be shrunk out of it: that of the Morph
+/// Operation of a qualifier.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a share of a box, which a float of 32 bits holds as the card reads it"
+)]
+pub const MORPH_EDGE: f32 = at::MORPH_EDGE as f32;
 
 /// The largest value of a channel: the largest that a half float holds, which is what the canvas
 /// is made of. What is beyond is read as this ([`sound`]).
@@ -617,6 +680,423 @@ pub fn shown_with(k: &Keyer, view: View, x: Rgb, pre: f32, matte: f32) -> Rgba {
 pub fn shown(k: &Keyer, view: View, x: Rgb) -> Rgba {
     let pre = pre_matte(k, x);
     shown_with(k, view, x, pre, thresholds(k, pre))
+}
+
+// ---------------------------------------------------------------------------------------------
+// What reads the pixels about a pixel
+// ---------------------------------------------------------------------------------------------
+
+/// The controls of a keyer that read the pixels about each one (see the module): none of them
+/// does anything at 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Finesse {
+    /// Pre-Blur, from 0 to [`MOST_BLUR`]: the standard deviation of the Gaussian that the
+    /// picture is keyed through, in pixels of a picture 1080 high.
+    pub pre_blur: f32,
+    /// Erode/Dilate, from less [`MOST_ERODE_DILATE`] to it: the radius of the box that the
+    /// matte is eroded over, below 0, or dilated over, above it, in pixels of a picture 1080
+    /// high.
+    pub erode_dilate: f32,
+    /// Matte Blur, from 0 to [`MOST_BLUR`]: the standard deviation of the Gaussian that the
+    /// matte is blurred by, in pixels of a picture 1080 high.
+    pub matte_blur: f32,
+    /// Clean Foreground, from 0 to 1.
+    pub clean_foreground: f32,
+    /// Clean Background, from 0 to 1.
+    pub clean_background: f32,
+}
+
+impl Finesse {
+    /// Check that each value is in its range.
+    ///
+    /// # Errors
+    /// A value is not a number, or out of its range: what, said for a person.
+    pub fn check(&self) -> Result<(), String> {
+        let within = |name: &str, value: f32, low: f32, high: f32| {
+            if value.is_finite() && (low..=high).contains(&value) {
+                Ok(())
+            } else {
+                Err(format!("{name} is from {low} to {high}, not {value}"))
+            }
+        };
+        within("pre_blur", self.pre_blur, 0.0, MOST_BLUR)?;
+        let most = MOST_ERODE_DILATE;
+        within("erode_dilate", self.erode_dilate, -most, most)?;
+        within("matte_blur", self.matte_blur, 0.0, MOST_BLUR)?;
+        within("clean_foreground", self.clean_foreground, 0.0, 1.0)?;
+        within("clean_background", self.clean_background, 0.0, 1.0)
+    }
+
+    /// The controls as the maths takes them: those that [`Finesse::check`] passes as they
+    /// are, a number out of its range brought to its nearest end, and what is not a number
+    /// read as 0.
+    #[must_use]
+    pub fn held(&self) -> Finesse {
+        Finesse {
+            pre_blur: held(self.pre_blur, 0.0, MOST_BLUR),
+            erode_dilate: held(self.erode_dilate, -MOST_ERODE_DILATE, MOST_ERODE_DILATE),
+            matte_blur: held(self.matte_blur, 0.0, MOST_BLUR),
+            clean_foreground: held(self.clean_foreground, 0.0, 1.0),
+            clean_background: held(self.clean_background, 0.0, 1.0),
+        }
+    }
+}
+
+/// The parameters of a corrector of a grade that has nothing but Matte Finesse: what `clean`,
+/// `spread` and `morph` of the maths of a grade read of it, so that a keyer does to its matte
+/// what a qualifier does to its key, by the same lines.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a sum of a few flags, far below what a float counts"
+)]
+fn finesse_block(
+    features: u32,
+    finesse: [f32; 4],
+    more: [f32; 4],
+) -> [[f32; 4]; at::CORRECTOR as usize] {
+    let mut block = [[0.0; 4]; at::CORRECTOR as usize];
+    block[at::FEATURES as usize] = [features as f32, 0.0, 0.0, 0.0];
+    block[at::FINESSE as usize] = finesse;
+    block[at::FINESSE_MORE as usize] = more;
+    block
+}
+
+/// A matte through Erode/Dilate (p. 2445), `around` the mean of the matte in the box of that
+/// radius about the pixel: a pass of Morph Operation, which grows the matte where
+/// `erode_dilate` is above 0 (a pixel is as much in the matte as any of the box is, to
+/// [`MORPH_EDGE`]) and shrinks it where it is below. At 0 the matte is as it is.
+#[must_use]
+pub fn eroded(matte: f32, around: f32, erode_dilate: f32) -> f32 {
+    let matte = unit(matte);
+    if erode_dilate.is_nan() || erode_dilate == 0.0 {
+        return matte;
+    }
+    let grow = if erode_dilate > 0.0 { 1.0 } else { 0.0 };
+    let block = finesse_block(at::MORPH_ON, [0.0; 4], [0.0, grow, 0.0, MORPH_EDGE]);
+    maths::morph(Params(&block), 0, matte, around, false)
+}
+
+/// A matte through the Matte Blur (p. 2445), `around` it through its Gaussian: Blur Radius
+/// with no In/Out Ratio, the blurred matte within 0 and 1.
+#[must_use]
+pub fn softened(around: f32) -> f32 {
+    let block = finesse_block(at::SPREAD_ON, [0.0; 4], [0.0; 4]);
+    maths::spread(Params(&block), 0, 0.0, around)
+}
+
+/// A matte through Clean Foreground and Clean Background (p. 2445), `around` the mean of the
+/// matte about the pixel: Clean Black by Clean Background, which takes a pixel in a region
+/// that is less in the matte than it towards 0, as a speck is; and Clean White by Clean
+/// Foreground, which takes one in a region that is more in the matte than 1 less it towards
+/// 1, as a hole is.
+#[must_use]
+pub fn cleaned(matte: f32, around: f32, clean_foreground: f32, clean_background: f32) -> f32 {
+    let finesse = [clean_background, clean_foreground, 0.0, 1.0];
+    let block = finesse_block(at::CLEAN_ON, finesse, [0.0; 4]);
+    maths::clean(Params(&block), 0, unit(matte), around)
+}
+
+/// The colour of a premultiplied pixel and its alpha, as a keyer reads them: the colour not
+/// premultiplied, and the alpha no less than 0 and no more than [`LARGEST`]. Where the alpha
+/// is not above 0, or is no number, nothing is seen: the colour is black and the alpha 0.
+#[must_use]
+pub fn unpremultiplied(pixel: Rgba) -> (Rgb, f32) {
+    let alpha = sound(pixel[3]);
+    if alpha > 0.0 {
+        (
+            [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha],
+            alpha,
+        )
+    } else {
+        ([0.0; 3], 0.0)
+    }
+}
+
+/// The pre-matte and the matte of each pixel of `image`, a premultiplied picture, row after
+/// row: what the key and the controls of the matte make of it, before the solid and garbage
+/// mattes (see the module). `units` of the pixels of the picture make a pixel of a picture
+/// [`crate::color::REFERENCE_HEIGHT`] high, which the lengths of `finesse` are counted in.
+///
+/// The picture and the matte are filtered as the card filters them
+/// ([`neighbourhood::filtered`]), and what a filter made is read between its texels at the
+/// middle of each pixel ([`neighbourhood::sample`]). A matte that goes through a control that
+/// reads the pixels about each one is kept in half floats between two of them, as the card
+/// keeps it, and is one when it comes out; a matte that goes through none is as the formulas
+/// make it.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "places of pixels, which a float holds"
+)]
+pub fn mattes(k: &Keyer, finesse: &Finesse, image: &Image, units: f32) -> Vec<[f32; 2]> {
+    // A keyer that keys nothing has a matte of one level, which nothing here changes.
+    let finesse = if k.gain > 0.0 {
+        finesse.held()
+    } else {
+        Finesse::default()
+    };
+    let width = image.width as usize;
+    let size = [image.width as f32, image.height as f32];
+    let middle = |pixel: usize| {
+        let (x, y) = (pixel % width.max(1), pixel / width.max(1));
+        [(x as f32 + 0.5) / size[0], (y as f32 + 0.5) / size[1]]
+    };
+    let soft = (finesse.pre_blur > 0.0).then(|| {
+        let filter = Filter::Gaussian {
+            sigma: [finesse.pre_blur; 2],
+        };
+        neighbourhood::filtered(image, filter, units)
+    });
+    let pres: Vec<f32> = image
+        .pixels
+        .iter()
+        .enumerate()
+        .map(|(pixel, own)| {
+            let read = match &soft {
+                Some(soft) => neighbourhood::sample(soft, middle(pixel)),
+                None => *own,
+            };
+            pre_matte(k, unpremultiplied(read).0)
+        })
+        .collect();
+    let mut matte: Vec<f32> = pres.iter().map(|pre| thresholds(k, *pre)).collect();
+    // The mean of the matte about each pixel, through `filter`: of the matte as the card
+    // keeps it, white premultiplied by it.
+    let around = |matte: &[f32], filter: Filter| -> Vec<f32> {
+        let picture = Image {
+            width: image.width,
+            height: image.height,
+            pixels: matte.iter().map(|level| [*level; 4]).collect(),
+        };
+        let filtered = neighbourhood::filtered(&picture, filter, units);
+        (0..matte.len())
+            .map(|pixel| neighbourhood::sample(&filtered, middle(pixel))[3])
+            .collect()
+    };
+    let kept =
+        |matte: Vec<f32>| -> Vec<f32> { matte.into_iter().map(neighbourhood::half).collect() };
+    if finesse.erode_dilate != 0.0 {
+        matte = kept(matte);
+        let radius = [finesse.erode_dilate.abs(); 2];
+        let means = around(&matte, Filter::Box { radius });
+        let grown = matte
+            .iter()
+            .zip(&means)
+            .map(|(level, mean)| eroded(*level, *mean, finesse.erode_dilate));
+        matte = kept(grown.collect());
+    }
+    if finesse.matte_blur > 0.0 {
+        matte = kept(matte);
+        let filter = Filter::Gaussian {
+            sigma: [finesse.matte_blur; 2],
+        };
+        let means = around(&matte, filter);
+        matte = kept(means.into_iter().map(softened).collect());
+    }
+    if finesse.clean_foreground > 0.0 || finesse.clean_background > 0.0 {
+        matte = kept(matte);
+        let means = around(&matte, at::clean_filter());
+        let clean = matte.iter().zip(&means).map(|(level, mean)| {
+            let (foreground, background) = (finesse.clean_foreground, finesse.clean_background);
+            cleaned(*level, *mean, foreground, background)
+        });
+        matte = kept(clean.collect());
+    }
+    pres.into_iter()
+        .zip(matte)
+        .map(|(pre, matte)| [pre, matte])
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The node of a composition
+// ---------------------------------------------------------------------------------------------
+
+/// The Delta Keyer node of a composition at one moment, as the maths takes it (see the
+/// module).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Node {
+    /// The controls of the key, of the thresholds, of the spill and of the replace mode.
+    pub settings: Settings,
+    /// The controls that read the pixels about each one.
+    pub finesse: Finesse,
+    /// What the node shows.
+    pub view: View,
+    /// Whether the garbage matte is read the other way round.
+    pub garbage_invert: bool,
+}
+
+impl Default for Node {
+    /// The settings as they are at first, with none of the controls that read the pixels
+    /// about each one, the final result shown, and the garbage matte read as it is.
+    fn default() -> Self {
+        Self {
+            settings: Settings::default(),
+            finesse: Finesse::default(),
+            view: View::FinalResult,
+            garbage_invert: false,
+        }
+    }
+}
+
+impl Node {
+    /// The keyer of its settings ([`Keyer::of`]).
+    #[must_use]
+    pub fn keyer(&self) -> Keyer {
+        Keyer::of(&self.settings)
+    }
+}
+
+// The settings of the Delta Keyer node of the model (`columbina_model::fusion`) are these, by
+// the same names and within the same ranges: a node at one moment is these settings as they
+// are.
+
+impl From<&DeltaKeyed> for Node {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "settings of a node, as the card takes them"
+    )]
+    fn from(settings: &DeltaKeyed) -> Self {
+        Self {
+            settings: Settings {
+                screen: settings.screen.map(|channel| channel as f32),
+                gain: settings.gain as f32,
+                balance: settings.balance as f32,
+                low: settings.low as f32,
+                high: settings.high as f32,
+                spill_method: match settings.spill_method {
+                    model::SpillMethod::None => SpillMethod::None,
+                    model::SpillMethod::Rare => SpillMethod::Rare,
+                    model::SpillMethod::Medium => SpillMethod::Medium,
+                    model::SpillMethod::WellDone => SpillMethod::WellDone,
+                    model::SpillMethod::Burnt => SpillMethod::Burnt,
+                },
+                spill_suppression: settings.spill_suppression as f32,
+                replace: match settings.replace {
+                    model::ReplaceMode::None => Replace::None,
+                    model::ReplaceMode::Source => Replace::Source,
+                    model::ReplaceMode::HardColor => Replace::HardColour,
+                    model::ReplaceMode::SoftColor => Replace::SoftColour,
+                },
+                replace_colour: settings.replace_color.map(|channel| channel as f32),
+            },
+            finesse: Finesse {
+                pre_blur: settings.pre_blur as f32,
+                erode_dilate: settings.erode_dilate as f32,
+                matte_blur: settings.matte_blur as f32,
+                clean_foreground: settings.clean_foreground as f32,
+                clean_background: settings.clean_background as f32,
+            },
+            view: match settings.view {
+                model::KeyerView::PreMatte => View::PreMatte,
+                model::KeyerView::Matte => View::Matte,
+                model::KeyerView::Status => View::Status,
+                model::KeyerView::FinalResult => View::FinalResult,
+            },
+            garbage_invert: settings.garbage_invert,
+        }
+    }
+}
+
+/// The settings of a Delta Keyer node of a composition at one moment, as the maths takes
+/// them. None of a node that is no Delta Keyer. The mattes and the mask that come into the
+/// node are not among them: they are the [`Incoming`] of [`node_pixel`].
+#[must_use]
+pub fn of_node(kind: &FusedKind) -> Option<Node> {
+    match kind {
+        FusedKind::DeltaKeyer { settings, .. } => Some(settings.into()),
+        _ => None,
+    }
+}
+
+/// What comes into a keyer from other nodes at a pixel: the alpha of the picture that is
+/// linked to each of its `garbage_matte`, `solid_matte` and `mask` inputs, and none of one
+/// that is not linked. Each is read within 0 and 1, and as 0 where it is no number.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Incoming {
+    /// The garbage matte, as it is linked: where it is 1 the matte is made transparent, or
+    /// where it is 0 with the invert of the node.
+    pub garbage: Option<f32>,
+    /// The solid matte: where it is 1 the matte is made solid.
+    pub solid: Option<f32>,
+    /// The effect mask of the node.
+    pub mask: Option<f32>,
+}
+
+/// A matte met with the solid and the garbage mattes that come in (p. 2440): first made 1
+/// where the solid matte is 1, `m + (1 − m) s`, and then 0 where the garbage matte is 1,
+/// `m (1 − g)`, so that the garbage matte wins where both are 1 (ours). With `garbage_invert`
+/// the garbage matte is read as 1 less what it is. A matte that is not there changes nothing,
+/// and neither does a solid matte of 0 or a garbage matte of 0, to the bit.
+#[must_use]
+pub fn met(matte: f32, incoming: &Incoming, garbage_invert: bool) -> f32 {
+    let mut matte = unit(matte);
+    if let Some(solid) = incoming.solid {
+        let solid = unit(solid);
+        if solid >= 1.0 {
+            matte = 1.0;
+        } else if solid > 0.0 {
+            matte += (1.0 - matte) * solid;
+        }
+    }
+    if let Some(garbage) = incoming.garbage {
+        let level = unit(garbage);
+        let garbage = if garbage_invert { 1.0 - level } else { level };
+        if garbage >= 1.0 {
+            matte = 0.0;
+        } else if garbage > 0.0 {
+            matte *= 1.0 - garbage;
+        }
+    }
+    matte
+}
+
+/// What a keyer node makes of the pixel `pixel`, premultiplied, of the pre-matte and the
+/// matte that the key and the controls of the matte made of it ([`mattes`]) and of what comes
+/// into the node there (see the module): what its view shows, mixed with the pixel as it came
+/// in by the effect mask.
+#[must_use]
+pub fn node_pixel(node: &Node, pixel: Rgba, pre: f32, matte: f32, incoming: &Incoming) -> Rgba {
+    let k = node.keyer();
+    let (colour, alpha) = unpremultiplied(pixel);
+    let after = met(matte, incoming, node.garbage_invert);
+    let own = match node.view {
+        View::Matte => shown_with(&k, View::Matte, colour, pre, matte),
+        View::PreMatte | View::Status => shown_with(&k, node.view, colour, pre, after),
+        View::FinalResult => result_with(&k, colour, pre, after).map(|value| value * alpha),
+    };
+    let Some(mask) = incoming.mask else {
+        return own;
+    };
+    let mask = unit(mask);
+    if mask <= 0.0 {
+        return pixel;
+    }
+    if mask >= 1.0 {
+        return own;
+    }
+    [0, 1, 2, 3].map(|channel| pixel[channel] + (own[channel] - pixel[channel]) * mask)
+}
+
+/// What a keyer node makes of each pixel of `image`, a premultiplied picture, row after row
+/// ([`mattes`] and [`node_pixel`]): `units` of its pixels make a pixel of a picture
+/// [`crate::color::REFERENCE_HEIGHT`] high, and `incoming` gives what comes into the node at
+/// the pixel of each number.
+#[must_use]
+pub fn node_picture(
+    node: &Node,
+    image: &Image,
+    units: f32,
+    incoming: &dyn Fn(usize) -> Incoming,
+) -> Vec<Rgba> {
+    let made = mattes(&node.keyer(), &node.finesse, image, units);
+    image
+        .pixels
+        .iter()
+        .zip(made)
+        .enumerate()
+        .map(|(at, (pixel, [pre, matte]))| node_pixel(node, *pixel, pre, matte, &incoming(at)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1209,6 +1689,527 @@ mod tests {
         assert_eq!(
             keyer(|s| s.spill_method = SpillMethod::None).uniform()[11],
             0.0
+        );
+    }
+
+    /// A node whose settings are those at first, set by `set`.
+    fn node(set: impl FnOnce(&mut Node)) -> Node {
+        let mut node = Node::default();
+        set(&mut node);
+        node
+    }
+
+    /// A picture 24 pixels wide and 16 high, opaque: `colour` gives that of the pixel (x, y).
+    fn picture(colour: impl Fn(u32, u32) -> Rgb) -> Image {
+        let (width, height) = (24, 16);
+        let pixels = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let rgb = colour(x, y);
+                [rgb[0], rgb[1], rgb[2], 1.0]
+            })
+            .collect();
+        Image {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    /// A pure green screen on the left half of [`picture`], and a grey on the right.
+    fn halved() -> Image {
+        picture(|x, _| if x < 12 { GREEN } else { [0.5; 3] })
+    }
+
+    /// The matte of the row 8 of a picture of [`picture`] through `finesse`, with the
+    /// settings as they are first: the lengths are pixels of the picture.
+    fn row(image: &Image, finesse: Finesse) -> Vec<f32> {
+        let made = mattes(&Keyer::of(&Settings::default()), &finesse, image, 1.0);
+        made[8 * 24..9 * 24].iter().map(|both| both[1]).collect()
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each setting of the node of the model against its own here"
+    )]
+    fn the_delta_keyer_of_the_model_has_these_settings_by_their_ranges_and_first_values() {
+        use columbina_model::fusion::bounds;
+        use columbina_model::grade::{Interp, Key, Param};
+        // What a Delta Keyer node of the model is at first, at any frame, is what these are
+        // at first.
+        let first = model::DeltaKeyer::default();
+        assert_eq!(Node::from(&first.at(12.0)), Node::default());
+        assert_eq!(Node::default().settings, Settings::default());
+        assert_eq!(Node::default().finesse, Finesse::default());
+        assert_eq!(Node::default().view, View::default());
+        // Each range of the model is the range of that setting here, with the same value at
+        // first: what the model takes these take, and what it refuses these refuse.
+        let settings = Settings::default();
+        for (name, theirs, ours) in [
+            (
+                "screen.r",
+                bounds::KEYER_SCREEN,
+                [settings.screen[0], 0.0, LARGEST],
+            ),
+            (
+                "screen.g",
+                bounds::KEYER_SCREEN_GREEN,
+                [settings.screen[1], 0.0, LARGEST],
+            ),
+            (
+                "screen.b",
+                bounds::KEYER_SCREEN,
+                [settings.screen[2], 0.0, LARGEST],
+            ),
+            ("gain", bounds::KEYER_GAIN, [settings.gain, 0.0, MOST_GAIN]),
+            (
+                "balance",
+                bounds::KEYER_BALANCE,
+                [settings.balance, 0.0, 1.0],
+            ),
+            ("blur", bounds::KEYER_BLUR, [0.0, 0.0, MOST_BLUR]),
+            ("low", bounds::KEYER_LOW, [settings.low, 0.0, 1.0]),
+            ("high", bounds::KEYER_HIGH, [settings.high, 0.0, 1.0]),
+            (
+                "erode_dilate",
+                bounds::KEYER_ERODE_DILATE,
+                [0.0, -MOST_ERODE_DILATE, MOST_ERODE_DILATE],
+            ),
+            ("clean", bounds::KEYER_CLEAN, [0.0, 0.0, 1.0]),
+            (
+                "replace_color",
+                bounds::KEYER_REPLACE_COLOR,
+                [settings.replace_colour[0], 0.0, LARGEST],
+            ),
+            (
+                "spill_suppression",
+                bounds::KEYER_SPILL_SUPPRESSION,
+                [settings.spill_suppression, 0.0, 1.0],
+            ),
+        ] {
+            let ours = ours.map(f64::from);
+            assert_eq!([theirs.default, theirs.low, theirs.high], ours, "{name}");
+        }
+        assert_eq!(model::LEAST_DOMINANCE, LEAST_DOMINANCE);
+        // A node of the model as it is at first is refused by none of the checks here; and a
+        // node of another kind has no settings of a keyer.
+        let mut composition = model::Composition::default();
+        composition
+            .nodes
+            .push(model::Node::new("k", model::Kind::DeltaKeyer));
+        composition.links = vec![
+            model::Link::new(model::MEDIA_IN, "k", model::Input::Input),
+            model::Link::new("k", model::MEDIA_OUT, model::Input::Input),
+        ];
+        composition.sort_links();
+        let fused = composition.at(0.0);
+        assert_eq!(fused.nodes.len(), 2);
+        let made = of_node(&fused.nodes[1].kind).expect("a delta keyer");
+        assert_eq!(made.settings.check(), Ok(()));
+        assert_eq!(made.finesse.check(), Ok(()));
+        assert_eq!(made, Node::default());
+        assert_eq!(of_node(&fused.nodes[0].kind), None);
+        // A node at a frame of its keys is its numbers there, by the same names.
+        let rising = Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 1.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 10,
+                value: 3.0,
+                interp: Interp::Linear,
+            },
+        ]);
+        let moving = model::DeltaKeyer {
+            screen: model::KeyColor::new(0.125, 0.25, 0.75),
+            gain: rising,
+            balance: Param::Fixed(0.25),
+            pre_blur: Param::Fixed(4.0),
+            low: Param::Fixed(0.125),
+            high: Param::Fixed(0.875),
+            erode_dilate: Param::Fixed(-2.5),
+            matte_blur: Param::Fixed(3.0),
+            clean_foreground: Param::Fixed(0.5),
+            clean_background: Param::Fixed(0.25),
+            replace: model::ReplaceMode::HardColor,
+            replace_color: model::KeyColor::new(0.5, 0.25, 2.0),
+            garbage_invert: true,
+            spill_method: model::SpillMethod::WellDone,
+            spill_suppression: Param::Fixed(0.75),
+            view: model::KeyerView::Status,
+        };
+        let kind = FusedKind::DeltaKeyer {
+            input: None,
+            garbage_matte: None,
+            solid_matte: None,
+            mask: None,
+            settings: moving.at(5.0),
+        };
+        let wanted = Node {
+            settings: Settings {
+                screen: [0.125, 0.25, 0.75],
+                gain: 2.0,
+                balance: 0.25,
+                low: 0.125,
+                high: 0.875,
+                spill_method: SpillMethod::WellDone,
+                spill_suppression: 0.75,
+                replace: Replace::HardColour,
+                replace_colour: [0.5, 0.25, 2.0],
+            },
+            finesse: Finesse {
+                pre_blur: 4.0,
+                erode_dilate: -2.5,
+                matte_blur: 3.0,
+                clean_foreground: 0.5,
+                clean_background: 0.25,
+            },
+            view: View::Status,
+            garbage_invert: true,
+        };
+        assert_eq!(of_node(&kind), Some(wanted));
+        assert_eq!(wanted.settings.check(), Ok(()));
+        assert_eq!(wanted.finesse.check(), Ok(()));
+        assert_eq!(wanted.keyer().dominant, 2);
+        // Every spelling of the model is one of the enums here.
+        let spelled = |change: &dyn Fn(&mut model::DeltaKeyer)| {
+            let mut keyer = model::DeltaKeyer::default();
+            change(&mut keyer);
+            Node::from(&keyer.at(0.0))
+        };
+        for (theirs, ours) in [
+            (model::SpillMethod::None, SpillMethod::None),
+            (model::SpillMethod::Rare, SpillMethod::Rare),
+            (model::SpillMethod::Medium, SpillMethod::Medium),
+            (model::SpillMethod::WellDone, SpillMethod::WellDone),
+            (model::SpillMethod::Burnt, SpillMethod::Burnt),
+        ] {
+            let made = spelled(&|keyer| keyer.spill_method = theirs);
+            assert_eq!(made.settings.spill_method, ours);
+        }
+        for (theirs, ours) in [
+            (model::ReplaceMode::None, Replace::None),
+            (model::ReplaceMode::Source, Replace::Source),
+            (model::ReplaceMode::HardColor, Replace::HardColour),
+            (model::ReplaceMode::SoftColor, Replace::SoftColour),
+        ] {
+            assert_eq!(
+                spelled(&|keyer| keyer.replace = theirs).settings.replace,
+                ours
+            );
+        }
+        for (theirs, ours) in [
+            (model::KeyerView::PreMatte, View::PreMatte),
+            (model::KeyerView::Matte, View::Matte),
+            (model::KeyerView::Status, View::Status),
+            (model::KeyerView::FinalResult, View::FinalResult),
+        ] {
+            assert_eq!(spelled(&|keyer| keyer.view = theirs).view, ours);
+        }
+    }
+
+    #[test]
+    fn the_controls_about_a_pixel_are_in_their_ranges_and_held_within_them() {
+        let refused = |set: fn(&mut Finesse)| {
+            let mut finesse = Finesse::default();
+            set(&mut finesse);
+            finesse.check().is_err()
+        };
+        assert_eq!(Finesse::default().check(), Ok(()));
+        assert!(!refused(|f| f.pre_blur = MOST_BLUR));
+        assert!(!refused(|f| f.erode_dilate = -MOST_ERODE_DILATE));
+        assert!(!refused(|f| f.erode_dilate = MOST_ERODE_DILATE));
+        assert!(!refused(|f| f.clean_foreground = 1.0));
+        assert!(refused(|f| f.pre_blur = -0.5));
+        assert!(refused(|f| f.pre_blur = 100.5));
+        assert!(refused(|f| f.erode_dilate = 100.5));
+        assert!(refused(|f| f.erode_dilate = f32::NAN));
+        assert!(refused(|f| f.matte_blur = -1.0));
+        assert!(refused(|f| f.matte_blur = f32::INFINITY));
+        assert!(refused(|f| f.clean_foreground = 1.5));
+        assert!(refused(|f| f.clean_background = -0.5));
+        let wild = Finesse {
+            pre_blur: f32::INFINITY,
+            erode_dilate: -1e9,
+            matte_blur: f32::NAN,
+            clean_foreground: 7.0,
+            clean_background: -3.0,
+        };
+        assert_eq!(
+            wild.held(),
+            Finesse {
+                pre_blur: MOST_BLUR,
+                erode_dilate: -MOST_ERODE_DILATE,
+                matte_blur: 0.0,
+                clean_foreground: 1.0,
+                clean_background: 0.0,
+            }
+        );
+        assert_eq!(wild.held().check(), Ok(()));
+    }
+
+    #[test]
+    fn the_solid_matte_is_met_first_and_the_garbage_matte_wins() {
+        let with = |garbage: Option<f32>, solid: Option<f32>| Incoming {
+            garbage,
+            solid,
+            mask: None,
+        };
+        for level in [0.0, 0.25, 0.8, 1.0] {
+            // A matte that is not there, and one of 0, change nothing, to the bit.
+            assert_eq!(met(level, &with(None, None), false), level);
+            assert_eq!(met(level, &with(Some(0.0), Some(0.0)), false), level);
+            // A solid matte of 1 makes the matte solid, and a garbage matte of 1 transparent.
+            assert_eq!(met(level, &with(None, Some(1.0)), false), 1.0);
+            assert_eq!(met(level, &with(Some(1.0), None), false), 0.0);
+            // Where both are 1 the garbage matte wins.
+            assert_eq!(met(level, &with(Some(1.0), Some(1.0)), false), 0.0);
+            // Read the other way round, the garbage matte takes where it is 0, and a garbage
+            // matte that is not there is not there either way.
+            assert_eq!(met(level, &with(Some(0.0), None), true), 0.0);
+            assert_eq!(met(level, &with(Some(1.0), None), true), level);
+            assert_eq!(met(level, &with(None, None), true), level);
+            // What is beyond 0 and 1, or no number, is read within them.
+            assert_eq!(met(level, &with(Some(7.0), None), false), 0.0);
+            assert_eq!(met(level, &with(Some(-2.0), Some(f32::NAN)), false), level);
+        }
+        // Between their ends: the solid matte fills its share of what is not solid, and the
+        // garbage matte takes its share of what is left.
+        about(met(0.5, &with(None, Some(0.5)), false), 0.75);
+        about(met(0.5, &with(Some(0.5), None), false), 0.25);
+        about(met(0.5, &with(Some(0.5), Some(0.5)), false), 0.375);
+        about(met(0.5, &with(Some(0.25), None), true), 0.125);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each view of a pixel, with the mattes and the mask that come in"
+    )]
+    fn a_node_shows_its_view_of_a_pixel_with_what_comes_into_it() {
+        let nothing = Incoming::default();
+        let edge = [0.4, 0.6, 0.4, 1.0];
+        let rgb = [edge[0], edge[1], edge[2]];
+        // An opaque pixel alone is what the formulas make of its colour, to the bit.
+        for view in View::ALL {
+            let shows = node(|n| n.view = view);
+            let k = shows.keyer();
+            let pre = pre_matte(&k, rgb);
+            assert_eq!(
+                node_pixel(&shows, edge, pre, pre, &nothing),
+                shown(&k, view, rgb),
+                "{view:?}"
+            );
+        }
+        // A picture seen through in part is keyed as what is seen of it: its colour not
+        // premultiplied, and the result times the alpha that came in.
+        let plain = Node::default();
+        let k = plain.keyer();
+        let pre = pre_matte(&k, rgb);
+        let whole = result(&k, rgb);
+        let half = edge.map(|value| 0.5 * value);
+        all_about(
+            node_pixel(&plain, half, pre, pre, &nothing),
+            whole.map(|value| 0.5 * value),
+        );
+        assert_eq!(unpremultiplied(half), (rgb, 0.5));
+        // What is not seen at all is nothing, whatever its channels hold; but its mattes
+        // are shown opaque, those of black, which is kept.
+        for unseen in [
+            [0.3, 0.9, 0.2, 0.0],
+            [0.3, 0.9, 0.2, -1.0],
+            [0.3, 0.9, 0.2, f32::NAN],
+        ] {
+            assert_eq!(unpremultiplied(unseen), ([0.0; 3], 0.0));
+            assert_eq!(node_pixel(&plain, unseen, 1.0, 1.0, &nothing), [0.0; 4]);
+            let matte = node(|n| n.view = View::Matte);
+            assert_eq!(node_pixel(&matte, unseen, 1.0, 1.0, &nothing), [1.0; 4]);
+        }
+        // The Matte view is of the matte before the solid and garbage mattes; the status and
+        // the final result are of the matte after them.
+        let garbage = Incoming {
+            garbage: Some(1.0),
+            ..nothing
+        };
+        let solid = Incoming {
+            solid: Some(1.0),
+            ..nothing
+        };
+        let of = |view: View, incoming: &Incoming| {
+            node_pixel(&node(|n| n.view = view), edge, pre, pre, incoming)
+        };
+        assert_eq!(of(View::Matte, &garbage), [pre, pre, pre, 1.0]);
+        assert_eq!(of(View::PreMatte, &garbage), [pre, pre, pre, 1.0]);
+        assert_eq!(of(View::Status, &garbage), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(of(View::Status, &solid), [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(of(View::FinalResult, &garbage), [0.0; 4]);
+        assert_eq!(
+            of(View::FinalResult, &solid),
+            result_with(&k, rgb, pre, 1.0)
+        );
+        // Read the other way round, a garbage matte of 1 takes nothing.
+        let inverted = node(|n| n.garbage_invert = true);
+        assert_eq!(
+            node_pixel(&inverted, edge, pre, pre, &garbage),
+            result(&k, rgb)
+        );
+        // The effect mask mixes what the view shows with the pixel as it came in, and keeps
+        // both of its ends to the bit.
+        let masked = |mask: f32| Incoming {
+            mask: Some(mask),
+            ..nothing
+        };
+        assert_eq!(node_pixel(&plain, edge, pre, pre, &masked(0.0)), edge);
+        assert_eq!(node_pixel(&plain, edge, pre, pre, &masked(-3.0)), edge);
+        assert_eq!(node_pixel(&plain, edge, pre, pre, &masked(1.0)), whole);
+        assert_eq!(node_pixel(&plain, edge, pre, pre, &masked(2.0)), whole);
+        let mixed = node_pixel(&plain, edge, pre, pre, &masked(0.25));
+        all_about(
+            mixed,
+            [0, 1, 2, 3].map(|i| edge[i] + (whole[i] - edge[i]) * 0.25),
+        );
+        // A screen colour with no channel above its other two keys nothing, and thresholds
+        // that have crossed are a step at the lower.
+        let grey = node(|n| n.settings.screen = [0.0; 3]);
+        assert_eq!(pre_matte(&grey.keyer(), GREEN), 1.0);
+        let crossed = node(|n| {
+            n.settings.low = 0.75;
+            n.settings.high = 0.25;
+        });
+        assert_eq!(thresholds(&crossed.keyer(), 0.75), 0.0);
+        assert_eq!(thresholds(&crossed.keyer(), 0.76), 1.0);
+    }
+
+    #[test]
+    fn erode_dilate_moves_the_edge_of_a_matte_and_the_matte_blur_softens_it() {
+        let image = halved();
+        // As the key made it: transparent on the screen, solid on the grey.
+        let plain = row(&image, Finesse::default());
+        assert!(plain[..12].iter().all(|level| *level == 0.0));
+        assert!(plain[12..].iter().all(|level| *level == 1.0));
+        // Eroded by two pixels, the two columns of the grey next to the screen go; dilated,
+        // the two of the screen next to the grey are taken in.
+        let eroded = row(
+            &image,
+            Finesse {
+                erode_dilate: -2.0,
+                ..Finesse::default()
+            },
+        );
+        assert!(eroded[..14].iter().all(|level| *level == 0.0), "{eroded:?}");
+        assert!(eroded[14..].iter().all(|level| *level == 1.0), "{eroded:?}");
+        let dilated = row(
+            &image,
+            Finesse {
+                erode_dilate: 2.0,
+                ..Finesse::default()
+            },
+        );
+        assert!(
+            dilated[..10].iter().all(|level| *level == 0.0),
+            "{dilated:?}"
+        );
+        assert!(
+            dilated[10..].iter().all(|level| *level == 1.0),
+            "{dilated:?}"
+        );
+        // Blurred, the edge is a ramp about where it was, alike on its two sides, and what
+        // is far from it is as it was.
+        let soft = row(
+            &image,
+            Finesse {
+                matte_blur: 2.0,
+                ..Finesse::default()
+            },
+        );
+        assert!(soft[11] > 0.1 && soft[11] < 0.5, "{soft:?}");
+        assert!(soft[12] > 0.5 && soft[12] < 0.9, "{soft:?}");
+        assert!((soft[11] + soft[12] - 1.0).abs() < 2e-3, "{soft:?}");
+        assert!(soft.windows(2).all(|pair| pair[0] <= pair[1]), "{soft:?}");
+        assert_eq!((soft[0], soft[23]), (0.0, 1.0));
+        // The one control alone, by its formula.
+        assert_eq!(super::eroded(0.5, 0.2, 0.0), 0.5);
+        assert_eq!(super::eroded(0.5, 0.2, 3.0), 1.0);
+        about(super::eroded(0.5, 0.03, 3.0), 0.6);
+        assert_eq!(super::eroded(0.5, 0.8, -3.0), 0.0);
+        about(super::eroded(0.5, 0.98, -3.0), 0.5);
+        about(super::eroded(1.0, 0.98, -3.0), 0.6);
+        assert_eq!(softened(0.375), 0.375);
+        assert_eq!(softened(1.5), 1.0);
+    }
+
+    #[test]
+    fn the_cleans_take_specks_out_and_fill_holes_and_the_pre_blur_softens_the_key() {
+        // A speck of grey on the screen, and a hole of the screen in the grey.
+        let speck = picture(|x, y| if (x, y) == (12, 8) { [0.5; 3] } else { GREEN });
+        let gap = picture(|x, y| if (x, y) == (12, 8) { GREEN } else { [0.5; 3] });
+        let cleans = |foreground: f32, background: f32| Finesse {
+            clean_foreground: foreground,
+            clean_background: background,
+            ..Finesse::default()
+        };
+        assert_eq!(row(&speck, Finesse::default())[12], 1.0);
+        assert_eq!(row(&gap, Finesse::default())[12], 0.0);
+        // Clean Background takes the speck, and leaves the hole; Clean Foreground fills the
+        // hole, and leaves the speck.
+        assert!(row(&speck, cleans(0.0, 1.0))[12] < 0.01);
+        assert_eq!(row(&gap, cleans(0.0, 1.0))[12], 0.0);
+        assert!(row(&gap, cleans(1.0, 0.0))[12] > 0.99);
+        assert_eq!(row(&speck, cleans(1.0, 0.0))[12], 1.0);
+        // What is far from either is as it was.
+        assert_eq!(row(&speck, cleans(1.0, 1.0))[0], 0.0);
+        assert_eq!(row(&gap, cleans(1.0, 1.0))[0], 1.0);
+        // The one control alone, by its formula: at 0 it does nothing.
+        assert_eq!(cleaned(0.75, 0.3, 0.0, 0.0), 0.75);
+        about(cleaned(1.0, 0.25, 0.0, 0.5), 0.5);
+        about(cleaned(0.0, 0.75, 0.5, 0.0), 0.5);
+        // The Pre-Blur blurs what is keyed: the pre-matte of the edge is a ramp, the share of
+        // the grey in the blurred picture, and the matte is that.
+        let image = halved();
+        let blurred = Finesse {
+            pre_blur: 2.0,
+            ..Finesse::default()
+        };
+        let k = Keyer::of(&Settings::default());
+        let made = mattes(&k, &blurred, &image, 1.0);
+        let at = |x: usize| made[8 * 24 + x];
+        assert!(at(11)[0] > 0.1 && at(11)[0] < 0.5, "{:?}", at(11));
+        assert!(at(12)[0] > 0.5 && at(12)[0] < 0.9, "{:?}", at(12));
+        assert_eq!(at(11)[0], at(11)[1]);
+        assert_eq!((at(0), at(23)), ([0.0, 0.0], [1.0, 1.0]));
+        // A keyer that keys nothing has a matte of 1 all over, whatever these are.
+        let idle = Keyer::of(&Settings {
+            gain: 0.0,
+            ..Settings::default()
+        });
+        let every = Finesse {
+            pre_blur: 3.0,
+            erode_dilate: -4.0,
+            matte_blur: 3.0,
+            clean_foreground: 1.0,
+            clean_background: 1.0,
+        };
+        assert!(mattes(&idle, &every, &image, 1.0)
+            .iter()
+            .all(|both| *both == [1.0, 1.0]));
+        // And a picture is made of its mattes pixel by pixel.
+        let shows = node(|n| n.finesse = blurred);
+        let whole = node_picture(&shows, &image, 1.0, &|_| Incoming::default());
+        assert_eq!(whole.len(), image.pixels.len());
+        let pixel = 8 * 24 + 12;
+        let [pre, matte] = made[pixel];
+        assert_eq!(
+            whole[pixel],
+            node_pixel(
+                &shows,
+                image.pixels[pixel],
+                pre,
+                matte,
+                &Incoming::default()
+            )
         );
     }
 }

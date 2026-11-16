@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use columbina_compose::grade::maths::Constants;
 use columbina_compose::grade::REC709_LUMA;
+use columbina_compose::keyer::{self, Incoming};
 use columbina_compose::mask::{self, Common, Shape};
 use columbina_compose::merge::{merge_pixel, Settings};
 use columbina_compose::mosaic;
@@ -25,8 +26,9 @@ use columbina_compose::{
 };
 use columbina_media::{Alpha, NativePicture, PictureFormat};
 use columbina_model::fusion::{
-    BlurFilter, Blurred, EllipseShape, FillMethod, Fused, FusedKind, FusedNode, Masked, Merged,
-    Mosaicked, Operator, PaintMode, PolygonShape, RectangleShape, Transformed, MOST_POINTS,
+    BlurFilter, Blurred, DeltaKeyed, DeltaKeyer, EllipseShape, FillMethod, Fused, FusedKind,
+    FusedNode, KeyerView, Masked, Merged, Mosaicked, Operator, PaintMode, PolygonShape,
+    RectangleShape, ReplaceMode, SpillMethod, Transformed, MOST_POINTS,
 };
 use columbina_model::project::{Rgba, Styled, TextAlign};
 
@@ -271,6 +273,10 @@ type Kind = (&'static str, Source, ColorRange, (u32, u32));
 /// The pixel of the picture that the pixel (x, y) of a frame reads, the picture being so many
 /// pixels wide and high; none where it reads nothing.
 type Reads = fn(i64, i64, i64, i64) -> Option<(i64, i64)>;
+
+/// A case of the controls of a keyer: what it is, what it sets of a keyer as it is at first,
+/// and how far from the processor the card may be.
+type KeyerCase = (&'static str, fn(&mut DeltaKeyed), f32);
 
 /// The sources of the kinds that a clip has: a picture, two pictures mixed, a title and a
 /// colour.
@@ -1119,6 +1125,13 @@ fn the_nodes_that_are_not_drawn_are_told_of() {
             mask: None,
             settings: tiles(32.0),
         },
+        FusedKind::DeltaKeyer {
+            input: Some(8),
+            garbage_matte: Some(3),
+            solid_matte: Some(4),
+            mask: Some(5),
+            settings: keyed(|_| {}),
+        },
     ]);
     let Source::Fused(fusion) = fused(Source::Color([1.0; 4]), nodes, output) else {
         panic!("a composition");
@@ -1247,7 +1260,8 @@ fn with_mask(kind: &FusedKind, mask: Option<usize>) -> FusedKind {
     | FusedKind::Ellipse { mask: own, .. }
     | FusedKind::Polygon { mask: own, .. }
     | FusedKind::Blur { mask: own, .. }
-    | FusedKind::Mosaic { mask: own, .. } = &mut kind
+    | FusedKind::Mosaic { mask: own, .. }
+    | FusedKind::DeltaKeyer { mask: own, .. } = &mut kind
     {
         *own = mask;
     }
@@ -2768,5 +2782,1026 @@ fn a_composition_with_a_blur_and_a_mosaic_is_shown_as_its_source_until_its_pipel
     assert_eq!(halves(&gpu, &mut compositor, &filtered), wanted);
     assert!(!compositor.is_provisional());
     assert_eq!(compositor.fusion_passes(), 7);
+    assert_no_errors(&gpu);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Delta Keyer
+// ---------------------------------------------------------------------------------------------
+
+/// How far what the card makes of a pixel by a keyer may be from what the processor makes of
+/// it (`keyer.rs`), of pixels given to the card as floats of 32 bits: a thousandth, or of its
+/// size where that is above 1, as of a Merge. It is more than the step of a half float that
+/// keeping the result takes, and less than any error of a formula.
+const KEYER_TOLERANCE: f32 = 1e-3;
+
+/// The same for a matte that went through a Pre-Blur, a Matte Blur or a Clean: the picture or
+/// the matte goes through the half floats of the two passes of a filter, which the card may
+/// round towards 0 and the processor rounds to the nearest, and the key makes some three
+/// times as much of a difference of the picture.
+const KEYER_FILTERED_TOLERANCE: f32 = 1e-2;
+
+/// The same for a matte that went through an Erode/Dilate: where the mean of the matte about
+/// a pixel is within the edge of the control, a twentieth wide, a step of a half float of
+/// that mean is twenty of the matte.
+const KEYER_MORPHED_TOLERANCE: f32 = 4e-2;
+
+/// How far a frame of a keyed picture may be from what the processor makes of the frames of
+/// what the keyer read: each of those went through its own half floats, a step off what the
+/// card read, of which the key makes some three; and what is keyed goes through two more.
+const KEYED_TOLERANCE: f32 = 6e-3;
+
+/// The colour of the screen of the pictures of these tests: a green one as a camera sees it.
+const STAGE: [f32; 3] = [0.08, 0.45, 0.12];
+
+/// [`STAGE`] as the Background Color of a keyer.
+const STAGE_PICKED: [f64; 3] = [0.08, 0.45, 0.12];
+
+/// Colours of every kind, not premultiplied: a pure green; the screen, in shadow and lit
+/// twice as brightly; greys; a skin tone; subjects with spill on them; the edge of a grey
+/// against the screen; the primaries and the colours of other screens; one beyond white and
+/// one with channels below black.
+const COLOURS: [[f32; 3]; 16] = [
+    [0.0, 1.0, 0.0],
+    STAGE,
+    [0.04, 0.225, 0.06],
+    [0.16, 0.9, 0.24],
+    [0.18, 0.18, 0.18],
+    [0.9, 0.9, 0.9],
+    [0.45, 0.25, 0.18],
+    [0.3, 0.5, 0.2],
+    [0.2, 0.6, 0.4],
+    [0.13, 0.315, 0.15],
+    [1.0, 0.0, 0.0],
+    [0.1, 0.15, 0.5],
+    [0.7, 0.1, 0.15],
+    [0.9, 0.9, 0.1],
+    [2.5, 4.0, 1.5],
+    [-0.05, 0.02, -0.01],
+];
+
+/// The settings of a Delta Keyer as they are at first, but for what `set` sets.
+fn keyed(set: impl FnOnce(&mut DeltaKeyed)) -> DeltaKeyed {
+    let mut settings = DeltaKeyer::default().at(0.0);
+    set(&mut settings);
+    settings
+}
+
+/// The settings of a Delta Keyer of the screen of these tests, set by `set`.
+fn staged(set: impl FnOnce(&mut DeltaKeyed)) -> DeltaKeyed {
+    keyed(|keyer| {
+        keyer.screen = STAGE_PICKED;
+        set(keyer);
+    })
+}
+
+/// A Delta Keyer of the picture at `input`, with neither mattes nor a mask.
+fn key(input: usize, settings: DeltaKeyed) -> FusedKind {
+    FusedKind::DeltaKeyer {
+        input: Some(input),
+        garbage_matte: None,
+        solid_matte: None,
+        mask: None,
+        settings,
+    }
+}
+
+/// What a Delta Keyer of `settings` makes on the processor of `pixels`, a premultiplied
+/// picture of `size` pixels, row after row (`keyer::node_picture`): `incoming` gives the
+/// mattes and the mask that come into it at the pixel of each number. A length of the keyer
+/// is so many pixels of a picture 1080 high.
+fn keyed_of(
+    settings: &DeltaKeyed,
+    pixels: &[[f32; 4]],
+    size: (u32, u32),
+    incoming: &dyn Fn(usize) -> Incoming,
+) -> Vec<[f32; 4]> {
+    let image = Image {
+        width: size.0,
+        height: size.1,
+        pixels: pixels.to_vec(),
+    };
+    let height = f64::from(size.1);
+    let units = neighbourhood::units(height, height, height);
+    keyer::node_picture(&keyer::Node::from(settings), &image, units, incoming)
+}
+
+/// Check that each of R, G, B and A of each pixel of `shown` is that of `wanted`, within
+/// `tolerance`, or within that share of its size where it is above 1.
+#[track_caller]
+fn assert_keyed(shown: &[f32], wanted: &[[f32; 4]], tolerance: f32, what: &str) {
+    assert_eq!(shown.len(), wanted.len() * 4, "{what}");
+    for (at, (pixel, wanted)) in shown.as_chunks::<4>().0.iter().zip(wanted).enumerate() {
+        for channel in 0..4 {
+            let most = tolerance * wanted[channel].abs().max(1.0);
+            assert!(
+                (pixel[channel] - wanted[channel]).abs() <= most,
+                "{what}: pixel {at} is {pixel:?}, not {wanted:?}"
+            );
+        }
+    }
+}
+
+/// The pixels of the frames of a picture over black and over white, premultiplied: its
+/// colour is that over black, and its alpha 1 less what the white under it adds.
+fn pixels_over(black: &[f32], white: &[f32]) -> Vec<[f32; 4]> {
+    black
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(white.as_chunks::<4>().0)
+        .map(|(dark, light)| [dark[0], dark[1], dark[2], 1.0 - (light[0] - dark[0])])
+        .collect()
+}
+
+/// Check that the frames `black` and `white` of a picture, over black and over white, are
+/// those of the premultiplied pixels `wanted`, within `tolerance`: over black its colour, and
+/// over white that and what its alpha leaves of the white.
+#[track_caller]
+fn assert_over(black: &[f32], white: &[f32], wanted: &[[f32; 4]], tolerance: f32, what: &str) {
+    assert_eq!(black.len(), wanted.len() * 4, "{what}");
+    assert_eq!(white.len(), wanted.len() * 4, "{what}");
+    let frames = black
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(white.as_chunks::<4>().0);
+    for (at, ((dark, light), wanted)) in frames.zip(wanted).enumerate() {
+        for channel in 0..3 {
+            let over = wanted[channel] + (1.0 - wanted[3]);
+            assert!(
+                (dark[channel] - wanted[channel]).abs() <= tolerance
+                    && (light[channel] - over).abs() <= tolerance,
+                "{what}: pixel {at} is {dark:?} over black and {light:?} over white, not \
+                 {wanted:?}"
+            );
+        }
+    }
+}
+
+/// The picture that the shader of a keyer is held to the processor at, 16 pixels by 3: each
+/// of [`COLOURS`] opaque; each half seen through, premultiplied; and each with an alpha of 0
+/// over channels that hold it still, of which nothing is seen.
+fn swatches() -> Vec<[f32; 4]> {
+    let mut pixels = Vec::new();
+    for alpha in [1.0_f32, 0.5, 0.0] {
+        let by = if alpha > 0.0 { alpha } else { 1.0 };
+        for [r, g, b] in COLOURS {
+            pixels.push([r * by, g * by, b * by, alpha]);
+        }
+    }
+    pixels
+}
+
+/// The settings that the shader of a keyer is held to the processor at: the screen as it is
+/// at first, picked, blue and red; Gain and Balance varied; thresholds, those that have
+/// crossed among them; a screen colour that keys nothing; each spill method, whole and by
+/// half; each replace mode, with a matte that gives back; and each view.
+#[allow(clippy::too_many_lines, reason = "each setting, one after another")]
+fn keyers() -> Vec<(String, DeltaKeyed)> {
+    let mut all = vec![
+        ("as it is at first".to_owned(), keyed(|_| {})),
+        ("a picked screen".to_owned(), staged(|_| {})),
+        (
+            "a blue screen".to_owned(),
+            keyed(|keyer| {
+                keyer.screen = [0.1, 0.15, 0.5];
+                keyer.spill_method = SpillMethod::WellDone;
+            }),
+        ),
+        (
+            "a red screen".to_owned(),
+            keyed(|keyer| keyer.screen = [0.7, 0.1, 0.15]),
+        ),
+        (
+            "thresholds that have crossed".to_owned(),
+            keyed(|keyer| {
+                keyer.low = 0.5;
+                keyer.high = 0.2;
+            }),
+        ),
+        (
+            "a screen with no channel above its other two".to_owned(),
+            keyed(|keyer| keyer.screen = [0.3, 0.3, 0.3]),
+        ),
+    ];
+    for gain in [0.5, 2.0, 10.0] {
+        let settings = staged(|keyer| keyer.gain = gain);
+        all.push((format!("a gain of {gain}"), settings));
+    }
+    for balance in [0.0, 0.3, 1.0] {
+        let settings = staged(|keyer| keyer.balance = balance);
+        all.push((format!("a balance of {balance}"), settings));
+    }
+    // With the screen as it is at first, no pre-matte of the picture is on a threshold.
+    for (low, high) in [(0.1, 0.9), (0.25, 0.75), (0.0, 0.5), (0.5, 1.0), (0.4, 0.4)] {
+        let settings = keyed(|keyer| {
+            keyer.low = low;
+            keyer.high = high;
+        });
+        all.push((format!("thresholds of {low} and {high}"), settings));
+    }
+    for method in [
+        SpillMethod::None,
+        SpillMethod::Rare,
+        SpillMethod::Medium,
+        SpillMethod::WellDone,
+        SpillMethod::Burnt,
+    ] {
+        for suppression in [1.0, 0.5] {
+            let settings = staged(|keyer| {
+                keyer.spill_method = method;
+                keyer.spill_suppression = suppression;
+            });
+            all.push((format!("{method:?} by {suppression}"), settings));
+        }
+    }
+    for replace in [
+        ReplaceMode::None,
+        ReplaceMode::Source,
+        ReplaceMode::HardColor,
+        ReplaceMode::SoftColor,
+    ] {
+        let settings = staged(|keyer| {
+            keyer.high = 0.5;
+            keyer.replace = replace;
+            keyer.replace_color = [0.4, 0.3, 0.2];
+        });
+        all.push((format!("{replace:?}"), settings));
+    }
+    // With this Gain and these thresholds, no pixel of the picture is on a step of the
+    // status.
+    for view in VIEWS {
+        all.push((format!("{view:?}"), viewed(view)));
+    }
+    all
+}
+
+/// Every view of a keyer.
+const VIEWS: [KeyerView; 4] = [
+    KeyerView::PreMatte,
+    KeyerView::Matte,
+    KeyerView::Status,
+    KeyerView::FinalResult,
+];
+
+/// The settings of a keyer of the screen of these tests that shows `view`, with a Gain and
+/// thresholds by which every pixel of [`COLOURS`] is far from the steps of the status: its
+/// pre-matte is 0, a quarter, some 0.79 or 1, and its matte 0, some 0.19, some 0.86 or 1.
+fn viewed(view: KeyerView) -> DeltaKeyed {
+    staged(|keyer| {
+        keyer.gain = 1.5;
+        keyer.low = 0.1;
+        keyer.high = 0.9;
+        keyer.view = view;
+    })
+}
+
+#[test]
+fn the_shader_of_a_keyer_is_held_to_the_mathematics_of_the_processor() {
+    // Colours of every kind, opaque, seen through in part and not seen, given to the card as
+    // floats of 32 bits, keyed with each setting: what the card makes of each pixel, which
+    // it keeps in a half float, is within a thousandth of what the processor makes of it, or
+    // of its size where that is above 1.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let size = (16, 3);
+    let pixels = swatches();
+    let target = Target::preview(&gpu, size.0, size.1).unwrap();
+    let alone = [Some(pixels.as_slice()), None, None, None];
+    let mut made = Vec::new();
+    for (what, settings) in keyers() {
+        compositor.key_for_tests(alone, &settings, &target).unwrap();
+        let shown = target.read_floats().unwrap();
+        let wanted = keyed_of(&settings, &pixels, size, &|_| Incoming::default());
+        assert_keyed(&shown, &wanted, KEYER_TOLERANCE, &what);
+        made.push(shown);
+    }
+    // The settings do something: no two of the first four screens key the picture alike.
+    for pair in made[..4].windows(2) {
+        assert!(differ(&pair[0], &pair[1], 0.05));
+    }
+    // A keyer that changes nothing has no pass to draw; and the pictures are to be of the
+    // size of the target.
+    let idle = keyed(|keyer| {
+        keyer.gain = 0.0;
+        keyer.spill_method = SpillMethod::None;
+    });
+    assert!(compositor.key_for_tests(alone, &idle, &target).is_err());
+    let short = [Some(&pixels[1..]), None, None, None];
+    assert!(compositor
+        .key_for_tests(short, &keyed(|_| {}), &target)
+        .is_err());
+    let none = [None, Some(pixels.as_slice()), None, None];
+    assert!(compositor
+        .key_for_tests(none, &keyed(|_| {}), &target)
+        .is_err());
+    assert_no_errors(&gpu);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each of the mattes and the mask, alone and together, in the views that they change"
+)]
+fn the_mattes_and_the_mask_of_a_keyer_are_met_as_the_processor_meets_them() {
+    // Each of the colours under each pair of a garbage matte and a solid matte, 16 pixels by
+    // 16, given to the card as floats: the mattes and the mask are the alphas of pictures,
+    // some of them above 1 and below 0, over channels that are not read.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let size = (16, 16);
+    let target = Target::preview(&gpu, size.0, size.1).unwrap();
+    let places = || (0..16_usize).flat_map(|y| (0..16_usize).map(move |x| (x, y)));
+    let pixels: Vec<[f32; 4]> = places()
+        .map(|(x, _)| {
+            let colour = COLOURS[x];
+            [colour[0], colour[1], colour[2], 1.0]
+        })
+        .collect();
+    let levels = |of: &dyn Fn(usize, usize) -> f32| -> Vec<[f32; 4]> {
+        places().map(|(x, y)| [0.3, 0.2, 0.1, of(x, y)]).collect()
+    };
+    let garbage = levels(&|_, y| [0.0, 0.25, 1.0, 1.5][y % 4]);
+    let solid = levels(&|_, y| [0.0, 0.5, 1.0, -1.0][y / 4]);
+    let mask = levels(&|x, y| [0.0, 0.3, 1.0, 2.0][(x + y) % 4]);
+    // Which of the garbage matte, the solid matte and the mask come in, whether the garbage
+    // matte is read the other way round, and the view.
+    let cases: [(&str, [bool; 3], bool, KeyerView); 9] = [
+        (
+            "a garbage matte",
+            [true, false, false],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "a garbage matte the other way round",
+            [true, false, false],
+            true,
+            KeyerView::FinalResult,
+        ),
+        (
+            "a solid matte",
+            [false, true, false],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "both mattes",
+            [true, true, false],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "an effect mask",
+            [false, false, true],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "both mattes and a mask",
+            [true, true, true],
+            true,
+            KeyerView::FinalResult,
+        ),
+        (
+            "the status of both mattes",
+            [true, true, false],
+            false,
+            KeyerView::Status,
+        ),
+        (
+            "the status of both mattes, the garbage matte the other way round, and a mask",
+            [true, true, true],
+            true,
+            KeyerView::Status,
+        ),
+        (
+            "the matte, which is before both mattes",
+            [true, true, false],
+            false,
+            KeyerView::Matte,
+        ),
+    ];
+    let plain = [Some(pixels.as_slice()), None, None, None];
+    let mut frames = Vec::new();
+    for (what, [junk, filled, limited], invert, view) in cases {
+        let mut settings = viewed(view);
+        settings.garbage_invert = invert;
+        let given = [
+            Some(pixels.as_slice()),
+            junk.then_some(garbage.as_slice()),
+            filled.then_some(solid.as_slice()),
+            limited.then_some(mask.as_slice()),
+        ];
+        compositor.key_for_tests(given, &settings, &target).unwrap();
+        let shown = target.read_floats().unwrap();
+        let incoming = |at: usize| Incoming {
+            garbage: junk.then(|| garbage[at][3]),
+            solid: filled.then(|| solid[at][3]),
+            mask: limited.then(|| mask[at][3]),
+        };
+        let wanted = keyed_of(&settings, &pixels, size, &incoming);
+        assert_keyed(&shown, &wanted, KEYER_TOLERANCE, what);
+        // Each does something, but to the view of the matte, which is before the mattes.
+        compositor.key_for_tests(plain, &settings, &target).unwrap();
+        let alone = target.read_floats().unwrap();
+        if view == KeyerView::Matte {
+            assert_eq!(shown, alone, "{what}");
+        } else {
+            assert!(differ(&shown, &alone, 0.05), "{what}");
+        }
+        frames.push(shown);
+    }
+    // The garbage matte read the other way round is another picture, and where both mattes
+    // are 1 the garbage matte wins: the pixel is nothing. The rows 8 to 11 are under a solid
+    // matte of 1, and of them the row 10 under a garbage matte of 1.
+    assert!(differ(&frames[0], &frames[1], 0.05));
+    let both = frames[3].as_chunks::<4>().0;
+    for pixel in &both[10 * 16..11 * 16] {
+        assert!(pixel.iter().all(|value| value.abs() < 1e-6), "{pixel:?}");
+    }
+    for pixel in &both[8 * 16..9 * 16] {
+        assert!((pixel[3] - 1.0).abs() <= KEYER_TOLERANCE, "{pixel:?}");
+    }
+    assert_no_errors(&gpu);
+}
+
+/// The colour of the pixel (x, y) of a picture of `size` pixels shot against the screen of
+/// these tests, which is lit whole over its left quarter and in shadow towards its right: a
+/// subject in its middle with a soft edge, a grey above, a skin tone across its middle and a
+/// colour near the screen's below; specks of the subject on the screen, and holes of the
+/// screen in the subject.
+fn shot(x: u32, y: u32, size: (u32, u32)) -> [f32; 3] {
+    let across = (float(x) + 0.5) / float(size.0);
+    let down = (float(y) + 0.5) / float(size.1);
+    let lit = 1.0 - 0.5 * (across - 0.25).max(0.0);
+    let subject = if down < 0.4 {
+        [0.18, 0.18, 0.18]
+    } else if down < 0.6 {
+        [0.45, 0.25, 0.18]
+    } else {
+        [0.2, 0.42, 0.2]
+    };
+    let away = (((across - 0.5) / 0.3).powi(2) + ((down - 0.5) / 0.35).powi(2)).sqrt();
+    let mut share = ((1.15 - away) / 0.3).clamp(0.0, 1.0);
+    if x % 16 == 3 && y % 12 == 5 {
+        share = 1.0;
+    }
+    if x % 16 == 11 && y % 12 == 9 {
+        share = 0.0;
+    }
+    [0, 1, 2].map(|channel| share * subject[channel] + (1.0 - share) * STAGE[channel] * lit)
+}
+
+/// The greatest difference between a channel of a pixel of `shown` and that of `wanted`.
+fn farthest(shown: &[f32], wanted: &[[f32; 4]]) -> f32 {
+    assert_eq!(shown.len(), wanted.len() * 4);
+    shown
+        .iter()
+        .zip(wanted.as_flattened())
+        .map(|(shown, wanted)| (shown - wanted).abs())
+        .fold(0.0, f32::max)
+}
+
+/// The greatest difference between a channel of a pixel of `shown` and that of `wanted`, but
+/// for the farthest 1 in 100 of them.
+fn nearly(shown: &[f32], wanted: &[[f32; 4]]) -> f32 {
+    assert_eq!(shown.len(), wanted.len() * 4);
+    let mut offs: Vec<f32> = shown
+        .iter()
+        .zip(wanted.as_flattened())
+        .map(|(shown, wanted)| (shown - wanted).abs())
+        .collect();
+    offs.sort_by(f32::total_cmp);
+    offs[offs.len() - 1 - offs.len() / 100]
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each control of a keyer that reads the pixels about each one, and all of them"
+)]
+fn the_controls_of_a_keyer_about_a_pixel_are_those_of_the_processor() {
+    // A picture shot against a green screen, 64 pixels by 136, given to the card as floats:
+    // its matte through each control that reads the pixels about each one is what the
+    // processor makes of it by the filters of the neighbourhoods and the maths of Matte
+    // Finesse. In a picture 136 high, 16 is some 2 pixels and 80 some 10, wide enough for
+    // the filter to be taken at fewer points, into a texture that is read between its
+    // texels.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let size = (64, 136);
+    let target = Target::preview(&gpu, size.0, size.1).unwrap();
+    let pixels: Vec<[f32; 4]> = (0..size.1)
+        .flat_map(|y| (0..size.0).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let colour = shot(x, y, size);
+            [colour[0], colour[1], colour[2], 1.0]
+        })
+        .collect();
+    let alone = [Some(pixels.as_slice()), None, None, None];
+    let mut drawn = |settings: &DeltaKeyed| {
+        compositor.key_for_tests(alone, settings, &target).unwrap();
+        target.read_floats().unwrap()
+    };
+    let matte = |set: fn(&mut DeltaKeyed)| {
+        staged(|keyer| {
+            keyer.view = KeyerView::Matte;
+            set(keyer);
+        })
+    };
+    // The matte of the key alone: within a thousandth, and of every level.
+    let plain = drawn(&matte(|_| {}));
+    let wanted = keyed_of(&matte(|_| {}), &pixels, size, &|_| Incoming::default());
+    assert_keyed(&plain, &wanted, KEYER_TOLERANCE, "the matte of the key");
+    let levels = reds(&plain);
+    assert!(levels.iter().any(|level| *level <= 0.001));
+    assert!(levels.iter().any(|level| *level >= 0.999));
+    assert!(levels.iter().any(|level| (0.2..0.8).contains(level)));
+    let cases: [KeyerCase; 10] = [
+        (
+            "a pre-blur",
+            |keyer| keyer.pre_blur = 16.0,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "a wide pre-blur",
+            |keyer| keyer.pre_blur = 40.0,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "an erode",
+            |keyer| keyer.erode_dilate = -16.0,
+            KEYER_MORPHED_TOLERANCE,
+        ),
+        (
+            "a dilate",
+            |keyer| keyer.erode_dilate = 16.0,
+            KEYER_MORPHED_TOLERANCE,
+        ),
+        (
+            "a wide dilate",
+            |keyer| keyer.erode_dilate = 80.0,
+            KEYER_MORPHED_TOLERANCE,
+        ),
+        (
+            "a matte blur",
+            |keyer| keyer.matte_blur = 16.0,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "a wide matte blur",
+            |keyer| keyer.matte_blur = 48.0,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "a clean foreground",
+            |keyer| keyer.clean_foreground = 0.5,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "a clean background",
+            |keyer| keyer.clean_background = 0.5,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "both cleans, with thresholds",
+            |keyer| {
+                keyer.low = 0.1;
+                keyer.high = 0.9;
+                keyer.clean_foreground = 0.75;
+                keyer.clean_background = 0.5;
+            },
+            KEYER_FILTERED_TOLERANCE,
+        ),
+    ];
+    for (what, set, tolerance) in cases {
+        let settings = matte(set);
+        let shown = drawn(&settings);
+        let wanted = keyed_of(&settings, &pixels, size, &|_| Incoming::default());
+        let off = farthest(&shown, &wanted);
+        assert!(off <= tolerance, "{what}: {off} off");
+        // The control does something.
+        assert!(differ(&shown, &plain, 0.05), "{what}");
+    }
+    // All of them, one after another, each on what the one before made, which was a step of
+    // a half float or two off: the matte, but for the farthest 1 in 100 of its values.
+    let settings = matte(|keyer| {
+        keyer.pre_blur = 12.0;
+        keyer.erode_dilate = -12.0;
+        keyer.matte_blur = 16.0;
+        keyer.clean_foreground = 0.5;
+        keyer.clean_background = 0.5;
+    });
+    let shown = drawn(&settings);
+    let wanted = keyed_of(&settings, &pixels, size, &|_| Incoming::default());
+    let off = nearly(&shown, &wanted);
+    assert!(off <= KEYER_MORPHED_TOLERANCE, "all of them: {off} off");
+    assert!(differ(&shown, &plain, 0.05));
+    // The final result of a keyer with a Pre-Blur and a Matte Blur: its colours are those of
+    // the picture as it is, with the matte that the controls made, but for the few pixels
+    // whose pre-matte is all but 1 and less than their matte, where what the matte gives
+    // back is a share of next to nothing.
+    let settings = staged(|keyer| {
+        keyer.pre_blur = 16.0;
+        keyer.matte_blur = 16.0;
+    });
+    let shown = drawn(&settings);
+    let wanted = keyed_of(&settings, &pixels, size, &|_| Incoming::default());
+    let off = nearly(&shown, &wanted);
+    assert!(
+        off <= KEYER_FILTERED_TOLERANCE,
+        "the final result: {off} off"
+    );
+    assert_no_errors(&gpu);
+}
+
+/// A picture of R'G'B'A of `width` × `height`, opaque, shot against the screen of these
+/// tests ([`shot`]).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "channels from 0 to 1, as words of 16 bits"
+)]
+fn shot_picture(width: u32, height: u32) -> Arc<NativePicture> {
+    let format = PictureFormat::Rgba64;
+    let mut luma = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            for channel in shot(x, y, (width, height)) {
+                let word = (channel.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                luma.extend(word.to_le_bytes());
+            }
+            luma.extend(u16::MAX.to_le_bytes());
+        }
+    }
+    Arc::new(NativePicture {
+        frame: 0,
+        width,
+        height,
+        format,
+        bits: 16,
+        matrix: YuvMatrix::Bt709,
+        range: ColorRange::Full,
+        chroma_location: 0,
+        alpha: Alpha::Opaque,
+        luma,
+        chroma: Vec::new(),
+        luma_stride: width as usize * format.pixel_bytes(),
+        chroma_stride: 0,
+        ..NativePicture::default()
+    })
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a keyer in a composition, alone and with each of its mattes and its mask"
+)]
+fn a_keyer_of_a_composition_keys_the_picture_of_its_clip_with_its_mattes_and_its_mask() {
+    // The picture of a clip shot against a green screen, keyed in a frame that is not
+    // square, over black and over white, which shows its alpha: what the processor makes of
+    // the frame of the clip, and of the frames of the masks that are its mattes.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let size = MASK;
+    let picture = Source::Picture(shot_picture(size.0, size.1), 0);
+    let under = [None, Some([1.0; 4])];
+    let [black, white] = under.map(|under| {
+        let clip = fused_of(picture.clone(), vec![FusedKind::MediaIn], Some(0), size);
+        frame_of(&gpu, &mut compositor, under, clip, size)
+    });
+    let pixels = pixels_over(&black, &white);
+    assert!(pixels.iter().all(|pixel| (pixel[3] - 1.0).abs() < 1e-3));
+    // The masks: a Rectangle over the left of the picture, a soft Ellipse in its middle, and
+    // another, lower and to the right. Each alone, its mask the red of its frame over black.
+    let masks = vec![
+        rectangle(
+            masked(),
+            RectangleShape {
+                center: [0.3, 0.5],
+                width: 0.4,
+                height: 0.8,
+                ..rectangle_shape()
+            },
+        ),
+        ellipse(
+            Masked {
+                soft_edge: 0.125,
+                ..masked()
+            },
+            EllipseShape {
+                height: 0.25,
+                ..ellipse_shape()
+            },
+        ),
+        ellipse(
+            Masked {
+                soft_edge: 0.1,
+                ..masked()
+            },
+            EllipseShape {
+                center: [0.6, 0.4],
+                ..ellipse_shape()
+            },
+        ),
+    ];
+    let levels: Vec<Vec<f32>> = masks
+        .iter()
+        .map(|node| {
+            let clip = clip_of(vec![node.clone()], 0, size);
+            reds(&frame_of(&gpu, &mut compositor, None, clip, size))
+        })
+        .collect();
+    // Which of the garbage matte (the Rectangle), the solid matte (the first Ellipse) and the
+    // mask (the second) the keyer has, whether its garbage matte is read the other way
+    // round, and its view.
+    let cases: [(&str, [bool; 3], bool, KeyerView); 7] = [
+        ("a keyer alone", [false; 3], false, KeyerView::FinalResult),
+        (
+            "a garbage matte",
+            [true, false, false],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "a garbage matte the other way round",
+            [true, false, false],
+            true,
+            KeyerView::FinalResult,
+        ),
+        (
+            "a solid matte",
+            [false, true, false],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "both mattes",
+            [true, true, false],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "both mattes and a mask",
+            [true, true, true],
+            false,
+            KeyerView::FinalResult,
+        ),
+        (
+            "the matte, with both mattes and a mask",
+            [true, true, true],
+            false,
+            KeyerView::Matte,
+        ),
+    ];
+    let mut alone = Vec::new();
+    for (what, linked, invert, view) in cases {
+        let settings = staged(|keyer| {
+            keyer.low = 0.1;
+            keyer.high = 0.9;
+            keyer.garbage_invert = invert;
+            keyer.view = view;
+        });
+        let [garbage_matte, solid_matte, mask] = [0, 1, 2].map(|at| linked[at].then_some(at));
+        let mut nodes = masks.clone();
+        nodes.push(FusedKind::MediaIn);
+        nodes.push(FusedKind::DeltaKeyer {
+            input: Some(3),
+            garbage_matte,
+            solid_matte,
+            mask,
+            settings,
+        });
+        let [dark, light] = under.map(|under| {
+            let clip = fused_of(picture.clone(), nodes.clone(), Some(4), size);
+            frame_of(&gpu, &mut compositor, under, clip, size)
+        });
+        let incoming = |at: usize| Incoming {
+            garbage: linked[0].then(|| levels[0][at]),
+            solid: linked[1].then(|| levels[1][at]),
+            mask: linked[2].then(|| levels[2][at]),
+        };
+        let wanted = keyed_of(&settings, &pixels, size, &incoming);
+        assert_over(&dark, &light, &wanted, KEYED_TOLERANCE, what);
+        if alone.is_empty() {
+            // The keyer does something: the screen is gone, and the frame over white is not
+            // the frame over black.
+            assert!(differ(&dark, &black, 0.05), "{what}");
+            assert!(differ(&dark, &light, 0.05), "{what}");
+            alone = dark;
+        } else {
+            // And so does what comes into it.
+            assert!(differ(&dark, &alone, 0.05), "{what}");
+        }
+    }
+    assert_no_errors(&gpu);
+}
+
+/// A picture of colours that needs no source: a soft white Ellipse over a Background of pure
+/// green, the screen of a keyer as it is at first, which keys it to the mask of the Ellipse.
+/// The picture is that of the node at 2.
+fn green_over() -> Vec<FusedKind> {
+    let mut nodes = soft_over();
+    nodes[0] = FusedKind::Background {
+        rgba: [0.0, 1.0, 0.0, 1.0],
+        mask: None,
+    };
+    nodes
+}
+
+#[test]
+fn a_keyer_reads_the_same_share_of_the_picture_about_a_pixel_at_whatever_size_it_is_drawn() {
+    // The controls that read the pixels about each one, through the textures of a
+    // composition and the passes of a frame: the matte of the picture as it is drawn, in a
+    // frame of its size and in one of half its size, is what the processor makes of the
+    // frame of the picture there. 70 is some 2 pixels of a picture 32 high, and 4 of one 64
+    // high.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let sizes: [((u32, u32), (u32, u32)); 3] = [
+        ((48, 32), (48, 32)),
+        ((96, 64), (48, 32)),
+        ((96, 64), (96, 64)),
+    ];
+    let cases: [KeyerCase; 4] = [
+        (
+            "a pre-blur",
+            |keyer| keyer.pre_blur = 70.0,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "a matte blur",
+            |keyer| keyer.matte_blur = 70.0,
+            KEYER_FILTERED_TOLERANCE,
+        ),
+        (
+            "an erode",
+            |keyer| keyer.erode_dilate = -70.0,
+            KEYER_MORPHED_TOLERANCE,
+        ),
+        (
+            "a clean background after a matte blur",
+            |keyer| {
+                keyer.matte_blur = 70.0;
+                keyer.clean_background = 0.5;
+            },
+            KEYER_FILTERED_TOLERANCE,
+        ),
+    ];
+    for (nominal, seen) in sizes {
+        let clip = clip_of(green_over(), 2, nominal);
+        let input = pixels_of(&frame_of(&gpu, &mut compositor, None, clip, seen));
+        let mut matte = |set: fn(&mut DeltaKeyed)| {
+            let settings = keyed(|keyer| {
+                keyer.view = KeyerView::Matte;
+                set(keyer);
+            });
+            let mut nodes = green_over();
+            nodes.push(key(2, settings));
+            let clip = clip_of(nodes, 3, nominal);
+            let shown = frame_of(&gpu, &mut compositor, None, clip, seen);
+            (settings, shown)
+        };
+        let (_, plain) = matte(|_| {});
+        for (what, set, tolerance) in cases {
+            let what = format!("{what}, of {nominal:?} in a frame of {seen:?}");
+            let (settings, shown) = matte(set);
+            let wanted = keyed_of(&settings, &input, seen, &|_| Incoming::default());
+            let off = farthest(&shown, &wanted);
+            assert!(off <= tolerance, "{what}: {off} off");
+            assert!(differ(&shown, &plain, 0.02), "{what}");
+        }
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the passes of each keyer, one after another"
+)]
+fn a_keyer_that_changes_nothing_is_no_pass_and_its_mask_keeps_its_ends_to_the_bit() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let picture = Source::Picture(pattern(), 0);
+    let drawn = |compositor: &mut Compositor, nodes: Vec<FusedKind>, output: usize| {
+        let clip = fused(picture.clone(), nodes, Some(output));
+        halves(
+            &gpu,
+            compositor,
+            &scene(vec![layer(clip, ColorRange::Full)]),
+        )
+    };
+    let source = drawn(&mut compositor, vec![FusedKind::MediaIn], 0);
+    assert_eq!(compositor.fusion_passes(), 0);
+    // A keyer that keys nothing and suppresses no spill, with any control that reads the
+    // pixels about each one: the clip as it is, to the bit, and no pass.
+    let idle = keyed(|keyer| {
+        keyer.gain = 0.0;
+        keyer.spill_method = SpillMethod::None;
+        keyer.pre_blur = 40.0;
+        keyer.matte_blur = 40.0;
+    });
+    let shown = drawn(&mut compositor, vec![FusedKind::MediaIn, key(0, idle)], 1);
+    assert_eq!(shown, source);
+    assert_eq!(compositor.fusion_passes(), 0);
+    // A composition without a keyer is drawn by the passes that it was drawn by, the source
+    // alone and two flips; and with such a keyer after them by the same passes and to the
+    // bit.
+    let (nodes, _) = there_and_back();
+    let twice = drawn(&mut compositor, nodes.clone(), 2);
+    assert_eq!(compositor.fusion_passes(), 3);
+    let mut longer = nodes;
+    longer.push(key(2, idle));
+    assert_eq!(drawn(&mut compositor, longer, 3), twice);
+    assert_eq!(compositor.fusion_passes(), 6);
+    // A keyer as it is at first: the source alone and the pass that keys it.
+    let first = keyed(|_| {});
+    let once = drawn(&mut compositor, vec![FusedKind::MediaIn, key(0, first)], 1);
+    assert_ne!(once, source);
+    assert_eq!(compositor.fusion_passes(), 8);
+    // A Rectangle as large as the picture: a mask of 1 all over, and inverted one of 0.
+    let limited = |invert: bool| {
+        let whole = rectangle(
+            Masked { invert, ..masked() },
+            RectangleShape {
+                width: 1.0,
+                height: 1.0,
+                ..rectangle_shape()
+            },
+        );
+        vec![
+            whole,
+            FusedKind::MediaIn,
+            with_mask(&key(1, first), Some(0)),
+        ]
+    };
+    // Limited by a mask of 1: one pass more, that of the mask, and the same picture to the
+    // bit.
+    let all = drawn(&mut compositor, limited(false), 2);
+    assert_eq!(all, once);
+    assert_eq!(compositor.fusion_passes(), 11);
+    // Limited by a mask of 0: the picture as it came in, which went through a texture of the
+    // composition, and is within a step of the source.
+    let none = drawn(&mut compositor, limited(true), 2);
+    assert_within(&none, &source, 1, "a mask of 0");
+    assert_eq!(compositor.fusion_passes(), 14);
+    // With every control that reads the pixels about each one: the source alone; the two
+    // passes of the Pre-Blur; the matte of the key; three passes for each of Erode/Dilate,
+    // the Matte Blur and the Cleans; and the pass that makes the picture.
+    let every = keyed(|keyer| {
+        keyer.pre_blur = 300.0;
+        keyer.erode_dilate = 200.0;
+        keyer.matte_blur = 300.0;
+        keyer.clean_foreground = 0.5;
+    });
+    let through = drawn(&mut compositor, vec![FusedKind::MediaIn, key(0, every)], 1);
+    assert_ne!(through, once);
+    assert_eq!(compositor.fusion_passes(), 28);
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_composition_with_a_keyer_is_shown_as_its_source_until_its_pipeline_is_made() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let picture = Source::Picture(pattern(), 0);
+    let under = colour([0.2, 0.5, 0.3, 1.0]);
+    let plain = scene(vec![
+        under.clone(),
+        layer(picture.clone(), ColorRange::Full),
+    ]);
+    // The picture of the clip keyed, with a Matte Blur: the passes of a keyer, by a pipeline
+    // of its own, and those of a filter of the neighbourhoods, whose pipeline is made at
+    // once.
+    let settings = keyed(|keyer| keyer.matte_blur = 300.0);
+    let nodes = vec![FusedKind::MediaIn, key(0, settings)];
+    let cut = scene(vec![
+        under,
+        layer(fused(picture, nodes, Some(1)), ColorRange::Full),
+    ]);
+    // A compositor that waits for its pipelines draws each frame as its scene says.
+    let mut waiting = Compositor::new(Arc::clone(&gpu));
+    let source = halves(&gpu, &mut waiting, &plain);
+    let pipelines = waiting.pipelines_made();
+    let wanted = halves(&gpu, &mut waiting, &cut);
+    assert_ne!(source, wanted);
+    assert!(!waiting.is_provisional());
+    assert_eq!(waiting.pipelines_made(), pipelines + 1);
+    // The source alone; the matte of the key, the two passes of its filter and the matte
+    // drawn anew; and the pass that makes the picture.
+    assert_eq!(waiting.fusion_passes(), 6);
+    // One that does not shows the clip without its composition at first, and says so.
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    compositor.compile_in_background(|| {});
+    assert_eq!(halves(&gpu, &mut compositor, &cut), source);
+    assert!(compositor.is_provisional());
+    assert_eq!(compositor.fusion_passes(), 0);
+    // Once the pipeline is made, it draws the frame as it is.
+    compositor.finish_compiling();
+    assert_eq!(halves(&gpu, &mut compositor, &cut), wanted);
+    assert!(!compositor.is_provisional());
+    assert_eq!(compositor.fusion_passes(), 6);
     assert_no_errors(&gpu);
 }

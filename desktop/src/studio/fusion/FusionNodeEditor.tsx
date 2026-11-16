@@ -7,18 +7,18 @@ import { EngineError, type Clip, type Composition, type FusionInput, type Fusion
 import { editingAllowed, inStudio } from '../keys';
 import type { Menu, MenuItem } from '../color/ColorMenu';
 import { CoveringMenu } from '../color/CoveringMenu';
-import { linkHalves, linkPath, NODE_HEIGHT, NODE_WIDTH, shownLabel, type Placed, type Point } from '../color/graph';
+import { NODE_HEIGHT, NODE_WIDTH, shownLabel, type Placed, type Point } from '../color/graph';
 import { KeyedMark, ZOOM_LEAST, ZOOM_MOST } from '../color/NodeEditor';
 import type { GradeEditing } from '../color/useGradeEditing';
 import { refusalText } from '../inspector/refusal';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import {
-  ADDABLE, addedNode, addNode, connect, disconnect, fusionKey, isFirst, moveNodes, reconnect, relabel, removeComposition, removeNodes, resetComposition,
-  restoreNodes, togglePass, withFirst, type FusionAt, type FusionCommand,
+  ADDABLE, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, isFirst, moveNodes, reconnect, relabel, removeComposition, removeNodes,
+  resetComposition, restoreNodes, togglePass, withFirst, type FusionAt, type FusionCommand,
 } from './edits';
 import {
-  hasOutput, INPUTS, layoutComposition, linkEnds, linkName, namesOf, nodesIn, placesOf, portAt, portName, portPoint,
-  type FusionLayout, type FusionPort, type PlacedFusion,
+  fusionLinkHalves, fusionLinkPath, hasMaskInput, hasOutput, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf, nodesIn, pictureInputs, placesOf, portAt,
+  portName, portPoint, type FusionLayout, type FusionPort, type PlacedFusion,
 } from './graph';
 import { hasKeys } from './settings';
 import '../color/color.css';
@@ -46,11 +46,13 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
   && (error.data as { reason?: unknown }).reason === 'empty';
 
 /**
- * A node of a composition: a card with a stripe in the colour of its kind and its name, its inputs
- * down its left side (a Merge's background orange above its foreground green, as in Fusion,
- * p. 2162) and its output at the middle of its right side. A node that is passed through is drawn
- * dimmed, and one whose settings have keys has a badge. Drawn again only when what it shows changes:
- * while one node is dragged the others are left as they are.
+ * A node of a composition: a card with a stripe in the colour of its kind and its name, the inputs
+ * of its pictures down its left side (a Merge's background orange above its foreground green, as
+ * in Fusion, p. 2162), its mask input blue on its lower edge, where it has one (the effect mask of
+ * a Merge, a Transform and a Background, and the mask that comes into a mask), and its output at
+ * the middle of its right side. A node that is passed through is drawn dimmed, and one whose
+ * settings have keys has a badge. Drawn again only when what it shows changes: while one node is
+ * dragged the others are left as they are.
  */
 const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chosen, lit, keyed, passed, ports, onLabel }: {
   node: FusionNode; x: number; y: number; name: string; kind: string; current: boolean; chosen: boolean;
@@ -62,7 +64,10 @@ const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chose
   keyed: string | null; passed: string | null;
   onLabel: (node: string) => void;
 }) {
-  const inputs = INPUTS[node.kind];
+  const inputs = pictureInputs(node.kind);
+  const maskPort = portName({ side: 'in', input: 'mask' });
+  const maskX = x + MASK_INSET;
+  const foot = y + NODE_HEIGHT;
   return <g className="color-node fusion-node" data-node={node.id} data-kind={node.kind} data-current={current || undefined} data-chosen={chosen || undefined}
     data-pass-through={node.pass_through || undefined}>
     <title>{[name, kind, passed ?? '', keyed ?? ''].filter(Boolean).join(' · ')}</title>
@@ -77,6 +82,9 @@ const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chose
       return <path key={input} className="color-port fusion-port" data-input={input} data-port={port} data-lit={lit === port || undefined}
         d={`M ${x - 1} ${py - 5} L ${x + 6} ${py} L ${x - 1} ${py + 5} Z`}><title>{ports[input]}</title></path>;
     })}
+    {/* The mask input points up into the card from its lower edge, at the place that `inputPoint` gives it. */}
+    {hasMaskInput(node.kind) && <path className="color-port fusion-port" data-input="mask" data-port={maskPort} data-lit={lit === maskPort || undefined}
+      d={`M ${maskX - 5} ${foot + 1} L ${maskX} ${foot - 6} L ${maskX + 5} ${foot + 1} Z`}><title>{ports.mask}</title></path>}
     {hasOutput(node.kind) && <rect className="color-port fusion-port" data-port="out" data-lit={lit === 'out' || undefined}
       x={x + NODE_WIDTH - 5} y={y + NODE_HEIGHT / 2 - 4} width={7} height={8}><title>{ports.output}</title></rect>}
   </g>;
@@ -84,17 +92,18 @@ const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chose
 
 /**
  * A link of a composition, from an output to an input, with two halves to take hold of: either
- * chooses it when it is clicked, and the second takes its end along when it is dragged. Drawn again
- * only when one of its ends moves or what is said of it changes.
+ * chooses it when it is clicked, and the second takes its end along when it is dragged. A link into
+ * a `mask` comes into it from below and is drawn in the colour of masks. Drawn again only when one
+ * of its ends moves or what is said of it changes.
  */
 const LinkLine = memo(function LinkLine({ name, input, fromX, fromY, toX, toY, chosen, replacing, hover }: {
   name: string; input: FusionInput; fromX: number; fromY: number; toX: number; toY: number; chosen: boolean; replacing: boolean; hover: 'start' | 'end' | null;
 }) {
   const from = { x: fromX, y: fromY };
   const to = { x: toX, y: toY };
-  const [first, second] = linkHalves(from, to);
+  const [first, second] = fusionLinkHalves(from, to, input);
   return <g>
-    <path className="color-link fusion-link" data-link={name} data-input={input} d={linkPath(from, to)} data-chosen={chosen || undefined}
+    <path className="color-link fusion-link" data-link={name} data-input={input} d={fusionLinkPath(from, to, input)} data-chosen={chosen || undefined}
       data-replacing={replacing || undefined} data-hover={hover ?? undefined} />
     <path className="color-link-hit" data-link-hit={name} data-half="start" d={first} />
     <path className="color-link-hit" data-link-hit={name} data-half="end" d={second} />
@@ -114,7 +123,8 @@ type Drag =
 /** What a drag is about to do, drawn until it ends. */
 interface Preview {
   moved?: Placed;
-  wire?: { from: Point; to: Point } | null;
+  /** The link that is drawn, and the input that it would go into, where it is over one or was begun at one: into a `mask` it is drawn as a link of a mask. */
+  wire?: { from: Point; to: Point; input: FusionInput | null } | null;
   port?: FusionPort | null;
   replacing?: string | null;
   detached?: string | null;
@@ -131,13 +141,16 @@ const linkInto = (layout: FusionLayout, port: FusionPort) => layout.links.find(l
  *
  * - a node added from the tool bar or from the right-click menu (Merge, Transform, Background,
  *   MediaIn), where the menu was opened; with one node chosen, a node that has an input goes in
- *   after it (`addNode`), and the new node is the one chosen;
+ *   after it (`addNode`), and the new node is the one chosen; a mask (Rectangle, Ellipse, Polygon,
+ *   a group of their own in the tool bar) is linked into the `mask` of the node chosen instead,
+ *   where that node has one and nothing is linked into it;
  * - a node chosen with a click, more with Ctrl+click or Shift+click or a box drawn round them, all
  *   with Ctrl+A; moved by dragging, which is one gesture: each move sends the places whole, the
  *   release ends it, and the whole is one step to undo (Escape takes it back);
  * - a link drawn from an output to an input, or from an input to an output; one into an input that
  *   has a link takes its place; the end of a link dragged to another input, or off to take the link
- *   away; a link chosen with a click and deleted with Delete or Backspace;
+ *   away; a link chosen with a click and deleted with Delete or Backspace; the `mask` input of a
+ *   node is an input as the others are, and any output goes into it;
  * - Delete deletes the nodes chosen, joining what fed each to what it fed where that is a single
  *   chain (`removeNodes`); the MediaOut stays; Ctrl+P passes the nodes chosen through; F2, a double
  *   click on its name, or its menu renames a node;
@@ -432,7 +445,7 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
       const anchor = portPoint(going.base, going.from) ?? point;
       const taken = port && port.side === 'in' ? linkInto(going.base, port) : null;
       setPreview({
-        wire: going.from.side === 'out' ? { from: anchor, to: point } : { from: point, to: anchor }, port,
+        wire: going.from.side === 'out' ? { from: anchor, to: point, input: port?.input ?? null } : { from: point, to: anchor, input: going.from.input }, port,
         replacing: taken && (!going.detached || linkName(taken) !== linkName(going.detached)) ? linkName(taken) : null,
         detached: going.detached ? linkName(going.detached) : null,
       });
@@ -501,8 +514,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
     if (port && press.from.input !== null) run(connect(at, composition, { from: port.node, to: press.from.node, input: press.from.input }));
   };
 
-  /** The items that add a node of each kind, at a point of the graph or where the editor lays it out. */
-  const addItems = (pos: Point | null): MenuItem[] => ADDABLE.map(kind => ({ id: `add-${kind}`, label: labels.kinds[kind], run: () => add(kind, pos) }));
+  /** The items that add a node of each kind, the masks after the others, at a point of the graph or where the editor lays it out. */
+  const addItems = (pos: Point | null): MenuItem[] => [...ADDABLE, ...ADDABLE_MASKS].map(kind => ({ id: `add-${kind}`, label: labels.kinds[kind], run: () => add(kind, pos) }));
   /** The menu of the background: Add Node ▸, the two commands of the whole composition, and the zoom. */
   const graphItems = (pos: Point | null): MenuItem[] => [
     { id: 'add-node', label: menuWords.addNode, items: addItems(pos) },
@@ -558,6 +571,14 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
             data-test={`add-${kind}`}><Icon size={14} aria-hidden="true" />{labels.kinds[kind]}</button>;
         })}
       </div>
+      {/* The masks, in a group of their own: one added with a node chosen that has a free mask input is linked into it. */}
+      <div className="fusion-add fusion-add-masks" role="group" aria-label={labels.masks}>
+        {ADDABLE_MASKS.map((kind) => {
+          const Icon = ADD_ICONS[kind];
+          return <button key={kind} type="button" className="color-tool" title={`${menuWords.addNode}: ${labels.kinds[kind]}`} onClick={() => add(kind, null)}
+            data-test={`add-${kind}`}><Icon size={14} aria-hidden="true" />{labels.kinds[kind]}</button>;
+        })}
+      </div>
       <span className="color-gap" />
       <input type="range" className="color-node-zoom" aria-label={menuWords.zoom} min={ZOOM_LEAST} max={ZOOM_MOST} step={0.05} value={zoom}
         onChange={event => setZoom(Number(event.target.value))} onPointerUp={event => event.currentTarget.blur()} data-test="node-zoom" />
@@ -582,7 +603,8 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
               return <LinkLine key={name} name={name} input={link.input} fromX={ends.from.x} fromY={ends.from.y} toX={ends.to.x} toY={ends.to.y}
                 chosen={pickedLink === name} replacing={preview?.replacing === name} hover={hover?.link === name ? hover.half : null} />;
             })}
-            {preview?.wire && <path className="color-link color-wire fusion-link" d={linkPath(preview.wire.from, preview.wire.to)} data-test="wire" />}
+            {preview?.wire && <path className="color-link color-wire fusion-link" data-input={preview.wire.input ?? undefined}
+              d={fusionLinkPath(preview.wire.from, preview.wire.to, preview.wire.input)} data-test="wire" />}
           </g>
           {layout.nodes.map(({ node, x, y }) => <NodeCard key={node.id} node={node} x={x} y={y} name={names.get(node.id) ?? node.id} kind={labels.kinds[node.kind]}
             current={node.id === selection.current} chosen={node.id !== selection.current && selection.others.includes(node.id)} lit={litOf(node.id)}

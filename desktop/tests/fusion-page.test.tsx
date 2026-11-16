@@ -14,10 +14,10 @@ import { en } from '../src/messages/en';
 import { numberedClips, shownClips } from '../src/studio/color/clips';
 import { Studio } from '../src/studio/Studio';
 import {
-  applyOp, emptyGrade, firstComposition, ProjectCopy, type Composition, type EngineEvent, type FusionLink, type FusionNode, type Media, type Op, type Project,
-  type Timeline, type TransportState,
+  applyOp, emptyGrade, firstComposition, ProjectCopy, type Composition, type EngineEvent, type FusionLink, type FusionNode, type FusionPoint, type Media, type Op,
+  type Project, type Timeline, type TransportState,
 } from '../src/studio/engine';
-import { newMerge, newNode } from '../src/studio/fusion/edits';
+import { newMerge, newNode, newPolygon, startPoints } from '../src/studio/fusion/edits';
 import { chosenPicture, fusionClip } from '../src/studio/pages/FusionPage';
 import { likeABrowser } from './mounted';
 import { blockOf } from './stylesheet';
@@ -59,6 +59,25 @@ const keyedComp = (): Composition => {
 const P = {
   in1: { x: 74, y: 57 }, n3: { x: 222, y: 57 }, n4: { x: 370, y: 57 }, n5: { x: 74, y: 149 }, out1: { x: 518, y: 57 },
   n3In: { x: 176, y: 57 }, n4Out: { x: 416, y: 57 }, n4Foreground: { x: 324, y: 28 + (58 * 2) / 3 }, n5Out: { x: 120, y: 149 }, out1In: { x: 472, y: 57 },
+};
+/** A Polygon of these points, the node `id`. */
+const polygonOf = (points: FusionPoint[], id = 'n7'): FusionNode => ({ ...newNode('polygon', null, id), params: { ...newPolygon(), points } } as FusionNode);
+/**
+ * `comp` and three masks that nothing is linked to or from: the Rectangle n6, the Polygon n7 of the four points that the page
+ * gives a new one, and the Ellipse n8. Laid out by the editor they stand in the first column under the Background n5,
+ * at 28,212; 28,304 and 28,396.
+ */
+const maskedComp = (): Composition => {
+  const made = comp();
+  return { ...made, nodes: [...made.nodes, newNode('rectangle', null, 'n6'), polygonOf(startPoints()), newNode('ellipse', null, 'n8')] };
+};
+/**
+ * Where the middles of the cards of the masks of `maskedComp` and their outputs are, and the mask inputs of the Transform and of
+ * the Merge: on the lower edge of the card, a quarter of its width (23 of 92) from its left.
+ */
+const M = {
+  n6: { x: 74, y: 241 }, n7: { x: 74, y: 333 }, n8: { x: 74, y: 425 }, n6Out: { x: 120, y: 241 }, n8Out: { x: 120, y: 425 },
+  n3Mask: { x: 199, y: 86 }, n4Mask: { x: 347, y: 86 },
 };
 const m2: Media = { ...media, id: 'm2', name: 'Street' };
 /** V1: c1 (frames 0–99, with a composition where one is given) and c2 (100–199); V2 above it: c3 (50–149); and, where asked for, A1 with a clip of sound. */
@@ -341,9 +360,10 @@ describe('the node editor of the Fusion page', () => {
     expect([...graph().querySelectorAll('[data-test="node-label"]')].map(each => each.textContent)).toEqual(['MediaIn 1', 'MediaOut 1', 'Transform 1', 'Merge 1', 'Background 1']);
     expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground']);
     expect([placeOf('MediaIn1'), placeOf('n5'), placeOf('n3'), placeOf('n4'), placeOf('MediaOut1')]).toEqual([[28, 28], [28, 120], [176, 28], [324, 28], [472, 28]]);
-    // The ports: a Merge's background and foreground on its left and its output on its right; a MediaOut has no output, a MediaIn no input.
+    // The ports: a Merge's background and foreground on its left, its effect mask on its lower edge and its output on its right;
+    // a MediaOut has no output, a MediaIn no input, and neither has a mask.
     const ports = (id: string) => [...nodeOf(id).querySelectorAll<SVGElement>('[data-port]')].map(each => each.dataset.port);
-    expect([ports('n4'), ports('MediaOut1'), ports('MediaIn1')]).toEqual([['in:background', 'in:foreground', 'out'], ['in:input'], ['out']]);
+    expect([ports('n4'), ports('MediaOut1'), ports('MediaIn1')]).toEqual([['in:background', 'in:foreground', 'in:mask', 'out'], ['in:input'], ['out']]);
   });
 
   it('adds a node from the tool bar with no links where none is chosen, and the new node is the one chosen', async () => {
@@ -588,6 +608,139 @@ describe('the node editor of the Fusion page', () => {
   });
 });
 
+describe('the masks in the node editor of the Fusion page', () => {
+  const ports = (id: string) => [...nodeOf(id).querySelectorAll<SVGElement>('[data-port]')].map(each => each.dataset.port);
+  const linkDrawn = (name: string) => graph().querySelector<SVGElement>(`[data-link="${name}"]`);
+
+  it('shows the mask input of every kind that has one on the lower edge of its card, in the colour of masks, and none on a MediaIn or a MediaOut', async () => {
+    await mount(projectOf([timelineOf(maskedComp())]));
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n6', 'n7', 'n8']);
+    expect([placeOf('n6'), placeOf('n7'), placeOf('n8')]).toEqual([[28, 212], [28, 304], [28, 396]]);
+    expect([...graph().querySelectorAll('[data-test="node-label"]')].map(each => each.textContent).slice(5)).toEqual(['Rectangle 1', 'Polygon 1', 'Ellipse 1']);
+    expect([ports('n3'), ports('n4'), ports('n5'), ports('n6'), ports('n7'), ports('n8'), ports('MediaIn1'), ports('MediaOut1')]).toEqual([
+      ['in:input', 'in:mask', 'out'], ['in:background', 'in:foreground', 'in:mask', 'out'], ['in:mask', 'out'],
+      ['in:mask', 'out'], ['in:mask', 'out'], ['in:mask', 'out'], ['out'], ['in:input'],
+    ]);
+    // The mask input of the Merge at 324,28: a quarter of the way along its lower edge, pointing up into the card, and named as Fusion names it.
+    const mask = port('n4', 'in:mask');
+    expect([mask.dataset.input, mask.getAttribute('d'), mask.querySelector('title')!.textContent]).toEqual(['mask', 'M 342 87 L 347 80 L 352 87 Z', 'Effect Mask']);
+    expect(port('n6', 'in:mask').getAttribute('d')).toBe('M 46 271 L 51 264 L 56 271 Z');
+    // The inputs of the pictures are where they were: the foreground of the Merge two thirds down its left side, the input of the Transform half way.
+    const down = 28 + (58 * 2) / 3;
+    expect(port('n4', 'in:foreground').getAttribute('d')).toBe(`M 323 ${down - 5} L 330 ${down} L 323 ${down + 5} Z`);
+    expect(port('n3', 'in:input').getAttribute('d')).toBe('M 175 52 L 182 57 L 175 62 Z');
+    // The colour of masks is a variable of the themes: of the stripe of a mask, of a mask input and of a link into one,
+    // which a link chosen or about to be replaced overrides by rules that come after.
+    const css = readFileSync('src/studio/fusion/fusion.css', 'utf8');
+    expect(blockOf(readFileSync('src/ui/tokens.css', 'utf8'), ':root')).toMatch(/--fusion-mask: #[0-9a-f]{6};/);
+    expect(blockOf(css, ".fusion-page .fusion-node[data-kind='polygon'] .fusion-node-stripe")).toContain('fill: var(--fusion-mask);');
+    for (const kind of ['rectangle', 'ellipse', 'polygon']) expect(css).toContain(`.fusion-page .fusion-node[data-kind='${kind}'] .fusion-node-stripe`);
+    expect(blockOf(css, ".fusion-page .fusion-port[data-input='mask']")).toContain('fill: var(--fusion-mask);');
+    expect(blockOf(css, ".fusion-page .fusion-link[data-input='mask']")).toContain('stroke: var(--fusion-mask);');
+    expect(css.indexOf(".fusion-page .fusion-link[data-input='mask'] {")).toBeLessThan(css.indexOf(".fusion-page .fusion-link[data-hover='end'] {"));
+    expect(css.indexOf(".fusion-page .fusion-link[data-input='mask'] {")).toBeLessThan(css.indexOf('.fusion-page .fusion-link[data-chosen],'));
+  });
+
+  it('links any output into a mask input by a drag, takes the place of the link that was there, and takes its end to another mask input or away', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(maskedComp())]));
+    bridge.call.mockClear();
+    // The Rectangle into the mask of the Merge.
+    dragFrom(port('n6', 'out'), M.n6Out, M.n4Mask);
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'connect_fusion', ...AT, link: link('n6', 'n4', 'mask') }]]);
+    // The mask of a node comes after its pictures in the order of the engine; the link is one of a mask, and comes into the input from below.
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground', 'n6>n4:mask']);
+    expect([linkDrawn('n6>n4:mask')!.dataset.input, linkDrawn('n6>n4:mask')!.getAttribute('d')]).toEqual(['mask', 'M 120 241 C 233.5 241, 347 163.5, 347 86']);
+    expect(linkDrawn('n3>n4:background')!.dataset.input).toBe('background');
+    // The nodes stay where they were: the Rectangle fed nothing before, and lies left of the Merge already.
+    expect([placeOf('n6'), placeOf('n4')]).toEqual([[28, 212], [324, 28]]);
+    // The Ellipse into the same input: one connect_fusion, and the link of the Rectangle is put out of its place.
+    bridge.call.mockClear();
+    dragFrom(port('n8', 'out'), M.n8Out, M.n4Mask);
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'connect_fusion', ...AT, link: link('n8', 'n4', 'mask') }]]);
+    expect([linkDrawn('n8>n4:mask') !== null, linkDrawn('n6>n4:mask')]).toEqual([true, null]);
+    // The link that is there already is not sent again.
+    bridge.call.mockClear();
+    dragFrom(port('n8', 'out'), M.n8Out, M.n4Mask);
+    await settle();
+    expect(sent(bridge)).toEqual([]);
+    // A press on a mask input that has a link takes up the end of the link: let go on the mask input of the Transform, the old link goes and the new one comes.
+    dragFrom(port('n4', 'in:mask'), M.n4Mask, M.n3Mask);
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'disconnect_fusion', ...AT, to: 'n4', input: 'mask' }, { op: 'connect_fusion', ...AT, link: link('n8', 'n3', 'mask') }]]);
+    expect(linksDrawn()).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n8>n3:mask', 'n3>n4:background', 'n5>n4:foreground']);
+    // Chosen with a click, the link is deleted with Delete; and the end of a link dragged off a mask input takes the link away.
+    bridge.call.mockClear();
+    press(half('n8>n3:mask', 'start'), { x: 150, y: 300 });
+    expect(linkDrawn('n8>n3:mask')!.getAttribute('data-chosen')).toBe('true');
+    key('Delete'); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'disconnect_fusion', ...AT, to: 'n3', input: 'mask' }]]);
+    bridge.call.mockClear();
+    dragFrom(port('n6', 'out'), M.n6Out, M.n3Mask);
+    await settle();
+    dragFrom(port('n3', 'in:mask'), M.n3Mask, { x: 260, y: 200 });
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'connect_fusion', ...AT, link: link('n6', 'n3', 'mask') }], [{ op: 'disconnect_fusion', ...AT, to: 'n3', input: 'mask' }]]);
+    expect(problem()).toBeNull();
+  });
+
+  it('adds a mask from its group of the tool bar: linked into the mask input of the node chosen where that is free, and loose otherwise', async () => {
+    const { bridge } = await mount();
+    // The masks are a group of their own, after the nodes of a picture.
+    const groups = [...document.querySelectorAll<HTMLElement>('.fusion-add')];
+    expect(groups.map(each => each.getAttribute('aria-label'))).toEqual(['Add Node', 'Masks']);
+    expect(groups.map(each => [...each.querySelectorAll('button')].map(button => button.textContent))).toEqual([
+      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Rectangle', 'Ellipse', 'Polygon'],
+    ]);
+    // No node chosen: the mask is added with no links, and is the node chosen.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-rectangle')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('rectangle') }]]);
+    expect([currentNode(), nodeOf('n10').dataset.kind]).toEqual(['n10', 'rectangle']);
+    // The Merge chosen, whose mask input is free: the mask goes into it, in the one operation, which is one step to undo.
+    choose('n4');
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-ellipse')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n4', 'mask')] }]]);
+    expect(linksDrawn()).toContain('n11>n4:mask');
+    expect(currentNode()).toBe('n11');
+    // The Ellipse is the one chosen now: a Polygon added goes into the mask that comes into it, and begins with four points.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-polygon')!); await settle();
+    expect(sent(bridge)).toEqual([[{
+      op: 'add_fusion_node', ...AT, node: { ...newNode('polygon'), params: { ...newPolygon(), points: startPoints() } }, links: [link('', 'n11', 'mask')],
+    }]]);
+    expect(linksDrawn()).toContain('n12>n11:mask');
+    expect(fieldsShown().filter(name => name!.startsWith('points.'))).toHaveLength(8);
+    // The Merge again, whose mask input has a link now: the mask is added loose, and the link stays.
+    choose('n4');
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-rectangle')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('rectangle') }]]);
+    expect(linksDrawn()).toContain('n11>n4:mask');
+    // A node chosen that has no mask input, the MediaIn: loose.
+    choose('in1');
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-ellipse')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('ellipse') }]]);
+    // A mask is never put into the chain of the picture: the links of the pictures are as they were.
+    expect(linksDrawn().filter(name => !name!.endsWith(':mask'))).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground']);
+  });
+
+  it('adds a mask from the menu of a node into the mask input of that node, where the menu was opened', async () => {
+    const { bridge } = await mount();
+    bridge.call.mockClear();
+    fireEvent.contextMenu(card('n3'), { clientX: 230, clientY: 60 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add Node' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Ellipse' }));
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('ellipse', { x: 230, y: 60 }), links: [link('', 'n3', 'mask')] }]]);
+    expect(placeOf('n10')).toEqual([230, 60]);
+    expect(linksDrawn()).toContain('n10>n3:mask');
+  });
+});
+
 describe('the Inspector of the Fusion page', () => {
   it('shows the settings of the one node chosen, by its kind, and says so where none or several are chosen', async () => {
     await mount();
@@ -747,6 +900,234 @@ describe('the Spline Editor of the Fusion page', () => {
     await mount();
     fireEvent.click(marked('toggle-spline')!);
     expect(marked('fusion-curves-empty')!.textContent).toBe(en.hint.studio.fusionPage.noCurves);
+  });
+});
+
+describe('the masks in the Inspector of the Fusion page', () => {
+  const checked = (name: string) => (row(name).querySelector('input') as HTMLInputElement).checked;
+  const select = (name: string) => row(name).querySelector('select')!;
+  const pointFields = () => fieldsShown().filter(name => name!.startsWith('points.'));
+  const pointNames = () => [...inspector().querySelectorAll<HTMLButtonElement>('.fusion-point-name')];
+  const addPoint = () => marked('add-point') as HTMLButtonElement;
+  const removePoint = () => marked('remove-point') as HTMLButtonElement;
+  const keyedAt = (name: string) => keysOf(name)[1].dataset.keyed;
+  /** The points of the Polygon n7 as the engine has them. */
+  const pointsIn = (project: Project) => {
+    const found = (project.timelines[0].tracks[0] as { clips: { fusion?: Composition }[] }).clips[0].fusion!.nodes.find(node => node.id === 'n7')!;
+    return (found.params as { points: FusionPoint[] }).points;
+  };
+
+  it('shows the settings of a mask by its kind, with the defaults of the engine, and the points of a Polygon each with its two numbers', async () => {
+    await mount(projectOf([timelineOf(maskedComp())]));
+    press(card('n6'), M.n6);
+    expect([inspector().dataset.node, inspector().dataset.kind, marked('fusion-node-name')!.textContent]).toEqual(['n6', 'rectangle', 'Rectangle 1']);
+    expect(fieldsShown()).toEqual(['label', 'level', 'soft_edge', 'border_width', 'paint_mode', 'invert', 'solid', 'center.x', 'center.y', 'width', 'height',
+      'corner_radius', 'angle']);
+    const numbers = ['level', 'soft_edge', 'border_width', 'center.x', 'center.y', 'width', 'height', 'corner_radius', 'angle'];
+    expect(numbers.map(name => box(name).value)).toEqual(['1.000', '0.000', '0.000', '0.500', '0.500', '0.500', '0.500', '0.000', '0.0']);
+    expect(numbers.map(name => row(name).querySelector('label')!.textContent))
+      .toEqual(['Level', 'Soft Edge', 'Border Width', 'Center X', 'Center Y', 'Width', 'Height', 'Corner Radius', 'Angle']);
+    // Every number has the three buttons of keys; the modes and the switches take none.
+    expect([...inspector().querySelectorAll<HTMLElement>('[data-keys]')].map(each => each.dataset.keys)).toEqual(numbers);
+    expect(keysOf('soft_edge').map(each => each.title)).toEqual(['Previous keyframe', 'Add keyframe', 'Next keyframe']);
+    expect([select('paint_mode').value, [...select('paint_mode').options].map(each => each.textContent)]).toEqual(['merge', ['Merge', 'Add', 'Subtract']]);
+    expect([checked('invert'), checked('solid')]).toEqual([false, true]);
+    // The border of a mask may be less than nothing: its slider goes both ways.
+    expect([slider('border_width').min, slider('border_width').max, slider('soft_edge').min]).toEqual(['-1', '1', '0']);
+    // An Ellipse has no corners.
+    press(card('n8'), M.n8);
+    expect([inspector().dataset.kind, marked('fusion-node-name')!.textContent]).toEqual(['ellipse', 'Ellipse 1']);
+    expect(fieldsShown()).toEqual(['label', 'level', 'soft_edge', 'border_width', 'paint_mode', 'invert', 'solid', 'center.x', 'center.y', 'width', 'height', 'angle']);
+    // A Polygon: its Size and its Fill Method, and the list of its points, each with its X and its Y from the centre and their keys.
+    press(card('n7'), M.n7);
+    expect([inspector().dataset.kind, marked('fusion-node-name')!.textContent]).toEqual(['polygon', 'Polygon 1']);
+    expect(fieldsShown()).toEqual(['label', 'level', 'soft_edge', 'border_width', 'paint_mode', 'invert', 'solid', 'center.x', 'center.y', 'size', 'angle', 'fill',
+      'points.0.x', 'points.0.y', 'points.1.x', 'points.1.y', 'points.2.x', 'points.2.y', 'points.3.x', 'points.3.y']);
+    expect([select('fill').value, [...select('fill').options].map(each => each.textContent)]).toEqual(['alternate', ['Alternate', 'Non Zero Winding']]);
+    expect(pointFields().map(name => box(name!).value)).toEqual(['-0.200', '-0.200', '0.200', '-0.200', '0.200', '0.200', '-0.200', '0.200']);
+    expect(pointNames().map(each => each.textContent)).toEqual(['Point 1', 'Point 2', 'Point 3', 'Point 4']);
+    expect([row('points.2.x').querySelector('label')!.textContent, row('points.2.y').querySelector('label')!.textContent]).toEqual(['Point 3 X', 'Point 3 Y']);
+    expect(keysOf('points.2.x').map(each => each.getAttribute('aria-label')))
+      .toEqual(['Point 3 X: Previous keyframe', 'Point 3 X: Add keyframe', 'Point 3 X: Next keyframe']);
+    // The numbers of a point have no slider, so that the list stays short.
+    expect(row('points.0.x').querySelector('input[type="range"]')).toBeNull();
+    expect(marked('fusion-few-points')).toBeNull();
+  });
+
+  it('sets the numbers, the switches and the modes of a mask, and a number of a point by its path', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(maskedComp())]));
+    press(card('n6'), M.n6);
+    bridge.call.mockClear();
+    type('soft_edge', '0.1'); await settle();
+    // Beyond the range, the value is the end of the range: a border of one width of the picture taken away, a rectangle ten pictures wide.
+    type('border_width', '-2'); await settle();
+    type('center.y', '0.25'); await settle();
+    type('width', '99'); await settle();
+    type('corner_radius', '0.5'); await settle();
+    type('angle', '45'); await settle();
+    fireEvent.click(row('invert').querySelector('input')!); await settle();
+    fireEvent.click(row('solid').querySelector('input')!); await settle();
+    fireEvent.change(select('paint_mode'), { target: { value: 'subtract' } }); await settle();
+    const rectangle = (params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id: 'n6', params }];
+    expect(sent(bridge)).toEqual([
+      rectangle({ soft_edge: 0.1 }), rectangle({ border_width: -1 }), rectangle({ center: { y: 0.25 } }), rectangle({ width: 10 }), rectangle({ corner_radius: 0.5 }),
+      rectangle({ angle: 45 }), rectangle({ invert: true }), rectangle({ solid: false }), rectangle({ paint_mode: 'subtract' }),
+    ]);
+    expect([checked('invert'), checked('solid'), select('paint_mode').value]).toEqual([true, false, 'subtract']);
+    // A double click on a label puts the default back.
+    bridge.call.mockClear();
+    fireEvent.doubleClick(row('width').querySelector('label')!); await settle();
+    expect(sent(bridge)).toEqual([rectangle({ width: 0.5 })]);
+    // A Polygon: its Fill Method and its Size by a patch of the node; a number of a point by its path, since a patch cannot name one point of the list.
+    press(card('n7'), M.n7);
+    bridge.call.mockClear();
+    fireEvent.change(select('fill'), { target: { value: 'non_zero_winding' } }); await settle();
+    type('size', '2'); await settle();
+    type('points.2.x', '0.3'); await settle();
+    // Beyond the range of a point, 16 widths of the picture from the centre.
+    type('points.0.y', '-99'); await settle();
+    expect(sent(bridge)).toEqual([
+      [{ op: 'set_fusion_node', ...AT, id: 'n7', params: { fill: 'non_zero_winding' } }], [{ op: 'set_fusion_node', ...AT, id: 'n7', params: { size: 2 } }],
+      [{ op: 'set_fusion_keys', ...AT, path: 'n7.points.2.x', param: 0.3 }], [{ op: 'set_fusion_keys', ...AT, path: 'n7.points.0.y', param: -16 }],
+    ]);
+    expect([box('points.2.x').value, box('points.0.y').value, select('fill').value]).toEqual(['0.300', '-16.000', 'non_zero_winding']);
+  });
+
+  it('puts a key on a setting of a mask and on a number of a point with the diamond, and a value typed at the key changes it', async () => {
+    const { bridge } = await mount(projectOf([timelineOf(maskedComp())]));
+    press(card('n7'), M.n7);
+    bridge.call.mockClear();
+    expect([keyedAt('soft_edge'), keyedAt('points.2.x')]).toEqual([undefined, undefined]);
+    // The playhead is at frame 0, where the clip shows picture 0 of its media.
+    fireEvent.click(keysOf('soft_edge')[1]); await settle();
+    fireEvent.click(keysOf('points.2.x')[1]); await settle();
+    expect(sent(bridge)).toEqual([
+      [{ op: 'splice_fusion_keys', ...AT, path: 'n7.soft_edge', at: 0, remove: 0, keys: [{ frame: 0, value: 0, interp: 'linear' }] }],
+      [{ op: 'splice_fusion_keys', ...AT, path: 'n7.points.2.x', at: 0, remove: 0, keys: [{ frame: 0, value: 0.2, interp: 'linear' }] }],
+    ]);
+    expect([keyedAt('soft_edge'), keyedAt('points.2.x'), keyedAt('points.2.y')]).toEqual(['true', 'true', undefined]);
+    expect(keysOf('points.2.x')[1].getAttribute('aria-pressed')).toBe('true');
+    expect(nodeOf('n7').querySelector('[data-test="node-keyed"]')).not.toBeNull();
+    // A value typed where the key is changes the key.
+    bridge.call.mockClear();
+    type('points.2.x', '0.4'); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'splice_fusion_keys', ...AT, path: 'n7.points.2.x', at: 0, remove: 1, keys: [{ frame: 0, value: 0.4, interp: 'linear' }] }]]);
+    // The diamond takes the key away again: its last key leaves its value, as one number.
+    bridge.call.mockClear();
+    fireEvent.click(keysOf('points.2.x')[1]); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_fusion_keys', ...AT, path: 'n7.points.2.x', param: 0.4 }]]);
+    expect(keyedAt('points.2.x')).toBeUndefined();
+  });
+
+  it('adds a point after the last or after the one chosen and takes one away, the points that stay keeping their keys', async () => {
+    const { bridge, project } = await mount(projectOf([timelineOf(maskedComp())]));
+    press(card('n7'), M.n7);
+    expect([addPoint().textContent, removePoint().textContent, addPoint().disabled, removePoint().disabled]).toEqual(['Add Point', 'Remove Point', false, false]);
+    // The second point takes a key on its X, to be told by.
+    fireEvent.click(keysOf('points.1.x')[1]); await settle();
+    const start = startPoints();
+    const second = { x: { keys: [{ frame: 0, value: 0.2, interp: 'linear' }] }, y: -0.2 };
+    const list = (points: unknown[]) => [[{ op: 'set_fusion_node', ...AT, id: 'n7', params: { points } }]];
+    // No point chosen: after the last, in the middle of the side that closes the outline, and it is the point chosen then.
+    bridge.call.mockClear();
+    fireEvent.click(addPoint()); await settle(); await settle();
+    expect(sent(bridge)).toEqual(list([start[0], second, start[2], start[3], { x: -0.2, y: 0 }]));
+    expect(pointNames().map(each => each.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false', 'false', 'true']);
+    expect(inspector().querySelector<HTMLElement>('[data-point="4"]')!.dataset.chosen).toBe('true');
+    // The first point chosen by its name: the new point goes after it, between it and the second, whose keys go with it to the third place.
+    fireEvent.click(pointNames()[0]);
+    expect(pointNames()[0].getAttribute('aria-pressed')).toBe('true');
+    bridge.call.mockClear();
+    fireEvent.click(addPoint()); await settle(); await settle();
+    expect(sent(bridge)).toEqual(list([start[0], { x: 0, y: -0.2 }, second, start[2], start[3], { x: -0.2, y: 0 }]));
+    expect(pointsIn(project())[2]).toEqual(second);
+    expect([keyedAt('points.1.x'), keyedAt('points.2.x')]).toEqual([undefined, 'true']);
+    expect(pointFields()).toHaveLength(12);
+    // The new point is the one chosen: Remove Point takes it away, and the keys are at the second place again.
+    expect(pointNames().map(each => each.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false', 'false', 'false', 'false']);
+    bridge.call.mockClear();
+    fireEvent.click(removePoint()); await settle();
+    expect(sent(bridge)).toEqual(list([start[0], second, start[2], start[3], { x: -0.2, y: 0 }]));
+    expect([keyedAt('points.1.x'), keyedAt('points.2.x')]).toEqual(['true', undefined]);
+    // No point chosen: the last is taken away, down to the three that are the fewest that make a shape.
+    expect(pointNames().every(each => each.getAttribute('aria-pressed') === 'false')).toBe(true);
+    bridge.call.mockClear();
+    fireEvent.click(removePoint()); await settle();
+    fireEvent.click(removePoint()); await settle();
+    expect(sent(bridge)).toEqual([...list([start[0], second, start[2], start[3]]), ...list([start[0], second, start[2]])]);
+    expect([addPoint().disabled, removePoint().disabled]).toEqual([false, true]);
+    expect(pointFields()).toEqual(['points.0.x', 'points.0.y', 'points.1.x', 'points.1.y', 'points.2.x', 'points.2.y']);
+    expect(pointsIn(project())).toEqual([start[0], second, start[2]]);
+    expect(marked('fusion-inspector-problem')).toBeNull();
+  });
+
+  it('adds no point to a polygon that is full, takes none from one of three or fewer, and says of one of fewer that it masks nothing', async () => {
+    const withPolygon = (points: FusionPoint[]): Composition => ({ ...comp(), nodes: [...comp().nodes, polygonOf(points)] });
+    // The Polygon is the third node of the first column, at 28,212.
+    await mount(projectOf([timelineOf(withPolygon(Array.from({ length: 128 }, (_, index) => ({ x: index / 1000, y: 0 }))))]));
+    press(card('n7'), M.n6);
+    expect(pointFields()).toHaveLength(256);
+    expect([addPoint().disabled, removePoint().disabled, marked('fusion-few-points')]).toEqual([true, false, null]);
+    cleanup();
+    await mount(projectOf([timelineOf(withPolygon(startPoints().slice(0, 2)))]));
+    press(card('n7'), M.n6);
+    expect([addPoint().disabled, removePoint().disabled]).toEqual([false, true]);
+    expect(marked('fusion-few-points')!.textContent).toBe(en.hint.studio.fusionPage.fewPoints);
+    // A third point makes it a shape, and the page says so no longer.
+    fireEvent.click(addPoint()); await settle(); await settle();
+    expect([pointFields().length, marked('fusion-few-points')]).toEqual([6, null]);
+  });
+
+  it('says nothing of a change that changes nothing, and says another refusal at its top', async () => {
+    const { refuse } = await mount(projectOf([timelineOf(maskedComp())]));
+    press(card('n6'), M.n6);
+    // A slider let go where it was, a value typed and a switch that the engine takes for no change: none is a failure.
+    refuse({ reason: 'empty' });
+    const soft = slider('soft_edge');
+    fireEvent.pointerDown(soft);
+    fireEvent.input(soft, { target: { value: '0.2' } }); await settle();
+    fireEvent.change(soft, { target: { value: '0.2' } }); await settle();
+    expect(marked('fusion-inspector-problem')).toBeNull();
+    type('level', '0.5'); await settle();
+    fireEvent.click(row('invert').querySelector('input')!); await settle();
+    expect(marked('fusion-inspector-problem')).toBeNull();
+    refuse({ reason: 'out_of_range' });
+    type('level', '0.25'); await settle();
+    expect(marked('fusion-inspector-problem')!.textContent).toContain(en.hint.studio.edit.out_of_range);
+  });
+});
+
+describe('the masks in the Spline Editor of the Fusion page', () => {
+  const listed = () => [...document.querySelectorAll<HTMLElement>('[data-test="fusion-curves"] li[data-curve]')].map(each => each.dataset.curve);
+  const named = (curve: string) => one(`[data-test="fusion-curves"] li[data-curve="${curve}"]`).textContent;
+  /** `maskedComp` with keys on the Soft Edge of the Polygon and on the X of its third point. */
+  const keyedMasks = (): Composition => {
+    const made = maskedComp();
+    const keys = (value: number) => ({ keys: [{ frame: 0, value, interp: 'linear' as const }] });
+    const points: FusionPoint[] = startPoints().map((point, index) => (index === 2 ? { ...point, x: keys(0.2) } : point));
+    const keyed = { ...newNode('polygon', null, 'n7'), params: { ...newPolygon(), points, soft_edge: keys(0.1) } } as FusionNode;
+    return { ...made, nodes: made.nodes.map(node => (node.id === 'n7' ? keyed : node)) };
+  };
+
+  it('lists the settings of a mask as those of the other nodes, and of the points of a Polygon the numbers that have keys, named by their point', async () => {
+    await mount(projectOf([timelineOf(keyedMasks())]));
+    expect(nodeOf('n7').querySelector('[data-test="node-keyed"]')).not.toBeNull();
+    fireEvent.click(marked('toggle-spline')!);
+    // None chosen: what has keys, of every node, each named with its node; a point is counted from 1.
+    expect(listed()).toEqual(['n7.soft_edge', 'n7.points.2.x']);
+    expect([named('n7.soft_edge'), named('n7.points.2.x')].map(text => text!.includes('Polygon 1 · '))).toEqual([true, true]);
+    expect(named('n7.soft_edge')).toContain('Polygon 1 · Soft Edge');
+    expect(named('n7.points.2.x')).toContain('Polygon 1 · Point 3 X');
+    // The Polygon chosen: every setting of its kind, those with keys first, and of its points the one number that has keys.
+    press(card('n7'), M.n7);
+    expect(listed()).toEqual(['n7.soft_edge', 'n7.points.2.x', 'n7.level', 'n7.border_width', 'n7.center.x', 'n7.center.y', 'n7.size', 'n7.angle']);
+    expect(named('n7.points.2.x')).toContain('Point 3 X');
+    // A Rectangle has no keys: its settings are listed all the same, for a key to be put on one.
+    press(card('n6'), M.n6);
+    const settings = ['level', 'soft_edge', 'border_width', 'center.x', 'center.y', 'width', 'height', 'corner_radius', 'angle'];
+    expect(listed()).toEqual(settings.map(path => `n6.${path}`));
+    const names = ['Level', 'Soft Edge', 'Border Width', 'Center X', 'Center Y', 'Width', 'Height', 'Corner Radius', 'Angle'];
+    expect(settings.map((path, index) => named(`n6.${path}`)!.includes(names[index]))).toEqual(settings.map(() => true));
   });
 });
 

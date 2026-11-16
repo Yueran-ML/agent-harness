@@ -749,11 +749,17 @@ export const zhCN: Messages = {
         inputs: { input: '输入', background: '背景', foreground: '前景', mask: '效果遮罩' },
         output: '输出', passThrough: '直通', passedThrough: '已直通', rename: '重命名',
         resetComposition: '重置 Fusion 合成', removeComposition: '移除合成', nodeName: '名称',
+        masks: '遮罩',
         settings: {
           apply: '应用模式', operator: '运算符', over: '覆盖', subtractiveAdditive: '减法 - 加法', alphaGain: 'Alpha 增益', burnIn: '加深',
           blend: '混合', centerX: '中心 X', centerY: '中心 Y', size: '大小', angle: '角度', flipHorizontal: '水平翻转',
           flipVertical: '垂直翻转', color: '颜色', red: '红', green: '绿', blue: '蓝', alpha: '透明通道',
+          level: '级别', softEdge: '柔边', borderWidth: '边框宽度', paintMode: '绘制模式', invert: '反转', solid: '实心',
+          width: '宽度', height: '高度', cornerRadius: '圆角半径', fill: '填充方式',
+          points: '点', point: '第 {n} 点', pointX: '第 {n} 点 X', pointY: '第 {n} 点 Y', addPoint: '添加点', removePoint: '移除点',
         },
+        paintModes: { merge: '合并', add: '相加', subtract: '相减' },
+        fills: { alternate: '交替', non_zero_winding: '非零环绕' },
       },
       colorPage: {
         viewerZoom: '检视器缩放', viewerFit: '适合窗口', matching: '正在匹配选中的片段…',
@@ -1556,6 +1562,7 @@ export const zhCN: Messages = {
         chooseNode: '选中一个节点，查看它的设置。',
         noSettings: '这个节点没有自己的设置。',
         noCurves: '还没有设置带关键帧。选中一个节点，查看它各项设置的曲线。',
+        fewPoints: '多边形至少要有三个点，才能成为遮罩。',
       },
       colorPage: {
         noClip: '播放头处没有片段。',

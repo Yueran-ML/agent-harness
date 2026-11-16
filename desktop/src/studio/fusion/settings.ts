@@ -6,16 +6,18 @@
  * the one there.
  *
  * The settings, their defaults and their ranges are those of the engine's catalog of the settings
- * that take keys (`engine/crates/model/tests/data/catalog.json`, `fusion_merge`, `fusion_transform`
- * and `fusion_background`; the tests hold the two together). A setting is named by its path in the
- * `params` of its node, and in an operation by the id of the node, a dot, and that path
- * (`n4.center.x`). The keys are at the frames that the other keys of the clip count
- * (`keyFrameOf`). Each function here gives the operations to send, and none where nothing would
- * change. Pure.
+ * that take keys (`engine/crates/model/tests/data/catalog.json`, `fusion_merge`, `fusion_transform`,
+ * `fusion_background`, `fusion_rectangle`, `fusion_ellipse` and `fusion_polygon`; the tests hold
+ * the two together). A setting is named by its path in the `params` of its node, and in an
+ * operation by the id of the node, a dot, and that path (`n4.center.x`). The two numbers of a point
+ * of a Polygon are settings each, named by the place of the point in the list of points, from 0
+ * (`points.2.x`); the catalog writes them once, for every point (`points.*.x`). The keys are at the
+ * frames that the other keys of the clip count (`keyFrameOf`). Each function here gives the
+ * operations to send, and none where nothing would change. Pure.
  */
 import { getAt, patchAt, type Bounds } from '../color/corrector';
 import { keyClockOf, shownKeyRange } from '../color/keyFrames';
-import type { Clip, FusionNode, Keyframe, Media, Op, Param, Timeline } from '../engine';
+import type { Clip, FusionKind, FusionNode, Keyframe, Media, Op, Param, Timeline } from '../engine';
 import { frameOfKey, keyAt, mediaOf } from '../inspector/clipKeys';
 import { spliceOf } from '../keyframes/curveGeometry';
 import { valueAt } from '../keyframes/value';
@@ -32,24 +34,66 @@ const PLACE: readonly FusionSetting[] = [
   s('center.x', 0.5, -15.5, 16.5, 'widths'), s('center.y', 0.5, -15.5, 16.5, 'heights'), s('size', 1, 0, 16), s('angle', 0, -3600, 3600, 'degrees_counterclockwise'),
 ];
 
-/** The settings of each kind of node that take keys, in the order of the catalog. A MediaIn and a MediaOut have none. */
-export const FUSION_SETTINGS: Record<'merge' | 'transform' | 'background', readonly FusionSetting[]> = {
+/** The controls that every mask has: its level, and how soft its edge and how wide its border are, in widths of the picture. */
+const MASK: readonly FusionSetting[] = [s('level', 1, 0, 1), s('soft_edge', 0, 0, 1, 'widths'), s('border_width', 0, -1, 1, 'widths')];
+/** Where the middle of a mask lies. */
+const MASK_CENTER: readonly FusionSetting[] = [s('center.x', 0.5, -10, 10, 'widths'), s('center.y', 0.5, -10, 10, 'heights')];
+/** How far a mask is turned about its middle. */
+const MASK_ANGLE = s('angle', 0, -36000, 36000, 'degrees_counterclockwise');
+/** The two numbers of every point of a Polygon, as the catalog writes them: the `*` is the place of the point. */
+const POINT_X = 'points.*.x';
+const POINT_Y = 'points.*.y';
+
+/**
+ * The settings of each kind of node that take keys, in the order of the catalog. A MediaIn and a
+ * MediaOut have none. Those of a Polygon end with the two numbers of a point, written once for
+ * every point as the catalog writes them; `settingsOf` gives them for each point of a node.
+ */
+export const FUSION_SETTINGS: Record<Exclude<FusionKind, 'media_in' | 'media_out'>, readonly FusionSetting[]> = {
   merge: [s('subtractive_additive', 1, 0, 1), s('alpha_gain', 1, 0, 1), s('burn_in', 0, 0, 1), s('blend', 1, 0, 1), ...PLACE],
   transform: PLACE,
   background: [s('color.r', 0, 0, 1), s('color.g', 0, 0, 1), s('color.b', 0, 0, 1), s('color.a', 1, 0, 1)],
+  rectangle: [...MASK, ...MASK_CENTER, s('width', 0.5, 0, 10, 'widths'), s('height', 0.5, 0, 10, 'heights'), s('corner_radius', 0, 0, 1), MASK_ANGLE],
+  // Both the width and the height of an Ellipse are in widths of the picture, so that alike they are a circle.
+  ellipse: [...MASK, ...MASK_CENTER, s('width', 0.5, 0, 10, 'widths'), s('height', 0.5, 0, 10, 'widths'), MASK_ANGLE],
+  polygon: [...MASK, ...MASK_CENTER, s('size', 1, 0, 10), MASK_ANGLE, s(POINT_X, 0, -16, 16, 'widths'), s(POINT_Y, 0, -16, 16, 'widths')],
 };
 
 const NONE: readonly FusionSetting[] = [];
 
-/** The settings of a node that take keys. */
-export function settingsOf(node: Pick<FusionNode, 'kind'>): readonly FusionSetting[] {
-  return node.kind === 'merge' || node.kind === 'transform' || node.kind === 'background' ? FUSION_SETTINGS[node.kind] : NONE;
+/** Whether a setting is a number of a point of a Polygon, whose path names the place of the point: `points.2.x`. */
+export const isPointSetting = (setting: Pick<FusionSetting, 'path'>): boolean => setting.path.startsWith('points.');
+
+/** The path of a number of a point of a Polygon: of the point `index`, from 0, its `x` or its `y`. */
+export const pointPath = (index: number, axis: 'x' | 'y'): string => `points.${index}.${axis}`;
+
+/** The settings of a Polygon of so many points, kept so that the same list is given each time. */
+const OF_POLYGON = new Map<number, readonly FusionSetting[]>();
+function polygonSettings(points: number): readonly FusionSetting[] {
+  const known = OF_POLYGON.get(points);
+  if (known) return known;
+  const plain = FUSION_SETTINGS.polygon.filter(setting => !isPointSetting(setting));
+  const ofPoint = FUSION_SETTINGS.polygon.filter(isPointSetting);
+  const made: FusionSetting[] = [...plain];
+  for (let index = 0; index < points; index++) for (const setting of ofPoint) made.push({ ...setting, path: setting.path.replace('*', String(index)) });
+  OF_POLYGON.set(points, made);
+  return made;
 }
 
-/** The setting of a node at a path of its `params`, or undefined where its kind has none there. */
-export function settingOf(node: Pick<FusionNode, 'kind'>, path: string): FusionSetting | undefined {
+/** The settings of a node that take keys: of a Polygon, those of its kind and then the two numbers of each of its points, in their order. */
+export function settingsOf(node: FusionNode): readonly FusionSetting[] {
+  if (node.kind === 'media_in' || node.kind === 'media_out') return NONE;
+  if (node.kind !== 'polygon') return FUSION_SETTINGS[node.kind];
+  return polygonSettings(Array.isArray(node.params.points) ? node.params.points.length : 0);
+}
+
+/** The setting of a node at a path of its `params`, or undefined where its kind has none there, or the polygon no such point. */
+export function settingOf(node: FusionNode, path: string): FusionSetting | undefined {
   return settingsOf(node).find(setting => setting.path === path);
 }
+
+/** A name with the number of a point in it, where the catalogue of words writes `{n}`: the points are counted from 1. */
+export const numbered = (text: string, index: number): string => text.replace('{n}', String(index + 1));
 
 /** A setting of a node: a number, or keys. One that the node does not say is its default. */
 export function paramOf(node: FusionNode, setting: FusionSetting): Param {
@@ -71,9 +115,14 @@ const placeOf = (keys: readonly Keyframe[], keyFrame: number) => {
   return at < 0 ? keys.length : at;
 };
 
-/** A setting of a node set to one number, by a patch of the node's `params`. */
-const setNumber = (at: FusionAt, node: Pick<FusionNode, 'id'>, setting: FusionSetting, value: number): Op =>
-  ({ op: 'set_fusion_node', ...at, id: node.id, params: patchAt(setting.path, value) });
+/**
+ * A setting of a node set to one number: by a patch of the node's `params`; but a number of a point
+ * of a Polygon by `set_fusion_keys` with the number, since a patch puts a list in place of a list,
+ * whole, and cannot name one point of it.
+ */
+const setNumber = (at: FusionAt, node: Pick<FusionNode, 'id'>, setting: FusionSetting, value: number): Op => (isPointSetting(setting)
+  ? { op: 'set_fusion_keys', ...at, path: pathOf(node, setting), param: value }
+  : { op: 'set_fusion_node', ...at, id: node.id, params: patchAt(setting.path, value) });
 
 /**
  * Give a setting a value at a frame of its keys. A setting with no keys is set to the number; one

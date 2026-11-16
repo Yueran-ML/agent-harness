@@ -45,8 +45,9 @@
   --bad-wash: rgb(236 154 162 / 0.1);
 
   /* The kinds of nodes of a composition on the Fusion page, each a stripe on its card, and the two
-     inputs of a Merge as Fusion colours them: the background orange, the foreground green. They are
-     seen on the card of either theme, so both themes have the same. */
+     inputs of a Merge as Fusion colours them: the background orange, the foreground green. The
+     masks, their input on a node and the links into it are blue, as Fusion's effect mask is. They
+     are seen on the card of either theme, so both themes have the same. */
   --fusion-media-in: #5b9bd5;
   --fusion-media-out: #5b9bd5;
   --fusion-merge: #4fae7a;
@@ -54,6 +55,7 @@
   --fusion-background: #9a7fd6;
   --fusion-input-background: #e08a2e;
   --fusion-input-foreground: #4fae7a;
+  --fusion-mask: #3f7ff2;
 
   /* The main button is the paper itself: light on the night. */
   --button: #eceae4;

@@ -12,9 +12,10 @@
 import type { Key } from '../../app/keys';
 import {
   firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionEllipse, type FusionKind, type FusionLink, type FusionMaskCommon,
-  type FusionMerge, type FusionNode, type FusionPolygon, type FusionRectangle, type FusionTransform, type NodePos, type Op,
+  type FusionMerge, type FusionNode, type FusionPoint, type FusionPolygon, type FusionRectangle, type FusionTransform, type NodePos, type Op,
 } from '../engine';
-import { hasOutput, INPUTS } from './graph';
+import { valueAt } from '../keyframes/value';
+import { handedOn, hasMaskInput, hasOutput, isMaskKind, MASK_KINDS, pictureInputs, type MaskKind } from './graph';
 
 /** The clip whose composition the operations change, as they name it. */
 export interface FusionAt { timeline: string; clip: string }
@@ -37,8 +38,10 @@ export function withFirst(at: FusionAt, has: boolean, ops: Op[]): Op[] {
   return [{ op: 'set_fusion', ...at, value: firstComposition() }, ...ops];
 }
 
-/** The kinds of node that the editor adds: a composition has exactly one MediaOut, so none is added. */
+/** The kinds of node of a picture that the editor adds: a composition has exactly one MediaOut, so none is added. */
 export const ADDABLE: readonly Exclude<FusionKind, 'media_out'>[] = ['merge', 'transform', 'background', 'media_in'];
+/** The masks that the editor adds, in a group of their own. */
+export const ADDABLE_MASKS: readonly MaskKind[] = MASK_KINDS;
 
 /** The settings of a Merge as the engine makes a new one (PROTOCOL.md, "Compositions"). */
 export const newMerge = (): FusionMerge => ({
@@ -56,6 +59,18 @@ export const newRectangle = (): FusionRectangle => ({ ...newMask(), center: { x:
 export const newEllipse = (): FusionEllipse => ({ ...newMask(), center: { x: 0.5, y: 0.5 }, width: 0.5, height: 0.5, angle: 0 });
 /** The settings of a Polygon mask as the engine makes a new one: no points yet. */
 export const newPolygon = (): FusionPolygon => ({ ...newMask(), center: { x: 0.5, y: 0.5 }, size: 1, angle: 0, points: [], fill: 'alternate' });
+
+/** The most points that a Polygon may have (PROTOCOL.md, "Masks"). */
+export const MOST_POINTS = 128;
+/** The fewest points that make a shape: with fewer a Polygon is a mask of nothing, so the page takes none away below them. */
+export const LEAST_POINTS = 3;
+/**
+ * The points that a Polygon added on the page begins with, since its points cannot be drawn in the
+ * viewer yet: a square about its centre, four tenths of the width of the picture wide, from its
+ * lower left corner round counter-clockwise (a point is counted from the centre, `x` to the right
+ * and `y` up, both in widths of the picture).
+ */
+export const startPoints = (): FusionPoint[] => [{ x: -0.2, y: -0.2 }, { x: 0.2, y: -0.2 }, { x: 0.2, y: 0.2 }, { x: -0.2, y: 0.2 }];
 
 /** A place as the editor keeps it: to a whole pixel, which is as near as a pointer puts a node. */
 const placeAt = (at: NodePos): NodePos => ({ x: Math.round(at.x), y: Math.round(at.y) });
@@ -75,17 +90,31 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
 }
 
 /**
- * Add a node. With `after`, a node that has an output, a node that has an input is inserted after
- * it: the links of the operation put the output of `after` into the first input of the new node
- * (`input` of a Transform, `background` of a Merge), and the output of the new node into every
- * input that `after` fed, each in the place of the link that was there. A node without an input (a
- * Background, a MediaIn), or one added with no node chosen, is added with no links. The new node is
- * named by the empty id in its links, as `add_fusion_node` takes them.
+ * Add a node. With `after`, a node that has an output, a node that has an input of a picture is
+ * inserted after it: the links of the operation put the output of `after` into the first input of
+ * the new node (`input` of a Transform, `background` of a Merge), and the output of the new node
+ * into every input that `after` fed, each in the place of the link that was there. A node without
+ * such an input (a Background, a MediaIn), or one added with no node chosen, is added with no links.
+ *
+ * A mask (a Rectangle, an Ellipse, a Polygon) is not put into the chain of the picture: as in
+ * Fusion, where the node chosen has a `mask` input that nothing is linked into, the mask is linked
+ * into it, in the same operation, and else it is added with no links. A Polygon begins with the
+ * points of `startPoints`.
+ *
+ * The new node is named by the empty id in its links, as `add_fusion_node` takes them.
  */
 export function addNode(at: FusionAt, composition: Composition, kind: FusionKind, after: string | null, pos: NodePos | null): Op[] {
-  const node = newNode(kind, pos);
-  const first = INPUTS[kind][0];
+  const node: FusionNode = kind === 'polygon'
+    ? { id: '', label: '', pass_through: false, pos: pos ? placeAt(pos) : null, kind, params: { ...newPolygon(), points: startPoints() } }
+    : newNode(kind, pos);
   const before = after === null ? undefined : composition.nodes.find(each => each.id === after);
+  if (isMaskKind(kind)) {
+    const into = before === undefined ? null : before.id;
+    const free = before !== undefined && hasMaskInput(before.kind) && !composition.links.some(link => link.to === into && link.input === 'mask');
+    if (into === null || !free) return [{ op: 'add_fusion_node', ...at, node }];
+    return [{ op: 'add_fusion_node', ...at, node, links: [{ from: '', to: into, input: 'mask' }] }];
+  }
+  const first = pictureInputs(kind)[0];
   if (!before || !hasOutput(before.kind) || first === undefined) return [{ op: 'add_fusion_node', ...at, node }];
   const fed = sortFusionLinks(composition.links.filter(link => link.from === before.id));
   const links: FusionLink[] = [{ from: before.id, to: '', input: first }, ...fed.map(link => ({ from: '', to: link.to, input: link.input }))];
@@ -103,8 +132,12 @@ export function addedNode(done: readonly Op[] | null | undefined): string | null
  * it away. As Fusion does, what fed a node is joined to what the node fed where that is a single
  * chain: a node with exactly one link into it gives each input that it fed a link from the node
  * that fed it (the `links` of `remove_fusion_node`). A node with no link into it, or with two (a
- * Merge with both inputs linked), leaves what it fed without a picture. Each node is taken away
- * from the composition as the ones before it left it, as the engine applies them.
+ * Merge with both inputs linked), leaves what it fed without a picture. The effect mask of a node
+ * is not counted among the links into it, since it is no picture that the node hands on: a
+ * Transform with a mask is joined across as one without, and a Background with a mask leaves what
+ * it fed without a picture; the mask that comes into a mask node is the picture that it hands on,
+ * and is counted. Each node is taken away from the composition as the ones before it left it, as
+ * the engine applies them.
  */
 export function removeNodes(at: FusionAt, composition: Composition, ids: readonly string[]): Op[] {
   let now = composition;
@@ -112,7 +145,8 @@ export function removeNodes(at: FusionAt, composition: Composition, ids: readonl
   for (const id of ids) {
     const node = now.nodes.find(each => each.id === id);
     if (!node || node.kind === 'media_out') continue;
-    const into = now.links.filter(link => link.to === id);
+    const passed = handedOn(node.kind);
+    const into = now.links.filter(link => link.to === id && (link.input !== 'mask' || passed === 'mask'));
     const fed = now.links.filter(link => link.from === id);
     const links: FusionLink[] = into.length === 1 ? fed.map(link => ({ from: into[0].from, to: link.to, input: link.input })) : [];
     ops.push(links.length > 0 ? { op: 'remove_fusion_node', ...at, id, links } : { op: 'remove_fusion_node', ...at, id });
@@ -166,6 +200,46 @@ export function togglePass(at: FusionAt, composition: Composition, ids: readonly
 export function relabel(at: FusionAt, composition: Composition, id: string, label: string): Op[] {
   const node = composition.nodes.find(each => each.id === id);
   return !node || node.label === label ? [] : [{ op: 'set_fusion_node', ...at, id, label }];
+}
+
+/** A number as a new point is given it: to a millionth, so that the middle of two numbers is written as it is read. */
+const tidy = (value: number): number => Number(value.toFixed(6));
+
+/**
+ * Put a point into a Polygon after its point `after` (counted from 0), or after its last where
+ * `after` is null or names none. The list of points is set whole, as the engine takes it
+ * (`set_fusion_node` with `points`), and every point that was there goes into it as the object that
+ * it is, so that its numbers and its keys stay with it though its place in the list, by which its
+ * keys are named, becomes another. The new point lies in the middle of the side that it is put
+ * into, between the point before it and the one after it (the first, after the last: the outline
+ * closes), where they are at the frame `keyFrame` of their keys; beside the one point of a polygon
+ * that has one; and at the centre of one that has none. Nothing where the polygon is full
+ * (`MOST_POINTS`), and for a node that is no Polygon.
+ */
+export function insertPoint(at: FusionAt, node: FusionNode, after: number | null, keyFrame: number): Op[] {
+  if (node.kind !== 'polygon') return [];
+  const points = node.params.points;
+  if (points.length >= MOST_POINTS) return [];
+  const index = after === null || !Number.isInteger(after) || after < 0 || after >= points.length ? points.length : after + 1;
+  const before = points[index - 1];
+  const next = points[index % Math.max(1, points.length)];
+  const now = (point: FusionPoint) => ({ x: valueAt(point.x, keyFrame), y: valueAt(point.y, keyFrame) });
+  let made: FusionPoint = { x: 0, y: 0 };
+  if (points.length === 1) made = { x: tidy(now(points[0]).x + 0.1), y: tidy(now(points[0]).y) };
+  else if (before !== undefined && next !== undefined) made = { x: tidy((now(before).x + now(next).x) / 2), y: tidy((now(before).y + now(next).y) / 2) };
+  return [{ op: 'set_fusion_node', ...at, id: node.id, params: { points: [...points.slice(0, index), made, ...points.slice(index)] } }];
+}
+
+/**
+ * Take the point `index` (counted from 0) of a Polygon away: the list of points set whole without
+ * it, the others the objects that they are, their keys with them. Nothing where the polygon has no
+ * such point, and for a node that is no Polygon.
+ */
+export function removePoint(at: FusionAt, node: FusionNode, index: number): Op[] {
+  if (node.kind !== 'polygon') return [];
+  const points = node.params.points;
+  if (!Number.isInteger(index) || index < 0 || index >= points.length) return [];
+  return [{ op: 'set_fusion_node', ...at, id: node.id, params: { points: points.filter((_, place) => place !== index) } }];
 }
 
 /** Whether a composition is the first one, as a clip new to the page has it. */

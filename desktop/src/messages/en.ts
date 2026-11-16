@@ -876,11 +876,21 @@ export const en = {
         inputs: { input: 'Input', background: 'Background', foreground: 'Foreground', mask: 'Effect Mask' },
         output: 'Output', passThrough: 'Pass Through', passedThrough: 'Passed through', rename: 'Rename',
         resetComposition: 'Reset Fusion Composition', removeComposition: 'Remove Composition', nodeName: 'Name',
+        /** The group of the masks in the tool bar of the node editor. */
+        masks: 'Masks',
         settings: {
           apply: 'Apply Mode', operator: 'Operator', over: 'Over', subtractiveAdditive: 'Subtractive - Additive', alphaGain: 'Alpha Gain', burnIn: 'Burn In',
           blend: 'Blend', centerX: 'Center X', centerY: 'Center Y', size: 'Size', angle: 'Angle', flipHorizontal: 'Flip Horizontal',
           flipVertical: 'Flip Vertical', color: 'Color', red: 'Red', green: 'Green', blue: 'Blue', alpha: 'Alpha',
+          /** The controls of the masks (Reference Manual 20, Chapter 108). `{n}` is the number of a point of a Polygon, from 1. */
+          level: 'Level', softEdge: 'Soft Edge', borderWidth: 'Border Width', paintMode: 'Paint Mode', invert: 'Invert', solid: 'Solid',
+          width: 'Width', height: 'Height', cornerRadius: 'Corner Radius', fill: 'Fill Method',
+          points: 'Points', point: 'Point {n}', pointX: 'Point {n} X', pointY: 'Point {n} Y', addPoint: 'Add Point', removePoint: 'Remove Point',
         },
+        /** How a mask is combined with the mask that comes into it. */
+        paintModes: { merge: 'Merge', add: 'Add', subtract: 'Subtract' },
+        /** Which regions of a Polygon are inside it. */
+        fills: { alternate: 'Alternate', non_zero_winding: 'Non Zero Winding' },
       },
       /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
       colorPage: {
@@ -1789,6 +1799,8 @@ export const en = {
         chooseNode: 'Select one node to see its settings.',
         noSettings: 'This node has no settings of its own.',
         noCurves: 'No setting has keyframes yet. Select a node to see the curves of its settings.',
+        /** A Polygon of fewer than three points is a mask of nothing. */
+        fewPoints: 'A polygon needs three points at least to be a mask.',
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

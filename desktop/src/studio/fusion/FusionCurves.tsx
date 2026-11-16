@@ -13,15 +13,29 @@ import type { Messages } from '../../messages/en';
 import { clipLocations } from '../timeline/selection';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { shownComposition, type FusionAt } from './edits';
-import { keyOps, paramOf, pathOf, settingOf, settingsOf, wholeParam, type FusionSetting } from './settings';
+import { isPointSetting, keyOps, numbered, paramOf, pathOf, settingOf, settingsOf, wholeParam, type FusionSetting } from './settings';
 
-/** The name of each setting that takes keys, by its path in its node's `params`, as the Inspector writes it. */
-export function settingNames(labels: Messages['label']['studio']['fusionPage']['settings']): Record<string, string> {
+type SettingLabels = Messages['label']['studio']['fusionPage']['settings'];
+
+/** The name of each setting that takes keys, by its path in its node's `params`, as the Inspector writes it; but those of the points of a Polygon (`settingLabel`). */
+export function settingNames(labels: SettingLabels): Record<string, string> {
   return {
     subtractive_additive: labels.subtractiveAdditive, alpha_gain: labels.alphaGain, burn_in: labels.burnIn, blend: labels.blend,
     'center.x': labels.centerX, 'center.y': labels.centerY, size: labels.size, angle: labels.angle,
     'color.r': labels.red, 'color.g': labels.green, 'color.b': labels.blue, 'color.a': labels.alpha,
+    level: labels.level, soft_edge: labels.softEdge, border_width: labels.borderWidth,
+    width: labels.width, height: labels.height, corner_radius: labels.cornerRadius,
   };
+}
+
+/**
+ * The name of a setting by its path, as the Inspector writes it: a number of a point of a Polygon
+ * with the number of its point, from 1 (`points.2.x` is Point 3 X); a path that has no name, as it is.
+ */
+export function settingLabel(labels: SettingLabels, path: string): string {
+  const point = /^points\.(\d+)\.(x|y)$/.exec(path);
+  if (point) return numbered(point[2] === 'x' ? labels.pointX : labels.pointY, Number(point[1]));
+  return settingNames(labels)[path] ?? path;
 }
 
 /** How the values of a setting are written beside the graph: an angle in degrees, every other setting as the number that it is. */
@@ -38,8 +52,9 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * The Spline Editor of the Fusion page (DaVinci Resolve Reference Manual 20, Ch. 72, pp. 1476–1507):
  * the Curve Editor of the Edit page (`CurveEditor`) on the settings of the nodes of the current
  * clip's composition, over the frames that their keys count. With one node chosen it lists every
- * setting of that node that takes keys, those with keys first; with none or several chosen, the
- * settings of every node that have keys, each named with its node.
+ * setting of that node that takes keys, those with keys first (of the points of a Polygon, which
+ * may be many, only the numbers that have keys: a key is put on one in the Inspector); with none or
+ * several chosen, the settings of every node that have keys, each named with its node.
  *
  * A drag of keys or of a handle is one gesture: each move sets the setting whole with
  * `set_fusion_keys`, the last move ends the gesture, and the whole is one step to undo; taken back,
@@ -74,17 +89,17 @@ export function FusionCurves({ bridge, session, revision, timeline, clip, media,
   const dragging = useRef(false);
   const at: FusionAt = { timeline: timeline.id, clip: clip.id };
 
-  const settingName = settingNames(labels.settings);
-  // One node chosen: all that it has. Else what has keys, of every node.
+  const settingName = (path: string) => settingLabel(labels.settings, path);
+  // One node chosen: all that it has, but of the points of a Polygon, which may be many, those that have keys. Else what has keys, of every node.
   const of = node !== null ? [node] : composition.nodes;
   const drawn: Drawn[] = of.flatMap(each => settingsOf(each)
-    .filter(setting => node !== null || typeof paramOf(each, setting) === 'object')
+    .filter(setting => (node !== null && !isPointSetting(setting)) || typeof paramOf(each, setting) === 'object')
     .map(setting => ({ node: each, setting })))
     .map(({ node: each, setting }, index): Drawn => ({
       node: each, setting,
       curve: {
         id: pathOf(each, setting), color: CURVE_COLORS[index % CURVE_COLORS.length], param: paramOf(each, setting), bounds: setting.bounds, display: displayOf(setting),
-        label: node !== null ? settingName[setting.path] ?? setting.path : `${names.get(each.id) ?? each.id} · ${settingName[setting.path] ?? setting.path}`,
+        label: node !== null ? settingName(setting.path) : `${names.get(each.id) ?? each.id} · ${settingName(setting.path)}`,
       },
     }));
   const byId = new Map(drawn.map(each => [each.curve.id, each]));

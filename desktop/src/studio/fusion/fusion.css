@@ -117,6 +117,12 @@
   gap: 2px;
 }
 
+/* The masks are a group of their own after the other nodes, behind a line. */
+.fusion-add-masks {
+  padding-left: var(--s2);
+  box-shadow: inset 1px 0 0 var(--line);
+}
+
 .fusion-page .fusion-first {
   flex: none;
   margin: 0;
@@ -165,6 +171,13 @@
   fill: var(--fusion-background);
 }
 
+/* The masks have one colour, which is also that of the mask input of a node and of the links into it. */
+.fusion-page .fusion-node[data-kind='rectangle'] .fusion-node-stripe,
+.fusion-page .fusion-node[data-kind='ellipse'] .fusion-node-stripe,
+.fusion-page .fusion-node[data-kind='polygon'] .fusion-node-stripe {
+  fill: var(--fusion-mask);
+}
+
 .fusion-page .fusion-node-name {
   font-size: calc(11px * var(--type));
   fill: var(--moon-0);
@@ -176,7 +189,10 @@
   opacity: 0.45;
 }
 
-/* The ports: an input and an output plain, the background of a Merge orange and its foreground green, as in Fusion (p. 2162). */
+/*
+ * The ports: an input and an output plain, the background of a Merge orange and its foreground green, as in Fusion (p. 2162),
+ * and the mask input of a node blue, on its lower edge.
+ */
 .fusion-page .fusion-port {
   fill: var(--moon-1);
 }
@@ -189,9 +205,20 @@
   fill: var(--fusion-input-foreground);
 }
 
-/* The links are plain; the half that would be taken along, a link chosen and one that a drag would replace are said as on the Color page. */
+.fusion-page .fusion-port[data-input='mask'] {
+  fill: var(--fusion-mask);
+}
+
+/*
+ * The links are plain, and a link into a mask input is in the colour of masks; the half that would be taken along, a link
+ * chosen and one that a drag would replace are said as on the Color page, by the rules after these, which win.
+ */
 .fusion-page .fusion-link {
   stroke: var(--moon-2);
+}
+
+.fusion-page .fusion-link[data-input='mask'] {
+  stroke: var(--fusion-mask);
 }
 
 .fusion-page .fusion-link[data-hover='end'] {
@@ -213,6 +240,49 @@
 /* The label of a switch is not dragged, as the label of a number is. */
 .fusion-page .fusion-flag-label {
   cursor: default;
+}
+
+/* The points of a Polygon: the two buttons that add one and take one away, and the list, each point its name over its two numbers. */
+.fusion-points-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.fusion-page .fusion-points {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fusion-point {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: var(--s2);
+  box-shadow: inset 2px 0 0 var(--line);
+}
+
+/* The point chosen, after which a point is added and which is the one taken away. */
+.fusion-point[data-chosen] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.fusion-point-name {
+  align-self: flex-start;
+  padding: 2px var(--s1);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--moon-2);
+}
+
+.fusion-point-name[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-wash);
 }
 
 /*

@@ -1,7 +1,8 @@
 /**
  * A composition laid out as the node editor of the Fusion page draws it (DaVinci Resolve Reference
- * Manual 20, Ch. 67, pp. 1316–1365): each node a card with its inputs down its left side and its
- * one output at the middle of its right side, and the links between them, from left to right.
+ * Manual 20, Ch. 67, pp. 1316–1365): each node a card with the inputs of its pictures down its left
+ * side, its mask input on its lower edge and its one output at the middle of its right side, and
+ * the links between them, from left to right.
  *
  * A node that the project gives a place (its `pos`, where it was dragged to) stands there; the
  * editor places the others: a node that nothing feeds in the first column, every other one column
@@ -11,14 +12,39 @@
  * that the two editors are drawn alike.
  */
 import { sortFusionLinks, type Composition, type FusionInput, type FusionKind, type FusionLink, type FusionNode } from '../engine';
-import { COLUMN_GAP, MARGIN, NODE_HEIGHT, NODE_WIDTH, PORT_REACH, ROW_GAP, type Placed, type Point } from '../color/graph';
+import { COLUMN_GAP, linkHalves, linkPath, MARGIN, NODE_HEIGHT, NODE_WIDTH, PORT_REACH, ROW_GAP, type Placed, type Point } from '../color/graph';
 
-/** The inputs of each kind of node, the first first, as the engine names them (PROTOCOL.md, "Compositions"). */
+/**
+ * The inputs of each kind of node, the first first, as the engine names them (PROTOCOL.md,
+ * "Compositions"): the pictures of a node, and after them its `mask`, the effect mask of a Merge, a
+ * Transform and a Background and the mask that comes into a mask node.
+ */
 export const INPUTS: Record<FusionKind, readonly FusionInput[]> = {
-  media_in: [], media_out: ['input'], merge: ['background', 'foreground'], transform: ['input'], background: [],
-  // The mask that comes into a mask node. The effect mask of the other kinds (`mask`, after their pictures) is not drawn by the editor yet.
+  media_in: [], media_out: ['input'], merge: ['background', 'foreground', 'mask'], transform: ['input', 'mask'], background: ['mask'],
   rectangle: ['mask'], ellipse: ['mask'], polygon: ['mask'],
 };
+
+/** The kinds of node that make a mask (PROTOCOL.md, "Masks"). */
+export const MASK_KINDS = ['rectangle', 'ellipse', 'polygon'] as const;
+export type MaskKind = (typeof MASK_KINDS)[number];
+/** Whether a kind of node makes a mask. */
+export const isMaskKind = (kind: FusionKind): kind is MaskKind => kind === 'rectangle' || kind === 'ellipse' || kind === 'polygon';
+
+/** Whether a kind of node has a `mask` input. */
+export const hasMaskInput = (kind: FusionKind): boolean => INPUTS[kind].includes('mask');
+
+/** The inputs of a kind of node that are drawn down its left side: those of its pictures, which are all but its `mask`. */
+export const pictureInputs = (kind: FusionKind): readonly FusionInput[] => INPUTS[kind].filter(input => input !== 'mask');
+
+/**
+ * The input whose picture a node hands on where it is passed through or taken away: the first of its
+ * pictures (the `background` of a Merge, the `input` of a Transform), of a mask node the mask that
+ * comes into it, and none of a Background or a MediaIn, whose effect mask is no picture to hand on.
+ */
+export const handedOn = (kind: FusionKind): FusionInput | undefined => pictureInputs(kind)[0] ?? (isMaskKind(kind) ? 'mask' : undefined);
+
+/** How far from the left edge of a node its mask input lies, on the lower edge: clear of the badge of keys at the middle. */
+export const MASK_INSET = NODE_WIDTH / 4;
 
 /** Whether a kind of node has an output: every kind but MediaOut, whose picture goes back to the timeline. */
 export const hasOutput = (kind: FusionKind): boolean => kind !== 'media_out';
@@ -93,9 +119,14 @@ export function layoutComposition(composition: Composition, placed: Placed = {})
   };
 }
 
-/** Where an input of a node is: spread down its left side, the first at the top (a Merge's background above its foreground). */
+/**
+ * Where an input of a node is: those of its pictures spread down its left side, the first at the top
+ * (a Merge's background above its foreground); its `mask` on its lower edge, a quarter of the way
+ * along, wherever the others are.
+ */
 export function inputPoint(placed: PlacedFusion, input: FusionInput): Point {
-  const inputs = INPUTS[placed.node.kind];
+  if (input === 'mask') return { x: placed.x + MASK_INSET, y: placed.y + NODE_HEIGHT };
+  const inputs = pictureInputs(placed.node.kind);
   const at = Math.max(0, inputs.indexOf(input));
   return { x: placed.x, y: placed.y + (NODE_HEIGHT * (at + 1)) / (Math.max(1, inputs.length) + 1) };
 }
@@ -110,6 +141,38 @@ export function linkEnds(layout: FusionLayout, link: FusionLink): { from: Point;
   const fromNode = layout.nodes.find(each => each.node.id === link.from);
   const toNode = layout.nodes.find(each => each.node.id === link.to);
   return fromNode && toNode ? { from: outputPoint(fromNode), to: inputPoint(toNode, link.input) } : null;
+}
+
+/**
+ * The four points of the curve of a link into a `mask`: it leaves its output to the right, as every
+ * link does, and comes into the mask input from below, where that input lies.
+ */
+function maskCurve(from: Point, to: Point): [Point, Point, Point, Point] {
+  const bend = Math.max(24, Math.abs(to.x - from.x) / 2);
+  const rise = Math.max(24, Math.abs(to.y - from.y) / 2);
+  return [from, { x: from.x + bend, y: from.y }, { x: to.x, y: to.y + rise }, to];
+}
+const between = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+const written = (point: Point) => `${point.x} ${point.y}`;
+
+/** The path of a link into an input: the curve of the Color page's editor, but into a `mask` from below. */
+export function fusionLinkPath(from: Point, to: Point, input: FusionInput | null): string {
+  if (input !== 'mask') return linkPath(from, to);
+  const [p0, p1, p2, p3] = maskCurve(from, to);
+  return `M ${written(p0)} C ${written(p1)}, ${written(p2)}, ${written(p3)}`;
+}
+
+/** The two halves of a link into an input, as paths, split at the middle of the curve of `fusionLinkPath` (see `linkHalves`). */
+export function fusionLinkHalves(from: Point, to: Point, input: FusionInput | null): [string, string] {
+  if (input !== 'mask') return linkHalves(from, to);
+  const [p0, p1, p2, p3] = maskCurve(from, to);
+  const p01 = between(p0, p1); const p12 = between(p1, p2); const p23 = between(p2, p3);
+  const p012 = between(p01, p12); const p123 = between(p12, p23);
+  const middle = between(p012, p123);
+  return [
+    `M ${written(p0)} C ${written(p01)}, ${written(p012)}, ${written(middle)}`,
+    `M ${written(middle)} C ${written(p123)}, ${written(p23)}, ${written(p3)}`,
+  ];
 }
 
 /** A link as one string, to name it in the page: `from>to:input`. */

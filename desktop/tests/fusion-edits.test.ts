@@ -7,15 +7,22 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Key } from '../src/app/keys';
-import { COLUMN_GAP, MARGIN, NODE_HEIGHT, NODE_WIDTH } from '../src/studio/color/graph';
-import { applyOp, firstComposition, type Composition, type FusionLink, type FusionNode, type Op, type Project } from '../src/studio/engine';
+import { COLUMN_GAP, linkHalves, linkPath, MARGIN, NODE_HEIGHT, NODE_WIDTH } from '../src/studio/color/graph';
 import {
-  addedNode, addNode, connect, disconnect, fusionKey, isFirst, moveNodes, newBackground, newMerge, newNode, newTransform, reconnect, relabel,
-  removeComposition, removeNodes, resetComposition, restoreNodes, shownComposition, togglePass, withFirst,
+  applyOp, firstComposition, type Composition, type FusionLink, type FusionNode, type FusionPoint, type Keyframe, type Op, type Project,
+} from '../src/studio/engine';
+import {
+  ADDABLE, ADDABLE_MASKS, addedNode, addNode, connect, disconnect, fusionKey, insertPoint, isFirst, LEAST_POINTS, MOST_POINTS, moveNodes, newBackground, newMerge,
+  newNode, newPolygon, newTransform, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes, shownComposition, startPoints,
+  togglePass, withFirst,
 } from '../src/studio/fusion/edits';
-import { hasOutput, INPUTS, inputPoint, layoutComposition, linkEnds, linkName, namesOf, nodesIn, outputPoint, placesOf, portAt } from '../src/studio/fusion/graph';
 import {
-  addKey, FUSION_SETTINGS, hasKeys, keyOps, keyTimesOf, paramOf, pathOf, putValue, removeKey, settingOf, settingsOf, wholeParam, wholeValue,
+  fusionLinkHalves, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, layoutComposition, linkEnds, linkName, MASK_INSET, namesOf,
+  nodesIn, outputPoint, pictureInputs, placesOf, portAt, portsOf,
+} from '../src/studio/fusion/graph';
+import {
+  addKey, FUSION_SETTINGS, hasKeys, isPointSetting, keyOps, keyTimesOf, numbered, paramOf, pathOf, pointPath, putValue, removeKey, settingOf, settingsOf,
+  wholeParam, wholeValue,
 } from '../src/studio/fusion/settings';
 import { clip, media, timeline } from './timeline-fixture';
 
@@ -196,7 +203,9 @@ describe('the layout of a composition', () => {
     expect(portAt(layout, inputPoint(four, 'foreground'))).toEqual({ node: 'n4', side: 'in', input: 'foreground' });
     expect(portAt(layout, outputPoint(five), port => port.side === 'in')).toBeNull();
     expect(nodesIn(layout, { x: 290, y: 190 }, { x: 310, y: 210 })).toEqual(['n5']);
-    expect(INPUTS.merge).toEqual(['background', 'foreground']);
+    // The pictures of a Merge are the two inputs down its side; its effect mask, the third, lies on its lower edge.
+    expect(INPUTS.merge).toEqual(['background', 'foreground', 'mask']);
+    expect(pictureInputs('merge')).toEqual(['background', 'foreground']);
     expect([hasOutput('media_out'), hasOutput('media_in')]).toEqual([false, true]);
   });
 
@@ -302,5 +311,254 @@ describe('the settings of the nodes that take keys', () => {
     const param = paramOf(keyed([[10, 0.25], [30, 0.75], [90, 0.1]]), blend);
     expect(keyTimesOf(shown, timeline(), [media], param)).toEqual([110, 130]);
     expect(keyTimesOf(shown, timeline(), [media], 0.5)).toEqual([]);
+  });
+});
+
+// The masks (PROTOCOL.md, "Masks"): a Rectangle, an Ellipse and a Polygon, and the `mask` input of the nodes that have one.
+const rectangle = (id: string): FusionNode => newNode('rectangle', null, id);
+const ellipse = (id: string): FusionNode => newNode('ellipse', null, id);
+/** A Polygon of these points. */
+const polygon = (points: FusionPoint[], id = 'p1'): FusionNode => ({ ...newNode('polygon', null, id), params: { ...newPolygon(), points } } as FusionNode);
+/** `comp` with the Rectangle n6 linked into the mask of the Merge n4. */
+const masked = (): Composition => ({ nodes: [...comp().nodes, rectangle('n6')], links: [...comp().links, link('n6', 'n4', 'mask')] });
+/** A composition of a MediaIn into a MediaOut and one more node, which is its third. */
+const withNode = (node: FusionNode): Composition => ({ nodes: [mediaIn(), mediaOut(), node], links: [link('MediaIn1', 'MediaOut1')] });
+/** A composition as the copy leaves it once it has applied operations to the one clip that has it. */
+const applied = (fusion: Composition, ops: Op[]): Composition => {
+  const project: Project = { schema: 5, next_id: 20, bins: [], groups: [], media: [media], timelines: [timeline([clip('c1', 0, 100, { fusion })])] };
+  return (ops.reduce(applyOp, project).timelines[0].tracks[0] as { clips: { fusion?: Composition }[] }).clips[0].fusion!;
+};
+const keyAt = (frame: number, value: number): Keyframe => ({ frame, value, interp: 'linear' });
+/** The points that an operation sets a Polygon to. */
+const pointsOf = (ops: Op[]): FusionPoint[] => ((ops[0] as Extract<Op, { op: 'set_fusion_node' }>).params as unknown as { points: FusionPoint[] }).points;
+const paths = (node: FusionNode) => settingsOf(node).map(setting => setting.path);
+
+describe('the masks in the node editor', () => {
+  it('are added in a group of their own: linked into the mask input of the node chosen where that is free, and loose otherwise', () => {
+    expect(ADDABLE_MASKS).toEqual(['rectangle', 'ellipse', 'polygon']);
+    expect(ADDABLE.some(isMaskKind)).toBe(false);
+    // None chosen: with no links, at the place given.
+    expect(addNode(AT, comp(), 'rectangle', null, { x: 10.4, y: 20.6 })).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('rectangle', { x: 10, y: 21 }) }]);
+    // A Merge, a Transform and a Background chosen, with nothing in their masks: the new mask goes into it, in the one operation.
+    expect(addNode(AT, comp(), 'rectangle', 'n4', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('rectangle'), links: [link('', 'n4', 'mask')] }]);
+    expect(addNode(AT, comp(), 'ellipse', 'n3', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n3', 'mask')] }]);
+    expect(addNode(AT, comp(), 'ellipse', 'n5', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n5', 'mask')] }]);
+    // A mask chosen: the new one is the mask that comes into it.
+    expect(addNode(AT, masked(), 'ellipse', 'n6', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n6', 'mask')] }]);
+    // The mask input of the node chosen has a link: the new mask is added loose, and the link stays.
+    const taken = addNode(AT, masked(), 'ellipse', 'n4', null);
+    expect(taken).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse') }]);
+    expect(taken[0]).not.toHaveProperty('links');
+    // A node chosen that has no mask input, or that is not there: loose.
+    for (const chosen of ['MediaIn1', 'MediaOut1', 'gone']) {
+      expect(addNode(AT, comp(), 'rectangle', chosen, null), chosen).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('rectangle') }]);
+    }
+  });
+
+  it('begin a Polygon with a square of four points about its centre, where the engine makes one without points', () => {
+    expect(addNode(AT, comp(), 'polygon', 'n4', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: { ...newNode('polygon'), params: { ...newPolygon(), points: startPoints() } }, links: [link('', 'n4', 'mask')],
+    }]);
+    expect(startPoints()).toEqual([{ x: -0.2, y: -0.2 }, { x: 0.2, y: -0.2 }, { x: 0.2, y: 0.2 }, { x: -0.2, y: 0.2 }]);
+    // Each polygon has a list of its own, and the engine's new one stays empty.
+    expect(startPoints()).not.toBe(startPoints());
+    expect(newPolygon().points).toEqual([]);
+  });
+
+  it('are never put into the chain of the picture, and a node of a picture never into a mask input', () => {
+    // A Background has a mask input alone: chosen after a node, it is added loose, as before.
+    expect(addNode(AT, comp(), 'background', 'n4', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('background') }]);
+    // A Merge after a Merge takes it as its background and feeds what it fed.
+    expect(addNode(AT, masked(), 'merge', 'n4', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: newNode('merge'), links: [link('n4', '', 'background'), link('', 'MediaOut1', 'input')],
+    }]);
+    // A Transform after the Rectangle that feeds the mask of the Merge goes between them: its picture is the mask.
+    expect(addNode(AT, masked(), 'transform', 'n6', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: newNode('transform'), links: [link('n6', '', 'input'), link('', 'n4', 'mask')],
+    }]);
+  });
+
+  it('are linked, unlinked and taken to another mask input as any link is, and kept in the order of the engine', () => {
+    const loose: Composition = { ...comp(), nodes: [...comp().nodes, rectangle('n6')] };
+    const linked = connect(AT, loose, link('n6', 'n4', 'mask'));
+    expect(linked).toEqual([{ op: 'connect_fusion', ...AT, link: link('n6', 'n4', 'mask') }]);
+    // The mask of a node comes after its pictures: background, foreground, input, mask.
+    expect(applied(loose, linked).links.map(linkName)).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground', 'n6>n4:mask']);
+    expect(connect(AT, masked(), link('n6', 'n4', 'mask'))).toEqual([]);
+    // Any output goes into a mask input: one that has a link gives it up to the new one.
+    const other = applied(masked(), connect(AT, masked(), link('n5', 'n4', 'mask'))).links.map(linkName);
+    expect([other.includes('n5>n4:mask'), other.includes('n6>n4:mask')]).toEqual([true, false]);
+    expect(disconnect(AT, link('n6', 'n4', 'mask'))).toEqual([{ op: 'disconnect_fusion', ...AT, to: 'n4', input: 'mask' }]);
+    const moved = reconnect(AT, link('n6', 'n4', 'mask'), { to: 'n3', input: 'mask' });
+    expect(moved).toEqual([{ op: 'disconnect_fusion', ...AT, to: 'n4', input: 'mask' }, { op: 'connect_fusion', ...AT, link: link('n6', 'n3', 'mask') }]);
+    expect(applied(masked(), moved).links.map(linkName)).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n6>n3:mask', 'n3>n4:background', 'n5>n4:foreground']);
+  });
+
+  it('are not counted among the pictures of a node that is deleted, but the mask that comes into a mask is what it hands on', () => {
+    // The Rectangle n6 masks the Merge, the Ellipse n7 comes into n6, the Rectangle n8 masks the Transform and n9 the Background.
+    const all: Composition = {
+      nodes: [...comp().nodes, rectangle('n6'), ellipse('n7'), rectangle('n8'), rectangle('n9')],
+      links: [...comp().links, link('n6', 'n4', 'mask'), link('n7', 'n6', 'mask'), link('n8', 'n3', 'mask'), link('n9', 'n5', 'mask')],
+    };
+    // A Transform with a mask is joined across as one without.
+    expect(removeNodes(AT, all, ['n3'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n3', links: [link('MediaIn1', 'n4', 'background')] }]);
+    // A Background makes its picture of nothing: its mask is not handed on to what it fed.
+    expect(removeNodes(AT, all, ['n5'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n5' }]);
+    // A mask between two: the one that came into it goes on into what it masked.
+    const joined = removeNodes(AT, all, ['n6']);
+    expect(joined).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n6', links: [link('n7', 'n4', 'mask')] }]);
+    expect(applied(all, joined).links.map(linkName)).toContain('n7>n4:mask');
+    expect(removeNodes(AT, all, ['n7'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n7' }]);
+    // A Merge with both its pictures is joined to nothing, with a mask or without.
+    expect(removeNodes(AT, all, ['n4'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n4' }]);
+    expect((['merge', 'transform', 'media_out', 'rectangle', 'background', 'media_in'] as const).map(handedOn))
+      .toEqual(['background', 'input', 'input', 'mask', undefined, undefined]);
+  });
+
+  it('have their input on the lower edge of a node, which leaves the inputs of its pictures where they were', () => {
+    expect([INPUTS.merge, INPUTS.transform, INPUTS.background, INPUTS.rectangle, INPUTS.media_in, INPUTS.media_out])
+      .toEqual([['background', 'foreground', 'mask'], ['input', 'mask'], ['mask'], ['mask'], [], ['input']]);
+    expect([pictureInputs('transform'), pictureInputs('background'), pictureInputs('polygon')]).toEqual([['input'], [], []]);
+    expect((['media_in', 'media_out', 'merge', 'transform', 'background', 'rectangle', 'ellipse', 'polygon'] as const).filter(hasMaskInput))
+      .toEqual(['merge', 'transform', 'background', 'rectangle', 'ellipse', 'polygon']);
+    const layout = layoutComposition(masked());
+    const placed = (id: string) => layout.nodes.find(each => each.node.id === id)!;
+    const [three, four, six] = [placed('n3'), placed('n4'), placed('n6')];
+    // The Rectangle feeds the Merge through its mask: it lies in a column left of it, as a node that feeds a picture does.
+    expect([six.column, four.column]).toEqual([0, 2]);
+    // The pictures: spread down the left side as though there were no mask input.
+    expect(inputPoint(four, 'background')).toEqual({ x: four.x, y: four.y + NODE_HEIGHT / 3 });
+    expect(inputPoint(four, 'foreground')).toEqual({ x: four.x, y: four.y + (NODE_HEIGHT * 2) / 3 });
+    expect(inputPoint(three, 'input')).toEqual({ x: three.x, y: three.y + NODE_HEIGHT / 2 });
+    // The mask: on the lower edge, a quarter of the way along, of every kind that has one.
+    expect(MASK_INSET).toBe(NODE_WIDTH / 4);
+    for (const each of [three, four, six]) expect(inputPoint(each, 'mask'), each.node.id).toEqual({ x: each.x + MASK_INSET, y: each.y + NODE_HEIGHT });
+    expect(portAt(layout, inputPoint(four, 'mask'))).toEqual({ node: 'n4', side: 'in', input: 'mask' });
+    expect(portAt(layout, inputPoint(four, 'foreground'))).toEqual({ node: 'n4', side: 'in', input: 'foreground' });
+    const ports = (id: string) => portsOf(layout).filter(each => each.port.node === id).map(each => [each.port.side, each.port.input]);
+    expect(ports('n4')).toEqual([['in', 'background'], ['in', 'foreground'], ['in', 'mask'], ['out', null]]);
+    expect(ports('n6')).toEqual([['in', 'mask'], ['out', null]]);
+    expect([ports('MediaIn1'), ports('MediaOut1')]).toEqual([[['out', null]], [['in', 'input']]]);
+    expect(linkEnds(layout, link('n6', 'n4', 'mask'))).toEqual({ from: outputPoint(six), to: inputPoint(four, 'mask') });
+  });
+
+  it('have their links drawn into the mask input from below, and every other link as the Color page draws it', () => {
+    const from = { x: 0, y: 0 };
+    const to = { x: 100, y: 40 };
+    expect(fusionLinkPath(from, to, 'input')).toBe(linkPath(from, to));
+    expect(fusionLinkPath(from, to, null)).toBe(linkPath(from, to));
+    expect(fusionLinkHalves(from, to, 'foreground')).toEqual(linkHalves(from, to));
+    // Out of the output to the right, and up into the input: the last handle lies straight below it.
+    expect(fusionLinkPath(from, to, 'mask')).toBe('M 0 0 C 50 0, 100 64, 100 40');
+    // The halves meet at the middle of that curve.
+    expect(fusionLinkHalves(from, to, 'mask')).toEqual(['M 0 0 C 25 0, 50 16, 68.75 29', 'M 68.75 29 C 87.5 42, 100 52, 100 40']);
+  });
+});
+
+describe('the settings of the masks', () => {
+  it('are those of the catalog of the engine, the two numbers of a point written once for every point', () => {
+    const catalog: Record<string, Entry[]> = JSON.parse(readFileSync('../engine/crates/model/tests/data/catalog.json', 'utf8'));
+    for (const kind of ['rectangle', 'ellipse', 'polygon'] as const) {
+      const entries = catalog[`fusion_${kind}`];
+      expect(FUSION_SETTINGS[kind].map(setting => ({ path: setting.path, default: setting.bounds.neutral, low: setting.bounds.low, high: setting.bounds.high, unit: setting.unit })), kind)
+        .toEqual(entries.map(entry => ({ path: entry.path, default: entry.default, low: entry.low, high: entry.high, unit: entry.unit })));
+      expect(entries.every(entry => entry.page === 'fusion' && entry.palette === 'fusion' && entry.clock === 'source_frame')).toBe(true);
+    }
+    expect(FUSION_SETTINGS.polygon.filter(isPointSetting).map(setting => setting.path)).toEqual(['points.*.x', 'points.*.y']);
+    // A new mask has every setting at the default of the catalog; the points of a Polygon are where they were put.
+    for (const node of [rectangle('r1'), ellipse('e1'), polygon(startPoints())]) {
+      for (const setting of settingsOf(node).filter(each => !isPointSetting(each))) expect(paramOf(node, setting), `${node.kind}.${setting.path}`).toBe(setting.bounds.neutral);
+    }
+  });
+
+  it('of a Polygon are those of its kind and then the two numbers of each of its points, by the place of the point', () => {
+    const shape = polygon(startPoints());
+    expect(paths(polygon([]))).toEqual(['level', 'soft_edge', 'border_width', 'center.x', 'center.y', 'size', 'angle']);
+    expect(paths(shape).slice(7)).toEqual(['points.0.x', 'points.0.y', 'points.1.x', 'points.1.y', 'points.2.x', 'points.2.y', 'points.3.x', 'points.3.y']);
+    // The same list for every polygon of as many points, so that what is drawn from it is not drawn again.
+    expect(settingsOf(shape)).toBe(settingsOf(polygon(startPoints(), 'p2')));
+    const x2 = settingOf(shape, pointPath(2, 'x'))!;
+    expect(x2).toEqual({ path: 'points.2.x', bounds: { neutral: 0, low: -16, high: 16 }, unit: 'widths' });
+    expect([isPointSetting(x2), isPointSetting(settingOf(shape, 'soft_edge')!)]).toEqual([true, false]);
+    // A point that the polygon has not, the path as the catalog writes it, and the list itself are no settings.
+    expect([settingOf(shape, 'points.4.x'), settingOf(shape, 'points.*.x'), settingOf(shape, 'points')]).toEqual([undefined, undefined, undefined]);
+    expect([paramOf(shape, x2), pathOf(shape, x2)]).toEqual([0.2, 'p1.points.2.x']);
+    // The points are counted from 1 where they are named.
+    expect([numbered('Point {n} X', 2), numbered('Point {n}', 0)]).toEqual(['Point 3 X', 'Point 1']);
+    expect(hasKeys(shape)).toBe(false);
+    expect(hasKeys(polygon(startPoints().map((point, index) => (index === 3 ? { ...point, y: { keys: [keyAt(0, 0.2)] } } : point))))).toBe(true);
+    // A mask of any kind has the badge of keys once one of its settings has a key.
+    const box = rectangle('r1');
+    expect(hasKeys(box)).toBe(false);
+    expect(hasKeys(applied(withNode(box), addKey(AT, box, settingOf(box, 'soft_edge')!, 0)).nodes[2])).toBe(true);
+  });
+
+  it('are set as the engine takes them: a number of a mask by a patch of its node, a number of a point by its path', () => {
+    const box = rectangle('r1');
+    const of = (path: string) => settingOf(box, path)!;
+    const patch = (params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id: 'r1', params }];
+    expect(putValue(AT, box, of('soft_edge'), 0.1, 12)).toEqual(patch({ soft_edge: 0.1 }));
+    expect(putValue(AT, box, of('border_width'), -0.5, 12)).toEqual(patch({ border_width: -0.5 }));
+    expect(putValue(AT, box, of('center.y'), 0.25, 12)).toEqual(patch({ center: { y: 0.25 } }));
+    expect(putValue(AT, box, of('corner_radius'), 1, 12)).toEqual(patch({ corner_radius: 1 }));
+    expect(putValue(AT, box, of('angle'), -90, 12)).toEqual(patch({ angle: -90 }));
+    expect(putValue(AT, box, of('width'), 0.5, 12)).toEqual([]);
+    expect(addKey(AT, box, of('level'), 12)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'r1.level', at: 0, remove: 0, keys: [keyAt(12, 1)] }]);
+    // A patch puts a list in place of a list, whole, and cannot name one point: its number is set by `set_fusion_keys`, which takes a number too.
+    const shape = polygon(startPoints());
+    const x2 = settingOf(shape, 'points.2.x')!;
+    const set = putValue(AT, shape, x2, 0.3, 12);
+    expect(set).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'p1.points.2.x', param: 0.3 }]);
+    expect(putValue(AT, shape, x2, 0.2, 12)).toEqual([]);
+    expect(wholeValue(AT, shape, x2, 0.2, 0.4, 12)).toEqual({ op: 'set_fusion_keys', ...AT, path: 'p1.points.2.x', param: 0.4 });
+    expect(wholeParam(AT, shape, x2, 0.2)).toEqual({ op: 'set_fusion_keys', ...AT, path: 'p1.points.2.x', param: 0.2 });
+    const keyed = addKey(AT, shape, x2, 12);
+    expect(keyed).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'p1.points.2.x', at: 0, remove: 0, keys: [keyAt(12, 0.2)] }]);
+    // The copy takes them as the engine does: the one number of the one point, and then its keys.
+    const numbered3 = applied(withNode(shape), set).nodes[2];
+    expect(paths(numbered3).slice(7).map(path => paramOf(numbered3, settingOf(numbered3, path)!))).toEqual([-0.2, -0.2, 0.2, -0.2, 0.3, 0.2, -0.2, 0.2]);
+    const after = applied(withNode(shape), keyed).nodes[2];
+    const there = settingOf(after, 'points.2.x')!;
+    expect(paramOf(after, there)).toEqual({ keys: [keyAt(12, 0.2)] });
+    expect(hasKeys(after)).toBe(true);
+    // Its last key taken away leaves its value, as one number.
+    expect(removeKey(AT, after, there, 12)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'p1.points.2.x', param: 0.2 }]);
+    expect(keyOps(AT, after, there, 0.5)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'p1.points.2.x', param: 0.5 }]);
+  });
+
+  it('keep the keys of a point with it where a point is put into the list of points or taken out of it', () => {
+    const keys = { keys: [keyAt(0, 0.2), keyAt(20, 0.4)] };
+    const points: FusionPoint[] = [{ x: -0.2, y: -0.2 }, { x: keys, y: -0.2 }, { x: 0.2, y: 0.2 }, { x: -0.2, y: 0.2 }];
+    const shape = polygon(points);
+    // After the last: the list set whole, the new point in the middle of the side that closes the outline, the others the objects that they were.
+    const last = insertPoint(AT, shape, null, 0);
+    expect(last).toEqual([{ op: 'set_fusion_node', ...AT, id: 'p1', params: { points: [...points, { x: -0.2, y: 0 }] } }]);
+    pointsOf(last).slice(0, 4).forEach((point, index) => expect(point, `point ${index}`).toBe(points[index]));
+    // After the first, at the frame of the second key of the point after it, where that point is at 0.4: the middle of -0.2 and 0.4.
+    const second = insertPoint(AT, shape, 0, 20);
+    expect(pointsOf(second)).toEqual([points[0], { x: 0.1, y: -0.2 }, points[1], points[2], points[3]]);
+    expect(pointsOf(second)[2]).toBe(points[1]);
+    // A place that the polygon has not is after the last.
+    expect(pointsOf(insertPoint(AT, shape, 9, 0))).toEqual([...points, { x: -0.2, y: 0 }]);
+    // A polygon without points takes one at its centre, and one of one point takes the second beside it.
+    expect(pointsOf(insertPoint(AT, polygon([]), null, 0))).toEqual([{ x: 0, y: 0 }]);
+    expect(pointsOf(insertPoint(AT, polygon([{ x: 0.1, y: 0.3 }]), 0, 0))).toEqual([{ x: 0.1, y: 0.3 }, { x: 0.2, y: 0.3 }]);
+    // A polygon takes 128 points and no more; and only a Polygon has points.
+    expect([MOST_POINTS, LEAST_POINTS]).toEqual([128, 3]);
+    expect(insertPoint(AT, polygon(Array.from({ length: MOST_POINTS }, (_, index) => ({ x: index / 1000, y: 0 }))), null, 0)).toEqual([]);
+    expect(pointsOf(insertPoint(AT, polygon(Array.from({ length: MOST_POINTS - 1 }, (_, index) => ({ x: index / 1000, y: 0 }))), null, 0))).toHaveLength(MOST_POINTS);
+    expect(insertPoint(AT, rectangle('r1'), null, 0)).toEqual([]);
+    // A point taken away: the list without it, the others the objects that they were.
+    const without = removePoint(AT, shape, 0);
+    expect(without).toEqual([{ op: 'set_fusion_node', ...AT, id: 'p1', params: { points: [points[1], points[2], points[3]] } }]);
+    expect(pointsOf(without)[0]).toBe(points[1]);
+    expect([removePoint(AT, shape, 4), removePoint(AT, shape, -1), removePoint(AT, rectangle('r1'), 0)]).toEqual([[], [], []]);
+    // In the copy the keys are named by the new place of their point: they were at points.1.x.
+    const left = applied(withNode(shape), without).nodes[2];
+    expect(paths(left).slice(7)).toEqual(['points.0.x', 'points.0.y', 'points.1.x', 'points.1.y', 'points.2.x', 'points.2.y']);
+    expect([paramOf(left, settingOf(left, 'points.0.x')!), paramOf(left, settingOf(left, 'points.1.x')!)]).toEqual([keys, 0.2]);
+    const more = applied(withNode(shape), second).nodes[2];
+    expect([paramOf(more, settingOf(more, 'points.1.x')!), paramOf(more, settingOf(more, 'points.2.x')!)]).toEqual([0.1, keys]);
+    expect(pathOf(more, settingOf(more, 'points.2.x')!)).toBe('p1.points.2.x');
   });
 });

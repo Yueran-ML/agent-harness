@@ -1593,7 +1593,7 @@ async fn dispatch(
         _ if crate::audio_presets::is_method(method) => {
             crate::audio_presets::call(engine, connection, id, method, params).await
         }
-        "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.bypass"
+        "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.fusion" | "viewer.bypass"
         | "viewer.preview" | "viewer.lut" => {
             let result = if method == "viewer.preview" {
                 let mut owner = engine.preview_owner.lock().await;
@@ -1603,7 +1603,9 @@ async fn dispatch(
             } else {
                 viewer(engine, method, params).await?
             };
-            if method == "viewer.highlight" || result["mode"] == "split" {
+            // A mode that shows another picture ends a drag of a window on the one before.
+            let another = matches!(method, "viewer.highlight" | "viewer.fusion");
+            if another || result["mode"] == "split" {
                 engine.state.lock().await.window_end("viewer_mode");
             }
             Ok(match connection.queue(rpc::result_line(id, &result)) {
@@ -1779,17 +1781,27 @@ async fn view_pointer(
 }
 
 /// Whether `scopes.statistics` asks for a frame drawn apart from what a monitor shows: of a
-/// timeline at a frame, or at a node of a grade.
+/// timeline at a frame, at a node of a grade, or of a node of a composition.
 fn measured_apart(params: Option<&RawValue>) -> bool {
     params
         .and_then(|params| {
             serde_json::from_str::<serde_json::Map<String, Value>>(params.get()).ok()
         })
         .is_some_and(|params| {
-            ["timeline", "frame", "grade", "node", "at", "clip"]
+            ["timeline", "frame", "grade", "node", "at", "clip", "fusion"]
                 .iter()
                 .any(|name| params.contains_key(*name))
         })
+}
+
+/// The refusal of a `fusion` that is not given as it may be: with a timeline and a frame
+/// alone, to be drawn off screen, and with no node of a grade.
+fn fusion_misplaced() -> Fault {
+    Fault::params(
+        "fusion names a node of a composition to draw off screen: give it with timeline and \
+         frame, and with no node of a grade",
+    )
+    .with_data(json!({ "reason": "fusion" }))
 }
 
 /// The params of `scopes.statistics` measured apart from what a monitor shows.
@@ -1812,6 +1824,10 @@ struct StatisticsApart {
     at: Option<Place>,
     #[serde(default)]
     clip: Option<String>,
+    /// The node of the composition of a clip whose picture is measured, as the Fusion view
+    /// shows it (`crate::fusion_view`).
+    #[serde(default)]
+    fusion: Option<crate::fusion_view::View>,
 }
 
 fn bins() -> u32 {
@@ -1819,11 +1835,15 @@ fn bins() -> u32 {
 }
 
 /// `viewer.wipe` and `viewer.split` (what the timeline monitor compares with),
-/// `viewer.highlight` (what it shows of the key of a node), and `viewer.bypass` (its picture
+/// `viewer.highlight` (what it shows of the key of a node), `viewer.fusion` (the picture of a
+/// node of the composition of a clip, in place of the frame), and `viewer.bypass` (its picture
 /// without its grades).
 async fn viewer(engine: &Engine, method: &str, params: Option<&RawValue>) -> Result<Value, Fault> {
     if method == "viewer.highlight" {
         return engine.transport.highlight(params).await;
+    }
+    if method == "viewer.fusion" {
+        return engine.transport.fusion(params).await;
     }
     if method == "viewer.bypass" {
         return engine.transport.bypass(params).await;
@@ -1854,6 +1874,10 @@ struct Sample {
     node: Option<String>,
     #[serde(default)]
     clip: Option<String>,
+    /// The node of the composition of a clip whose picture is sampled, as the Fusion view
+    /// shows it (`crate::fusion_view`).
+    #[serde(default)]
+    fusion: Option<crate::fusion_view::View>,
 }
 
 fn one() -> u32 {
@@ -1927,7 +1951,7 @@ async fn statistics_apart(
 ) -> Result<Reply, Reply> {
     let asked: StatisticsApart = rpc::params(
         "scopes.statistics",
-        r#"{"view": "timeline" | "source"} or {"timeline": "t1", "frame": 0}, "bins"?: 256, "grade"?: {"level": "clip", ...}, "node"?: "n1", "at"?: "input" | "output", "clip"?: "c1""#,
+        r#"{"view": "timeline" | "source"} or {"timeline": "t1", "frame": 0}, "bins"?: 256, "grade"?: {"level": "clip", ...}, "node"?: "n1", "at"?: "input" | "output", "clip"?: "c1", "fusion"?: {"clip": "c1", "node"?: "n4"}"#,
         params,
     )?;
     if !(16..=1024).contains(&asked.bins) {
@@ -1948,6 +1972,11 @@ async fn statistics_apart(
         return Err(Fault::params("at is given only with a node")
             .with_data(json!({ "reason": "node" }))
             .into());
+    }
+    // The picture of a node of a composition is drawn off screen, of a timeline and a frame.
+    let fusion = asked.fusion;
+    if fusion.is_some() && (node.is_some() || asked.view.is_some()) {
+        return Err(fusion_misplaced().into());
     }
     if asked.view == Some(Monitor::Source) {
         return Err(no_grades_there().into());
@@ -1971,7 +2000,13 @@ async fn statistics_apart(
     let project = engine.state.lock().await.history.project().clone();
     let (probe, scopes, bins) = (Arc::clone(&engine.probe), engine.scopes.clone(), asked.bins);
     let result = tokio::task::spawn_blocking(move || {
-        let drawn = probe.draw(&project, &timeline, frame, node.as_ref())?;
+        let (drawn, told) = match &fusion {
+            Some(view) => {
+                let (drawn, told) = probe.draw_fusion(&project, &timeline, frame, view)?;
+                (drawn, Some(told))
+            }
+            None => (probe.draw(&project, &timeline, frame, node.as_ref())?, None),
+        };
         let signal = drawn.signal;
         let shown = Shown::Target {
             gpu: drawn.gpu,
@@ -1987,6 +2022,9 @@ async fn statistics_apart(
             object.insert("timeline".into(), json!(timeline));
             if let Some(node) = &node {
                 object.insert("node".into(), node.written());
+            }
+            if let Some(told) = &told {
+                object.insert("fusion".into(), json!(told));
             }
         }
         Ok::<_, Fault>(value)
@@ -2021,9 +2059,46 @@ async fn timeline_thumbnail(
     })
 }
 
+/// The frame that `view.sample` reads: what a monitor shows (`shown`), or the frame of a
+/// timeline named by `at`, drawn off screen: as an export draws it, or, where `fusion` names a
+/// node of the composition of a clip, as the Fusion view shows it, with that view as it is
+/// told.
+fn sampled(
+    probe: &Probe,
+    project: &Project,
+    shown: Option<Shown>,
+    at: Option<&(String, i64)>,
+    fusion: Option<&crate::fusion_view::View>,
+) -> Result<(probe::Drawn, Option<crate::fusion_view::Told>), Fault> {
+    Ok(match shown {
+        Some(Shown::Target { gpu, target, .. }) => (
+            probe::Drawn {
+                gpu,
+                target,
+                signal: columbina_compose::scopes::Signal::default(),
+            },
+            None,
+        ),
+        Some(Shown::Picture { picture, rotation }) => {
+            (probe.draw_picture(picture, rotation)?, None)
+        }
+        None => {
+            let (timeline, frame) = at.expect("named with the frame");
+            match fusion {
+                Some(view) => {
+                    let (drawn, told) = probe.draw_fusion(project, timeline, *frame, view)?;
+                    (drawn, Some(told))
+                }
+                None => (probe.draw(project, timeline, *frame, None)?, None),
+            }
+        }
+    })
+}
+
 /// `view.sample`: the mean of a few pixels of what a monitor shows, or of a frame of a timeline
 /// drawn off screen, about a point of the picture; and, for a node of a grade, of the picture
-/// that goes into it and comes out of it there.
+/// that goes into it and comes out of it there; or, with `fusion`, of the picture of a node of
+/// the composition of a clip.
 async fn view_sample(
     engine: &Engine,
     connection: &Connection,
@@ -2032,12 +2107,17 @@ async fn view_sample(
 ) -> Result<Reply, Reply> {
     let asked: Sample = rpc::params(
         "view.sample",
-        r#"{"monitor": "timeline" | "source"} or {"timeline": "t1", "frame": 0}, "x": 960.5, "y": 540.5, "size"?: 1, "grade"?: {"level": "clip", ...}, "node"?: "n1", "clip"?: "c1""#,
+        r#"{"monitor": "timeline" | "source"} or {"timeline": "t1", "frame": 0}, "x": 960.5, "y": 540.5, "size"?: 1, "grade"?: {"level": "clip", ...}, "node"?: "n1", "clip"?: "c1", "fusion"?: {"clip": "c1", "node"?: "n4"}"#,
         params,
     )?;
     let node = node_at(asked.grade, asked.node, Place::Output, asked.clip)?;
     if node.is_some() && asked.monitor == Some(Monitor::Source) {
         return Err(no_grades_there().into());
+    }
+    // The picture of a node of a composition is drawn off screen, of a timeline and a frame.
+    let fusion = asked.fusion;
+    if fusion.is_some() && (node.is_some() || asked.monitor.is_some()) {
+        return Err(fusion_misplaced().into());
     }
     let monitor = asked.monitor;
     let (shown, at) = frame_named(
@@ -2069,18 +2149,7 @@ async fn view_sample(
             let region = probe::square(x, y, size, width, height)?;
             probe::mean_of(drawn, region).map(|rgb| (rgb, region, (width, height)))
         };
-        let drawn = match shown {
-            Some(Shown::Target { gpu, target, .. }) => probe::Drawn {
-                gpu,
-                target,
-                signal: columbina_compose::scopes::Signal::default(),
-            },
-            Some(Shown::Picture { picture, rotation }) => probe.draw_picture(picture, rotation)?,
-            None => {
-                let (timeline, frame) = at.as_ref().expect("named with the frame");
-                probe.draw(&project, timeline, *frame, None)?
-            }
-        };
+        let (drawn, told) = sampled(&probe, &project, shown, at.as_ref(), fusion.as_ref())?;
         let (rgb, region, (width, height)) = mean(&drawn)?;
         let mut value = json!({
             "frame": at.as_ref().map(|(_, frame)| *frame).or(shown_frame),
@@ -2095,6 +2164,9 @@ async fn view_sample(
         match monitor {
             Some(monitor) => value["monitor"] = json!(monitor),
             None => value["timeline"] = json!(at.as_ref().map(|(timeline, _)| timeline)),
+        }
+        if let Some(told) = &told {
+            value["fusion"] = json!(told);
         }
         if let (Some(node), Some((timeline, frame))) = (node, &at) {
             let mut values = Vec::new();

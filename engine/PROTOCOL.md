@@ -231,7 +231,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
-| `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
+| `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"`; with a timeline and a frame, `"fusion"?: {"clip": "c1", "node"?: "n4"}` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}, "fusion"?: {...}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
 | `view.overlay` | `{"monitor": "timeline", "overlay": {"canvas": [w, h], "lines"?: [[[x, y], ...], ...], "dots"?: [{"kind": "tick" \| "key" \| "active" \| "current", "at": [[x, y], ...]}, ...]} \| null}` to draw or to clear; `{"monitor": "timeline"}` to ask | `{"monitor": "timeline", "lines": n, "dots": m}`: how many lines and dots the view draws over its picture from now on (see Marks over the picture) |
 | `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Window controls of every shape (see Circular and Gradient Window controls, Linear and Polygon Window controls, Curve Window controls) |
@@ -271,7 +271,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `scopes.subscribe` | `{"view": "timeline" \| "source", "settings": {"kind": "waveform", ...}}` | `{"scope_id": "scope-1", "size": {"width": 512, "height": 256}, "graticule": {...}, "settings": {...}}`, then `scopes.frame` (see Scopes) |
 | `scopes.set` | `{"scope_id": "scope-1", "settings": {...}}` | as `scopes.subscribe` |
 | `scopes.unsubscribe` | `{"scope_id": "scope-1"}` | `{}` |
-| `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}`, or `{"timeline": "t1", "frame": n, "bins"?}`; either with `"grade": target, "node": "n1", "at"?: "input" \| "output", "clip"?: "c1"` | the figures of the frame shown, of a frame drawn off screen, or of the picture at a node (see Scopes) |
+| `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}`, or `{"timeline": "t1", "frame": n, "bins"?}`; either with `"grade": target, "node": "n1", "at"?: "input" \| "output", "clip"?: "c1"`; the second with `"fusion": {"clip": "c1", "node"?: "n4"}` | the figures of the frame shown, of a frame drawn off screen, of the picture at a node, or of the picture of a node of a composition (see Scopes) |
 | `luts.list` | none, or `{"folder"?: "Film"}` | `{"roots": [...], "luts": [...], "truncated": false}` (see The library of LUTs) |
 | `luts.preview` | `{"luts": ["Film/Look.cube", ...], "height"?: 72, "frame"?: {"timeline": "t1", "frame": 0, "clip"?: "c1", "grade": target, "node": "n1"}}` | `{"previews": [{"lut", "width", "height", "png": "<base64>"} \| {"lut", "error"}, ...]}` (see Previews of LUTs) |
 | `grade.export_lut` | `{"grade": target, "node"?: "n1", "size": 17 \| 33 \| 65, "path": "<name or file>.cube", "frame"?: n, "replace"?: false}` | `{"path", "name", "size", "nodes": [...], "ignored": [{"node", "why"}]}` (see Generate LUT) |
@@ -294,6 +294,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `gallery.album.delete` | `{"album": "a2"}` | `{"deleted": [still ids]}` |
 | `grade.append_node` | `{"from": target, "node": "n4", "to": [target, ...], "keyframes"?: "none" \| "source_timecode" \| "start_frame", "at"?: 120, "revision"?: n}` | as `transaction.apply` (Append Node to Selected Clips, see The Gallery) |
 | `viewer.highlight` | `{"mode": "off" \| "highlight" \| "bw", "grade"?: target, "node"?: "n1", "monitor"?: "timeline"}` | `{"monitor": "timeline", "mode", "grade"?, "node"?}` (see Highlight) |
+| `viewer.fusion` | `{"clip": "c1" \| null, "node"?: "n4", "monitor"?: "timeline"}` | `{"monitor": "timeline", "fusion": {"clip", "node"?, "shown", "canvas": [w, h], "size"?: {"width", "height"}, "picture"?: {"x", "y", "width", "height"}} \| null}` (see The Fusion view) |
 | `viewer.bypass` | `{"on": true, "monitor"?: "timeline"}` | `{"monitor": "timeline", "on"}` (see Bypass Color) |
 | `viewer.preview` | `{"grade": target, "node": "n1", "lut": "Film/Look.cube", "frame"?: n, "monitor"?: "timeline"}`, or `{"on": false}` | `{"monitor": "timeline", "preview": {...} \| null}` (see Live Preview and the Color Viewer LUT) |
 | `viewer.lut` | `{"on": true \| false, "monitor"?: "timeline"}` | `{"monitor": "timeline", "on"}` (see Live Preview and the Color Viewer LUT) |
@@ -1164,6 +1165,15 @@ the picture as it is shown (turned as its media says) for the source monitor.
   in the working space of the timeline, as the node sees them (see below, The picture at a node).
   With `monitor` this is of the timeline that the timeline monitor shows, at the frame it shows;
   the source monitor shows media, ungraded, and is refused (`node`).
+- With `fusion` `{"clip": "c1", "node"?: "n4"}`, and a `timeline` and a `frame`, the frame is
+  drawn off screen as the Fusion view of the timeline monitor shows it (see The Fusion view, in
+  Comparisons in the viewer): the picture of that node of the composition of that clip, alone,
+  fitted to the frame of the timeline; in a headless engine too, and whatever a monitor shows.
+  `rgb` is of that picture, and the answer has `"fusion"`, the view as the state of the monitor
+  tells it: whether the picture is drawn at the frame, and where it lies. It is refused as
+  `viewer.fusion` is (`clip`, `wrong_track`, `node`), and with `{"reason": "fusion"}` where it
+  is given with `monitor` (a sample of a monitor is of what the monitor shows) or with a node
+  of a grade.
 - Answer: `{"monitor": m` or `"timeline": "t1", "frame", "x", "y", "size", "width", "height"`
   (of the frame), `"region": {"x", "y", "width", "height"}` (the pixels averaged), `"rgb": [r,
   g, b]`, and with a node `"node": {"grade", "node", "input": [r, g, b], "output": [r, g,
@@ -1930,6 +1940,12 @@ notification `transport.state`):
   least one layer was unavailable, once per frame, and resets when playback starts from pause.
 - `compared` (where a wipe or split screen is on): the frame of the timeline that each of its
   references shows for the frame shown (see Comparisons in the viewer).
+- `fusion` (where the Fusion view is on, `viewer.fusion`): `{"clip", "node"?, "shown",
+  "canvas": [w, h], "size"?: {"width", "height"}, "picture"?: {"x", "y", "width", "height"}}`,
+  the node of the composition of a clip whose picture the monitor shows in place of its frame,
+  whether that picture is drawn at the frame shown, and where it lies in the frame; left out
+  where the monitor shows its frame (see The Fusion view, in Comparisons in the viewer). It is
+  let go of when a timeline is loaded or unloaded.
 - `recording: true` while automation is recorded as the timeline plays (`automation.record`; see
   Recording automation); left out where it is not. `all_read: true` while All Read is on
   (`automation.all_read`, T16b); left out where it is not.
@@ -3660,6 +3676,10 @@ exactly (see `crates/model/src/span.rs`); the frame then shows that next picture
   without it. Words that do not fit on the frame are not written.
 - **Highlight**: the timeline state has `highlight: {"mode", "grade", "node"}` while a Highlight
   mode is on (`viewer.highlight`, in Comparisons in the viewer), and none while it is off.
+- **The Fusion view**: the timeline state has `fusion: {"clip", "node"?, "shown", "canvas",
+  "size"?, "picture"?}` while the monitor shows the picture of a node of the composition of a
+  clip in place of its frame (`viewer.fusion`, The Fusion view in Comparisons in the viewer),
+  and none while it shows its frame. No grade is seen in that view.
 - **Bypass Color**: the timeline state has `bypass: true` while the monitor shows its picture
   without its grades (`viewer.bypass`, in Comparisons in the viewer), and none while it shows them.
 - **Live Preview**: the timeline state has `preview: {"grade", "node", "lut", "frame"?}` while a
@@ -4115,6 +4135,16 @@ brings no picture, is none, and a node that is read as a mask alone is among the
 with the `garbage_matte` and the `solid_matte` of a `delta_keyer`, which it names between its
 picture and its mask.
 
+**The picture of one node.** The composition is made the same way for the picture of any one
+of its nodes in place of what comes into the `media_out`
+(`crates/model/src/fusion.rs`, `Composition::at_node`; `resolve::fused_for` for a clip at a
+frame of its timeline): the nodes that the node depends on, each as above, and the node itself
+as what is shown. A node that the `media_out` does not read is made for as any other; one that
+is passed through shows what it hands on. The compositor draws it by the passes that it draws
+those nodes by within the whole composition, and none of a node after it. It is what the Fusion
+view of the timeline monitor shows (`viewer.fusion`, see The Fusion view, in Comparisons in the
+viewer), and what `view.sample` and `scopes.statistics` read with `fusion`.
+
 **The masks are drawn.** A `rectangle`, an `ellipse` and a `polygon` are each drawn into a
 picture of the composition: white premultiplied by the value of the mask, which is that of
 `crates/compose/src/mask.rs` for a frame of the size that the pictures are drawn at (Sizes,
@@ -4412,6 +4442,14 @@ where a monitor was named. Refused with `-32602` for both or neither of `view` a
 with `frame`, the source monitor with a node (`reason: "node"`), `at` or `clip` without a node,
 and the refusals of The picture at a node; with `-32004` `not_loaded` where the timeline monitor
 shows no timeline.
+
+With `"fusion": {"clip": "c1", "node"?: "n4"}`, and `timeline` and `frame`, it measures the
+picture of that node of the composition of that clip, drawn off screen as the Fusion view shows
+it (see The Fusion view, in Comparisons in the viewer), through the output transform, as the
+scopes of the monitor measure the view. The answer has `"fusion"`, the view as it is told.
+Refused as `view.sample` with `fusion` is: `clip`, `wrong_track`, `node`, and `{"reason":
+"fusion"}` with `view` or with a node of a grade.
+
 **Refusals.** `-32602` for params that are not the method's; with `data` `{"reason":
 "settings", "message"}` for settings that cannot be read or are out of range, `{"reason":
 "missing", "scope_id"}` for a scope that is not this connection's, `{"reason": "too_many",
@@ -4539,6 +4577,98 @@ Color page alone, and turns it off as that page is left. A `--headless` engine a
 - **Refusals**: `-32602` for params that are not the method's, with `data` `{"reason":
   "monitor"}` for the source monitor (it shows no grade) and `{"reason": "node"}` for a mode on
   without both `grade` and `node`.
+
+### The Fusion view
+
+**`viewer.fusion`** `{"clip": "c1" | null, "node"?: "n4", "monitor"?: "timeline"}` has the
+timeline monitor show **the picture of one node of the composition of a clip, alone**, in place
+of the frame of the timeline, as the viewers of the Fusion page of `DaVinci Resolve` show the
+node that is viewed; `{"clip": null}` has it show the frame of the timeline again. `clip` is
+always written. It is how a page looks at a node while it edits a composition (see
+Compositions), and how it learns where the picture of the composition lies in the frame, to
+draw the controls of a node over it (`view.overlay`) and to read the pointer on it
+(`view.pointer`). It answers `{"monitor": "timeline", "fusion": {...} | null}`, the view as it
+is now, and the monitor draws its frame again at once where it is not playing. A `--headless`
+engine answers `-32601`: it has no monitor (a frame off screen is drawn there, see below).
+
+```json
+{"monitor": "timeline", "fusion": {
+  "clip": "c1", "node": "n4", "shown": true, "canvas": [1920, 1080],
+  "size": {"width": 1440, "height": 1080},
+  "picture": {"x": 240.0, "y": 0.0, "width": 1440.0, "height": 1080.0}}}
+```
+
+- **The node.** `clip` is a clip of a track of picture of the timeline that the monitor shows,
+  and `node` a node of its composition, by its id: the monitor shows the picture of that node,
+  made of the node and of everything that leads to it, and of nothing after it, each node as it
+  is at the frame of the keys of the clip, as The picture at a node is of a grade. The node need
+  not be one that the `media_out` reads: a mask that is not linked yet, and a branch that is not
+  merged yet, have their pictures as any node has. Without `node`, or with the id of the
+  `media_out`, it is what comes out of the composition. A `media_in` shows the source of the
+  clip; a mask node the picture that it is, white premultiplied by its mask, so that over the
+  black of the frame it is the mask itself in R, G and B; a node that is passed through what it
+  hands on, the picture of its first input, and black where it has none; a node that reads
+  nothing that gives a picture, black. A clip that has no composition is viewed as though it
+  had the one that a clip has at first, a `media_in` `MediaIn1` linked to a `media_out`
+  `MediaOut1`: it shows its source, and those are the ids that it may be given.
+- **What is not drawn.** Nothing of the timeline but that picture: not the other layers, not
+  the subtitles; not the `transform`, the `crop`, the `composite` mode or the opacity of the
+  clip, nor its fades or the transition that it is in; and no grade: not the clip's, not its
+  group's, not the timeline's. The source of the clip goes through its input transform before
+  the composition, as it always does, and the frame through the output transform of the
+  project (with its Output LUT) after it, and the view shows the Color Viewer LUT where
+  `viewer.lut` has it on: the colour is that of the timeline's picture without its grades.
+- **Where it lies.** The picture is of the size of the composition, `size` (that of the source
+  of the clip, see Compositions; of a title and of a colour, that of the timeline), and it is
+  fitted whole into the frame of the timeline, as large as it fits, its shape kept, in the
+  middle, as the source of a clip that is not moved is fitted: a picture less wide than the
+  frame has black at its left and right, one less high black above and below it. What is
+  transparent in the picture shows black too: there is no checkerboard. `picture` is the
+  rectangle that it lies in, `x` and `y` of its top left corner and its `width` and `height`,
+  in the pixels of the frame drawn from its top left corner, those in which `view.pointer`
+  tells `x` and `y`, `view.sample` takes them and `view.overlay` takes its points; they need
+  not be whole numbers. `canvas` is the width and the height of that frame, those of the
+  timeline, as `view.overlay` takes `canvas`. A place of a composition, a share `(u, v)` of the
+  width and of the height of its picture from its lower left corner, `v` up (see Coordinates,
+  in Compositions), is at `x + u · width` and `y + (1 − v) · height` of the frame: the middle of
+  a picture of 1440 × 1080 in a timeline of 1920 × 1080 at `(960, 540)`, and its `(0.25,
+  0.75)` at `(600, 270)`. The pictures of the composition are drawn at the pixels that are seen
+  (see Sizes, in Compositions in the picture).
+- **`shown`** is whether the picture is drawn at the frame shown: the clip is seen there (the
+  playhead is on it, it and its track are on, and its media is in the project) and the node is
+  in its composition. Where it is not, the frame is black, and the view stays on: it shows the
+  picture again when there is one. `size` and `picture` are told while the clip is in the
+  timeline, whatever the frame, and are left out once it is not.
+- **The state.** The timeline state tells the view as the method answers it (`fusion`; left out
+  while the view is off), at once when it is turned on or off, and again whenever it changes:
+  as the playhead comes on the clip or leaves it, and as the project changes the size of the
+  timeline or of the source of the clip, or takes the clip or the node away. An edit of the
+  composition is drawn at once where the monitor is not playing, as an edit of a grade is,
+  and from the next frame where it plays. Playing and scrubbing show the view frame by frame;
+  the sound of the timeline plays as it does. The view is of the monitor, not of the project:
+  it changes no revision and no history, and it is let go of when a timeline is loaded or
+  unloaded.
+- **With the other modes.** While the Fusion view is on it is all that the monitor shows: a
+  Highlight mode, Bypass Color, a Live Preview of a LUT, and a wipe or a split screen are not
+  drawn (`compared` is left out of the state), and each is as it was set once the view is
+  turned off; they may be set meanwhile. The Window controls of the Color page are not drawn
+  over it. The scopes, `view.sample` and `transport.frame_digest` of the monitor are of the
+  frame as it is shown, the view. A still grabbed is of the frame of the timeline as it is
+  graded (see Grabbing); an export, a thumbnail, the references of a wipe and a frame drawn
+  off screen without `fusion` are of the timeline as it is.
+- **Off screen.** `view.sample` and `scopes.statistics` of a `timeline` and a `frame` take
+  `"fusion": {"clip": "c1", "node"?: "n4"}` and draw the same picture off screen, whatever the
+  monitor shows and in a headless engine too (see Samples and the pointer, and Scopes); their
+  answers have `"fusion"`, the view as it is told above.
+- **Refusals**: `-32602` for params that are not the method's, with `data` `{"reason":
+  "monitor"}` for the source monitor (it shows media, and no composition); `{"reason": "clip",
+  "clip"}` for a clip that the timeline shown has not; `{"reason": "wrong_track", "clip"}` for
+  a clip of sound, which has no composition; and `{"reason": "node", "node"}` for a node that
+  the composition of the clip has not (every node has a picture to view, the `media_out` that
+  of the composition). A view that is turned on while the monitor shows no timeline is `-32004`
+  with `{"reason": "not_loaded"}`. A call that is refused changes nothing. A clip or a node
+  that is taken away while the view is on is not refused: the frame is black (`shown` false)
+  until it is there again or another is viewed.
 
 ### Bypass Color
 
@@ -4678,7 +4808,9 @@ timeline is loaded, `{"reason": "draw"}` where the frame cannot be read back. A 
 "that clip's embedded grade" (p. 3256), and the manual says nothing of Bypass Color or the
 Highlight modes at a grab: where either shows the frame otherwise, the frame is drawn again
 aside, graded and not highlighted, for the still alone (no view or scope sees it), and the
-monitor goes on showing it as it did. `view` is
+monitor goes on showing it as it did. So it is where the monitor shows the Fusion view
+(`viewer.fusion`): the still is of the frame of the timeline, not of the picture of a node.
+`view` is
 `"timeline"` (`-32602` `{"reason": "view"}` otherwise). Grab All Stills, Grab Missing Stills and
 One Still Per Scene are not done. Each grab is logged as `still_grabbed` `{"width", "height",
 "format", "read_ms", "written_ms"}`: of a frame of 3840 × 2160 (66 MB of half floats), a release
@@ -5335,11 +5467,11 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.scrub_audio`, `transport.loop` or `transport.play_range` of the source monitor (`{"reason": "monitor"}`); a range of `transport.play_range` that begins before 0 or does not end after it begins (`{"reason": "range"}`); a `level` of `audio.monitor` over 0 dB (`{"reason": "level"}`); `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media, or of a `mix` naming a source channel that the media does not have; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`, also of a `mix`); `{"reason": "channel", "stream": n, "channel": c}` (a `mix` of `media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.scrub_audio`, `transport.loop` or `transport.play_range` of the source monitor (`{"reason": "monitor"}`); a range of `transport.play_range` that begins before 0 or does not end after it begins (`{"reason": "range"}`); a `level` of `audio.monitor` over 0 dB (`{"reason": "level"}`); `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media, or of a `mix` naming a source channel that the media does not have; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn; `viewer.fusion`, or a `fusion` of `view.sample` or `scopes.statistics`, naming a clip or a node of a composition that the timeline has not | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`, also of a `mix`); `{"reason": "channel", "stream": n, "channel": c}` (a `mix` of `media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer); `{"reason": "clip" \| "wrong_track" \| "node" \| "monitor" \| "fusion", ...}` (see The Fusion view) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
-| `-32004` | `transport.*`: no media is loaded, the transport has stopped, or the test hook could not draw; `scopes.statistics`: the monitor shows nothing, or its frame could not be measured | `{"reason": "..."}`, see The transport; `not_loaded` or `draw` (see Scopes) |
+| `-32004` | `transport.*`: no media is loaded, the transport has stopped, or the test hook could not draw; `scopes.statistics`: the monitor shows nothing, or its frame could not be measured; `viewer.fusion` of a clip while the timeline monitor shows no timeline | `{"reason": "..."}`, see The transport; `not_loaded` or `draw` (see Scopes); `not_loaded` (see The Fusion view) |
 
 The connection stays usable after every error.
 

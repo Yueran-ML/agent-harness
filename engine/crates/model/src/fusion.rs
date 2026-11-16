@@ -2342,6 +2342,41 @@ impl Composition {
         Fused { nodes, output }
     }
 
+    /// The composition at a frame of its keys, for the picture of the node `id` in place of
+    /// the one that comes into its `MediaOut`: the nodes that the picture of that node is made
+    /// of, each with its settings as the numbers that they are there, and `output` the node
+    /// itself (see [`Fused`]). It is what a viewer shows of one node: the node and all that
+    /// leads to it, and nothing after it.
+    ///
+    /// The node need not be one that the `MediaOut` depends on: a mask that is not linked yet,
+    /// or a branch that is not merged yet, has its picture as any node has. Each node is as
+    /// [`Composition::at`] has it, with the same settings, after those that it reads; those
+    /// that the node does not depend on are left out. A node that is passed through shows
+    /// what it hands on, the picture of its first input ([`Kind::through`]), and none where
+    /// it has no such input or that input brings no picture; a node on the way that is passed
+    /// through is left out for the one that it hands on, as it is in [`Composition::at`]. Of
+    /// the `MediaOut` it is [`Composition::at`] itself. None where the composition has no node
+    /// `id`.
+    #[must_use]
+    pub fn at_node(&self, id: &str, frame: f64) -> Option<Fused> {
+        let node = self.node(id)?;
+        if node.kind.kind() == Kind::MediaOut {
+            return Some(self.at(frame));
+        }
+        let shown = if node.pass_through {
+            node.kind
+                .kind()
+                .through()
+                .and_then(|input| self.feeding(&node.id, input))
+        } else {
+            Some(node)
+        };
+        let mut nodes = Vec::new();
+        let mut placed = HashMap::new();
+        let output = shown.and_then(|node| self.place(node, frame, &mut nodes, &mut placed));
+        Some(Fused { nodes, output })
+    }
+
     /// Put `node` among `nodes`, after the nodes whose pictures it reads, and give its place
     /// there: the one that it has already where it was put before, and none for a node that
     /// has no picture to give.
@@ -2458,6 +2493,10 @@ pub fn size_of(clip: &Clip, project: &Project, timeline: &Timeline) -> (u32, u32
 /// one that is passed through, whose place is taken by the node that it hands on. A node
 /// that is read as a mask or as a matte alone is depended on, and is there. The `MediaOut`
 /// itself is not in the list: `output` is what it shows.
+///
+/// A composition made for the picture of one of its nodes ([`Composition::at_node`]) is the
+/// same, with that node in the place of what comes into the `MediaOut`: the nodes that the
+/// node depends on, and `output` the node itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fused {
     /// The nodes, each after those that it reads.
@@ -3639,6 +3678,119 @@ mod tests {
             fused.nodes[0].kind,
             FusedKind::Transform { input: None, .. }
         ));
+    }
+
+    #[test]
+    fn a_composition_for_a_node_lists_what_that_node_reads_and_nothing_after_it() {
+        let mut composition = merged();
+        if let NodeKind::Merge(merge) = &mut composition.nodes[2].kind {
+            merge.blend = keys(&[(0, 0.0), (10, 1.0)]);
+        }
+        let whole = composition.at(5.0);
+        assert_eq!(ids(&whole), ["bg", "in", "over", "move"]);
+        // The Merge in the middle: itself and what leads to it, each as the whole composition
+        // has it at the frame, and not the Transform after it.
+        let middle = composition.at_node("over", 5.0).unwrap();
+        assert_eq!(ids(&middle), ["bg", "in", "over"]);
+        assert_eq!(middle.output, Some(2));
+        assert_eq!(middle.nodes[..], whole.nodes[..3]);
+        assert!(matches!(
+            &middle.nodes[2].kind,
+            FusedKind::Merge { settings, .. } if (settings.blend - 0.5).abs() < 1e-12
+        ));
+        // A node that reads nothing is there alone.
+        let first = composition.at_node("in", 5.0).unwrap();
+        assert_eq!(ids(&first), ["in"]);
+        assert_eq!(first.output, Some(0));
+        let colour = composition.at_node("bg", 5.0).unwrap();
+        assert_eq!(ids(&colour), ["bg"]);
+        assert_eq!(colour.output, Some(0));
+        // The last node before the MediaOut, and the MediaOut itself, are the composition.
+        assert_eq!(composition.at_node("move", 5.0).unwrap(), whole);
+        assert_eq!(composition.at_node("out", 5.0).unwrap(), whole);
+        // There is no such node.
+        assert_eq!(composition.at_node("n404", 5.0), None);
+        assert_eq!(Composition::default().at_node("over", 0.0), None);
+        // The composition that a clip has at first: its MediaIn, by either of its nodes.
+        let plain = Composition::default();
+        assert_eq!(plain.at_node(MEDIA_IN, 0.0), Some(plain.at(0.0)));
+        assert_eq!(plain.at_node(MEDIA_OUT, 0.0), Some(plain.at(0.0)));
+    }
+
+    #[test]
+    fn a_node_that_the_media_out_does_not_read_has_its_picture_all_the_same() {
+        // A mask that is not linked yet, and a branch that is not merged yet: a Transform
+        // that reads a Background of its own, limited by an Ellipse.
+        let mut composition = merged();
+        composition.nodes.extend([
+            Node::new("r", Kind::Rectangle),
+            Node::new("spare", Kind::Transform),
+            Node::new("unseen", Kind::Background),
+            Node::new("e", Kind::Ellipse),
+        ]);
+        composition.links.extend([
+            Link::new("unseen", "spare", Input::Input),
+            Link::new("e", "spare", Input::Mask),
+        ]);
+        composition.sort_links();
+        assert_eq!(composition.check(), Ok(()));
+        // None of them is in the composition as the MediaOut shows it.
+        assert_eq!(ids(&composition.at(0.0)), ["bg", "in", "over", "move"]);
+        let mask = composition.at_node("r", 0.0).unwrap();
+        assert_eq!(ids(&mask), ["r"]);
+        assert_eq!(mask.output, Some(0));
+        assert!(matches!(
+            mask.nodes[0].kind,
+            FusedKind::Rectangle { mask: None, .. }
+        ));
+        // The branch: its picture before its mask, and nothing of the rest.
+        let branch = composition.at_node("spare", 0.0).unwrap();
+        assert_eq!(ids(&branch), ["unseen", "e", "spare"]);
+        assert_eq!(branch.output, Some(2));
+        assert_eq!(
+            branch.nodes[2].kind,
+            FusedKind::Transform {
+                input: Some(0),
+                mask: Some(1),
+                settings: Transform::default().at(0.0),
+            }
+        );
+        // A mask node shows the mask that it makes of the one that comes into it.
+        let mut combined = masked();
+        combined.links.retain(|link| link.to != "over");
+        let shown = combined.at_node("e", 0.0).unwrap();
+        assert_eq!(ids(&shown), ["r", "e"]);
+        assert_eq!(shown.output, Some(1));
+        assert_eq!(shown.nodes[1].kind.mask(), Some(0));
+    }
+
+    #[test]
+    fn a_node_that_is_passed_through_is_viewed_as_what_it_hands_on() {
+        // The Merge passed through: its background, and nothing of its foreground.
+        let mut composition = merged();
+        composition.nodes[2].pass_through = true;
+        let handed = composition.at_node("over", 0.0).unwrap();
+        assert_eq!(ids(&handed), ["bg"]);
+        assert_eq!(handed.output, Some(0));
+        // A node after it reads what it hands on, as in the whole composition.
+        let after = composition.at_node("move", 0.0).unwrap();
+        assert_eq!(ids(&after), ["bg", "move"]);
+        assert_eq!(after, composition.at(0.0));
+        // A node with no input to hand on gives no picture, and neither does one whose first
+        // input is not linked.
+        composition.nodes[1].pass_through = true;
+        assert_eq!(composition.at_node("bg", 0.0), Some(Fused::default()));
+        assert_eq!(composition.at_node("over", 0.0), Some(Fused::default()));
+        let mut bare = merged();
+        bare.nodes[3].pass_through = true;
+        bare.links.retain(|link| link.to != "move");
+        assert_eq!(bare.at_node("move", 0.0), Some(Fused::default()));
+        // A mask node that is passed through shows the mask that comes into it.
+        let mut limited = masked();
+        limited.nodes[6].pass_through = true;
+        let mask = limited.at_node("e", 0.0).unwrap();
+        assert_eq!(ids(&mask), ["r"]);
+        assert_eq!(mask.output, Some(0));
     }
 
     /// The composition of `merged` with its Merge limited by the Ellipse `e`, into which the

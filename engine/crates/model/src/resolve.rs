@@ -169,6 +169,43 @@ pub fn video_of_track_at(t: &Timeline, project: &Project, track: &Track, frame: 
     layers
 }
 
+/// The composition of `clip`, a clip of timeline `t` of `project`, as it is at frame `frame`
+/// of the timeline, made for the picture of its node `node`: what a viewer of that node shows
+/// ([`Composition::at_node`]). With no node, or with its `media_out`, it is the composition as
+/// the layer of the clip has it ([`Layer::fusion`]): what comes out of it.
+///
+/// It is at the frame of the keys of the clip, as the layer has it. A clip that has no
+/// composition is taken to have the one that a clip has at first, a `media_in` linked to a
+/// `media_out` (by their ids there, [`crate::fusion::MEDIA_IN`] and
+/// [`crate::fusion::MEDIA_OUT`]), which shows its source. None where the composition has no
+/// such node.
+#[must_use]
+pub fn fused_for(
+    t: &Timeline,
+    project: &Project,
+    clip: &Clip,
+    frame: i64,
+    node: Option<&str>,
+) -> Option<Fused> {
+    let first = Composition::default();
+    let composition = clip.fusion.as_ref().unwrap_or(&first);
+    // A composition with no keys is the same at every frame: the clock is not asked.
+    let at = if composition.is_animated() {
+        KeyClock::of(clip, project, t.rate).at(frame)
+    } else {
+        0
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a frame of keys is within 2^53 of 0"
+    )]
+    let at = at as f64;
+    match node {
+        Some(node) => composition.at_node(node, at),
+        None => Some(composition.at(at)),
+    }
+}
+
 /// The layers of a track at a frame.
 fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: &mut Vec<Layer>) {
     for transition in &track.transitions {
@@ -1265,6 +1302,93 @@ mod tests {
         assert_eq!(samples_at(i64::MAX, rate, 48000), i64::MAX);
         assert_eq!(samples_at(i64::MIN, rate, 48000), i64::MIN);
         assert_eq!(samples_at(-1, rate, 48000), -1920);
+    }
+
+    #[test]
+    fn the_composition_of_a_clip_for_a_node_is_at_the_frame_of_the_keys_of_the_clip() {
+        use crate::fusion::{FusedKind, Input, Kind, Link, Node, NodeKind};
+        use crate::grade::{Interp, Key, Param};
+        let mut project = project();
+        // c2 shows m1 from its frame 100: a Background whose alpha rises over the frames 100
+        // to 120 of the media, under the picture of the clip, and a mask that is not linked.
+        let mut behind = Node::new("bg", Kind::Background);
+        if let NodeKind::Background(background) = &mut behind.kind {
+            background.color.a = Param::Keys(
+                [(100, 0.0), (120, 1.0)]
+                    .into_iter()
+                    .map(|(frame, value)| Key {
+                        frame,
+                        value,
+                        interp: Interp::Linear,
+                    })
+                    .collect(),
+            );
+        }
+        let mut composition = Composition {
+            nodes: vec![
+                Node::new("in", Kind::MediaIn),
+                behind,
+                Node::new("over", Kind::Merge),
+                Node::new("r", Kind::Rectangle),
+                Node::new("out", Kind::MediaOut),
+            ],
+            links: vec![
+                Link::new("bg", "over", Input::Background),
+                Link::new("in", "over", Input::Foreground),
+                Link::new("over", "out", Input::Input),
+            ],
+        };
+        composition.sort_links();
+        project.timelines[0].tracks[0].clips[1].fusion = Some(composition);
+        project.validate().unwrap();
+        let timeline = &project.timelines[0];
+        let clip = &timeline.tracks[0].clips[1];
+        let layer_at = |frame: i64| {
+            video_at(timeline, &project, frame)
+                .into_iter()
+                .find(|layer| layer.clip == "c2")
+                .unwrap()
+        };
+        // With no node, and with the MediaOut, it is the composition that the layer has.
+        let whole = layer_at(60).fusion;
+        assert!(whole.is_some());
+        assert_eq!(fused_for(timeline, &project, clip, 60, None), whole);
+        assert_eq!(fused_for(timeline, &project, clip, 60, Some("out")), whole);
+        // A node alone is as the layer has it at that frame: at the frame of the keys.
+        let whole = whole.unwrap();
+        let alpha = |frame: i64| {
+            let alone = fused_for(timeline, &project, clip, frame, Some("bg")).unwrap();
+            assert_eq!(alone.nodes.len(), 1);
+            assert_eq!(alone.output, Some(0));
+            let FusedKind::Background { rgba, .. } = &alone.nodes[0].kind else {
+                panic!("the node is the Background")
+            };
+            (rgba[3], alone)
+        };
+        let (at_60, alone) = alpha(60);
+        assert_eq!(alone.nodes[0], whole.nodes[0]);
+        assert!(at_60 > 0.0 && at_60 < 1.0, "{at_60}");
+        assert!(alpha(62).0 > at_60);
+        // A node that the MediaOut does not read, and one that is not there.
+        let mask = fused_for(timeline, &project, clip, 60, Some("r")).unwrap();
+        assert_eq!(mask.nodes.len(), 1);
+        assert_eq!(mask.nodes[0].id, "r");
+        assert_eq!(fused_for(timeline, &project, clip, 60, Some("n404")), None);
+        // A clip without a composition has the one that a clip has at first.
+        let plain = &timeline.tracks[0].clips[0];
+        let first = Composition::default().at(0.0);
+        assert_eq!(plain.fusion, None);
+        assert_eq!(
+            fused_for(timeline, &project, plain, 10, None),
+            Some(first.clone())
+        );
+        for node in [crate::fusion::MEDIA_IN, crate::fusion::MEDIA_OUT] {
+            assert_eq!(
+                fused_for(timeline, &project, plain, 10, Some(node)),
+                Some(first.clone())
+            );
+        }
+        assert_eq!(fused_for(timeline, &project, plain, 10, Some("bg")), None);
     }
 
     #[test]

@@ -788,6 +788,7 @@ fn fixture() -> (State, Registry, Arc<Pin>, Arc<FrameSnapshot>) {
         overlay: None,
         frozen: 0,
         highlight: None,
+        fusion: false,
     };
     frame.overlay = selection.overlay(&frame, None);
     let frame = Arc::new(frame);

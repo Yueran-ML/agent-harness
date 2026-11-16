@@ -571,6 +571,25 @@ impl Transport {
         timeline.highlight(highlight).await
     }
 
+    /// `viewer.fusion`: show on the timeline monitor the picture of a node of the composition
+    /// of a clip, alone (`crate::fusion_view`), or the frame of the timeline again.
+    ///
+    /// # Errors
+    /// The engine is headless (`-32601`); the params are not what the method takes (`-32602`;
+    /// of the source monitor, `reason: monitor`); or, of a view that is on, no timeline is
+    /// loaded (`-32004`, `not_loaded`), the timeline shown has no such clip (`clip`), the clip
+    /// is one of sound (`wrong_track`), or its composition has no such node (`node`).
+    pub async fn fusion(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
+        let Some(timeline) = &self.timeline else {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                "there is no method viewer.fusion in a headless engine: it has no monitor",
+            ));
+        };
+        let view = crate::fusion_view::View::read(params)?;
+        timeline.fusion(view).await
+    }
+
     /// `viewer.bypass`: show the timeline monitor's picture without its grades (Bypass Color,
     /// p. 2987; Shift-D, pp. 504, 550), or with them.
     ///

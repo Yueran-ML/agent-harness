@@ -13,6 +13,20 @@
 //! that lays it on the canvas, unchanged. A layer without a composition is drawn as it always
 //! was, and nothing of this is made for it.
 //!
+//! # The picture of one node
+//!
+//! A viewer of a node shows the picture of that node alone, as Fusion's viewers do. Nothing
+//! is drawn otherwise for it: the composition is made for the node
+//! ([`columbina_model::fusion::Composition::at_node`]), so that its `output` is the node and
+//! its nodes are those that the node depends on, and it is the [`Fusion`] of a layer that is
+//! not moved ([`crate::Transform::NONE`]), whole ([`crate::Crop::NONE`]), opaque, laid as it
+//! is, with no grade, alone in its scene. `plan` then makes of it the passes that it makes of
+//! those nodes within the whole composition, so that the picture is the texture of the node
+//! as the whole composition draws it; and the picture is fitted whole to the canvas, in its
+//! middle, where [`crate::geometry::fitted`] says, over the black of the canvas: what is
+//! transparent in it shows black. A mask node shows white premultiplied by its mask, which
+//! over black is the mask itself in R, G and B.
+//!
 //! # The pictures
 //!
 //! Every picture of a composition is of one size, that of the composition (the source of its

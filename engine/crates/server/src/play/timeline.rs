@@ -20,6 +20,7 @@ use super::ahead::{Request, TrackReader, Want};
 use super::sources::{Read, Sources};
 use super::{Action, Notify};
 use crate::compare::{Change, Comparison};
+use crate::fusion_view::{Told as FusionTold, View as FusionView};
 use crate::gpu::{Graphics, Subscription};
 use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::highlight::Highlight;
@@ -86,6 +87,11 @@ pub struct Status {
     /// The Highlight mode that the monitor shows, where one is on (`viewer.highlight`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highlight: Option<Highlight>,
+    /// The Fusion view that the monitor shows in place of the frame of the timeline, where one
+    /// is on (`viewer.fusion`): the picture of a node of the composition of a clip, whether
+    /// it is drawn at the frame shown, and where it lies in the frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fusion: Option<FusionTold>,
     /// Whether the monitor shows the picture without its grades (`viewer.bypass`, Bypass
     /// Color); left out where it does not.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -148,6 +154,7 @@ impl Default for Status {
             scrub_audio: true,
             missing_luts: Vec::new(),
             highlight: None,
+            fusion: None,
             bypass: false,
             preview: None,
             viewer_lut: true,
@@ -216,6 +223,8 @@ enum Command {
     Original(oneshot::Sender<Result<crate::stills::Frame, Fault>>),
     /// The Highlight mode that is shown (`viewer.highlight`).
     Highlight(Option<Highlight>, oneshot::Sender<Value>),
+    /// The Fusion view that is shown (`viewer.fusion`).
+    Fusion(Option<FusionView>, oneshot::Sender<Result<Value, Fault>>),
     /// The Live Preview that is shown (`viewer.preview`).
     Preview(Option<Preview>, oneshot::Sender<Value>),
     /// Whether the view shows the Color Viewer LUT (`viewer.lut`).
@@ -476,6 +485,17 @@ impl Timeline {
         let (reply, receiver) = oneshot::channel();
         self.send(Command::Highlight(highlight, reply))?;
         receiver.await.map_err(|_| stopped())
+    }
+
+    /// Show a Fusion view, or none, and give the view shown now.
+    ///
+    /// # Errors
+    /// The monitor has stopped; or, of a view that is on, no timeline is loaded, or the timeline
+    /// has no such clip of picture, or the composition of the clip no such node.
+    pub async fn fusion(&self, view: Option<FusionView>) -> Result<Value, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::Fusion(view, reply))?;
+        receiver.await.map_err(|_| stopped())?
     }
 
     /// Show the picture without its grades, or with them, and say which it shows now.
@@ -1264,6 +1284,9 @@ impl Worker {
                 }
                 let _ = reply.send(Highlight::written(self.status.highlight.as_ref()));
             }
+            Command::Fusion(view, reply) => {
+                let _ = reply.send(self.fuse(view));
+            }
             Command::Bypass(on, reply) => {
                 if self.status.bypass != on {
                     self.status.bypass = on;
@@ -1511,12 +1534,18 @@ impl Worker {
     /// otherwise, it is drawn again aside with neither, for no view and no scope, and the frame
     /// shown is drawn again as it was shown.
     fn graded_original(&mut self) -> Result<crate::stills::Frame, Fault> {
-        if !self.status.bypass && self.status.highlight.is_none() && self.status.preview.is_none() {
+        if !self.status.bypass
+            && self.status.highlight.is_none()
+            && self.status.preview.is_none()
+            && self.status.fusion.is_none()
+        {
             return self.original();
         }
         let bypass = std::mem::take(&mut self.status.bypass);
         let highlight = self.status.highlight.take();
         let preview = self.status.preview.take();
+        // Nor is a still of the Fusion view: it is of the frame of the timeline.
+        let fusion = self.status.fusion.take();
         self.aside = true;
         let drawn = self.draw_inner(true, false);
         self.aside = false;
@@ -1524,10 +1553,35 @@ impl Worker {
         self.status.bypass = bypass;
         self.status.highlight = highlight;
         self.status.preview = preview;
+        self.status.fusion = fusion;
         if !self.status.playing {
             let _ = self.draw(true, false);
         }
         grabbed
+    }
+
+    /// Show the Fusion view `view`, or none (`viewer.fusion`), draw the frame again where it is
+    /// not playing, and give the view shown now. A view that is refused changes nothing.
+    fn fuse(&mut self, view: Option<FusionView>) -> Result<Value, Fault> {
+        let told = match view {
+            Some(view) => {
+                let (Some(project), Some(index)) = (&self.project, self.timeline) else {
+                    return Err(not_loaded());
+                };
+                let timeline = &project.timelines[index];
+                view.check(timeline)?;
+                Some(view.state(project, timeline, self.drawn_frame()))
+            }
+            None => None,
+        };
+        if self.status.fusion != told {
+            self.status.fusion = told;
+            if !self.status.playing {
+                let _ = self.draw(true, false);
+            }
+            self.tell(true);
+        }
+        Ok(FusionView::written(self.status.fusion.as_ref()))
     }
 
     /// Change what the frame is compared with, and draw it again where it is not playing.
@@ -1946,7 +2000,8 @@ impl Worker {
     }
 
     /// The frame of the timeline drawn: the playhead's, or, where it is still, the frame that a
-    /// Live Preview asks for (Hover Scrub Preview, `viewer.preview`).
+    /// Live Preview asks for (Hover Scrub Preview, `viewer.preview`). The Fusion view, which
+    /// shows no Live Preview, is of the playhead's.
     fn drawn_frame(&self) -> i64 {
         let frame = self.status.frame.unwrap_or(0);
         match self
@@ -1955,7 +2010,7 @@ impl Worker {
             .as_ref()
             .and_then(|preview| preview.frame)
         {
-            Some(asked) if self.clock.is_none() => {
+            Some(asked) if self.clock.is_none() && self.status.fusion.is_none() => {
                 clock::clamped(asked, self.status.last.unwrap_or(0))
             }
             _ => frame,
@@ -2004,7 +2059,21 @@ impl Worker {
         let mut previous = BTreeMap::new();
         let mut clips = Vec::new();
         let mut origins = Vec::new();
-        for layer in resolve::video_at(timeline, &project, frame) {
+        let layers = resolve::video_at(timeline, &project, frame);
+        // The Fusion view: of the layers of the frame, that of its clip alone, showing what
+        // the composition of the clip gives for the node, as it is fitted; and it is told
+        // whether that is drawn, and where it lies, as the frame is.
+        let view = self.status.fusion.as_ref().map(FusionTold::view);
+        let layers = match &view {
+            Some(view) => {
+                let layer = view.layer(&project, timeline, frame, layers);
+                self.status.fusion = Some(view.told(&project, timeline, layer.is_some()));
+                scene.subtitles.clear();
+                layer.into_iter().collect()
+            }
+            None => layers,
+        };
+        for layer in layers {
             let clip = layer.clip.clone();
             let clock = timeline
                 .tracks
@@ -2145,10 +2214,13 @@ impl Worker {
         // picture of every clip ever visited. At a late cut, that track's old picture stays.
         self.previous = previous;
         self.grade(&mut scene, &clips, frame)?;
+        // The Fusion view shows the picture of a node as it is: through the input transform of
+        // its clip and the output transform of the timeline, and through no grade.
+        let fused = view.is_some();
         // Bypass Color: the picture without its grades, its colour management kept; nothing of
         // a key to highlight.
         let bypass = self.status.bypass;
-        if bypass {
+        if bypass || fused {
             crate::grading::bypass(&mut scene);
         }
         let highlight = self
@@ -2157,6 +2229,7 @@ impl Worker {
             .as_ref()
             .filter(|highlight| {
                 !bypass
+                    && !fused
                     && highlight.show(
                         &project,
                         index,
@@ -2167,8 +2240,13 @@ impl Worker {
                     )
             })
             .cloned();
-        self.compare.prepare(&project, index, frame, &self.grading);
-        self.status.compared = self.compare.compared();
+        // Nothing is compared with the Fusion view: the references are not made for it.
+        if fused {
+            self.status.compared = None;
+        } else {
+            self.compare.prepare(&project, index, frame, &self.grading);
+            self.status.compared = self.compare.compared();
+        }
         let snapshot = FrameSnapshot {
             revision: self.revision,
             project: Arc::clone(&project),
@@ -2182,6 +2260,7 @@ impl Worker {
             overlay: None,
             frozen: self.frozen,
             highlight,
+            fusion: fused,
         };
         let snapshot = self.present(&scene, frame, Some(snapshot))?;
         self.status.shown = Some(frame);
@@ -2286,12 +2365,17 @@ impl Worker {
         compositor
             .render(scene, &target)
             .map_err(|error| drawing(&error.to_string()))?;
-        // What the viewer shows: the frame, or the frame compared with a reference.
-        let shown = self
-            .compare
-            .show(&gpu, compositor, &target)
-            .map_err(|error| drawing(&error))?
-            .unwrap_or_else(|| Arc::clone(&target));
+        // What the viewer shows: the frame, or the frame compared with a reference. The Fusion
+        // view is shown as it is, compared with nothing.
+        let fused = snapshot.as_ref().is_some_and(|snapshot| snapshot.fusion);
+        let shown = if fused {
+            Arc::clone(&target)
+        } else {
+            self.compare
+                .show(&gpu, compositor, &target)
+                .map_err(|error| drawing(&error))?
+                .unwrap_or_else(|| Arc::clone(&target))
+        };
         // A frame drawn aside is handed to no view.
         let attached = if self.aside {
             None
@@ -2659,6 +2743,8 @@ fn drawing(message: &str) -> Fault {
 
 #[cfg(test)]
 mod colour;
+#[cfg(test)]
+mod fused;
 #[cfg(test)]
 mod grades;
 

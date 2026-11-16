@@ -53,6 +53,10 @@ pub struct FrameSnapshot {
     pub overlay: Option<Arc<columbina_view::window_overlay::WindowOverlay>>,
     pub frozen: u64,
     pub highlight: Option<crate::highlight::Highlight>,
+    /// Whether the frame is the Fusion view (`crate::fusion_view`): the picture of a node of
+    /// the composition of a clip, fitted, in place of the frame of the timeline. Its layers
+    /// are not where the timeline puts them, and no window of a grade is drawn or edited on it.
+    pub fusion: bool,
 }
 
 impl FrameSnapshot {
@@ -668,6 +672,7 @@ mod tests {
             overlay: None,
             frozen: 0,
             highlight: None,
+            fusion: false,
         })
     }
     fn shown(serial: u64, tag: u64) -> Presentation {

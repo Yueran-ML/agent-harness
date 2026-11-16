@@ -186,9 +186,11 @@ impl Selection {
         Ok(())
     }
 
-    /// Coordinates and clock of the actual retained target layer, after Highlight.
+    /// Coordinates and clock of the actual retained target layer, after Highlight. None of a
+    /// frame of the Fusion view, whose one layer is fitted and not where the timeline puts it.
     pub fn placement(&self, frame: &FrameSnapshot) -> Option<(Affine, (u32, u32), i64)> {
-        if !frame.editable()
+        if frame.fusion
+            || !frame.editable()
             || frame.revision != self.revision
             || frame.project.timelines[frame.timeline].id != self.timeline
         {

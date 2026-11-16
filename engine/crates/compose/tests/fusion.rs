@@ -278,6 +278,11 @@ type Reads = fn(i64, i64, i64, i64) -> Option<(i64, i64)>;
 /// and how far from the processor the card may be.
 type KeyerCase = (&'static str, fn(&mut DeltaKeyed), f32);
 
+/// A case of the fitting of the picture of a composition: what it is, the size of the
+/// composition, the size of the frame, and where the picture is to lie in the frame (x, y,
+/// width and height).
+type FittedCase = (&'static str, (u32, u32), (u32, u32), [u32; 4]);
+
 /// The sources of the kinds that a clip has: a picture, two pictures mixed, a title and a
 /// colour.
 fn sources() -> Vec<Kind> {
@@ -3803,5 +3808,261 @@ fn a_composition_with_a_keyer_is_shown_as_its_source_until_its_pipeline_is_made(
     assert_eq!(halves(&gpu, &mut compositor, &cut), wanted);
     assert!(!compositor.is_provisional());
     assert_eq!(compositor.fusion_passes(), 6);
+    assert_no_errors(&gpu);
+}
+
+/// What a viewer of one node of a composition shows: the composition made for that node, its
+/// `nodes` those that the node depends on and `output` the node, of pictures of `size`
+/// pixels, on a layer that is not moved, whole, opaque and not graded, alone in a frame of
+/// `canvas` pixels.
+fn viewer(
+    source: Source,
+    (nodes, output): (Vec<FusedKind>, Option<usize>),
+    size: (u32, u32),
+    canvas: (u32, u32),
+) -> Scene {
+    let clip = fused_of(source, nodes, output, size);
+    scene_of(canvas.0, canvas.1, vec![layer(clip, ColorRange::Full)])
+}
+
+/// R, G, B and A of the pixel (x, y) of a frame `width` pixels wide.
+fn float_pixel(frame: &[f32], width: u32, x: u32, y: u32) -> [f32; 4] {
+    let at = ((y * width + x) * 4) as usize;
+    [frame[at], frame[at + 1], frame[at + 2], frame[at + 3]]
+}
+
+#[test]
+fn a_node_viewed_alone_is_drawn_by_the_passes_that_lead_to_it_and_none_after_it() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let picture = Source::Picture(pattern(), 0);
+    let own = (WIDTH, HEIGHT);
+    let plain = scene(vec![layer(picture.clone(), ColorRange::Full)]);
+    let source = floats(&gpu, &mut compositor, &plain);
+    // The picture of the clip over a Background by a Blend of a half, and that flipped.
+    let whole = vec![
+        FusedKind::MediaIn,
+        FusedKind::Background {
+            rgba: [0.3, 0.1, 0.2, 1.0],
+            mask: None,
+        },
+        FusedKind::Merge {
+            background: Some(1),
+            foreground: Some(0),
+            mask: None,
+            settings: Merged {
+                blend: 0.5,
+                ..merge()
+            },
+        },
+        flip(2),
+    ];
+    let passes = compositor.fusion_passes();
+    let flipped = viewer(picture.clone(), (whole.clone(), Some(3)), own, own);
+    let flipped = floats(&gpu, &mut compositor, &flipped);
+    // The source alone, the Background, the Merge and the Transform.
+    assert_eq!(compositor.fusion_passes(), passes + 4);
+    // The Merge viewed, the composition made for it: what it reads, and itself. Its picture
+    // is half the picture of the clip and half the Background, and not the Transform's.
+    let merged = viewer(picture.clone(), (whole[..3].to_vec(), Some(2)), own, own);
+    let middle = floats(&gpu, &mut compositor, &merged);
+    assert_eq!(compositor.fusion_passes(), passes + 7);
+    for (at, (shown, source)) in middle
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(source.as_chunks::<4>().0)
+        .enumerate()
+    {
+        for (channel, behind) in [0.3_f32, 0.1, 0.2].into_iter().enumerate() {
+            let wanted = 0.5 * source[channel] + 0.5 * behind;
+            assert!(
+                (shown[channel] - wanted).abs() <= 2e-3,
+                "pixel {at}: {shown:?}, not {wanted} of {source:?}"
+            );
+        }
+    }
+    assert!(differ(&middle, &flipped, 1e-2));
+    // With the nodes after it left in, it is the same picture to the bit, by the same
+    // passes: a pass that nothing reads is not drawn.
+    let before = halves(&gpu, &mut compositor, &merged);
+    let kept = viewer(picture.clone(), (whole.clone(), Some(2)), own, own);
+    assert_eq!(halves(&gpu, &mut compositor, &kept), before);
+    assert_eq!(compositor.fusion_passes(), passes + 13);
+    // The Background viewed: its colour over the whole picture, by its one pass.
+    let backdrop = viewer(picture.clone(), (vec![whole[1].clone()], Some(0)), own, own);
+    let shown = floats(&gpu, &mut compositor, &backdrop);
+    for (at, pixel) in shown.as_chunks::<4>().0.iter().enumerate() {
+        for (channel, wanted) in [0.3_f32, 0.1, 0.2, 1.0].into_iter().enumerate() {
+            assert!(
+                (pixel[channel] - wanted).abs() <= 1e-3,
+                "pixel {at}: {pixel:?}"
+            );
+        }
+    }
+    assert_eq!(compositor.fusion_passes(), passes + 14);
+    // The MediaIn viewed is the source of the clip, to the bit, and no pass.
+    let media_in = viewer(
+        picture.clone(),
+        (vec![FusedKind::MediaIn], Some(0)),
+        own,
+        own,
+    );
+    assert_eq!(
+        halves(&gpu, &mut compositor, &media_in),
+        halves(&gpu, &mut compositor, &plain)
+    );
+    // And a node that gives no picture shows the black of the frame.
+    let none = viewer(picture, (vec![FusedKind::MediaIn], None), own, own);
+    assert_eq!(
+        halves(&gpu, &mut compositor, &none),
+        NOTHING.repeat((WIDTH * HEIGHT) as usize)
+    );
+    assert_eq!(compositor.fusion_passes(), passes + 14);
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_node_viewed_alone_is_fitted_whole_into_the_frame_over_black() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let rgba = [0.2, 0.4, 0.6, 1.0];
+    // A Background, which covers the picture of its composition: the pixels that are not
+    // black are the picture, and they lie where the fitting says, whatever the two shapes.
+    let cases: [FittedCase; 4] = [
+        (
+            "a square in a wide frame",
+            (32, 32),
+            (64, 36),
+            [14, 0, 36, 36],
+        ),
+        (
+            "a wide one in a frame less wide",
+            (64, 16),
+            (64, 36),
+            [0, 10, 64, 16],
+        ),
+        (
+            "a wide one in a frame that stands",
+            (32, 16),
+            (36, 64),
+            [0, 23, 36, 18],
+        ),
+        (
+            "one of the shape of the frame",
+            (32, 18),
+            (64, 36),
+            [0, 0, 64, 36],
+        ),
+    ];
+    for (what, size, canvas, lies) in cases {
+        let told = columbina_compose::geometry::fitted(
+            (f64::from(canvas.0), f64::from(canvas.1)),
+            (f64::from(size.0), f64::from(size.1)),
+        );
+        assert_eq!(told, Some(lies.map(f64::from)), "{what}");
+        let alone = viewer(
+            Source::Color([1.0, 0.0, 1.0, 1.0]),
+            (vec![FusedKind::Background { rgba, mask: None }], Some(0)),
+            size,
+            canvas,
+        );
+        let shown = floats(&gpu, &mut compositor, &alone);
+        for y in 0..canvas.1 {
+            for x in 0..canvas.0 {
+                let inside = (lies[0]..lies[0] + lies[2]).contains(&x)
+                    && (lies[1]..lies[1] + lies[3]).contains(&y);
+                let wanted: [f32; 4] = if inside {
+                    [0.2, 0.4, 0.6, 1.0]
+                } else {
+                    [0.0, 0.0, 0.0, 1.0]
+                };
+                let pixel = float_pixel(&shown, canvas.0, x, y);
+                for channel in 0..4 {
+                    assert!(
+                        (pixel[channel] - wanted[channel]).abs() <= 1e-3,
+                        "{what}: ({x}, {y}) is {pixel:?}, not {wanted:?}"
+                    );
+                }
+            }
+        }
+    }
+    // The MediaIn of a picture twice as wide as high, in a frame of 16:9: the layer of the
+    // clip as it is fitted, to the bit, black above and below it.
+    let picture = Source::Picture(pattern(), 0);
+    let plain = scene_of(64, 36, vec![layer(picture.clone(), ColorRange::Full)]);
+    let media_in = viewer(
+        picture,
+        (vec![FusedKind::MediaIn], Some(0)),
+        (WIDTH, HEIGHT),
+        (64, 36),
+    );
+    let shown = halves(&gpu, &mut compositor, &media_in);
+    assert_eq!(shown, halves(&gpu, &mut compositor, &plain));
+    assert_eq!(
+        columbina_compose::geometry::fitted((64.0, 36.0), (16.0, 8.0)),
+        Some([0.0, 2.0, 64.0, 32.0])
+    );
+    let row = 64 * 4;
+    let black = NOTHING.repeat(2 * 64);
+    assert_eq!(&shown[..2 * row], &black[..]);
+    assert_eq!(&shown[34 * row..], &black[..]);
+    assert_ne!(&shown[2 * row..2 * row + 4], &NOTHING[..]);
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_mask_node_viewed_alone_is_white_by_its_mask_where_its_picture_lies() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    // A soft Ellipse of a square composition, in a frame twice as wide: the picture lies in
+    // its middle, a pixel of it to a pixel of the frame.
+    let (side, canvas) = (32_u32, (64_u32, 32_u32));
+    let soft = ellipse(
+        Masked {
+            soft_edge: 0.1,
+            ..masked()
+        },
+        EllipseShape {
+            center: [0.55, 0.45],
+            width: 0.7,
+            height: 0.3,
+            angle: -40.0,
+        },
+    );
+    let (shape, common) = maths_of(&soft);
+    let wanted = mask::mask(side, side, &shape, &common, None);
+    assert_eq!(
+        columbina_compose::geometry::fitted((64.0, 32.0), (32.0, 32.0)),
+        Some([16.0, 0.0, 32.0, 32.0])
+    );
+    let alone = viewer(
+        Source::Color([1.0, 0.0, 1.0, 1.0]),
+        (vec![soft], Some(0)),
+        (side, side),
+        canvas,
+    );
+    let shown = floats(&gpu, &mut compositor, &alone);
+    let mut most = 0.0_f32;
+    for y in 0..canvas.1 {
+        for x in 0..canvas.0 {
+            let pixel = float_pixel(&shown, canvas.0, x, y);
+            let mask = if (16..48).contains(&x) {
+                wanted[(y * side + x - 16) as usize]
+            } else {
+                0.0
+            };
+            most = most.max(mask);
+            for value in &pixel[..3] {
+                assert!(
+                    (value - mask).abs() <= MASK_TOLERANCE,
+                    "({x}, {y}) is {pixel:?}, not {mask}"
+                );
+            }
+        }
+    }
+    // The mask is somewhere full: the picture is not black all over.
+    assert!(most > 0.9, "{most}");
+    assert_eq!(compositor.fusion_passes(), 1);
     assert_no_errors(&gpu);
 }

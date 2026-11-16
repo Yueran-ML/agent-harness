@@ -11,7 +11,7 @@ use columbina_model::{Clip, Cue, Group, Rgba, Source as ClipSource, Time, Track}
 use super::*;
 
 /// A monitor of no view, whose LUTs are read from `dir` alone.
-fn monitor(dir: &Path) -> Worker {
+pub(super) fn monitor(dir: &Path) -> Worker {
     let (_, inbox) = mpsc::channel();
     Worker {
         inbox,
@@ -59,17 +59,17 @@ fn monitor(dir: &Path) -> Worker {
     }
 }
 
-const ORANGE: [u8; 4] = [200, 110, 40, 255];
-const TEAL: [u8; 4] = [40, 150, 170, 255];
+pub(super) const ORANGE: [u8; 4] = [200, 110, 40, 255];
+pub(super) const TEAL: [u8; 4] = [40, 150, 170, 255];
 
 /// A clip of a colour.
-fn colour(id: &str, rgba: [u8; 4], start: i64, length: i64) -> Clip {
+pub(super) fn colour(id: &str, rgba: [u8; 4], start: i64, length: i64) -> Clip {
     Clip::new(id, ClipSource::Color { color: Rgba(rgba) }, start, length)
 }
 
 /// A project whose timeline, t1, of `width` × `height`, has these clips on its one track of
 /// picture, and no sound.
-fn timeline_of(clips: Vec<Clip>, width: u32, height: u32) -> Project {
+pub(super) fn timeline_of(clips: Vec<Clip>, width: u32, height: u32) -> Project {
     let mut project = Project::sample();
     let timeline = &mut project.timelines[0];
     (timeline.width, timeline.height) = (width, height);
@@ -90,7 +90,7 @@ fn corrector(set: impl FnOnce(&mut Corrector)) -> Grade {
     }
 }
 
-fn grey() -> Grade {
+pub(super) fn grey() -> Grade {
     corrector(|settings| settings.primaries.saturation = Param::Fixed(0.0))
 }
 
@@ -114,7 +114,7 @@ fn gain(keys: &[(i64, f64)]) -> Grade {
 }
 
 /// What the monitor shows of `project` at `frame`, as R, G, B and A of 8 bits a pixel.
-fn shown(monitor: &mut Worker, project: &Project, frame: i64) -> Vec<u8> {
+pub(super) fn shown(monitor: &mut Worker, project: &Project, frame: i64) -> Vec<u8> {
     monitor.replace(0, Arc::new(project.clone()));
     monitor.status.frame = Some(frame);
     monitor.draw(true, false).unwrap();
@@ -300,7 +300,7 @@ fn presentation_still_uses_the_clip_clock_while_its_decoded_frame_stays_zero() {
 }
 
 /// The pixel at `x`, `y` of a picture `width` wide.
-fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+pub(super) fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
     let at = 4 * (y * width + x) as usize;
     rgba[at..at + 4].try_into().unwrap()
 }
@@ -316,7 +316,7 @@ fn expected(rgba: [u8; 4], grades: &[(&Grade, f64)]) -> [u8; 3] {
     rgb.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
-fn near(got: [u8; 4], wanted: [u8; 3], what: &str) {
+pub(super) fn near(got: [u8; 4], wanted: [u8; 3], what: &str) {
     for i in 0..3 {
         assert!(
             got[i].abs_diff(wanted[i]) <= 1,

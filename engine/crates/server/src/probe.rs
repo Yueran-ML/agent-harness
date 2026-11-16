@@ -29,6 +29,13 @@
 //!
 //! A node that leads to the node only by its key, and to nothing else, has nowhere for its picture
 //! to go in the grade cut there; that grade is not complete, and it is not drawn (`node`).
+//!
+//! # The picture of a node of a composition
+//!
+//! With `fusion`, a frame of a timeline is drawn as the Fusion view of the timeline monitor
+//! shows it ([`crate::fusion_view`], `viewer.fusion`): the picture of a node of the composition
+//! of a clip, alone and fitted to the frame, with no grade, through the output transform; in a
+//! headless engine too, and whatever a monitor shows.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -202,6 +209,57 @@ impl Probe {
             };
             Ok((scene, signal))
         })
+    }
+
+    /// Draw what the Fusion view `view` shows at frame `frame` of the timeline `timeline` of
+    /// `project` (`crate::fusion_view`), off screen: the picture of a node of the composition
+    /// of a clip, alone, fitted to the frame of the timeline over black, through the output
+    /// transform and no grade; black where the clip is not seen at the frame. With it, the
+    /// view as it is told: whether the picture is drawn, and where it lies. This blocks, as
+    /// [`Probe::draw`] does.
+    ///
+    /// # Errors
+    /// The timeline is not there, it has no such clip of picture, or the composition of the
+    /// clip has no such node (`-32602`), or the card could not draw the frame (`-32004`,
+    /// `draw`).
+    pub fn draw_fusion(
+        &self,
+        project: &Project,
+        timeline: &str,
+        frame: i64,
+        view: &crate::fusion_view::View,
+    ) -> Result<(Drawn, crate::fusion_view::Told), Fault> {
+        let index = project
+            .timelines
+            .iter()
+            .position(|found| found.id == timeline)
+            .ok_or_else(|| {
+                missing(
+                    "timeline",
+                    format!("there is no timeline {timeline} in the project"),
+                )
+            })?;
+        view.check(&project.timelines[index])?;
+        let project = Arc::new(project.clone());
+        let shown = &project.timelines[index];
+        let layers = resolve::video_at(shown, &project, frame);
+        let layer = view.layer(&project, shown, frame, layers);
+        let told = view.told(&project, shown, layer.is_some());
+        let drawn = self.with_drawing(|gpu, drawn| {
+            let (mut scene, clips) = crate::render::scene_of(
+                &project,
+                shown,
+                layer.into_iter().collect(),
+                &drawn.sources,
+            )
+            .map_err(|message| drawing(&message))?;
+            drawn.grading.update(gpu, &project, index);
+            drawn.grading.grade(&mut scene, &clips, frame);
+            // No grade of the clip, of its group or of the timeline: the picture as it is.
+            crate::grading::bypass(&mut scene);
+            Ok((scene, drawn.grading.output().signal))
+        })?;
+        Ok((drawn, told))
     }
 
     /// Draw frame `frame` of the timeline `timeline` of `project` small, `height` pixels high at

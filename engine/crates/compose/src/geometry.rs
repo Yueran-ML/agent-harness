@@ -202,6 +202,30 @@ pub fn fit(canvas: (f64, f64), shown: (f64, f64)) -> (f64, f64) {
     }
 }
 
+/// Where a picture of `shown` pixels lies on a canvas of `canvas` pixels as a layer that is not
+/// moved shows it ([`Transform::NONE`]): fitted ([`fit`]) and in the middle. It is the left and
+/// the top of the picture, in pixels of the canvas from its top left corner, and then its
+/// width and its height there: `[x, y, width, height]`. A picture of another shape than the
+/// canvas leaves black at its left and right (it is as high as the canvas) or above and below
+/// it (it is as wide). None where either has no pixels.
+///
+/// It is where the frame of such a layer is put by [`placement`], so that what tells where a
+/// picture lies and what draws it go by one rule: the picture of a composition shown alone
+/// ([`crate::fusion`], The picture of one node) lies there.
+#[must_use]
+pub fn fitted(canvas: (f64, f64), shown: (f64, f64)) -> Option<[f64; 4]> {
+    let frame = fit(canvas, shown);
+    if frame.0 <= 0.0 || frame.1 <= 0.0 {
+        return None;
+    }
+    Some([
+        (canvas.0 - frame.0) / 2.0,
+        (canvas.1 - frame.1) / 2.0,
+        frame.0,
+        frame.1,
+    ])
+}
+
 /// An affine map of the plane: (x, y) is put at (a x + b y + tx, c x + d y + ty).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Affine {
@@ -467,6 +491,42 @@ mod tests {
         assert!(near(place.apply((0.0, 0.0)), (240.0, 0.0)));
         assert!(near(place.apply((1440.0, 1080.0)), (1680.0, 1080.0)));
         assert!(near(place.apply((720.0, 540.0)), (960.0, 540.0)));
+    }
+
+    #[test]
+    fn a_picture_that_is_not_moved_lies_fitted_in_the_middle_where_its_frame_is_put() {
+        // 4:3 in 16:9: black at its left and right.
+        assert_eq!(
+            fitted((1920.0, 1080.0), (1440.0, 1080.0)),
+            Some([240.0, 0.0, 1440.0, 1080.0])
+        );
+        // Wider than the canvas: black above and below; and of its shape, all of it.
+        assert_eq!(
+            fitted((1920.0, 1080.0), (3840.0, 1080.0)),
+            Some([0.0, 270.0, 1920.0, 540.0])
+        );
+        assert_eq!(
+            fitted((1280.0, 720.0), (3840.0, 2160.0)),
+            Some([0.0, 0.0, 1280.0, 720.0])
+        );
+        // Where the frame of a layer that is not moved is put, whatever the shapes.
+        for (canvas, shown) in [
+            ((1920.0, 1080.0), (1080.0, 1920.0)),
+            ((64.0, 36.0), (32.0, 32.0)),
+            ((36.0, 64.0), (48.0, 16.0)),
+            ((1000.0, 700.0), (333.0, 127.0)),
+        ] {
+            let [x, y, width, height] = fitted(canvas, shown).unwrap();
+            let place = placement(canvas, fit(canvas, shown), &Transform::NONE);
+            assert!(near(place.apply((0.0, 0.0)), (x, y)), "{shown:?}");
+            assert!(
+                near(place.apply(fit(canvas, shown)), (x + width, y + height)),
+                "{shown:?}"
+            );
+        }
+        // Nothing of nothing.
+        assert_eq!(fitted((1920.0, 1080.0), (0.0, 1080.0)), None);
+        assert_eq!(fitted((0.0, 1080.0), (1920.0, 1080.0)), None);
     }
 
     #[test]

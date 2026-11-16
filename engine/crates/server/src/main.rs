@@ -43,6 +43,7 @@ mod audio;
 mod audio_presets;
 mod compare;
 mod conn;
+mod fusion_view;
 mod fx_meters;
 mod gallery;
 mod gpu;

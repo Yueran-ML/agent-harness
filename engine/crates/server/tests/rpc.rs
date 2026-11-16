@@ -60,6 +60,9 @@ mod project_luts;
 #[path = "rpc/highlight.rs"]
 mod highlight;
 
+#[path = "rpc/fusion_view.rs"]
+mod fusion_view;
+
 #[path = "rpc/color_page.rs"]
 mod color_page;
 

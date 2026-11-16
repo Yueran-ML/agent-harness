@@ -1,0 +1,232 @@
+/*
+ * The Fusion page, laid out as DaVinci Resolve's (Reference Manual 20, p. 1216): a bar that names
+ * the clip; the viewer above the node editor, across the width that the Inspector leaves; the
+ * Inspector down the right side; and the Spline Editor beneath the node editor when it is opened.
+ *
+ * The page is also the body of the studio (`.studio-body`, a row of panes in Studio.css). This
+ * stylesheet is loaded with the Fusion page, which the window loads before Studio.css
+ * (`src/main.tsx`), and of two rules as specific the one loaded later wins: `.studio-body` alone
+ * would make the page a row of its parts, each as narrow as it could be. So the rule that makes the
+ * page a grid names both classes, and every rule here that sets what a rule of Studio.css or of the
+ * Color page's stylesheets sets on the same element names the page too.
+ *
+ * The sizes, in a studio `W` wide and `H` high: the Inspector is 260px at the least and 30% of `W`
+ * (300px at 1000), so the viewer and the node editor have 699px at `W` = 1000; the viewer and the
+ * node editor are 220px high at the least each, which with the bar is 477px of the 620px or so
+ * that a studio 700px high leaves the page. What does not fit is scrolled: the page itself where
+ * it is lower than its rows, the graph of the node editor and the Inspector where they hold more
+ * than they show.
+ */
+.studio-body.fusion-page {
+  display: grid;
+}
+
+.fusion-page {
+  grid-template-columns: minmax(0, 1fr) clamp(260px, 30cqi, 340px);
+  grid-template-rows: auto minmax(220px, 1fr) minmax(220px, 1fr);
+  grid-template-areas:
+    "bar bar"
+    "viewer inspector"
+    "nodes inspector";
+  overflow: auto;
+}
+
+/* With the Spline Editor open, the lower band holds the node editor and the curves, and takes the larger part. */
+.fusion-page[data-curves] {
+  grid-template-rows: auto minmax(200px, 0.8fr) minmax(340px, 1.2fr);
+}
+
+.fusion-page > * {
+  min-width: 0;
+  min-height: 0;
+  background: var(--ink-1);
+}
+
+/* The part of the page that has the focus: a line along its top edge, as on the Color page. */
+.fusion-page > [data-focused] {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+/* --- The bar: the timeline, the clip and the clips before and after it, and the Spline Editor. */
+.fusion-bar {
+  grid-area: bar;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2);
+}
+
+.fusion-clip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fusion-clip-name {
+  min-width: 0;
+  max-width: 320px;
+  padding: 0 var(--s1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--moon-1);
+}
+
+.fusion-gap {
+  flex: 1;
+}
+
+/* --- The viewer: the timeline monitor, with its transport beneath the picture. */
+.fusion-viewer {
+  grid-area: viewer;
+  display: flex;
+  flex-direction: column;
+}
+
+.fusion-page .fusion-viewer > .monitor {
+  flex: 1;
+  min-height: 0;
+}
+
+/* --- The node editor, and the Spline Editor beneath it. */
+.fusion-nodes {
+  grid-area: nodes;
+  display: flex;
+  flex-direction: column;
+}
+
+.fusion-page .fusion-nodes-body {
+  flex: 1 1 0;
+  min-height: 140px;
+}
+
+/* The tool bar has no button laid over its right end, as the Color page's has, and goes onto a second line where it is narrow. */
+.fusion-page .fusion-nodes-head {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  padding: 2px var(--s3);
+}
+
+.fusion-add {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.fusion-page .fusion-first {
+  flex: none;
+  margin: 0;
+  padding: 2px var(--s3);
+}
+
+.fusion-page .fusion-empty {
+  margin: 0;
+  padding: var(--s3);
+}
+
+.fusion-page .fusion-curves {
+  flex: none;
+  height: 46%;
+  min-height: 160px;
+  max-height: none;
+}
+
+/* --- The nodes of a composition: cards on the surfaces of the theme, a stripe in the colour of the kind, the name on the card. */
+.fusion-page .fusion-node .color-node-card {
+  fill: var(--ink-3);
+}
+
+.fusion-page .fusion-node-stripe {
+  pointer-events: none;
+  fill: var(--moon-3);
+}
+
+.fusion-page .fusion-node[data-kind='media_in'] .fusion-node-stripe {
+  fill: var(--fusion-media-in);
+}
+
+.fusion-page .fusion-node[data-kind='media_out'] .fusion-node-stripe {
+  fill: var(--fusion-media-out);
+}
+
+.fusion-page .fusion-node[data-kind='merge'] .fusion-node-stripe {
+  fill: var(--fusion-merge);
+}
+
+.fusion-page .fusion-node[data-kind='transform'] .fusion-node-stripe {
+  fill: var(--fusion-transform);
+}
+
+.fusion-page .fusion-node[data-kind='background'] .fusion-node-stripe {
+  fill: var(--fusion-background);
+}
+
+.fusion-page .fusion-node-name {
+  font-size: calc(11px * var(--type));
+  fill: var(--moon-0);
+  user-select: none;
+}
+
+/* A node that is passed through hands on its first input as it is: it is drawn dimmed. */
+.fusion-page .fusion-node[data-pass-through] {
+  opacity: 0.45;
+}
+
+/* The ports: an input and an output plain, the background of a Merge orange and its foreground green, as in Fusion (p. 2162). */
+.fusion-page .fusion-port {
+  fill: var(--moon-1);
+}
+
+.fusion-page .fusion-port[data-input='background'] {
+  fill: var(--fusion-input-background);
+}
+
+.fusion-page .fusion-port[data-input='foreground'] {
+  fill: var(--fusion-input-foreground);
+}
+
+/* The links are plain; the half that would be taken along, a link chosen and one that a drag would replace are said as on the Color page. */
+.fusion-page .fusion-link {
+  stroke: var(--moon-2);
+}
+
+.fusion-page .fusion-link[data-hover='end'] {
+  stroke: var(--accent-strong);
+}
+
+.fusion-page .fusion-link[data-chosen],
+.fusion-page .fusion-link[data-replacing] {
+  stroke: var(--accent);
+}
+
+/* --- The Inspector. */
+.fusion-inspector {
+  grid-area: inspector;
+  overflow: auto;
+  padding: var(--s2) var(--s3);
+}
+
+/* The label of a switch is not dragged, as the label of a number is. */
+.fusion-page .fusion-flag-label {
+  cursor: default;
+}
+
+/*
+ * A studio too narrow for the Inspector beside a viewer of 500px (260 + 500): the Inspector goes
+ * beneath the node editor, and the page scrolls.
+ */
+@container studio (max-width: 759px) {
+  .fusion-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(220px, 1fr) minmax(220px, 1fr) minmax(200px, auto);
+    grid-template-areas: "bar" "viewer" "nodes" "inspector";
+  }
+
+  .fusion-page[data-curves] {
+    grid-template-rows: auto minmax(200px, 0.8fr) minmax(340px, 1.2fr) minmax(200px, auto);
+  }
+}

@@ -75,7 +75,7 @@ export const TWO_MONITORS_PX = 1280;
  */
 export function EditPage({
   bridge, native, session, revision, pool, media, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
-  focus, onFocus, noticeOf, onRetry, onProblem, onExport,
+  focus, onFocus, noticeOf, onRetry, onProblem, onExport, onChosenClips,
 }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
   native: boolean;
@@ -99,6 +99,8 @@ export function EditPage({
   onProblem: (said: string, failure: unknown) => void;
   /** Open the export of the timeline shown, with its In and Out points. */
   onExport?: (marks: Marks | null) => void;
+  /** Told the clips chosen on the timeline whenever they change: the Fusion page opens on the one clip of picture among them. */
+  onChosenClips?: (clips: readonly string[]) => void;
 }) {
   const words = useWords();
   const audioText = useFairlightText();
@@ -132,8 +134,9 @@ export function EditPage({
   const [chosenCue, setChosenCue] = useState<string | null>(null);
   // A subtitle added or double-clicked is to be written in: the inspector opens on it, as DaVinci Resolve's does.
   const onCue = useCallback((cue: string | null, open: boolean) => { setChosenCue(cue); if (cue !== null && open) setInspectorOpen(true); }, []);
-  const now = useRef({ onProblem, words, onExport, selected });
-  now.current = { onProblem, words, onExport, selected };
+  const now = useRef({ onProblem, words, onExport, selected, onChosenClips });
+  now.current = { onProblem, words, onExport, selected, onChosenClips };
+  useEffect(() => { now.current.onChosenClips?.(chosenClips); }, [chosenClips]);
   const exportNow = useCallback(() => {
     const { onExport: open, selected: shown } = now.current;
     if (open && shown !== null) open(timeline.current?.marks() ?? null);

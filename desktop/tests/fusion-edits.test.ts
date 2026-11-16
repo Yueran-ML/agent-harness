@@ -1,0 +1,291 @@
+/**
+ * What the Fusion page asks of the engine, worked out apart from the page (PROTOCOL.md,
+ * "Compositions"): the operations of each command of the node editor, the layout of a composition,
+ * the settings of the nodes as the engine's catalog has them, and the operations that set them and
+ * their keys.
+ */
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import type { Key } from '../src/app/keys';
+import { COLUMN_GAP, MARGIN, NODE_HEIGHT, NODE_WIDTH } from '../src/studio/color/graph';
+import { applyOp, firstComposition, type Composition, type FusionLink, type FusionNode, type Op, type Project } from '../src/studio/engine';
+import {
+  addedNode, addNode, connect, disconnect, fusionKey, isFirst, moveNodes, newBackground, newMerge, newNode, newTransform, reconnect, relabel,
+  removeComposition, removeNodes, resetComposition, restoreNodes, shownComposition, togglePass, withFirst,
+} from '../src/studio/fusion/edits';
+import { hasOutput, INPUTS, inputPoint, layoutComposition, linkEnds, linkName, namesOf, nodesIn, outputPoint, placesOf, portAt } from '../src/studio/fusion/graph';
+import {
+  addKey, FUSION_SETTINGS, hasKeys, keyOps, keyTimesOf, paramOf, pathOf, putValue, removeKey, settingOf, settingsOf, wholeParam, wholeValue,
+} from '../src/studio/fusion/settings';
+import { clip, media, timeline } from './timeline-fixture';
+
+const AT = { timeline: 't1', clip: 'c1' };
+const link = (from: string, to: string, input: FusionLink['input'] = 'input'): FusionLink => ({ from, to, input });
+const mediaIn = (id = 'MediaIn1'): FusionNode => newNode('media_in', null, id);
+const mediaOut = (id = 'MediaOut1'): FusionNode => newNode('media_out', null, id);
+const merge = (id: string): FusionNode => newNode('merge', null, id);
+const transform = (id: string): FusionNode => newNode('transform', null, id);
+const background = (id: string): FusionNode => newNode('background', null, id);
+/** MediaIn1 through the Transform n3 into the background of the Merge n4, the Background n5 its foreground, and the Merge into MediaOut1. */
+const comp = (): Composition => ({
+  nodes: [mediaIn(), mediaOut(), transform('n3'), merge('n4'), background('n5')],
+  links: [link('MediaIn1', 'n3'), link('n3', 'n4', 'background'), link('n5', 'n4', 'foreground'), link('n4', 'MediaOut1')],
+});
+const key = (given: Partial<Key>): Key => ({ key: '', shift: false, ctrl: false, alt: false, meta: false, repeat: false, composing: false, ...given });
+
+describe('the composition that a clip is shown with', () => {
+  it('is its own, or the first one where it has none, the same object each time', () => {
+    const own = comp();
+    expect(shownComposition({ fusion: own })).toBe(own);
+    expect(shownComposition({})).toEqual(firstComposition());
+    expect(shownComposition({})).toBe(shownComposition({}));
+    expect(isFirst(shownComposition({}))).toBe(true);
+    expect(isFirst(own)).toBe(false);
+    // A node of the first one that was dragged is no longer the first composition.
+    const dragged = firstComposition();
+    dragged.nodes[0] = { ...dragged.nodes[0], pos: { x: 3, y: 4 } };
+    expect(isFirst(dragged)).toBe(false);
+  });
+
+  it('is sent before the first change of a clip that has none, in the transaction of the change', () => {
+    const change: Op[] = [{ op: 'set_fusion_node', ...AT, id: 'MediaIn1', pass_through: true }];
+    expect(withFirst(AT, true, change)).toBe(change);
+    expect(withFirst(AT, false, change)).toEqual([{ op: 'set_fusion', ...AT, value: firstComposition() }, ...change]);
+    // Nothing to do sends nothing, and a whole composition put in place is sent as it is.
+    expect(withFirst(AT, false, [])).toEqual([]);
+    const whole: Op[] = [{ op: 'set_fusion', ...AT, value: null }];
+    expect(withFirst(AT, false, whole)).toBe(whole);
+  });
+});
+
+describe('the commands of the node editor', () => {
+  it('add a node with no links where none is chosen, at the place given', () => {
+    expect(addNode(AT, comp(), 'merge', null, { x: 40.4, y: 80.6 })).toEqual([
+      { op: 'add_fusion_node', ...AT, node: { id: '', kind: 'merge', label: '', pass_through: false, pos: { x: 40, y: 81 }, params: newMerge() } },
+    ]);
+    expect(addNode(AT, comp(), 'transform', null, null)).toEqual([
+      { op: 'add_fusion_node', ...AT, node: { id: '', kind: 'transform', label: '', pass_through: false, pos: null, params: newTransform() } },
+    ]);
+  });
+
+  it('insert a node after the one chosen: its output into the first input of the new node, and the new node into all that it fed', () => {
+    // After the Transform, which feeds the background of the Merge.
+    expect(addNode(AT, comp(), 'transform', 'n3', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: newNode('transform'), links: [link('n3', '', 'input'), link('', 'n4', 'background')],
+    }]);
+    // A Merge takes what was chosen as its background.
+    expect(addNode(AT, comp(), 'merge', 'n4', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: newNode('merge'), links: [link('n4', '', 'background'), link('', 'MediaOut1', 'input')],
+    }]);
+    // A node that feeds several inputs is put before every one of them.
+    const fan: Composition = { nodes: [mediaIn(), mediaOut(), merge('n4')], links: [link('MediaIn1', 'n4', 'background'), link('MediaIn1', 'n4', 'foreground'), link('n4', 'MediaOut1')] };
+    expect(addNode(AT, fan, 'transform', 'MediaIn1', null)[0]).toMatchObject({
+      links: [link('MediaIn1', '', 'input'), link('', 'n4', 'background'), link('', 'n4', 'foreground')],
+    });
+    // A node without an input cannot go after another, and nothing goes after the MediaOut: both are added loose.
+    expect(addNode(AT, comp(), 'background', 'n3', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('background') }]);
+    expect(addNode(AT, comp(), 'transform', 'MediaOut1', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('transform') }]);
+    expect(newNode('background').params).toEqual(newBackground());
+  });
+
+  it('tell the node that a transaction added', () => {
+    expect(addedNode([{ op: 'add_fusion_node', ...AT, node: newNode('merge', null, 'n12') }])).toBe('n12');
+    expect(addedNode([{ op: 'set_fusion', ...AT, value: null }])).toBeNull();
+    expect(addedNode(null)).toBeNull();
+  });
+
+  it('delete nodes, joining what fed each to what it fed where that is a single chain, and leave the MediaOut', () => {
+    // The Transform has one link into it: the MediaIn is linked to the background that it fed.
+    expect(removeNodes(AT, comp(), ['n3'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n3', links: [link('MediaIn1', 'n4', 'background')] }]);
+    // The Merge has two links into it: what it fed is left without a picture.
+    expect(removeNodes(AT, comp(), ['n4'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n4' }]);
+    // A node that nothing feeds has nothing to join.
+    expect(removeNodes(AT, comp(), ['n5'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n5' }]);
+    // The MediaOut is not deleted, alone or among others, and a node that is not there is passed over.
+    expect(removeNodes(AT, comp(), ['MediaOut1'])).toEqual([]);
+    expect(removeNodes(AT, comp(), ['MediaOut1', 'n5', 'gone'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n5' }]);
+    // Two nodes of a chain: the second is taken from the composition as the first left it, so the chain is joined across both.
+    const chain: Composition = { nodes: [mediaIn(), mediaOut(), transform('n3'), transform('n4')], links: [link('MediaIn1', 'n3'), link('n3', 'n4'), link('n4', 'MediaOut1')] };
+    const ops = removeNodes(AT, chain, ['n3', 'n4']);
+    expect(ops).toEqual([
+      { op: 'remove_fusion_node', ...AT, id: 'n3', links: [link('MediaIn1', 'n4')] },
+      { op: 'remove_fusion_node', ...AT, id: 'n4', links: [link('MediaIn1', 'MediaOut1')] },
+    ]);
+    // Applied as the copy applies them, they leave the first composition's link.
+    let project: Project = { schema: 5, next_id: 10, bins: [], groups: [], media: [media], timelines: [timeline([clip('c1', 0, 100, { fusion: chain })])] };
+    for (const op of ops) project = applyOp(project, op);
+    const left = (project.timelines[0].tracks[0] as { clips: { fusion?: Composition }[] }).clips[0].fusion!;
+    expect(left.links).toEqual([link('MediaIn1', 'MediaOut1')]);
+  });
+
+  it('move nodes to whole pixels, each a set_fusion_node of its place', () => {
+    const placed: Composition = { ...comp(), nodes: comp().nodes.map(node => (node.id === 'n3' ? { ...node, pos: { x: 10, y: 20 } } : node)) };
+    expect(moveNodes(AT, placed, { n3: { x: 10.2, y: 19.8 }, n4: { x: 200.6, y: 30.4 } })).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n4', pos: { x: 201, y: 30 } }]);
+    // A move of a drag sends every node dragged, whether or not it is where it was: it is the same whatever went before it.
+    expect(moveNodes(AT, placed, { n3: { x: 10, y: 20 } }, true)).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n3', pos: { x: 10, y: 20 } }]);
+    // Taken back, each goes where it was: at its place, or where the editor lays it out.
+    expect(restoreNodes(AT, placed, ['n3', 'n4'])).toEqual([
+      { op: 'set_fusion_node', ...AT, id: 'n3', pos: { x: 10, y: 20 } }, { op: 'set_fusion_node', ...AT, id: 'n4', pos: null },
+    ]);
+  });
+
+  it('link, unlink and take the end of a link to another input', () => {
+    expect(connect(AT, comp(), link('n5', 'n4', 'background'))).toEqual([{ op: 'connect_fusion', ...AT, link: link('n5', 'n4', 'background') }]);
+    // The link that is there already sends nothing: alone in a transaction the engine would refuse it as empty.
+    expect(connect(AT, comp(), link('n3', 'n4', 'background'))).toEqual([]);
+    expect(disconnect(AT, link('n3', 'n4', 'background'))).toEqual([{ op: 'disconnect_fusion', ...AT, to: 'n4', input: 'background' }]);
+    expect(reconnect(AT, link('n5', 'n4', 'foreground'), { to: 'MediaOut1', input: 'input' })).toEqual([
+      { op: 'disconnect_fusion', ...AT, to: 'n4', input: 'foreground' }, { op: 'connect_fusion', ...AT, link: link('n5', 'MediaOut1') },
+    ]);
+    expect(reconnect(AT, link('n5', 'n4', 'foreground'), { to: 'n4', input: 'foreground' })).toEqual([]);
+  });
+
+  it('pass nodes through, rename them, and reset or remove the whole composition', () => {
+    const passed: Composition = { ...comp(), nodes: comp().nodes.map(node => (node.id === 'n4' ? { ...node, pass_through: true } : node)) };
+    expect(togglePass(AT, passed, ['n3', 'n4'])).toEqual([
+      { op: 'set_fusion_node', ...AT, id: 'n3', pass_through: true }, { op: 'set_fusion_node', ...AT, id: 'n4', pass_through: false },
+    ]);
+    expect(relabel(AT, comp(), 'n3', 'Shake')).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n3', label: 'Shake' }]);
+    expect(relabel(AT, comp(), 'n3', '')).toEqual([]);
+    expect(resetComposition(AT, { fusion: comp() })).toEqual([{ op: 'set_fusion', ...AT, value: firstComposition() }]);
+    expect(resetComposition(AT, { fusion: firstComposition() })).toEqual([]);
+    expect(resetComposition(AT, {})).toEqual([]);
+    expect(removeComposition(AT, { fusion: comp() })).toEqual([{ op: 'set_fusion', ...AT, value: null }]);
+    expect(removeComposition(AT, {})).toEqual([]);
+  });
+
+  it('are asked for by keys that the transport does not take', () => {
+    expect(fusionKey(key({ key: 'Delete' }))).toEqual({ kind: 'delete', key: 'Delete' });
+    expect(fusionKey(key({ key: 'Backspace' }))).toEqual({ kind: 'delete', key: 'Backspace' });
+    expect(fusionKey(key({ key: 'p', code: 'KeyP', ctrl: true }))).toEqual({ kind: 'passThrough' });
+    expect(fusionKey(key({ key: 'a', code: 'KeyA', ctrl: true }))).toEqual({ kind: 'selectAll' });
+    expect(fusionKey(key({ key: 'F2' }))).toEqual({ kind: 'rename' });
+    expect(fusionKey(key({ key: 'Escape' }))).toEqual({ kind: 'cancel' });
+    // The keys of the transport, and the same letters without Ctrl, ask nothing of the editor.
+    for (const plain of [' ', 'j', 'k', 'l', 'p', 'a', 'ArrowLeft', 'ArrowRight', 'Home', 'End']) expect(fusionKey(key({ key: plain })), plain).toBeNull();
+    expect(fusionKey(key({ key: 'Delete', repeat: true }))).toBeNull();
+    expect(fusionKey(key({ key: 'p', code: 'KeyP', ctrl: true, shift: true }))).toBeNull();
+    expect(fusionKey(key({ key: 'F2', composing: true }))).toBeNull();
+  });
+});
+
+describe('the layout of a composition', () => {
+  it('puts a node that nothing feeds in the first column and every other one right of what feeds it', () => {
+    const layout = layoutComposition(comp());
+    const at = (id: string) => { const placed = layout.nodes.find(each => each.node.id === id)!; return [placed.column, placed.row]; };
+    expect([at('MediaIn1'), at('n5'), at('n3'), at('n4'), at('MediaOut1')]).toEqual([[0, 0], [0, 1], [1, 0], [2, 0], [3, 0]]);
+    const merged = layout.nodes.find(each => each.node.id === 'n4')!;
+    expect(merged.x).toBe(MARGIN + 2 * (NODE_WIDTH + COLUMN_GAP));
+    expect(layout.width).toBe(MARGIN + 3 * (NODE_WIDTH + COLUMN_GAP) + NODE_WIDTH + MARGIN);
+    // The links are in the engine's order: by the node they go into, then by the name of the input.
+    expect(layout.links.map(linkName)).toEqual(['n4>MediaOut1:input', 'MediaIn1>n3:input', 'n3>n4:background', 'n5>n4:foreground']);
+  });
+
+  it('keeps a node where the project puts it, and finds the ports, the links and the nodes under a point', () => {
+    const placed: Composition = { ...comp(), nodes: comp().nodes.map(node => (node.id === 'n5' ? { ...node, pos: { x: 300, y: 200 } } : node)) };
+    expect(placesOf(placed)).toEqual({ n5: { x: 300, y: 200 } });
+    const layout = layoutComposition(placed, placesOf(placed));
+    const five = layout.nodes.find(each => each.node.id === 'n5')!;
+    expect([five.x, five.y]).toEqual([300, 200]);
+    const four = layout.nodes.find(each => each.node.id === 'n4')!;
+    // The background of a Merge is above its foreground; its output is at the middle of its right side.
+    expect(inputPoint(four, 'background').y).toBeLessThan(inputPoint(four, 'foreground').y);
+    expect(outputPoint(four)).toEqual({ x: four.x + NODE_WIDTH, y: four.y + NODE_HEIGHT / 2 });
+    expect(linkEnds(layout, link('n5', 'n4', 'foreground'))).toEqual({ from: outputPoint(five), to: inputPoint(four, 'foreground') });
+    expect(linkEnds(layout, link('gone', 'n4', 'foreground'))).toBeNull();
+    expect(portAt(layout, inputPoint(four, 'foreground'))).toEqual({ node: 'n4', side: 'in', input: 'foreground' });
+    expect(portAt(layout, outputPoint(five), port => port.side === 'in')).toBeNull();
+    expect(nodesIn(layout, { x: 290, y: 190 }, { x: 310, y: 210 })).toEqual(['n5']);
+    expect(INPUTS.merge).toEqual(['background', 'foreground']);
+    expect([hasOutput('media_out'), hasOutput('media_in')]).toEqual([false, true]);
+  });
+
+  it('names a node by its label, or by its kind and its number among those of its kind', () => {
+    const kinds = { media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background' };
+    const labelled: Composition = { ...comp(), nodes: [...comp().nodes.map(node => (node.id === 'n4' ? { ...node, label: 'Over the sky' } : node)), transform('n6')] };
+    expect([...namesOf(labelled, kinds)]).toEqual([
+      ['MediaIn1', 'MediaIn 1'], ['MediaOut1', 'MediaOut 1'], ['n3', 'Transform 1'], ['n4', 'Over the sky'], ['n5', 'Background 1'], ['n6', 'Transform 2'],
+    ]);
+  });
+});
+
+interface Entry { path: string; default: number; low: number; high: number; unit: string; page: string; palette: string; clock: string }
+
+describe('the settings of the nodes that take keys', () => {
+  it('are those of the catalog of the engine, with its defaults, ranges and units', () => {
+    // By its path from the folder that the tests run in, as a test of a page reads a file.
+    const catalog: Record<string, Entry[]> = JSON.parse(readFileSync('../engine/crates/model/tests/data/catalog.json', 'utf8'));
+    for (const kind of ['merge', 'transform', 'background'] as const) {
+      const entries = catalog[`fusion_${kind}`];
+      expect(FUSION_SETTINGS[kind].map(setting => ({ path: setting.path, default: setting.bounds.neutral, low: setting.bounds.low, high: setting.bounds.high, unit: setting.unit })), kind)
+        .toEqual(entries.map(entry => ({ path: entry.path, default: entry.default, low: entry.low, high: entry.high, unit: entry.unit })));
+      expect(entries.every(entry => entry.page === 'fusion' && entry.palette === 'fusion' && entry.clock === 'source_frame')).toBe(true);
+    }
+    // A new node has every setting at the default of the catalog; a MediaIn and a MediaOut have none.
+    for (const node of [merge('n1'), transform('n2'), background('n3')]) {
+      for (const setting of settingsOf(node)) expect(paramOf(node, setting), `${node.kind}.${setting.path}`).toBe(setting.bounds.neutral);
+    }
+    expect(settingsOf(mediaIn())).toEqual([]);
+    expect(settingsOf(mediaOut())).toEqual([]);
+    expect(settingOf(merge('n1'), 'apply')).toBeUndefined();
+  });
+
+  const blend = settingOf(merge('n4'), 'blend')!;
+  const centerX = settingOf(merge('n4'), 'center.x')!;
+  const keyed = (keys: [number, number][]): FusionNode => ({ ...merge('n4'), params: { ...newMerge(), blend: { keys: keys.map(([frame, value]) => ({ frame, value, interp: 'linear' as const })) } } } as FusionNode);
+
+  it('are set as one number until they have a key, and then as a key at the frame', () => {
+    expect(pathOf(merge('n4'), centerX)).toBe('n4.center.x');
+    expect(putValue(AT, merge('n4'), centerX, 0.25, 12)).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n4', params: { center: { x: 0.25 } } }]);
+    expect(putValue(AT, merge('n4'), centerX, 0.5, 12)).toEqual([]);
+    const node = keyed([[10, 0.25], [30, 0.75]]);
+    expect(hasKeys(node)).toBe(true);
+    expect(hasKeys(merge('n4'))).toBe(false);
+    // A value at a frame that has a key changes the key; at another frame it puts a key there, among the others in order.
+    expect(putValue(AT, node, blend, 0.4, 30)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'n4.blend', at: 1, remove: 1, keys: [{ frame: 30, value: 0.4, interp: 'linear' }] }]);
+    expect(putValue(AT, node, blend, 0.4, 20)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'n4.blend', at: 1, remove: 0, keys: [{ frame: 20, value: 0.4, interp: 'linear' }] }]);
+    expect(putValue(AT, node, blend, 0.75, 30)).toEqual([]);
+  });
+
+  it('take a key at the playhead, of the value that they have there, and lose it again', () => {
+    // The first key of a setting is spliced in at 0: the number becomes the keys.
+    expect(addKey(AT, merge('n4'), blend, 12)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'n4.blend', at: 0, remove: 0, keys: [{ frame: 12, value: 1, interp: 'linear' }] }]);
+    const node = keyed([[10, 0.25], [30, 0.75]]);
+    expect(addKey(AT, node, blend, 20)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'n4.blend', at: 1, remove: 0, keys: [{ frame: 20, value: 0.5, interp: 'linear' }] }]);
+    expect(addKey(AT, node, blend, 10)).toEqual([]);
+    expect(removeKey(AT, node, blend, 10)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'n4.blend', at: 0, remove: 1, keys: [] }]);
+    expect(removeKey(AT, node, blend, 11)).toEqual([]);
+    // The last key leaves its value, as one number.
+    expect(removeKey(AT, keyed([[10, 0.25]]), blend, 10)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'n4.blend', param: 0.25 }]);
+  });
+
+  it('are made what a curve editor leaves them, by the keys that differ', () => {
+    const node = keyed([[10, 0.25], [30, 0.75]]);
+    const moved = { keys: [{ frame: 10, value: 0.25, interp: 'linear' as const }, { frame: 40, value: 0.75, interp: 'linear' as const }] };
+    expect(keyOps(AT, node, blend, moved)).toEqual([{ op: 'splice_fusion_keys', ...AT, path: 'n4.blend', at: 1, remove: 1, keys: [moved.keys[1]] }]);
+    expect(keyOps(AT, node, blend, paramOf(node, blend))).toEqual([]);
+    expect(keyOps(AT, node, blend, 0.3)).toEqual([{ op: 'set_fusion_keys', ...AT, path: 'n4.blend', param: 0.3 }]);
+    expect(keyOps(AT, node, blend, { keys: [] })).toEqual([]);
+  });
+
+  it('are set whole at each move of a drag, from what they were as it began, and put back whole', () => {
+    expect(wholeValue(AT, merge('n4'), blend, 1, 0.6, 12)).toEqual({ op: 'set_fusion_node', ...AT, id: 'n4', params: { blend: 0.6 } });
+    const initial = paramOf(keyed([[10, 0.25], [30, 0.75]]), blend);
+    expect(wholeValue(AT, merge('n4'), blend, initial, 0.6, 30)).toEqual({ op: 'set_fusion_keys', ...AT, path: 'n4.blend', param: { keys: [
+      { frame: 10, value: 0.25, interp: 'linear' }, { frame: 30, value: 0.6, interp: 'linear' },
+    ] } });
+    expect(wholeValue(AT, merge('n4'), blend, initial, 0.6, 20)).toEqual({ op: 'set_fusion_keys', ...AT, path: 'n4.blend', param: { keys: [
+      { frame: 10, value: 0.25, interp: 'linear' }, { frame: 20, value: 0.6, interp: 'linear' }, { frame: 30, value: 0.75, interp: 'linear' },
+    ] } });
+    expect(wholeParam(AT, merge('n4'), blend, initial)).toEqual({ op: 'set_fusion_keys', ...AT, path: 'n4.blend', param: initial });
+    expect(wholeParam(AT, merge('n4'), blend, 1)).toEqual({ op: 'set_fusion_node', ...AT, id: 'n4', params: { blend: 1 } });
+  });
+
+  it('have their keys at the frames of the timeline at which the clip shows their pictures', () => {
+    // The clip begins at frame 100 of the timeline and at the first picture of its media: the key of picture 10 is at frame 110.
+    const shown = clip('c1', 100, 50);
+    const param = paramOf(keyed([[10, 0.25], [30, 0.75], [90, 0.1]]), blend);
+    expect(keyTimesOf(shown, timeline(), [media], param)).toEqual([110, 130]);
+    expect(keyTimesOf(shown, timeline(), [media], 0.5)).toEqual([]);
+  });
+});

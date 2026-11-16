@@ -815,7 +815,7 @@ export const en = {
       open: 'Studio',
       close: 'Close the studio',
       pages: 'Pages of the studio',
-      page: { media: 'Media', cut: 'Cut', edit: 'Edit', color: 'Color', fairlight: 'Fairlight' },
+      page: { media: 'Media', cut: 'Cut', edit: 'Edit', fusion: 'Fusion', color: 'Color', fairlight: 'Fairlight' },
       /** The two viewers of the Edit page, as DaVinci Resolve names them. */
       monitor: {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
@@ -861,6 +861,23 @@ export const en = {
         edits: 'Edits', smartInsert: 'Smart insert', append: 'Append', rippleOverwrite: 'Ripple overwrite', placeOnTop: 'Place on top',
         sourceOverwrite: 'Source overwrite', transitions: 'Transitions', dissolve: 'Dissolve', dipBlack: 'Dip to black',
         overview: 'Whole timeline', detail: 'Timeline around the playhead', tapeStrip: 'Source tape of the bin',
+      },
+      /**
+       * The Fusion page, in DaVinci Resolve's words (Reference Manual 20, Chapters 64, 67 and 70): the kinds of nodes and their inputs, the
+       * commands of the node editor, and the settings of the Inspector (a Merge's on pp. 2162–2170).
+       */
+      fusionPage: {
+        toolbar: 'Fusion page tools', clip: 'Clip', previousClip: 'Previous clip', nextClip: 'Next clip', noClip: 'No clip', viewer: 'Viewer',
+        spline: 'Spline', splineEditor: 'Spline Editor', closeSpline: 'Close Spline Editor',
+        kinds: { media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background' },
+        inputs: { input: 'Input', background: 'Background', foreground: 'Foreground' },
+        output: 'Output', passThrough: 'Pass Through', passedThrough: 'Passed through', rename: 'Rename',
+        resetComposition: 'Reset Fusion Composition', removeComposition: 'Remove Composition', nodeName: 'Name',
+        settings: {
+          apply: 'Apply Mode', operator: 'Operator', over: 'Over', subtractiveAdditive: 'Subtractive - Additive', alphaGain: 'Alpha Gain', burnIn: 'Burn In',
+          blend: 'Blend', centerX: 'Center X', centerY: 'Center Y', size: 'Size', angle: 'Angle', flipHorizontal: 'Flip Horizontal',
+          flipVertical: 'Flip Vertical', color: 'Color', red: 'Red', green: 'Green', blue: 'Blue', alpha: 'Alpha',
+        },
       },
       /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
       colorPage: {
@@ -1673,6 +1690,10 @@ export const en = {
         not_empty: "The bin still contains items.",
         no_port: "That node has no such input or output.",
         input_taken: "That input already has a link.",
+        no_input: "That node has no such input.",
+        no_output: "That node has no output to link from.",
+        input_linked: "That input already has a link.",
+        one_media_out: "A composition has exactly one MediaOut node.",
         loop: "This link would make the grade loop back on itself.",
         grouped: "A clip is still in this group. Take it out of the group first.",
         ungrouped: "This clip is not in a group.",
@@ -1756,6 +1777,15 @@ export const en = {
         noTimeline: 'Create a timeline on the Edit page to begin.',
         /** Why an edit of the source cannot be pressed: the viewer has no source, which choosing a medium in the pool does not give it. */
         noSource: 'The viewer has no source yet: double-click a clip in the media pool to load it, or show the source tape.',
+      },
+      fusionPage: {
+        noClip: 'There is no clip on a video track at the playhead. Move the playhead onto one to see its composition.',
+        soundClip: 'A clip of sound has no composition. Move the playhead onto a clip on a video track.',
+        /** A clip shown with the composition that every clip begins with, which is not in the project yet. */
+        first: 'This clip has no composition yet. Your first change makes one.',
+        chooseNode: 'Select one node to see its settings.',
+        noSettings: 'This node has no settings of its own.',
+        noCurves: 'No setting has keyframes yet. Select a node to see the curves of its settings.',
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

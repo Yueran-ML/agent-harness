@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
-import { Film, FolderOpen, Palette, PanelRightClose, PanelRightOpen, Scissors, Settings, X } from 'lucide-react';
+import { Film, FolderOpen, Palette, PanelRightClose, PanelRightOpen, Scissors, Settings, WandSparkles, X } from 'lucide-react';
 import { useWords } from '../app/locale';
 import { shortcut, studioSupported } from '../app/system';
 import { sentenceOf } from '../key/form';
@@ -14,6 +14,7 @@ import { ColorPage } from './pages/ColorPage';
 import { CutPage } from './pages/CutPage';
 import { EditPage } from './pages/EditPage';
 import { FairlightPage } from './pages/FairlightPage';
+import { FusionPage } from './pages/FusionPage';
 import { MediaPage } from './pages/MediaPage';
 import { RenderDialog } from './render/RenderDialog';
 import { ExportProgress } from './render/RenderProgress';
@@ -28,14 +29,15 @@ import { useMonitor } from './useMonitor';
 import type { ViewerNotice } from './Viewer';
 
 /** The pages of the studio, at its foot as in DaVinci Resolve. Those of the later phases come with them. */
-export type StudioPage = 'media' | 'cut' | 'edit' | 'color' | 'fairlight';
-const PAGE_ICONS = { media: FolderOpen, cut: Scissors, edit: Film, color: Palette, fairlight: Film } as const;
+export type StudioPage = 'media' | 'cut' | 'edit' | 'fusion' | 'color' | 'fairlight';
+const PAGE_ICONS = { media: FolderOpen, cut: Scissors, edit: Film, fusion: WandSparkles, color: Palette, fairlight: Film } as const;
 /**
- * The pages, in DaVinci Resolve's order. The studio opens only on Windows (the author's decision);
- * the Color page is held to that besides, so that it never shows elsewhere before its time.
+ * The pages, in DaVinci Resolve's order, the Fusion page between Edit and Color. The studio opens
+ * only on Windows (the author's decision); the Fusion and the Color page are held to that besides,
+ * so that they never show elsewhere before their time.
  */
 export function studioPages(): readonly StudioPage[] {
-  return studioSupported() ? ['media', 'cut', 'edit', 'color', 'fairlight'] : ['media', 'cut', 'edit'];
+  return studioSupported() ? ['media', 'cut', 'edit', 'fusion', 'color', 'fairlight'] : ['media', 'cut', 'edit'];
 }
 
 /** The timelines of a project that is not there yet: the same list each time, so that the pool is not drawn again for it. */
@@ -107,6 +109,9 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   // The monitor that the keys go to on the Edit page, and the timeline chosen there.
   const [focus, setFocus] = useState<Monitor>('timeline');
   const [chosenTimeline, setChosenTimeline] = useState<string | null>(null);
+  // The clips chosen on the Edit page as it was left, which the Fusion page opens on: kept apart from what is drawn, as only that page reads them.
+  const editChosen = useRef<readonly string[]>([]);
+  const onEditChosen = useCallback((clips: readonly string[]) => { editChosen.current = clips; }, []);
   // The bin that the pool shows: the Cut page's source tape is made of its media.
   const [bin, setBin] = useState<string | null>(null);
   // Whether the Cut page's viewer shows the source tape: the pool then chooses the medium under its playhead.
@@ -347,6 +352,22 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       onRetry={again}
       onProblem={(said, failure) => fail(said)(failure)}
       onExport={onExport}
+      onChosenClips={onEditChosen}
+    />}
+    {page === 'fusion' && pages.includes('fusion') && <FusionPage
+      bridge={bridge}
+      native={native}
+      session={snapshot.session ?? 0}
+      revision={snapshot.revision ?? 0}
+      media={project?.media ?? NO_MEDIA}
+      timelines={timelines}
+      selected={selected}
+      onSelect={setChosenTimeline}
+      timelineMonitor={timelineMonitor}
+      noticeOf={noticeOf}
+      onRetry={again}
+      onProblem={(said, failure) => fail(said)(failure)}
+      chosen={editChosen.current}
     />}
     {page === 'fairlight' && pages.includes('fairlight') && <FairlightPage bridge={bridge} native={native} session={snapshot.session ?? 0} revision={snapshot.revision ?? 0}
       pool={pool} media={project?.media ?? NO_MEDIA} timelines={timelines} selected={selected} onSelect={setChosenTimeline} timelineMonitor={timelineMonitor}

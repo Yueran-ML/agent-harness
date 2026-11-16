@@ -162,7 +162,7 @@ type Said = { path: string; text: string };
 
 // What is written in every language as it is: the names of the platforms, and the names of the
 // fields of an app or a bot, as their consoles write them.
-const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret', 'Fairlight']);
+const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret', 'Fairlight', 'Fusion']);
 // What is written with the units of an editor, as editors write them in every language: 29.97 fps, 10 bit.
 const UNITS = new Set(['label.studio.fps', 'label.studio.bits']);
 // What the Chinese one keeps in English, as the terms of the trade are said there: a label that is

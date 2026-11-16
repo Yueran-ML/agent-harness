@@ -29,6 +29,8 @@ const COLORS: Record<ClipKeyed, string> = {
   'crop.left': '#b083f0', 'crop.right': '#f69d50', 'crop.top': '#39c5cf', 'crop.bottom': '#e275ad', 'crop.softness': '#8ddb8c',
   'title.size': '#f0883e', 'title.x': '#ff938a', 'title.y': '#6bc46d',
 };
+/** The colours of the curves, in the order of the settings: another editor of curves (the Spline Editor of the Fusion page) draws its own with them. */
+export const CURVE_COLORS: readonly string[] = Object.values(COLORS);
 const isKeyed = (path: string): path is ClipKeyed => (CLIP_KEYED as readonly string[]).includes(path);
 
 /** The Retime Frame curve of a clip, among the curves of the editor. */

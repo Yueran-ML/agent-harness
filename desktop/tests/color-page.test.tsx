@@ -591,7 +591,7 @@ describe('the Color page', () => {
 
   it('is a page of the studio on Windows only', () => {
     (window as { columbina?: unknown }).columbina = { platform: 'win32' };
-    expect(studioPages()).toEqual(['media', 'cut', 'edit', 'color', 'fairlight']);
+    expect(studioPages()).toEqual(['media', 'cut', 'edit', 'fusion', 'color', 'fairlight']);
     (window as { columbina?: unknown }).columbina = { platform: 'darwin' };
     expect(studioPages()).toEqual(['media', 'cut', 'edit']);
     (window as { columbina?: unknown }).columbina = { platform: 'linux' };

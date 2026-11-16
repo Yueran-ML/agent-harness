@@ -222,6 +222,7 @@ fn transform() -> Transformed {
 fn flip(input: usize) -> FusedKind {
     FusedKind::Transform {
         input: Some(input),
+        mask: None,
         settings: Transformed {
             flip_horizontal: true,
             ..transform()
@@ -549,7 +550,7 @@ fn a_background_covers_the_picture_with_its_colour_premultiplied() {
     let background = |rgba| {
         fused(
             Source::Color([1.0, 0.0, 1.0, 1.0]),
-            vec![FusedKind::Background { rgba }],
+            vec![FusedKind::Background { rgba, mask: None }],
             Some(0),
         )
     };
@@ -675,6 +676,7 @@ fn a_transform_moves_flips_and_turns_its_picture_pixel_for_pixel() {
             FusedKind::MediaIn,
             FusedKind::Transform {
                 input: Some(0),
+                mask: None,
                 settings,
             },
         ];
@@ -699,7 +701,7 @@ fn a_merge_lays_its_foreground_where_its_centre_puts_it_on_its_background() {
     let rgba = [0.1, 0.2, 0.3, 1.0];
     let behind = fused(
         picture.clone(),
-        vec![FusedKind::Background { rgba }],
+        vec![FusedKind::Background { rgba, mask: None }],
         Some(0),
     );
     let backdrop = halves(
@@ -711,10 +713,11 @@ fn a_merge_lays_its_foreground_where_its_centre_puts_it_on_its_background() {
     let over = |settings: Merged| {
         let nodes = vec![
             FusedKind::MediaIn,
-            FusedKind::Background { rgba },
+            FusedKind::Background { rgba, mask: None },
             FusedKind::Merge {
                 background: Some(1),
                 foreground: Some(0),
+                mask: None,
                 settings,
             },
         ];
@@ -743,10 +746,11 @@ fn a_merge_lays_its_foreground_where_its_centre_puts_it_on_its_background() {
     }
     // With no foreground, and with a Blend of 0, it is its background.
     let nodes = vec![
-        FusedKind::Background { rgba },
+        FusedKind::Background { rgba, mask: None },
         FusedKind::Merge {
             background: Some(0),
             foreground: None,
+            mask: None,
             settings: merge(),
         },
     ];
@@ -778,7 +782,7 @@ fn a_graph_of_several_nodes_is_drawn_each_from_those_that_it_reads() {
     let rgba = [0.3, 0.1, 0.2, 1.0];
     let behind = fused(
         picture.clone(),
-        vec![FusedKind::Background { rgba }],
+        vec![FusedKind::Background { rgba, mask: None }],
         Some(0),
     );
     let backdrop = halves(
@@ -790,16 +794,18 @@ fn a_graph_of_several_nodes_is_drawn_each_from_those_that_it_reads() {
         FusedKind::MediaIn,
         FusedKind::Transform {
             input: Some(0),
+            mask: None,
             settings: Transformed {
                 center: [0.75, 0.5],
                 flip_horizontal: true,
                 ..transform()
             },
         },
-        FusedKind::Background { rgba },
+        FusedKind::Background { rgba, mask: None },
         FusedKind::Merge {
             background: Some(2),
             foreground: Some(1),
+            mask: None,
             settings: merge(),
         },
     ];
@@ -832,6 +838,7 @@ fn an_input_that_reads_nothing_is_transparent_and_so_is_a_clip_whose_output_read
             "a transform of nothing",
             vec![FusedKind::Transform {
                 input: None,
+                mask: None,
                 settings: Transformed {
                     angle: 30.0,
                     ..transform()
@@ -844,6 +851,7 @@ fn an_input_that_reads_nothing_is_transparent_and_so_is_a_clip_whose_output_read
             vec![FusedKind::Merge {
                 background: None,
                 foreground: None,
+                mask: None,
                 settings: merge(),
             }],
             Some(0),
@@ -874,6 +882,7 @@ fn an_input_that_reads_nothing_is_transparent_and_so_is_a_clip_whose_output_read
         FusedKind::Merge {
             background: None,
             foreground: Some(0),
+            mask: None,
             settings: Merged {
                 blend: 0.5,
                 ..merge()
@@ -928,6 +937,7 @@ fn the_grade_the_crop_the_transform_and_the_composite_mode_are_done_after_the_co
             FusedKind::Merge {
                 background: None,
                 foreground: Some(0),
+                mask: None,
                 settings: Merged {
                     blend: 0.5,
                     ..merge()

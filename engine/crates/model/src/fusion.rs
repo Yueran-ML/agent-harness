@@ -34,15 +34,58 @@
 //! - `media_out`, one input, `input`: the picture that goes back to the timeline. A
 //!   composition has exactly one. Where its input is not linked the clip shows nothing: it is
 //!   transparent.
-//! - `merge`, the inputs `background` and `foreground`: the foreground laid over the
-//!   background ([`Merge`]).
-//! - `transform`, one input, `input`: its picture moved, made larger or smaller, turned and
-//!   flipped ([`Transform`]).
-//! - `background`, no inputs: one colour over the whole picture ([`Background`]).
+//! - `merge`, the inputs `background` and `foreground`, and its effect mask, `mask`: the
+//!   foreground laid over the background ([`Merge`]).
+//! - `transform`, one input, `input`, and its effect mask, `mask`: its picture moved, made
+//!   larger or smaller, turned and flipped ([`Transform`]).
+//! - `background`, no input but its effect mask, `mask`: one colour over the whole picture
+//!   ([`Background`]).
+//! - `rectangle`, `ellipse` and `polygon`, one input each, `mask`: the masks ([`Rectangle`],
+//!   [`Ellipse`], [`Polygon`]; see Masks below).
 //!
 //! An input that is not linked gives no picture: a transparent one of the size of the
-//! composition. A node that is passed through (Fusion's Pass Through, Ctrl-P) hands on the
-//! picture of its first input as it is, and a node that has no input then gives none.
+//! composition; but a `mask` that is not linked is no mask at all (see Masks). A node that is
+//! passed through (Fusion's Pass Through, Ctrl-P) hands on the picture of its first input as
+//! it is ([`Kind::through`]): a Merge its background, a Transform its picture, and a mask node
+//! the mask that comes into it. A node that has no such input, a `media_in` or a `background`,
+//! then gives none: the effect mask of a node is not a picture that it hands on.
+//!
+//! # Masks
+//!
+//! A Rectangle, an Ellipse and a Polygon each make a mask (Reference Manual 20, Chapter 108,
+//! pp. 2386–2426): 1 where the shape is and 0 where it is not, with the controls that every
+//! mask node has: Level, Soft Edge, Border Width, Invert, Solid and the Paint Mode. Their
+//! settings are those of the mathematics of the masks of the compositor, by the same names,
+//! in the same units, within the same ranges and with the same values at first; what each
+//! makes of a pixel is told there.
+//!
+//! The links have no types: any output may go into any input. So that this holds of masks
+//! (ours: Fusion keeps a mask as a picture of one channel):
+//!
+//! - What comes out of a mask node is a picture: white premultiplied by the value of the
+//!   mask, so that its red, its green, its blue and its alpha are all that value. It may be
+//!   the foreground of a Merge as any picture may.
+//! - A `mask` input reads the alpha of the picture that is linked to it, whatever made it:
+//!   a mask node, or the picture of a clip with its own alpha.
+//! - A `mask` input that is not linked, or whose link brings no picture (it comes from a
+//!   node that is passed through and has nothing to hand on), is **no mask**: the node is
+//!   not limited. In [`Fused`] it is none.
+//!
+//! What a mask does to the node whose `mask` it comes into, which the compositor is held to:
+//!
+//! - A node that has a picture to hand on (a `transform`, its `input`; a `merge`, its
+//!   `background`): where the mask is 1 its result is its own, where it is 0 it is the
+//!   picture of that first input as it came in (transparent where that is not linked), and
+//!   between them the two are mixed by the value of the mask, channel by channel:
+//!   `first + (own − first) · mask`.
+//! - A `background`, which makes its picture of nothing: its picture multiplied by the
+//!   mask, all four channels.
+//! - A mask node: the mask that comes in is combined with its own by its Paint Mode
+//!   (Merge, Add or Subtract). With nothing coming in there is no Paint Mode, and the mask
+//!   is its own.
+//!
+//! A node that is read through a `mask` alone is still one that the picture depends on: it
+//! is among the nodes of [`Fused`], and a loop through a `mask` is a loop.
 //!
 //! # Coordinates
 //!
@@ -51,7 +94,9 @@
 //! of the picture, from its lower left corner, `x` to the right and `y` up, so that the middle
 //! is 0.5 and 0.5; a size is a factor, 1 as it is; an angle is in degrees, counter-clockwise.
 //! (The transform of the Edit page counts from the middle, `y` down and clockwise: the two are
-//! not the same.)
+//! not the same.) The lengths of a mask are shares of the width of the picture, but for the
+//! Height of a Rectangle, which is a share of its height (see [`Rectangle`], [`Ellipse`] and
+//! [`Polygon`]).
 //!
 //! # Keys
 //!
@@ -59,8 +104,12 @@
 //! that the other keys of the clip count ([`crate::keyframes::KeyClock`]): those of its media,
 //! or its own from its first for a title, a colour and a still. A setting is named by the id
 //! of its node, a dot, and its path in the settings of the node: `n4.center.x`. So the id of a
-//! node has no dot in it.
+//! node has no dot in it. A point of a Polygon is named by its place in the list of points,
+//! from 0: `n7.points.2.x`. Its two numbers take keys each on its own, as those of a point of
+//! a Polygon window of the Color page do; the list itself, how many points there are and in
+//! which order, is set whole and takes no keys.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use serde::ser::SerializeStruct;
@@ -80,8 +129,14 @@ pub const MEDIA_IN: &str = "MediaIn1";
 /// The id of the `MediaOut` of the composition that a clip has at first, as `DaVinci` names it.
 pub const MEDIA_OUT: &str = "MediaOut1";
 
+/// The most points of a [`Polygon`]. The manual gives none: this is ours, as many as a
+/// Polygon window of the Color page has at the most.
+pub const MOST_POINTS: usize = crate::grade::window::MOST_POLYGON_POINTS;
+
 /// The bounds of the settings of the nodes of a composition, in Fusion's units (see the
-/// [module](self)). The manual gives no range of any of them: these are ours.
+/// [module](self)). The manual gives no range of any of them but the Corner Radius of a
+/// Rectangle: these are ours. Those of the masks are those of the mathematics of the masks
+/// of the compositor, which is held to them.
 pub mod bounds {
     use crate::grade::Bounds;
 
@@ -103,14 +158,39 @@ pub mod bounds {
     pub const COLOR: Bounds = Bounds::new(0.0, 0.0, 1.0);
     /// The alpha of a Background: opaque at first.
     pub const ALPHA: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// Level of a mask (p. 2397): 1, the mask as it is, at first.
+    pub const MASK_LEVEL: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// Soft Edge of a mask (p. 2398), in widths of the picture: 0, a crisp edge, at first; up
+    /// to a ramp as wide as the picture.
+    pub const MASK_SOFT_EDGE: Bounds = Bounds::new(0.0, 0.0, 1.0);
+    /// Border Width of a mask (p. 2398), in widths of the picture: 0, no border, at first; up
+    /// to the width of the picture, either way.
+    pub const MASK_BORDER_WIDTH: Bounds = Bounds::new(0.0, -1.0, 1.0);
+    /// Center X and Y of a mask (pp. 2398, 2407, 2417): 0.5, the middle, at first; as far as
+    /// ten pictures either way.
+    pub const MASK_CENTER: Bounds = Bounds::new(0.5, -10.0, 10.0);
+    /// Width and Height of a Rectangle and of an Ellipse (pp. 2398–2399, 2417): 0.5, half the
+    /// picture, at first; from 0, a shape that covers nothing, to ten pictures.
+    pub const MASK_EXTENT: Bounds = Bounds::new(0.5, 0.0, 10.0);
+    /// Corner Radius of a Rectangle (p. 2417): from 0, sharp corners, which it has at first,
+    /// to 1, the most rounding there is, both as the manual has them.
+    pub const MASK_CORNER_RADIUS: Bounds = Bounds::new(0.0, 0.0, 1.0);
+    /// Angle of a mask (pp. 2399, 2417; the Z Rotation of a Polygon, p. 2407), in degrees
+    /// counter-clockwise: 0 at first; a hundred turns either way.
+    pub const MASK_ANGLE: Bounds = Bounds::new(0.0, -36_000.0, 36_000.0);
+    /// Size of a Polygon (p. 2407): 1, its points as they were drawn, at first; from 0 to 10.
+    pub const MASK_SIZE: Bounds = Bounds::new(1.0, 0.0, 10.0);
+    /// An `x` or a `y` of a point of a Polygon, from its centre, in widths of the picture: as
+    /// far as 16 pictures either way.
+    pub const MASK_POINT: Bounds = Bounds::new(0.0, -16.0, 16.0);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Kinds, inputs and links
 // ---------------------------------------------------------------------------------------------
 
-/// The kinds of node, as they are named in `kind`. Others are to come: masks, Blur, Mosaic,
-/// the Delta Keyer, the Tracker and Text+.
+/// The kinds of node, as they are named in `kind`. Others are to come: Blur, Mosaic, the
+/// Delta Keyer, the Tracker and Text+.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -125,6 +205,12 @@ pub enum Kind {
     Transform,
     /// A colour over the whole picture.
     Background,
+    /// The mask of a rectangle.
+    Rectangle,
+    /// The mask of an ellipse.
+    Ellipse,
+    /// The mask of a polygon.
+    Polygon,
 }
 
 impl Kind {
@@ -137,17 +223,37 @@ impl Kind {
             Self::Merge => "merge",
             Self::Transform => "transform",
             Self::Background => "background",
+            Self::Rectangle => "rectangle",
+            Self::Ellipse => "ellipse",
+            Self::Polygon => "polygon",
         }
     }
 
-    /// The inputs that a node of the kind has. The first is the one whose picture the node
-    /// hands on where it is passed through.
+    /// The inputs that a node of the kind has: its pictures, and after them its effect mask,
+    /// `mask`, which every kind has but `media_in` and `media_out`. A mask node has that one
+    /// alone: the mask that comes into it.
     #[must_use]
     pub fn inputs(self) -> &'static [Input] {
         match self {
-            Self::MediaIn | Self::Background => &[],
-            Self::MediaOut | Self::Transform => &[Input::Input],
-            Self::Merge => &[Input::Background, Input::Foreground],
+            Self::MediaIn => &[],
+            Self::MediaOut => &[Input::Input],
+            Self::Transform => &[Input::Input, Input::Mask],
+            Self::Merge => &[Input::Background, Input::Foreground, Input::Mask],
+            Self::Background | Self::Rectangle | Self::Ellipse | Self::Polygon => &[Input::Mask],
+        }
+    }
+
+    /// The input whose picture a node of the kind hands on where it is passed through: the
+    /// first of its pictures, and of a mask node the mask that comes into it. None of a kind
+    /// that makes its picture of nothing, `media_in` and `background`: the effect mask of a
+    /// node is not a picture that it hands on.
+    #[must_use]
+    pub fn through(self) -> Option<Input> {
+        match self {
+            Self::MediaIn | Self::Background => None,
+            Self::MediaOut | Self::Transform => Some(Input::Input),
+            Self::Merge => Some(Input::Background),
+            Self::Rectangle | Self::Ellipse | Self::Polygon => Some(Input::Mask),
         }
     }
 
@@ -156,9 +262,15 @@ impl Kind {
     pub fn has_output(self) -> bool {
         self != Self::MediaOut
     }
+
+    /// Whether a node of the kind makes a mask: `rectangle`, `ellipse` and `polygon`.
+    #[must_use]
+    pub fn is_mask(self) -> bool {
+        matches!(self, Self::Rectangle | Self::Ellipse | Self::Polygon)
+    }
 }
 
-/// An input of a node, by its name. The effect mask of a node is to come with the masks.
+/// An input of a node, by its name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -169,6 +281,10 @@ pub enum Input {
     Background,
     /// The foreground of a Merge (the green one).
     Foreground,
+    /// The effect mask of a node (the blue input of an editor): the mask that limits a
+    /// `merge`, a `transform` or a `background`, and the mask that comes into a mask node.
+    /// It reads the alpha of the picture that is linked to it; not linked, it is no mask.
+    Mask,
 }
 
 impl Input {
@@ -179,6 +295,7 @@ impl Input {
             Self::Input => "input",
             Self::Background => "background",
             Self::Foreground => "foreground",
+            Self::Mask => "mask",
         }
     }
 }
@@ -256,8 +373,14 @@ impl Center {
     }
 
     fn check(&self, names: [&'static str; 2]) -> Result<(), OpError> {
-        bounds::CENTER.check(names[0], &self.x)?;
-        bounds::CENTER.check(names[1], &self.y)
+        self.check_within(bounds::CENTER, names)
+    }
+
+    /// Check that its `x` and its `y` are within `bounds`, each by the name that it is
+    /// refused by.
+    fn check_within(&self, bounds: Bounds, names: [&'static str; 2]) -> Result<(), OpError> {
+        bounds.check(names[0], &self.x)?;
+        bounds.check(names[1], &self.y)
     }
 }
 
@@ -538,6 +661,476 @@ impl Background {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The masks
+// ---------------------------------------------------------------------------------------------
+
+/// How the mask of a node is combined with the mask that comes into it (Paint Mode, p. 2398):
+/// the three that the mathematics of the masks has. With `m` the value of the mask of the
+/// node and `i` that of the incoming one, both from 0 to 1. It is written `"merge"`, `"add"`
+/// or `"subtract"`, takes no keys, and is read only where a mask comes in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaintMode {
+    /// The mask is laid over the incoming one: `i + m · (1 − i)`. Every mask has it at first.
+    #[default]
+    Merge,
+    /// The values of the mask are added to those of the incoming one: `min(i + m, 1)`.
+    Add,
+    /// The values of the mask are taken from those of the incoming one: `max(i − m, 0)`.
+    Subtract,
+}
+
+/// Which of the regions that the sides of a Polygon part are inside it (Fill Method,
+/// p. 2407). It is written `"alternate"` or `"non_zero_winding"`, and takes no keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FillMethod {
+    /// A region is inside where a line from it to far away crosses the sides an odd number of
+    /// times, so that where the polygon lies over itself there is a hole.
+    #[default]
+    Alternate,
+    /// A region is inside where the sides go around it at all: no hole where the polygon lies
+    /// over itself.
+    NonZeroWinding,
+}
+
+/// The controls that every mask has, as they are at a frame of their keys: `numbers` its
+/// Level, its Soft Edge and its Border Width.
+fn masked(
+    numbers: [&Param; 3],
+    invert: bool,
+    solid: bool,
+    paint_mode: PaintMode,
+    frame: f64,
+) -> Masked {
+    let [level, soft_edge, border_width] = numbers.map(|setting| setting.value_at(frame));
+    Masked {
+        level,
+        soft_edge,
+        border_width,
+        invert,
+        solid,
+        paint_mode,
+    }
+}
+
+/// Check the Level, the Soft Edge and the Border Width of a mask, in that order, each by the
+/// name that it is refused by.
+fn check_common(names: [&'static str; 3], numbers: [&Param; 3]) -> Result<(), OpError> {
+    let all = [
+        bounds::MASK_LEVEL,
+        bounds::MASK_SOFT_EDGE,
+        bounds::MASK_BORDER_WIDTH,
+    ];
+    for ((what, range), number) in names.into_iter().zip(all).zip(numbers) {
+        range.check(what, number)?;
+    }
+    Ok(())
+}
+
+/// The settings of a Rectangle mask (pp. 2414–2417): the controls that every mask has, and
+/// its shape.
+///
+/// Level is what the mask is multiplied by. Soft Edge is how wide the ramp across the edge
+/// is, and Border Width how thick the line along the edge is, both in widths of the picture:
+/// solid, the border is added to the shape, or taken from it below 0; not solid, the border
+/// is all that is drawn. Invert makes the mask 1 where the shape is not. Its middle is at
+/// `center`; its Width is a share of the width of the picture and its Height a share of its
+/// height, so that a Width and a Height of 1 are the whole picture; Corner Radius is from 0,
+/// sharp corners, to 1, the most rounding there is; and it is turned by `angle` about its
+/// middle.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rectangle {
+    /// Level (p. 2397): from 0 to 1.
+    pub level: Param,
+    /// Soft Edge (p. 2398), in widths of the picture.
+    pub soft_edge: Param,
+    /// Border Width (p. 2398), in widths of the picture, either way.
+    pub border_width: Param,
+    /// Invert: the mask is 1 where the shape is not.
+    pub invert: bool,
+    /// Solid: the shape is filled. Without it only its border is drawn.
+    pub solid: bool,
+    /// Paint Mode: how the mask is combined with the one that comes in.
+    pub paint_mode: PaintMode,
+    /// Center X and Y: where its middle is.
+    pub center: Center,
+    /// Width, in widths of the picture.
+    pub width: Param,
+    /// Height, in heights of the picture.
+    pub height: Param,
+    /// Corner Radius: from 0, sharp corners, to 1, the short sides half circles.
+    pub corner_radius: Param,
+    /// Angle, in degrees counter-clockwise.
+    pub angle: Param,
+}
+
+impl Default for Rectangle {
+    /// In the middle of the picture, half of it wide and high, with sharp corners and not
+    /// turned: solid and whole, with a crisp edge and no border, not inverted, merged with
+    /// the mask that comes in.
+    fn default() -> Self {
+        Self {
+            level: bounds::MASK_LEVEL.param(),
+            soft_edge: bounds::MASK_SOFT_EDGE.param(),
+            border_width: bounds::MASK_BORDER_WIDTH.param(),
+            invert: false,
+            solid: true,
+            paint_mode: PaintMode::Merge,
+            center: Center::middle(),
+            width: bounds::MASK_EXTENT.param(),
+            height: bounds::MASK_EXTENT.param(),
+            corner_radius: bounds::MASK_CORNER_RADIUS.param(),
+            angle: bounds::MASK_ANGLE.param(),
+        }
+    }
+}
+
+impl Rectangle {
+    /// Its shape at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> RectangleShape {
+        RectangleShape {
+            center: self.center.at(frame),
+            width: self.width.value_at(frame),
+            height: self.height.value_at(frame),
+            corner_radius: self.corner_radius.value_at(frame),
+            angle: self.angle.value_at(frame),
+        }
+    }
+
+    /// The controls that every mask has, as its own are at a frame of its keys.
+    #[must_use]
+    pub fn common_at(&self, frame: f64) -> Masked {
+        let numbers = [&self.level, &self.soft_edge, &self.border_width];
+        masked(numbers, self.invert, self.solid, self.paint_mode, frame)
+    }
+
+    fn check(&self) -> Result<(), OpError> {
+        check_common(
+            [
+                "rectangle.level",
+                "rectangle.soft_edge",
+                "rectangle.border_width",
+            ],
+            [&self.level, &self.soft_edge, &self.border_width],
+        )?;
+        let center = ["rectangle.center.x", "rectangle.center.y"];
+        self.center.check_within(bounds::MASK_CENTER, center)?;
+        bounds::MASK_EXTENT.check("rectangle.width", &self.width)?;
+        bounds::MASK_EXTENT.check("rectangle.height", &self.height)?;
+        bounds::MASK_CORNER_RADIUS.check("rectangle.corner_radius", &self.corner_radius)?;
+        bounds::MASK_ANGLE.check("rectangle.angle", &self.angle)
+    }
+
+    fn settings(&self) -> [(&'static str, &Param); 9] {
+        [
+            ("level", &self.level),
+            ("soft_edge", &self.soft_edge),
+            ("border_width", &self.border_width),
+            ("center.x", &self.center.x),
+            ("center.y", &self.center.y),
+            ("width", &self.width),
+            ("height", &self.height),
+            ("corner_radius", &self.corner_radius),
+            ("angle", &self.angle),
+        ]
+    }
+
+    fn settings_mut(&mut self) -> [(&'static str, &mut Param); 9] {
+        [
+            ("level", &mut self.level),
+            ("soft_edge", &mut self.soft_edge),
+            ("border_width", &mut self.border_width),
+            ("center.x", &mut self.center.x),
+            ("center.y", &mut self.center.y),
+            ("width", &mut self.width),
+            ("height", &mut self.height),
+            ("corner_radius", &mut self.corner_radius),
+            ("angle", &mut self.angle),
+        ]
+    }
+}
+
+/// The settings of an Ellipse mask (pp. 2396–2399): the controls that every mask has, as a
+/// [`Rectangle`] has them, and its shape. Its middle is at `center`; its Width and its Height
+/// are both shares of the width of the picture, so that a Width and a Height alike are a
+/// circle in a picture of any shape; and it is turned by `angle` about its middle.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ellipse {
+    /// Level (p. 2397): from 0 to 1.
+    pub level: Param,
+    /// Soft Edge (p. 2398), in widths of the picture.
+    pub soft_edge: Param,
+    /// Border Width (p. 2398), in widths of the picture, either way.
+    pub border_width: Param,
+    /// Invert: the mask is 1 where the shape is not.
+    pub invert: bool,
+    /// Solid: the shape is filled. Without it only its border is drawn.
+    pub solid: bool,
+    /// Paint Mode: how the mask is combined with the one that comes in.
+    pub paint_mode: PaintMode,
+    /// Center X and Y: where its middle is.
+    pub center: Center,
+    /// Width, in widths of the picture.
+    pub width: Param,
+    /// Height, in widths of the picture too.
+    pub height: Param,
+    /// Angle, in degrees counter-clockwise.
+    pub angle: Param,
+}
+
+impl Default for Ellipse {
+    /// In the middle of the picture, a circle half the picture wide, not turned: solid and
+    /// whole, with a crisp edge and no border, not inverted, merged with the mask that comes
+    /// in.
+    fn default() -> Self {
+        Self {
+            level: bounds::MASK_LEVEL.param(),
+            soft_edge: bounds::MASK_SOFT_EDGE.param(),
+            border_width: bounds::MASK_BORDER_WIDTH.param(),
+            invert: false,
+            solid: true,
+            paint_mode: PaintMode::Merge,
+            center: Center::middle(),
+            width: bounds::MASK_EXTENT.param(),
+            height: bounds::MASK_EXTENT.param(),
+            angle: bounds::MASK_ANGLE.param(),
+        }
+    }
+}
+
+impl Ellipse {
+    /// Its shape at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> EllipseShape {
+        EllipseShape {
+            center: self.center.at(frame),
+            width: self.width.value_at(frame),
+            height: self.height.value_at(frame),
+            angle: self.angle.value_at(frame),
+        }
+    }
+
+    /// The controls that every mask has, as its own are at a frame of its keys.
+    #[must_use]
+    pub fn common_at(&self, frame: f64) -> Masked {
+        let numbers = [&self.level, &self.soft_edge, &self.border_width];
+        masked(numbers, self.invert, self.solid, self.paint_mode, frame)
+    }
+
+    fn check(&self) -> Result<(), OpError> {
+        check_common(
+            ["ellipse.level", "ellipse.soft_edge", "ellipse.border_width"],
+            [&self.level, &self.soft_edge, &self.border_width],
+        )?;
+        let center = ["ellipse.center.x", "ellipse.center.y"];
+        self.center.check_within(bounds::MASK_CENTER, center)?;
+        bounds::MASK_EXTENT.check("ellipse.width", &self.width)?;
+        bounds::MASK_EXTENT.check("ellipse.height", &self.height)?;
+        bounds::MASK_ANGLE.check("ellipse.angle", &self.angle)
+    }
+
+    fn settings(&self) -> [(&'static str, &Param); 8] {
+        [
+            ("level", &self.level),
+            ("soft_edge", &self.soft_edge),
+            ("border_width", &self.border_width),
+            ("center.x", &self.center.x),
+            ("center.y", &self.center.y),
+            ("width", &self.width),
+            ("height", &self.height),
+            ("angle", &self.angle),
+        ]
+    }
+
+    fn settings_mut(&mut self) -> [(&'static str, &mut Param); 8] {
+        [
+            ("level", &mut self.level),
+            ("soft_edge", &mut self.soft_edge),
+            ("border_width", &mut self.border_width),
+            ("center.x", &mut self.center.x),
+            ("center.y", &mut self.center.y),
+            ("width", &mut self.width),
+            ("height", &mut self.height),
+            ("angle", &mut self.angle),
+        ]
+    }
+}
+
+/// A point of a [`Polygon`], from its centre: `x` to the right and `y` up, both in widths of
+/// the picture, so that turning the polygon does not shear it. Each is a number or keys.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Point {
+    /// How far right of the centre, in widths of the picture.
+    pub x: Param,
+    /// How far above the centre, in widths of the picture.
+    pub y: Param,
+}
+
+impl Point {
+    /// A point that is at one place on every frame.
+    #[must_use]
+    pub fn new(x: f64, y: f64) -> Self {
+        Self {
+            x: x.into(),
+            y: y.into(),
+        }
+    }
+}
+
+/// The settings of a Polygon mask (pp. 2404–2408): the controls that every mask has, as a
+/// [`Rectangle`] has them, and its shape, a closed outline of straight sides from each point
+/// to the next and from the last to the first.
+///
+/// The points are counted from `center`, multiplied by `size` and turned by `angle` about
+/// it. There are at most [`MOST_POINTS`]; fewer than three have no outline, and are a mask
+/// of nothing, as a polygon that is being drawn is. Each number of a point takes keys on its
+/// own (`points.2.x`); the list is set whole, so that it has as many points at every frame.
+/// The Bezier handles of the points of Fusion's polyline are not kept.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Polygon {
+    /// Level (p. 2397): from 0 to 1.
+    pub level: Param,
+    /// Soft Edge (p. 2398), in widths of the picture.
+    pub soft_edge: Param,
+    /// Border Width (p. 2398), in widths of the picture, either way.
+    pub border_width: Param,
+    /// Invert: the mask is 1 where the shape is not.
+    pub invert: bool,
+    /// Solid: the shape is filled. Without it only its border is drawn.
+    pub solid: bool,
+    /// Paint Mode: how the mask is combined with the one that comes in.
+    pub paint_mode: PaintMode,
+    /// Center X and Y: the place that its points are counted from.
+    pub center: Center,
+    /// Size: what its points are multiplied by.
+    pub size: Param,
+    /// Z Rotation, in degrees counter-clockwise about the centre.
+    pub angle: Param,
+    /// Its points, in the order of its outline.
+    pub points: Vec<Point>,
+    /// Fill Method.
+    pub fill: FillMethod,
+}
+
+impl Default for Polygon {
+    /// No points, about the middle of the picture, at the size that they are drawn and not
+    /// turned, with the Alternate fill: solid and whole, with a crisp edge and no border, not
+    /// inverted, merged with the mask that comes in.
+    fn default() -> Self {
+        Self {
+            level: bounds::MASK_LEVEL.param(),
+            soft_edge: bounds::MASK_SOFT_EDGE.param(),
+            border_width: bounds::MASK_BORDER_WIDTH.param(),
+            invert: false,
+            solid: true,
+            paint_mode: PaintMode::Merge,
+            center: Center::middle(),
+            size: bounds::MASK_SIZE.param(),
+            angle: bounds::MASK_ANGLE.param(),
+            points: Vec::new(),
+            fill: FillMethod::Alternate,
+        }
+    }
+}
+
+impl Polygon {
+    /// Its shape at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> PolygonShape {
+        PolygonShape {
+            center: self.center.at(frame),
+            size: self.size.value_at(frame),
+            angle: self.angle.value_at(frame),
+            points: self
+                .points
+                .iter()
+                .map(|point| [point.x.value_at(frame), point.y.value_at(frame)])
+                .collect(),
+            fill: self.fill,
+        }
+    }
+
+    /// The controls that every mask has, as its own are at a frame of its keys.
+    #[must_use]
+    pub fn common_at(&self, frame: f64) -> Masked {
+        let numbers = [&self.level, &self.soft_edge, &self.border_width];
+        masked(numbers, self.invert, self.solid, self.paint_mode, frame)
+    }
+
+    fn check(&self) -> Result<(), OpError> {
+        check_common(
+            ["polygon.level", "polygon.soft_edge", "polygon.border_width"],
+            [&self.level, &self.soft_edge, &self.border_width],
+        )?;
+        let center = ["polygon.center.x", "polygon.center.y"];
+        self.center.check_within(bounds::MASK_CENTER, center)?;
+        bounds::MASK_SIZE.check("polygon.size", &self.size)?;
+        bounds::MASK_ANGLE.check("polygon.angle", &self.angle)?;
+        if self.points.len() > MOST_POINTS {
+            return Err(OpError::OutOfRange {
+                what: "polygon.points",
+            });
+        }
+        for point in &self.points {
+            bounds::MASK_POINT.check("polygon.points.x", &point.x)?;
+            bounds::MASK_POINT.check("polygon.points.y", &point.y)?;
+        }
+        Ok(())
+    }
+
+    /// Its settings that take keys, each with its path: those that every polygon has, and
+    /// the two numbers of each of its points after them, by the place of the point.
+    fn settings(&self) -> Vec<(Cow<'static, str>, &Param)> {
+        let mut all = named([
+            ("level", &self.level),
+            ("soft_edge", &self.soft_edge),
+            ("border_width", &self.border_width),
+            ("center.x", &self.center.x),
+            ("center.y", &self.center.y),
+            ("size", &self.size),
+            ("angle", &self.angle),
+        ]);
+        for (at, point) in self.points.iter().enumerate() {
+            all.push((Cow::Owned(format!("points.{at}.x")), &point.x));
+            all.push((Cow::Owned(format!("points.{at}.y")), &point.y));
+        }
+        all
+    }
+
+    fn settings_mut(&mut self) -> Vec<(Cow<'static, str>, &mut Param)> {
+        let mut all = named([
+            ("level", &mut self.level),
+            ("soft_edge", &mut self.soft_edge),
+            ("border_width", &mut self.border_width),
+            ("center.x", &mut self.center.x),
+            ("center.y", &mut self.center.y),
+            ("size", &mut self.size),
+            ("angle", &mut self.angle),
+        ]);
+        for (at, point) in self.points.iter_mut().enumerate() {
+            all.push((Cow::Owned(format!("points.{at}.x")), &mut point.x));
+            all.push((Cow::Owned(format!("points.{at}.y")), &mut point.y));
+        }
+        all
+    }
+}
+
+/// Settings that are named by fixed paths, as a list that settings named otherwise may be
+/// added to.
+fn named<P>(settings: impl IntoIterator<Item = (&'static str, P)>) -> Vec<(Cow<'static, str>, P)> {
+    settings
+        .into_iter()
+        .map(|(name, setting)| (Cow::Borrowed(name), setting))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
 // Nodes
 // ---------------------------------------------------------------------------------------------
 
@@ -555,6 +1148,12 @@ pub enum NodeKind {
     Transform(Transform),
     /// A colour over the whole picture.
     Background(Background),
+    /// The mask of a rectangle.
+    Rectangle(Rectangle),
+    /// The mask of an ellipse.
+    Ellipse(Ellipse),
+    /// The mask of a polygon.
+    Polygon(Polygon),
 }
 
 /// The settings of a kind that has none, as they are written: `{}`.
@@ -572,6 +1171,9 @@ impl NodeKind {
             Self::Merge(_) => Kind::Merge,
             Self::Transform(_) => Kind::Transform,
             Self::Background(_) => Kind::Background,
+            Self::Rectangle(_) => Kind::Rectangle,
+            Self::Ellipse(_) => Kind::Ellipse,
+            Self::Polygon(_) => Kind::Polygon,
         }
     }
 
@@ -584,6 +1186,9 @@ impl NodeKind {
             Kind::Merge => Self::Merge(Merge::default()),
             Kind::Transform => Self::Transform(Transform::default()),
             Kind::Background => Self::Background(Background::default()),
+            Kind::Rectangle => Self::Rectangle(Rectangle::default()),
+            Kind::Ellipse => Self::Ellipse(Ellipse::default()),
+            Kind::Polygon => Self::Polygon(Polygon::default()),
         }
     }
 
@@ -604,6 +1209,9 @@ impl NodeKind {
             Kind::Merge => Self::Merge(serde_json::from_value(params)?),
             Kind::Transform => Self::Transform(serde_json::from_value(params)?),
             Kind::Background => Self::Background(serde_json::from_value(params)?),
+            Kind::Rectangle => Self::Rectangle(serde_json::from_value(params)?),
+            Kind::Ellipse => Self::Ellipse(serde_json::from_value(params)?),
+            Kind::Polygon => Self::Polygon(serde_json::from_value(params)?),
         })
     }
 
@@ -619,51 +1227,69 @@ impl NodeKind {
             Self::Merge(params) => serde_json::to_value(params),
             Self::Transform(params) => serde_json::to_value(params),
             Self::Background(params) => serde_json::to_value(params),
+            Self::Rectangle(params) => serde_json::to_value(params),
+            Self::Ellipse(params) => serde_json::to_value(params),
+            Self::Polygon(params) => serde_json::to_value(params),
         };
         value.expect("the settings of a node are written as JSON")
     }
 
-    /// Check its settings: each within its bounds, as a number or at each key.
+    /// Check its settings: each within its bounds, as a number or at each key; and of a
+    /// Polygon, that it has no more points than it may.
     pub(crate) fn check(&self) -> Result<(), OpError> {
         match self {
             Self::MediaIn | Self::MediaOut => Ok(()),
             Self::Merge(merge) => merge.check(),
             Self::Transform(transform) => transform.check(),
             Self::Background(background) => background.check(),
+            Self::Rectangle(rectangle) => rectangle.check(),
+            Self::Ellipse(ellipse) => ellipse.check(),
+            Self::Polygon(polygon) => polygon.check(),
         }
     }
 
     /// Its settings that take keys, each with its path in `params`.
-    fn keyed(&self) -> Vec<(&'static str, &Param)> {
+    fn keyed(&self) -> Vec<(Cow<'static, str>, &Param)> {
         match self {
             Self::MediaIn | Self::MediaOut => vec![],
-            Self::Merge(merge) => merge.settings().into(),
-            Self::Transform(transform) => transform.settings().into(),
-            Self::Background(background) => background.settings().into(),
+            Self::Merge(merge) => named(merge.settings()),
+            Self::Transform(transform) => named(transform.settings()),
+            Self::Background(background) => named(background.settings()),
+            Self::Rectangle(rectangle) => named(rectangle.settings()),
+            Self::Ellipse(ellipse) => named(ellipse.settings()),
+            Self::Polygon(polygon) => polygon.settings(),
         }
     }
 
     /// Its settings that take keys, each with its path in `params`, to be changed.
-    fn settings_mut(&mut self) -> Vec<(&'static str, &mut Param)> {
+    fn settings_mut(&mut self) -> Vec<(Cow<'static, str>, &mut Param)> {
         match self {
             Self::MediaIn | Self::MediaOut => vec![],
-            Self::Merge(merge) => merge.settings_mut().into(),
-            Self::Transform(transform) => transform.settings_mut().into(),
-            Self::Background(background) => background.settings_mut().into(),
+            Self::Merge(merge) => named(merge.settings_mut()),
+            Self::Transform(transform) => named(transform.settings_mut()),
+            Self::Background(background) => named(background.settings_mut()),
+            Self::Rectangle(rectangle) => named(rectangle.settings_mut()),
+            Self::Ellipse(ellipse) => named(ellipse.settings_mut()),
+            Self::Polygon(polygon) => polygon.settings_mut(),
         }
     }
 
-    /// The setting at `path` of its `params`, if it is one that takes keys: `center.x`.
+    /// The setting at `path` of its `params`, if it is one that takes keys: `center.x`, or
+    /// `points.2.x` of a Polygon that has a third point.
     pub(crate) fn setting_mut(&mut self, path: &str) -> Option<&mut Param> {
         self.settings_mut()
             .into_iter()
             .find_map(|(name, setting)| (name == path).then_some(setting))
     }
 
-    /// The paths of its settings that take keys, in the order of its `params`.
+    /// The paths of its settings that take keys, in the order of its `params`: of a
+    /// Polygon, those of the points that it has, by their places.
     #[must_use]
-    pub fn settings(&self) -> Vec<&'static str> {
-        self.keyed().into_iter().map(|(name, _)| name).collect()
+    pub fn settings(&self) -> Vec<String> {
+        self.keyed()
+            .into_iter()
+            .map(|(name, _)| name.into_owned())
+            .collect()
     }
 
     /// Whether any of its settings has keys.
@@ -689,9 +1315,10 @@ impl NodeKind {
 /// A node of a composition.
 ///
 /// It is written `{"id", "kind", "label", "pass_through", "pos", "params"}`, where `params` is
-/// what a node of its kind is set by: a [`Merge`], a [`Transform`] or a [`Background`], and an
-/// object with no fields for `media_in` and `media_out`. `pass_through` and `pos` are always
-/// written, and may be left out where a node is read: they are then `false` and `null`.
+/// what a node of its kind is set by: a [`Merge`], a [`Transform`], a [`Background`], a
+/// [`Rectangle`], an [`Ellipse`] or a [`Polygon`], and an object with no fields for `media_in`
+/// and `media_out`. `pass_through` and `pos` are always written, and may be left out where a
+/// node is read: they are then `false` and `null`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     /// What it is known by in its composition: `n` and a number where the engine made it. It
@@ -701,7 +1328,7 @@ pub struct Node {
     /// [`LONGEST_LABEL`](crate::grade::LONGEST_LABEL) characters.
     pub label: String,
     /// Whether it is passed through (Pass Through, Ctrl-P): it then hands on the picture of
-    /// its first input as it is, and a node with no input gives none.
+    /// its first input as it is ([`Kind::through`]), and a node with no such input gives none.
     pub pass_through: bool,
     /// Where it lies in the node editor, or none for where the editor lays it out, as a node
     /// of a grade has it ([`Pos`]).
@@ -753,6 +1380,9 @@ impl Serialize for Node {
             NodeKind::Merge(params) => node.serialize_field("params", params)?,
             NodeKind::Transform(params) => node.serialize_field("params", params)?,
             NodeKind::Background(params) => node.serialize_field("params", params)?,
+            NodeKind::Rectangle(params) => node.serialize_field("params", params)?,
+            NodeKind::Ellipse(params) => node.serialize_field("params", params)?,
+            NodeKind::Polygon(params) => node.serialize_field("params", params)?,
         }
         node.end()
     }
@@ -988,8 +1618,9 @@ impl Composition {
 
     /// The node whose picture comes into `input` of the node `to`: the one that the link
     /// there comes from, or, where that one is passed through, the one whose picture it hands
-    /// on, and so on. None where no picture comes in: the input, or the first input of a node
-    /// that is passed through on the way, is not linked, or such a node has no input.
+    /// on, and so on. None where no picture comes in: the input, or the input that a node
+    /// that is passed through on the way hands on ([`Kind::through`]), is not linked, or such
+    /// a node has none to hand on.
     fn feeding(&self, to: &str, input: Input) -> Option<&Node> {
         let (mut to, mut input) = (to, input);
         // A composition that is checked has no loop: one that is not is not followed for ever.
@@ -998,7 +1629,7 @@ impl Composition {
             if !node.pass_through {
                 return Some(node);
             }
-            (to, input) = (node.id.as_str(), *node.kind.kind().inputs().first()?);
+            (to, input) = (node.id.as_str(), node.kind.kind().through()?);
         }
         None
     }
@@ -1041,15 +1672,33 @@ impl Composition {
             NodeKind::MediaOut => return None,
             NodeKind::Background(background) => FusedKind::Background {
                 rgba: background.at(frame),
+                mask: read(Input::Mask),
             },
             NodeKind::Merge(merge) => FusedKind::Merge {
                 background: read(Input::Background),
                 foreground: read(Input::Foreground),
+                mask: read(Input::Mask),
                 settings: merge.at(frame),
             },
             NodeKind::Transform(transform) => FusedKind::Transform {
                 input: read(Input::Input),
+                mask: read(Input::Mask),
                 settings: transform.at(frame),
+            },
+            NodeKind::Rectangle(rectangle) => FusedKind::Rectangle {
+                mask: read(Input::Mask),
+                common: rectangle.common_at(frame),
+                shape: rectangle.at(frame),
+            },
+            NodeKind::Ellipse(ellipse) => FusedKind::Ellipse {
+                mask: read(Input::Mask),
+                common: ellipse.common_at(frame),
+                shape: ellipse.at(frame),
+            },
+            NodeKind::Polygon(polygon) => FusedKind::Polygon {
+                mask: read(Input::Mask),
+                common: polygon.common_at(frame),
+                shape: polygon.at(frame),
             },
         };
         let at = nodes.len();
@@ -1090,11 +1739,12 @@ pub fn size_of(clip: &Clip, project: &Project, timeline: &Timeline) -> (u32, u32
 /// A composition at one moment, as the compositor draws it: the nodes that the picture of its
 /// `MediaOut` is made of, each with its settings as the numbers that they are at the frame.
 ///
-/// The nodes are in an order in which each comes after those whose pictures it reads, and a
-/// node names the one that an input reads by its place in the list. Only the nodes that the
-/// `MediaOut` depends on are there, each once: a node whose picture is not read is left out,
-/// and so is one that is passed through, whose place is taken by the node that it hands on.
-/// The `MediaOut` itself is not in the list: `output` is what it shows.
+/// The nodes are in an order in which each comes after those whose pictures it reads, its
+/// pictures before its mask, and a node names the one that an input reads by its place in
+/// the list. Only the nodes that the `MediaOut` depends on are there, each once: a node whose
+/// picture is not read is left out, and so is one that is passed through, whose place is
+/// taken by the node that it hands on. A node that is read as a mask alone is depended on,
+/// and is there. The `MediaOut` itself is not in the list: `output` is what it shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fused {
     /// The nodes, each after those that it reads.
@@ -1115,7 +1765,9 @@ pub struct FusedNode {
 
 /// What a node of a composition draws at one moment. A picture that an input reads is named
 /// by its place in [`Fused::nodes`], which is before that of the node; none is no picture, a
-/// transparent one of the size of the composition.
+/// transparent one of the size of the composition. But a `mask` that is none is no mask: the
+/// node is not limited (see Masks of the [module](self)). One that names a node reads the
+/// alpha of its picture.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum FusedKind {
@@ -1125,6 +1777,8 @@ pub enum FusedKind {
     Background {
         /// Its red, green, blue and alpha, each from 0 to 1, not premultiplied.
         rgba: [f64; 4],
+        /// Its effect mask, which its picture is multiplied by; none where it has none.
+        mask: Option<usize>,
     },
     /// A foreground laid over a background.
     Merge {
@@ -1132,6 +1786,9 @@ pub enum FusedKind {
         background: Option<usize>,
         /// The picture of the foreground.
         foreground: Option<usize>,
+        /// Its effect mask: the merged result where it is 1, the background as it came in
+        /// where it is 0. None where it has none.
+        mask: Option<usize>,
         /// How it is laid.
         settings: Merged,
     },
@@ -1139,25 +1796,141 @@ pub enum FusedKind {
     Transform {
         /// The picture.
         input: Option<usize>,
+        /// Its effect mask: the picture as it is put where it is 1, as it came in where it
+        /// is 0. None where it has none.
+        mask: Option<usize>,
         /// How it is put.
         settings: Transformed,
+    },
+    /// The mask of a rectangle: a picture that is white premultiplied by the mask.
+    Rectangle {
+        /// The mask that comes in, which its Paint Mode combines with its own; none where
+        /// none comes in, and the mask is its own.
+        mask: Option<usize>,
+        /// The controls that every mask has.
+        common: Masked,
+        /// Its shape.
+        shape: RectangleShape,
+    },
+    /// The mask of an ellipse: a picture that is white premultiplied by the mask.
+    Ellipse {
+        /// The mask that comes in, which its Paint Mode combines with its own; none where
+        /// none comes in, and the mask is its own.
+        mask: Option<usize>,
+        /// The controls that every mask has.
+        common: Masked,
+        /// Its shape.
+        shape: EllipseShape,
+    },
+    /// The mask of a polygon: a picture that is white premultiplied by the mask.
+    Polygon {
+        /// The mask that comes in, which its Paint Mode combines with its own; none where
+        /// none comes in, and the mask is its own.
+        mask: Option<usize>,
+        /// The controls that every mask has.
+        common: Masked,
+        /// Its shape.
+        shape: PolygonShape,
     },
 }
 
 impl FusedKind {
     /// The picture that the first input of a node of the kind reads, by its place in
-    /// [`Fused::nodes`]: of a Merge its background, of a Transform its one input. None of a
-    /// kind that has no input, and where the input reads no picture. It is the picture that
-    /// what cannot draw a kind hands on in its place, as a node that is passed through hands
-    /// on that of its first input.
+    /// [`Fused::nodes`]: of a Merge its background, of a Transform its one input, and of a
+    /// mask node the mask that comes into it. None of a kind that has no such input, and
+    /// where the input reads no picture. It is the picture that a node that is passed through
+    /// hands on ([`Kind::through`]), and that what cannot draw a kind may hand on in its
+    /// place.
     #[must_use]
     pub fn first_input(&self) -> Option<usize> {
         match self {
             Self::MediaIn | Self::Background { .. } => None,
             Self::Merge { background, .. } => *background,
             Self::Transform { input, .. } => *input,
+            Self::Rectangle { mask, .. }
+            | Self::Ellipse { mask, .. }
+            | Self::Polygon { mask, .. } => *mask,
         }
     }
+
+    /// The mask that the `mask` input of a node of the kind reads, by its place in
+    /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform and of a Background, and
+    /// the mask that comes into a mask node. None of a `MediaIn`, which has no such input,
+    /// and where the input is not linked or brings no picture.
+    #[must_use]
+    pub fn mask(&self) -> Option<usize> {
+        match self {
+            Self::MediaIn => None,
+            Self::Background { mask, .. }
+            | Self::Merge { mask, .. }
+            | Self::Transform { mask, .. }
+            | Self::Rectangle { mask, .. }
+            | Self::Ellipse { mask, .. }
+            | Self::Polygon { mask, .. } => *mask,
+        }
+    }
+}
+
+/// The controls that every mask node has, at one moment: each that takes keys as the number
+/// that it is there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Masked {
+    /// Level: what the mask is multiplied by, from 0 to 1.
+    pub level: f64,
+    /// Soft Edge: how wide the ramp across the edge is, in widths of the picture.
+    pub soft_edge: f64,
+    /// Border Width: how thick the line along the edge is, in widths of the picture.
+    pub border_width: f64,
+    /// Invert: the mask is 1 where the shape is not.
+    pub invert: bool,
+    /// Solid: the shape is filled. Without it only its border is drawn.
+    pub solid: bool,
+    /// Paint Mode: how the mask is combined with the one that comes in.
+    pub paint_mode: PaintMode,
+}
+
+/// The shape of a [`Rectangle`] at one moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RectangleShape {
+    /// Where its middle is: `x` and `y`, as [`Center`] counts them.
+    pub center: [f64; 2],
+    /// Its width, in widths of the picture.
+    pub width: f64,
+    /// Its height, in heights of the picture.
+    pub height: f64,
+    /// Corner Radius, from 0 to 1.
+    pub corner_radius: f64,
+    /// How far it is turned, in degrees counter-clockwise.
+    pub angle: f64,
+}
+
+/// The shape of an [`Ellipse`] at one moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EllipseShape {
+    /// Where its middle is: `x` and `y`, as [`Center`] counts them.
+    pub center: [f64; 2],
+    /// Its width, in widths of the picture.
+    pub width: f64,
+    /// Its height, in widths of the picture too.
+    pub height: f64,
+    /// How far it is turned, in degrees counter-clockwise.
+    pub angle: f64,
+}
+
+/// The shape of a [`Polygon`] at one moment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PolygonShape {
+    /// The place that its points are counted from: `x` and `y`, as [`Center`] counts them.
+    pub center: [f64; 2],
+    /// What its points are multiplied by.
+    pub size: f64,
+    /// How far it is turned about its centre, in degrees counter-clockwise.
+    pub angle: f64,
+    /// Its points, each `[x, y]` from the centre, `x` to the right and `y` up, in widths of
+    /// the picture.
+    pub points: Vec<[f64; 2]>,
+    /// Fill Method.
+    pub fill: FillMethod,
 }
 
 /// The settings of a [`Merge`] at one moment, each that takes keys as the number that it is
@@ -1337,20 +2110,42 @@ mod tests {
     #[test]
     fn each_kind_has_its_inputs_and_every_kind_but_media_out_an_output() {
         assert_eq!(Kind::MediaIn.inputs(), &[] as &[Input]);
-        assert_eq!(Kind::Background.inputs(), &[] as &[Input]);
+        assert_eq!(Kind::Background.inputs(), &[Input::Mask]);
         assert_eq!(Kind::MediaOut.inputs(), &[Input::Input]);
-        assert_eq!(Kind::Transform.inputs(), &[Input::Input]);
+        assert_eq!(Kind::Transform.inputs(), &[Input::Input, Input::Mask]);
         assert_eq!(
             Kind::Merge.inputs(),
-            &[Input::Background, Input::Foreground]
+            &[Input::Background, Input::Foreground, Input::Mask]
         );
+        // A mask node has the mask that comes into it, and hands it on where it is passed
+        // through; the effect mask of another node is not what it hands on.
+        for mask in [Kind::Rectangle, Kind::Ellipse, Kind::Polygon] {
+            assert_eq!(mask.inputs(), &[Input::Mask]);
+            assert_eq!(mask.through(), Some(Input::Mask));
+            assert!(mask.is_mask());
+        }
+        assert_eq!(Kind::MediaIn.through(), None);
+        assert_eq!(Kind::Background.through(), None);
+        assert_eq!(Kind::MediaOut.through(), Some(Input::Input));
+        assert_eq!(Kind::Transform.through(), Some(Input::Input));
+        assert_eq!(Kind::Merge.through(), Some(Input::Background));
         for kind in [
             Kind::MediaIn,
             Kind::MediaOut,
             Kind::Merge,
             Kind::Transform,
             Kind::Background,
+            Kind::Rectangle,
+            Kind::Ellipse,
+            Kind::Polygon,
         ] {
+            // What is handed on is an input of the kind, and its mask comes after its pictures.
+            let inputs = kind.inputs();
+            if let Some(input) = kind.through() {
+                assert!(inputs.contains(&input), "{kind:?}");
+            }
+            let mask = inputs.iter().position(|input| *input == Input::Mask);
+            assert!(mask.is_none() || mask == Some(inputs.len() - 1), "{kind:?}");
             assert_eq!(kind.has_output(), kind != Kind::MediaOut);
             assert_eq!(NodeKind::new(kind).kind(), kind);
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(kind.name()));
@@ -1361,7 +2156,12 @@ mod tests {
             );
             assert_eq!(NodeKind::new(kind).check(), Ok(()));
         }
-        for input in [Input::Input, Input::Background, Input::Foreground] {
+        for input in [
+            Input::Input,
+            Input::Background,
+            Input::Foreground,
+            Input::Mask,
+        ] {
             assert_eq!(serde_json::to_value(input).unwrap(), json!(input.name()));
         }
     }
@@ -1691,6 +2491,63 @@ mod tests {
             paths(Kind::Background),
             ["color.r", "color.g", "color.b", "color.a"]
         );
+        assert_eq!(
+            paths(Kind::Rectangle),
+            [
+                "level",
+                "soft_edge",
+                "border_width",
+                "center.x",
+                "center.y",
+                "width",
+                "height",
+                "corner_radius",
+                "angle"
+            ]
+        );
+        assert_eq!(
+            paths(Kind::Ellipse),
+            [
+                "level",
+                "soft_edge",
+                "border_width",
+                "center.x",
+                "center.y",
+                "width",
+                "height",
+                "angle"
+            ]
+        );
+        // A Polygon has the two numbers of each point that it has, after the others.
+        let fixed = [
+            "level",
+            "soft_edge",
+            "border_width",
+            "center.x",
+            "center.y",
+            "size",
+            "angle",
+        ];
+        assert_eq!(paths(Kind::Polygon), fixed);
+        let mut polygon = NodeKind::Polygon(Polygon {
+            points: vec![Point::new(0.0, 0.0), Point::new(0.25, 0.0)],
+            ..Polygon::default()
+        });
+        assert_eq!(polygon.settings()[..7], fixed);
+        assert_eq!(
+            polygon.settings()[7..],
+            ["points.0.x", "points.0.y", "points.1.x", "points.1.y"]
+        );
+        *polygon.setting_mut("points.1.y").unwrap() = keys(&[(0, 0.0), (10, 0.125)]);
+        assert!(polygon.is_animated());
+        assert_eq!(
+            polygon.params()["points"][1]["y"]["keys"][1]["value"],
+            json!(0.125)
+        );
+        // A point that it has not, a point whole, and a place written another way are none.
+        for path in ["points.2.x", "points.1", "points", "points.01.x", "fill"] {
+            assert!(polygon.setting_mut(path).is_none(), "{path}");
+        }
         let mut merge = NodeKind::new(Kind::Merge);
         *merge.setting_mut("center.y").unwrap() = keys(&[(0, 0.25), (10, 0.75)]);
         assert!(merge.is_animated());
@@ -1766,7 +2623,8 @@ mod tests {
         assert_eq!(
             fused.nodes[0].kind,
             FusedKind::Background {
-                rgba: [0.0, 0.0, 0.0, 1.0]
+                rgba: [0.0, 0.0, 0.0, 1.0],
+                mask: None,
             }
         );
         assert_eq!(fused.nodes[1].kind, FusedKind::MediaIn);
@@ -1775,6 +2633,7 @@ mod tests {
             FusedKind::Merge {
                 background: Some(0),
                 foreground: Some(1),
+                mask: None,
                 settings: Merged {
                     apply: Composite::Screen,
                     operator: Operator::Over,
@@ -1792,6 +2651,7 @@ mod tests {
             fused.nodes[3].kind,
             FusedKind::Transform {
                 input: Some(2),
+                mask: None,
                 settings: Transformed {
                     center: [1.0, 0.5],
                     size: 1.0,
@@ -1865,6 +2725,360 @@ mod tests {
             fused.nodes[0].kind,
             FusedKind::Transform { input: None, .. }
         ));
+    }
+
+    /// The composition of `merged` with its Merge limited by the Ellipse `e`, into which the
+    /// mask of the Rectangle `r` comes.
+    fn masked() -> Composition {
+        let mut composition = merged();
+        composition.nodes.push(Node::new("r", Kind::Rectangle));
+        composition.nodes.push(Node::new("e", Kind::Ellipse));
+        composition.links.push(Link::new("r", "e", Input::Mask));
+        composition.links.push(Link::new("e", "over", Input::Mask));
+        composition.sort_links();
+        composition
+    }
+
+    /// The ids of the nodes of a composition at a moment, in their order.
+    fn ids(fused: &Fused) -> Vec<&str> {
+        fused.nodes.iter().map(|node| node.id.as_str()).collect()
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each kind of mask as it is at a frame"
+    )]
+    fn a_mask_is_read_after_the_pictures_of_its_node_and_one_that_is_not_linked_is_none() {
+        let mut composition = masked();
+        assert_eq!(composition.check(), Ok(()));
+        if let NodeKind::Ellipse(ellipse) = &mut composition.nodes[6].kind {
+            ellipse.soft_edge = keys(&[(0, 0.0), (10, 0.5)]);
+            ellipse.paint_mode = PaintMode::Subtract;
+        }
+        let fused = composition.at(5.0);
+        // The masks are read through `mask` alone, and are there: each after what it reads.
+        assert_eq!(ids(&fused), ["bg", "in", "r", "e", "over", "move"]);
+        assert_eq!(fused.output, Some(5));
+        let read: Vec<Option<usize>> = fused.nodes.iter().map(|node| node.kind.mask()).collect();
+        assert_eq!(read, [None, None, None, Some(2), Some(3), None]);
+        assert_eq!(
+            fused.nodes[3].kind,
+            FusedKind::Ellipse {
+                mask: Some(2),
+                common: Masked {
+                    level: 1.0,
+                    soft_edge: 0.25,
+                    border_width: 0.0,
+                    invert: false,
+                    solid: true,
+                    paint_mode: PaintMode::Subtract,
+                },
+                shape: EllipseShape {
+                    center: [0.5, 0.5],
+                    width: 0.5,
+                    height: 0.5,
+                    angle: 0.0,
+                },
+            }
+        );
+        assert_eq!(
+            fused.nodes[2].kind,
+            FusedKind::Rectangle {
+                mask: None,
+                common: Masked {
+                    level: 1.0,
+                    soft_edge: 0.0,
+                    border_width: 0.0,
+                    invert: false,
+                    solid: true,
+                    paint_mode: PaintMode::Merge,
+                },
+                shape: RectangleShape {
+                    center: [0.5, 0.5],
+                    width: 0.5,
+                    height: 0.5,
+                    corner_radius: 0.0,
+                    angle: 0.0,
+                },
+            }
+        );
+        // The first input of a mask node is the mask that comes into it.
+        assert_eq!(fused.nodes[3].kind.first_input(), Some(2));
+        assert_eq!(fused.nodes[4].kind.first_input(), Some(0));
+        // A mask is a picture like another: it may be the foreground of a Merge, and what a
+        // `mask` reads may be any picture.
+        let mut shown = masked();
+        shown.links.retain(|link| link.to != "over");
+        shown.links.push(Link::new("e", "over", Input::Foreground));
+        shown.links.push(Link::new("in", "over", Input::Mask));
+        shown.sort_links();
+        assert_eq!(shown.check(), Ok(()));
+        let fused = shown.at(0.0);
+        assert_eq!(ids(&fused), ["r", "e", "in", "over", "move"]);
+        assert!(matches!(
+            fused.nodes[3].kind,
+            FusedKind::Merge {
+                background: None,
+                foreground: Some(1),
+                mask: Some(2),
+                ..
+            }
+        ));
+        // A polygon is there with its points as they are at the frame.
+        let mut drawn = masked();
+        drawn.nodes[5].kind = NodeKind::Polygon(Polygon {
+            points: vec![
+                Point::new(-0.25, -0.25),
+                Point::new(0.25, -0.25),
+                Point {
+                    x: Param::Fixed(0.0),
+                    y: keys(&[(0, 0.0), (10, 0.5)]),
+                },
+            ],
+            fill: FillMethod::NonZeroWinding,
+            ..Polygon::default()
+        });
+        assert_eq!(drawn.check(), Ok(()));
+        let fused = drawn.at(5.0);
+        let FusedKind::Polygon { shape, mask, .. } = &fused.nodes[2].kind else {
+            panic!("the third node is the polygon")
+        };
+        assert_eq!(*mask, None);
+        assert_eq!(
+            *shape,
+            PolygonShape {
+                center: [0.5, 0.5],
+                size: 1.0,
+                angle: 0.0,
+                points: vec![[-0.25, -0.25], [0.25, -0.25], [0.0, 0.25]],
+                fill: FillMethod::NonZeroWinding,
+            }
+        );
+    }
+
+    #[test]
+    fn a_mask_node_that_is_passed_through_hands_on_the_mask_that_comes_into_it() {
+        // The ellipse passed through: the Merge is limited by the rectangle.
+        let mut composition = masked();
+        composition.nodes[6].pass_through = true;
+        let fused = composition.at(0.0);
+        assert_eq!(ids(&fused), ["bg", "in", "r", "over", "move"]);
+        assert_eq!(fused.nodes[3].kind.mask(), Some(2));
+        // The rectangle too, into which no mask comes: the Merge is not limited.
+        composition.nodes[5].pass_through = true;
+        let fused = composition.at(0.0);
+        assert_eq!(ids(&fused), ["bg", "in", "over", "move"]);
+        assert_eq!(fused.nodes[2].kind.mask(), None);
+        assert_eq!(fused, merged().at(0.0));
+        // A node that is passed through does not hand on its effect mask: a Background that
+        // has one gives no picture, and a Transform its picture as it came in.
+        let mut limited = masked();
+        limited.links.push(Link::new("r", "bg", Input::Mask));
+        limited.links.push(Link::new("r", "move", Input::Mask));
+        limited.sort_links();
+        assert_eq!(limited.check(), Ok(()));
+        let fused = limited.at(0.0);
+        assert_eq!(ids(&fused), ["r", "bg", "in", "e", "over", "move"]);
+        assert_eq!(fused.nodes[1].kind.mask(), Some(0));
+        assert_eq!(fused.nodes[5].kind.mask(), Some(0));
+        limited.nodes[1].pass_through = true;
+        limited.nodes[3].pass_through = true;
+        let fused = limited.at(0.0);
+        assert_eq!(ids(&fused), ["in", "r", "e", "over"]);
+        assert_eq!(fused.output, Some(3));
+        assert!(matches!(
+            fused.nodes[3].kind,
+            FusedKind::Merge {
+                background: None,
+                foreground: Some(0),
+                mask: Some(2),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_mask_is_linked_into_the_kinds_that_have_one_and_makes_no_loop() {
+        let with = |link: Link| {
+            let mut composition = masked();
+            composition
+                .links
+                .retain(|had| had.target() != link.target());
+            composition.links.push(link);
+            composition.sort_links();
+            composition.check()
+        };
+        for to in ["bg", "over", "move", "r", "e"] {
+            assert_eq!(with(Link::new("in", to, Input::Mask)), Ok(()), "{to}");
+        }
+        for to in ["in", "out"] {
+            assert_eq!(
+                with(Link::new("r", to, Input::Mask)),
+                Err(OpError::NoInput {
+                    node: to.into(),
+                    input: Input::Mask
+                })
+            );
+        }
+        // A mask node has no input but the mask that comes into it.
+        for input in [Input::Input, Input::Background, Input::Foreground] {
+            assert_eq!(
+                with(Link::new("in", "e", input)),
+                Err(OpError::NoInput {
+                    node: "e".into(),
+                    input
+                })
+            );
+        }
+        // A loop through a mask is a loop: of one node, and of several.
+        assert_eq!(
+            with(Link::new("e", "e", Input::Mask)),
+            Err(OpError::Loop { node: "e".into() })
+        );
+        assert!(matches!(
+            with(Link::new("move", "r", Input::Mask)),
+            Err(OpError::Loop { .. })
+        ));
+        // And a mask takes one link.
+        let mut twice = masked();
+        twice.links.push(Link::new("r", "over", Input::Mask));
+        twice.sort_links();
+        assert_eq!(
+            twice.check(),
+            Err(OpError::InputLinked {
+                node: "over".into(),
+                input: Input::Mask
+            })
+        );
+    }
+
+    #[test]
+    fn a_setting_of_a_mask_is_refused_out_of_its_range_by_its_kind_and_its_path() {
+        let polygon = NodeKind::Polygon(Polygon {
+            points: vec![Point::new(0.0, 0.0)],
+            ..Polygon::default()
+        });
+        for node in [
+            NodeKind::new(Kind::Rectangle),
+            NodeKind::new(Kind::Ellipse),
+            polygon,
+        ] {
+            let kind = node.kind();
+            for path in node.settings() {
+                let entry = crate::catalog::of_fusion(kind, &path).expect("it is listed");
+                // A point is refused by `points.x` or `points.y`, whichever point it is.
+                let what = format!("{}.{}", kind.name(), path.replace(".0.", "."));
+                for (value, fits) in [
+                    (entry.low, true),
+                    (entry.high, true),
+                    (entry.low - 0.001, false),
+                    (entry.high + 0.001, false),
+                    (f64::NAN, false),
+                ] {
+                    let mut set = node.clone();
+                    *set.setting_mut(&path).expect("it takes keys") = Param::Fixed(value);
+                    match set.check() {
+                        Ok(()) => assert!(fits, "{what} at {value}"),
+                        Err(OpError::OutOfRange { what: named }) => {
+                            assert!(!fits, "{what} at {value}");
+                            assert_eq!(named, what);
+                        }
+                        Err(other) => panic!("{what} at {value}: {other:?}"),
+                    }
+                }
+                // And at each key: keys that are not in the order of their frames are refused.
+                let mut keyed = node.clone();
+                *keyed.setting_mut(&path).expect("it takes keys") =
+                    keys(&[(5, entry.default), (5, entry.default)]);
+                assert!(
+                    matches!(keyed.check(), Err(OpError::OutOfRange { .. })),
+                    "{what}"
+                );
+            }
+        }
+        // A polygon has at most so many points; any fewer will do, none too.
+        let mut many = Polygon {
+            points: vec![Point::new(0.0, 0.0); MOST_POINTS],
+            ..Polygon::default()
+        };
+        assert_eq!(NodeKind::Polygon(many.clone()).check(), Ok(()));
+        many.points.push(Point::new(0.0, 0.0));
+        assert_eq!(
+            NodeKind::Polygon(many).check(),
+            Err(OpError::OutOfRange {
+                what: "polygon.points"
+            })
+        );
+        assert_eq!(NodeKind::new(Kind::Polygon).check(), Ok(()));
+    }
+
+    #[test]
+    fn a_mask_is_written_with_every_setting_and_read_back() {
+        let written = |kind: Kind| serde_json::to_value(Node::new("m", kind)).unwrap();
+        assert_eq!(
+            written(Kind::Rectangle),
+            json!({
+                "id": "m", "kind": "rectangle", "label": "", "pass_through": false, "pos": null,
+                "params": {
+                    "level": 1.0, "soft_edge": 0.0, "border_width": 0.0, "invert": false,
+                    "solid": true, "paint_mode": "merge", "center": {"x": 0.5, "y": 0.5},
+                    "width": 0.5, "height": 0.5, "corner_radius": 0.0, "angle": 0.0,
+                },
+            })
+        );
+        assert_eq!(
+            written(Kind::Ellipse)["params"],
+            json!({
+                "level": 1.0, "soft_edge": 0.0, "border_width": 0.0, "invert": false,
+                "solid": true, "paint_mode": "merge", "center": {"x": 0.5, "y": 0.5},
+                "width": 0.5, "height": 0.5, "angle": 0.0,
+            })
+        );
+        assert_eq!(
+            written(Kind::Polygon)["params"],
+            json!({
+                "level": 1.0, "soft_edge": 0.0, "border_width": 0.0, "invert": false,
+                "solid": true, "paint_mode": "merge", "center": {"x": 0.5, "y": 0.5},
+                "size": 1.0, "angle": 0.0, "points": [], "fill": "alternate",
+            })
+        );
+        for kind in [Kind::Rectangle, Kind::Ellipse, Kind::Polygon] {
+            let read: Node = serde_json::from_value(written(kind)).unwrap();
+            assert_eq!(read, Node::new("m", kind));
+        }
+        // The Paint Modes, the Fill Methods and the points of a polygon as they are written.
+        let mut drawn = written(Kind::Polygon);
+        drawn["params"]["paint_mode"] = json!("subtract");
+        drawn["params"]["fill"] = json!("non_zero_winding");
+        drawn["params"]["points"] = json!([
+            {"x": -0.25, "y": 0.0},
+            {"x": 0.25, "y": {"keys": [{"frame": 0, "value": 0.1, "interp": "hold"}]}},
+        ]);
+        let read: Node = serde_json::from_value(drawn.clone()).unwrap();
+        let NodeKind::Polygon(polygon) = &read.kind else {
+            panic!("it is a polygon")
+        };
+        assert_eq!(polygon.paint_mode, PaintMode::Subtract);
+        assert_eq!(polygon.fill, FillMethod::NonZeroWinding);
+        assert_eq!(polygon.points[0], Point::new(-0.25, 0.0));
+        assert!(polygon.points[1].y.is_animated());
+        assert_eq!(serde_json::to_value(&read).unwrap(), drawn);
+        assert_eq!(serde_json::to_value(PaintMode::Add).unwrap(), json!("add"));
+        // A setting that is left out, one that is not known, and a mode that is not one of
+        // the three are refused, as those of the other kinds are.
+        let wrong = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut node = written(Kind::Ellipse);
+            change(&mut node["params"]);
+            serde_json::from_value::<Node>(node).is_err()
+        };
+        assert!(wrong(&|params| {
+            params.as_object_mut().unwrap().remove("solid");
+        }));
+        assert!(wrong(&|params| params["corner_radius"] = json!(0.0)));
+        assert!(wrong(&|params| params["paint_mode"] = json!("maximum")));
+        assert!(wrong(&|params| params["invert"] = json!(1)));
+        assert!(!wrong(&|params| params["invert"] = json!(true)));
     }
 
     #[test]

@@ -30,7 +30,11 @@ only its input is linked), a corrector that it adds has no settings but ``lut`` 
 changes nothing.
 
 Compositions (the Fusion page) are kept as simply: the operations on the composition of a clip
-do what they say, on a clip that has one, with none of the engine's checks of it.
+do what they say, on a clip that has one, with none of the engine's checks of it: a node of any
+kind (the masks ``rectangle``, ``ellipse`` and ``polygon`` among them) and a link into any input
+(``mask`` among them) are kept as they are given, the links in the engine's order, and a setting
+is found by its path in the ``params`` of its node, a point of a polygon by its place in the
+list of its points.
 
 In a test, :func:`served` serves a project in the loop of the test. As a program, run it the way
 the engine is run, ``python fake_engine.py --project DIR --headless [--idle-seconds N]``, and with
@@ -1276,12 +1280,13 @@ class Fake:
             composition["links"] = [one for one in links if (one["to"], one["input"]) != end]
             return
         if name in ("set_fusion_keys", "splice_fusion_keys"):
-            # The id of the node, a dot, and the path of the setting in its params.
+            # The id of the node, a dot, and the path of the setting in its params: a point of a
+            # polygon is named by its place in the list of its points (``points.2.x``).
             node_id, _, path = str(op["path"]).partition(".")
             place: Any = self._fusion_node(nodes, node_id, index)["params"]
             *heads, last = path.split(".")
             for head in heads:
-                place = place[head]
+                place = place[int(head)] if head.isdigit() else place[head]
             if name == "set_fusion_keys":
                 place[last] = op["param"]
                 return

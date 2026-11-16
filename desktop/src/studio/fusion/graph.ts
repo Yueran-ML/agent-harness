@@ -16,6 +16,8 @@ import { COLUMN_GAP, MARGIN, NODE_HEIGHT, NODE_WIDTH, PORT_REACH, ROW_GAP, type 
 /** The inputs of each kind of node, the first first, as the engine names them (PROTOCOL.md, "Compositions"). */
 export const INPUTS: Record<FusionKind, readonly FusionInput[]> = {
   media_in: [], media_out: ['input'], merge: ['background', 'foreground'], transform: ['input'], background: [],
+  // The mask that comes into a mask node. The effect mask of the other kinds (`mask`, after their pictures) is not drawn by the editor yet.
+  rectangle: ['mask'], ellipse: ['mask'], polygon: ['mask'],
 };
 
 /** Whether a kind of node has an output: every kind but MediaOut, whose picture goes back to the timeline. */

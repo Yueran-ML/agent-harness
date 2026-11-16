@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyOp, CopyMismatch, defaultColorSettings, emptyGrade, firstComposition, fixedOf, keptColor, mergePatch, SOUND_FIELDS,
   sortFusionLinks, sortLinks,
-  type Clip, type ClipTrack, type FusionLink, type GradeNode, type Link, type Media, type Op, type Project, type Timeline,
+  type Clip, type ClipTrack, type FusionLink, type FusionNode, type FusionPolygon, type GradeNode, type Link, type Media, type Op, type Project, type Timeline,
 } from '../src/studio/engine';
 
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
@@ -150,6 +150,76 @@ describe('the compositions of the copy, where the examples do not reach', () => 
       [project, { op: 'splice_fusion_keys', timeline: 't1', clip: 'c1', path: 'n9.blend', at: 0, remove: 1, keys: [] }],
       [project, { op: 'set_fusion', timeline: 't1', clip: 'c99', value: null }],
     ] as [Project, Op][]) expect(() => applyOp(on, op)).toThrow(CopyMismatch);
+  });
+});
+
+describe('the masks of the compositions of the copy', () => {
+  const at = (name: string) => structuredClone(examples.find(example => example.name === name)!);
+  const clipOf = (project: Project) => (project.timelines[0].tracks[0] as ClipTrack).clips[0];
+  const AT = { timeline: 't1', clip: 'c1' } as const;
+  /** A mask of each kind as the engine writes a new one: every setting, none left out. */
+  const common = { level: 1, soft_edge: 0, border_width: 0, invert: false, solid: true, paint_mode: 'merge' } as const;
+  const ellipse: FusionNode = {
+    id: 'e1', kind: 'ellipse', label: '', pass_through: false, pos: null,
+    params: { ...common, center: { x: 0.5, y: 0.5 }, width: 0.5, height: 0.5, angle: 0 },
+  };
+  const rectangle: FusionNode = {
+    id: 'r1', kind: 'rectangle', label: '', pass_through: false, pos: null,
+    params: { ...common, center: { x: 0.5, y: 0.5 }, width: 0.5, height: 0.5, corner_radius: 0, angle: 0 },
+  };
+  const polygon: FusionNode = {
+    id: 'p1', kind: 'polygon', label: '', pass_through: false, pos: null,
+    params: { ...common, center: { x: 0.5, y: 0.5 }, size: 1, angle: 0, points: [{ x: -0.1, y: -0.1 }, { x: 0.1, y: -0.1 }, { x: 0, y: 0.1 }], fill: 'alternate' },
+  };
+  /** The composition of a Merge, n9, over a Background, n10, with the Merge limited by the ellipse, the rectangle coming into the ellipse, and the polygon read by nothing. */
+  const masked = (): Project => {
+    let project = at('set_fusion_node').before;
+    project = applyOp(project, { op: 'add_fusion_node', ...AT, node: ellipse, links: [{ from: 'e1', to: 'n9', input: 'mask' }] });
+    project = applyOp(project, { op: 'add_fusion_node', ...AT, node: rectangle, links: [{ from: 'r1', to: 'e1', input: 'mask' }] });
+    return applyOp(project, { op: 'add_fusion_node', ...AT, node: polygon });
+  };
+  const nodeOf = (project: Project, id: string) => clipOf(project).fusion!.nodes.find(node => node.id === id)!;
+
+  it('keeps a mask after the pictures of its node, as the engine orders the names of the inputs', () => {
+    const links: FusionLink[] = [
+      { from: 'a', to: 'n9', input: 'mask' }, { from: 'b', to: 'n9', input: 'foreground' }, { from: 'c', to: 'n9', input: 'background' },
+      { from: 'd', to: 'n10', input: 'mask' }, { from: 'e', to: 'n10', input: 'input' },
+    ];
+    expect(sortFusionLinks(links).map(link => `${link.to}.${link.input}`)).toEqual(['n10.input', 'n10.mask', 'n9.background', 'n9.foreground', 'n9.mask']);
+    expect(clipOf(masked()).fusion!.links.map(link => `${link.from}>${link.to}.${link.input}`)).toEqual([
+      'n9>MediaOut1.input', 'r1>e1.mask', 'n10>n9.background', 'MediaIn1>n9.foreground', 'e1>n9.mask',
+    ]);
+  });
+
+  it('adds a mask with every setting, links it in place of the mask that an input had, and takes it away with its links', () => {
+    const project = masked();
+    expect(clipOf(project).fusion!.nodes.map(node => node.kind)).toEqual(['media_in', 'media_out', 'merge', 'background', 'ellipse', 'rectangle', 'polygon']);
+    expect(nodeOf(project, 'e1')).toStrictEqual(ellipse);
+    const relinked = applyOp(project, { op: 'connect_fusion', ...AT, link: { from: 'p1', to: 'n9', input: 'mask' } });
+    expect(clipOf(relinked).fusion!.links.filter(link => link.input === 'mask').map(link => `${link.from}>${link.to}`)).toEqual(['r1>e1', 'p1>n9']);
+    const unlinked = applyOp(relinked, { op: 'disconnect_fusion', ...AT, to: 'n9', input: 'mask' });
+    expect(clipOf(unlinked).fusion!.links.some(link => link.to === 'n9' && link.input === 'mask')).toBe(false);
+    const removed = applyOp(project, { op: 'remove_fusion_node', ...AT, id: 'e1', links: [{ from: 'r1', to: 'n9', input: 'mask' }] });
+    expect(clipOf(removed).fusion!.links.filter(link => link.input === 'mask')).toEqual([{ from: 'r1', to: 'n9', input: 'mask' }]);
+    expect(project).toStrictEqual(masked());
+  });
+
+  it('sets the controls of a mask by a patch, the points of a polygon whole, and a number of a point by its place', () => {
+    const project = masked();
+    const set = applyOp(project, { op: 'set_fusion_node', ...AT, id: 'e1', params: { invert: true, paint_mode: 'subtract', soft_edge: 0.05, center: { x: 0.25 } } });
+    expect(nodeOf(set, 'e1').params).toStrictEqual({ ...ellipse.params, invert: true, paint_mode: 'subtract', soft_edge: 0.05, center: { x: 0.25, y: 0.5 } });
+    const keys = { keys: [{ frame: 0, value: 0.1, interp: 'linear' as const }, { frame: 24, value: 0.3, interp: 'linear' as const }] };
+    const keyed = applyOp(project, { op: 'set_fusion_keys', ...AT, path: 'p1.points.2.y', param: keys });
+    expect((nodeOf(keyed, 'p1').params as FusionPolygon).points).toStrictEqual([{ x: -0.1, y: -0.1 }, { x: 0.1, y: -0.1 }, { x: 0, y: keys }]);
+    const spliced = applyOp(keyed, { op: 'splice_fusion_keys', ...AT, path: 'p1.points.2.y', at: 1, remove: 1, keys: [] });
+    expect((nodeOf(spliced, 'p1').params as FusionPolygon).points[2].y).toStrictEqual({ keys: [keys.keys[0]] });
+    // A list is put in place of a list, whole: the points that had keys are gone with them.
+    const redrawn = applyOp(keyed, { op: 'set_fusion_node', ...AT, id: 'p1', params: { fill: 'non_zero_winding', points: [{ x: 0, y: 0 }] } });
+    expect(nodeOf(redrawn, 'p1').params).toStrictEqual({ ...polygon.params, fill: 'non_zero_winding', points: [{ x: 0, y: 0 }] });
+    // A point that the polygon has not, a point whole, and a setting that takes no keys are not settings of the copy.
+    for (const path of ['p1.points.3.x', 'p1.points.2', 'p1.points', 'e1.invert', 'e1.paint_mode', 'e1.corner_radius', 'p1.fill']) {
+      expect(() => applyOp(project, { op: 'set_fusion_keys', ...AT, path, param: 0.5 }), path).toThrow(CopyMismatch);
+    }
   });
 });
 

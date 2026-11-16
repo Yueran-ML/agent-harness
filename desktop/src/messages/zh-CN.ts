@@ -742,8 +742,11 @@ export const zhCN: Messages = {
       fusionPage: {
         toolbar: 'Fusion 页面工具', clip: '片段', previousClip: '上一个片段', nextClip: '下一个片段', noClip: '没有片段', viewer: '检视器',
         spline: '样条线', splineEditor: '样条线编辑器', closeSpline: '关闭样条线编辑器',
-        kinds: { media_in: '媒体输入', media_out: '媒体输出', merge: '合并', transform: '变换', background: '背景' },
-        inputs: { input: '输入', background: '背景', foreground: '前景' },
+        kinds: {
+          media_in: '媒体输入', media_out: '媒体输出', merge: '合并', transform: '变换', background: '背景',
+          rectangle: '矩形', ellipse: '椭圆', polygon: '多边形',
+        },
+        inputs: { input: '输入', background: '背景', foreground: '前景', mask: '效果遮罩' },
         output: '输出', passThrough: '直通', passedThrough: '已直通', rename: '重命名',
         resetComposition: '重置 Fusion 合成', removeComposition: '移除合成', nodeName: '名称',
         settings: {

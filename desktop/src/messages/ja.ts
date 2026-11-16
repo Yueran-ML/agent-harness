@@ -791,8 +791,11 @@ export const ja: Messages = {
       fusionPage: {
         toolbar: 'Fusion ページのツール', clip: 'クリップ', previousClip: '前のクリップ', nextClip: '次のクリップ', noClip: 'クリップなし', viewer: 'ビューア',
         spline: 'スプライン', splineEditor: 'スプラインエディター', closeSpline: 'スプラインエディターを閉じる',
-        kinds: { media_in: 'メディア入力', media_out: 'メディア出力', merge: 'マージ', transform: '変形', background: '背景' },
-        inputs: { input: '入力', background: '背景', foreground: '前景' },
+        kinds: {
+          media_in: 'メディア入力', media_out: 'メディア出力', merge: 'マージ', transform: '変形', background: '背景',
+          rectangle: '長方形', ellipse: '楕円', polygon: 'ポリゴン',
+        },
+        inputs: { input: '入力', background: '背景', foreground: '前景', mask: 'エフェクトマスク' },
         output: '出力', passThrough: 'パススルー', passedThrough: 'パススルー中', rename: '名前を変更',
         resetComposition: 'Fusion コンポジションをリセット', removeComposition: 'コンポジションを削除', nodeName: '名前',
         settings: {

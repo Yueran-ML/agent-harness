@@ -143,7 +143,7 @@ use crate::audio::{
     TrackGroup, Vca,
 };
 use crate::color_management::{Levels, LutPair};
-use crate::fusion::{Composition, MOST_NODES};
+use crate::fusion::{Composition, MOST_NODES, MOST_POINTS};
 use crate::grade::{
     Composite, Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL,
     LONGEST_PATH, MOST_INPUTS,
@@ -855,9 +855,10 @@ pub enum Op {
     },
     /// Put a number, or keys, in place of a setting of a node of the composition of a clip
     /// that takes keys ([`crate::catalog::fusion`]), named by the id of the node, a dot, and
-    /// the path of the setting in the `params` of the node: `n4.center.x`. Its inverse puts
-    /// back what the setting was. The keys are at the frames that the other keys of the clip
-    /// are at ([`crate::keyframes`]).
+    /// the path of the setting in the `params` of the node: `n4.center.x`, or `n7.points.2.x`
+    /// for a number of the third point of a Polygon. Its inverse puts back what the setting
+    /// was. The keys are at the frames that the other keys of the clip are at
+    /// ([`crate::keyframes`]).
     SetFusionKeys {
         /// The timeline of the clip.
         timeline: Id,
@@ -1321,7 +1322,9 @@ pub enum OpError {
     /// `label` (the name of a bus); and of a group of tracks, `members` and `linked` (one twice).
     /// Of a composition ([`crate::fusion`]): `fusion_nodes` (more nodes than it may have),
     /// `fusion_id` (the id of a node with a dot in it), and a setting of a node by its kind
-    /// and its path, such as `merge.blend`, `transform.center.x` or `background.color.a`.
+    /// and its path, such as `merge.blend`, `transform.center.x`, `background.color.a` or
+    /// `ellipse.soft_edge`; of a Polygon, `polygon.points` (more points than it may have) and
+    /// `polygon.points.x` or `polygon.points.y` (a number of one of its points).
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -1956,6 +1959,7 @@ fn range_message(what: &str) -> String {
         "lut" => "the path of the LUT is empty, too long or holds a NUL".into(),
         "param" => "the node has no such setting".into(),
         "fusion_nodes" => format!("a composition has at most {MOST_NODES} nodes"),
+        "polygon.points" => format!("a Polygon has at most {MOST_POINTS} points"),
         "fusion_id" => "the id of a node of a composition has a dot in it, which ends the id \
                         in the path of a setting"
             .into(),

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Blend, Ellipsis, ImagePlus, Move, Square, X } from 'lucide-react';
+import { Blend, Circle, Ellipsis, ImagePlus, Move, Pentagon, RectangleHorizontal, Square, X } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
@@ -32,7 +32,10 @@ const HOLD_MS = 1500;
 const ZOOM_STEP = 1.25;
 const NO_PLACES: Placed = {};
 /** The face of the button that adds a node of each kind. */
-const ADD_ICONS = { merge: Blend, transform: Move, background: Square, media_in: ImagePlus } as const;
+const ADD_ICONS = {
+  merge: Blend, transform: Move, background: Square, media_in: ImagePlus,
+  rectangle: RectangleHorizontal, ellipse: Circle, polygon: Pentagon,
+} as const;
 
 /** The nodes that are chosen: the one chosen last, whose settings the Inspector shows where it is the only one, and the others. */
 export interface FusionSelection { current: string | null; others: readonly string[] }

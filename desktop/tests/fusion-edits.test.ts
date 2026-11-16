@@ -201,11 +201,26 @@ describe('the layout of a composition', () => {
   });
 
   it('names a node by its label, or by its kind and its number among those of its kind', () => {
-    const kinds = { media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background' };
+    const kinds = {
+      media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
+      rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon',
+    };
     const labelled: Composition = { ...comp(), nodes: [...comp().nodes.map(node => (node.id === 'n4' ? { ...node, label: 'Over the sky' } : node)), transform('n6')] };
     expect([...namesOf(labelled, kinds)]).toEqual([
       ['MediaIn1', 'MediaIn 1'], ['MediaOut1', 'MediaOut 1'], ['n3', 'Transform 1'], ['n4', 'Over the sky'], ['n5', 'Background 1'], ['n6', 'Transform 2'],
     ]);
+  });
+
+  it('makes a mask of each kind with every setting, as the engine writes a new one, and knows the mask that comes into it', () => {
+    const common = { level: 1, soft_edge: 0, border_width: 0, invert: false, solid: true, paint_mode: 'merge', center: { x: 0.5, y: 0.5 } };
+    const base = { label: '', pass_through: false, pos: null };
+    expect(newNode('rectangle', null, 'r1')).toStrictEqual({ id: 'r1', ...base, kind: 'rectangle', params: { ...common, width: 0.5, height: 0.5, corner_radius: 0, angle: 0 } });
+    expect(newNode('ellipse', null, 'e1')).toStrictEqual({ id: 'e1', ...base, kind: 'ellipse', params: { ...common, width: 0.5, height: 0.5, angle: 0 } });
+    expect(newNode('polygon', null, 'p1')).toStrictEqual({ id: 'p1', ...base, kind: 'polygon', params: { ...common, size: 1, angle: 0, points: [], fill: 'alternate' } });
+    for (const kind of ['rectangle', 'ellipse', 'polygon'] as const) {
+      expect(INPUTS[kind]).toEqual(['mask']);
+      expect(hasOutput(kind)).toBe(true);
+    }
   });
 });
 

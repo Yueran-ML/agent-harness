@@ -706,8 +706,34 @@ export interface FusionMerge {
 export interface FusionTransform { center: FusionCenter; size: Param; angle: Param; flip_horizontal: boolean; flip_vertical: boolean }
 /** The settings of a Background node: one colour, each channel from 0 to 1, not premultiplied by its alpha. */
 export interface FusionBackground { color: { r: Param; g: Param; b: Param; a: Param } }
-/** An input of a node of a composition, by its name: `input` of a `media_out` and a `transform`, the two of a `merge`. */
-export type FusionInput = 'input' | 'background' | 'foreground';
+/** How the mask of a node is combined with the mask that comes into it (Paint Mode): read only where one comes in. */
+export type FusionPaintMode = 'merge' | 'add' | 'subtract';
+/** Which regions of a Polygon are inside it (Fill Method): `alternate` leaves a hole where its outline lies over itself. */
+export type FusionFillMethod = 'alternate' | 'non_zero_winding';
+/**
+ * The controls that every mask node has (Reference Manual 20, Chapter 108): `level` from 0 to 1; `soft_edge`
+ * (0…1) and `border_width` (−1…1) in widths of the picture; and three that take no keys.
+ */
+export interface FusionMaskCommon { level: Param; soft_edge: Param; border_width: Param; invert: boolean; solid: boolean; paint_mode: FusionPaintMode }
+/** The settings of a Rectangle mask: its `width` in widths of the picture and its `height` in heights of it; `corner_radius` from 0 to 1. */
+export interface FusionRectangle extends FusionMaskCommon { center: FusionCenter; width: Param; height: Param; corner_radius: Param; angle: Param }
+/** The settings of an Ellipse mask: its `width` and its `height` both in widths of the picture, so that alike they are a circle. */
+export interface FusionEllipse extends FusionMaskCommon { center: FusionCenter; width: Param; height: Param; angle: Param }
+/** A point of a Polygon mask, from its centre: `x` to the right and `y` up, both in widths of the picture, each −16…16. */
+export interface FusionPoint { x: Param; y: Param }
+/**
+ * The settings of a Polygon mask: its points, each from `center`, multiplied by `size` and turned by
+ * `angle`. Each number of a point takes keys (`points.2.x`); the list is set whole. At most 128 points;
+ * fewer than three are a mask of nothing.
+ */
+export interface FusionPolygon extends FusionMaskCommon { center: FusionCenter; size: Param; angle: Param; points: FusionPoint[]; fill: FusionFillMethod }
+/**
+ * An input of a node of a composition, by its name: `input` of a `media_out` and a `transform`, the two
+ * pictures of a `merge`, and `mask`, the effect mask of a `merge`, a `transform` and a `background` and
+ * the mask that comes into a mask node. A `mask` reads the alpha of the picture linked to it (a mask node
+ * gives white premultiplied by its mask); not linked, it is no mask.
+ */
+export type FusionInput = 'input' | 'background' | 'foreground' | 'mask';
 /**
  * A node of a composition. Its id is unique within its composition only, and has no dot in it; its
  * `params` are those of its kind, and an object with no fields for `media_in` and `media_out`. The
@@ -719,7 +745,10 @@ export type FusionNode = { id: string; label: string; pass_through?: boolean; po
   | { kind: 'media_out'; params: Record<string, never> }
   | { kind: 'merge'; params: FusionMerge }
   | { kind: 'transform'; params: FusionTransform }
-  | { kind: 'background'; params: FusionBackground });
+  | { kind: 'background'; params: FusionBackground }
+  | { kind: 'rectangle'; params: FusionRectangle }
+  | { kind: 'ellipse'; params: FusionEllipse }
+  | { kind: 'polygon'; params: FusionPolygon });
 export type FusionKind = FusionNode['kind'];
 /** A link from the output of node `from` into the input `input` of node `to`. */
 export interface FusionLink { from: string; to: string; input: FusionInput }

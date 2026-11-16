@@ -111,6 +111,15 @@
 //! read as 0, and one beyond 0 and 1 as the nearer of them. So every value of a mask is a number
 //! from 0 to 1.
 //!
+//! # The nodes of a composition
+//!
+//! The mask nodes of a composition ([`columbina_model::fusion`]) keep these settings, by these
+//! names (but `center`, as Fusion writes it), in these units, within these ranges and with
+//! these values at first, each number a number or keys; the tests of this module hold the two
+//! together. [`of_node`] makes a node as it is at a frame the [`Shape`] and the [`Common`] of
+//! the maths. In a composition a mask is a picture, white premultiplied by its value, and an
+//! incoming mask is the alpha of the picture that is linked to the `mask` input of the node.
+//!
 //! # What is not here
 //!
 //! - The other mask nodes: `B-Spline`, Triangle, Bitmap, Ranges, Wand and Mask Paint, and the
@@ -146,6 +155,8 @@
 )]
 
 use std::f32::consts::FRAC_1_SQRT_2;
+
+use columbina_model::fusion::{self as model, FusedKind};
 
 use crate::grade::maths::smoothstep;
 
@@ -991,6 +1002,105 @@ pub fn mask(
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------------------------
+// The mask nodes of a composition
+// ---------------------------------------------------------------------------------------------
+//
+// The settings of the mask nodes of the model (`columbina_model::fusion`) are these, by the
+// same names (but `center`, as Fusion writes it), in the same units, within the same ranges and
+// with the same values at first: the tests hold the two together. A node of a composition at a
+// moment is made the shape and the controls of the maths here, and nowhere else.
+
+impl From<model::PaintMode> for PaintMode {
+    fn from(mode: model::PaintMode) -> Self {
+        match mode {
+            model::PaintMode::Merge => Self::Merge,
+            model::PaintMode::Add => Self::Add,
+            model::PaintMode::Subtract => Self::Subtract,
+        }
+    }
+}
+
+impl From<model::FillMethod> for FillMethod {
+    fn from(fill: model::FillMethod) -> Self {
+        match fill {
+            model::FillMethod::Alternate => Self::Alternate,
+            model::FillMethod::NonZeroWinding => Self::NonZeroWinding,
+        }
+    }
+}
+
+impl From<&model::Masked> for Common {
+    fn from(common: &model::Masked) -> Self {
+        Self {
+            level: common.level as f32,
+            soft_edge: common.soft_edge as f32,
+            border_width: common.border_width as f32,
+            invert: common.invert,
+            solid: common.solid,
+            paint_mode: common.paint_mode.into(),
+        }
+    }
+}
+
+impl From<&model::RectangleShape> for Rectangle {
+    fn from(shape: &model::RectangleShape) -> Self {
+        Self {
+            centre: shape.center.map(|place| place as f32),
+            width: shape.width as f32,
+            height: shape.height as f32,
+            corner_radius: shape.corner_radius as f32,
+            angle: shape.angle as f32,
+        }
+    }
+}
+
+impl From<&model::EllipseShape> for Ellipse {
+    fn from(shape: &model::EllipseShape) -> Self {
+        Self {
+            centre: shape.center.map(|place| place as f32),
+            width: shape.width as f32,
+            height: shape.height as f32,
+            angle: shape.angle as f32,
+        }
+    }
+}
+
+impl From<&model::PolygonShape> for Polygon {
+    fn from(shape: &model::PolygonShape) -> Self {
+        Self {
+            centre: shape.center.map(|place| place as f32),
+            size: shape.size as f32,
+            angle: shape.angle as f32,
+            points: shape
+                .points
+                .iter()
+                .map(|&[x, y]| [x as f32, y as f32])
+                .collect(),
+            fill: shape.fill.into(),
+        }
+    }
+}
+
+/// The shape and the controls of a mask node of a composition at one moment, as the maths
+/// takes them: of a Rectangle, an Ellipse and a Polygon. None of a node that makes no mask.
+/// The mask that comes into the node is not among them: it is the `incoming` of [`mask`].
+#[must_use]
+pub fn of_node(kind: &FusedKind) -> Option<(Shape, Common)> {
+    match kind {
+        FusedKind::Rectangle { common, shape, .. } => {
+            Some((Shape::Rectangle(shape.into()), common.into()))
+        }
+        FusedKind::Ellipse { common, shape, .. } => {
+            Some((Shape::Ellipse(shape.into()), common.into()))
+        }
+        FusedKind::Polygon { common, shape, .. } => {
+            Some((Shape::Polygon(shape.into()), common.into()))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1911,6 +2021,182 @@ mod tests {
         let shape = Shape::Ellipse(Ellipse::default());
         let incoming = [0.0; 7];
         let _ = mask(4, 2, &shape, &Common::default(), Some(incoming.as_slice()));
+    }
+
+    #[test]
+    fn the_masks_of_the_model_have_these_settings_by_their_ranges_and_first_values() {
+        use columbina_model::fusion::bounds;
+        // What a mask node of the model is at first, at any frame, is what these are at first.
+        let rectangle = model::Rectangle::default();
+        assert_eq!(Rectangle::from(&rectangle.at(12.0)), Rectangle::default());
+        assert_eq!(Common::from(&rectangle.common_at(12.0)), Common::default());
+        let ellipse = model::Ellipse::default();
+        assert_eq!(Ellipse::from(&ellipse.at(12.0)), Ellipse::default());
+        assert_eq!(Common::from(&ellipse.common_at(12.0)), Common::default());
+        let polygon = model::Polygon::default();
+        assert_eq!(Polygon::from(&polygon.at(12.0)), Polygon::default());
+        assert_eq!(Common::from(&polygon.common_at(12.0)), Common::default());
+        // Each range of the model is the range of that setting here, with the same value at
+        // first: what the model takes these take, and what it refuses these refuse.
+        for (name, theirs, ours) in [
+            ("level", bounds::MASK_LEVEL, LEVEL),
+            ("soft_edge", bounds::MASK_SOFT_EDGE, SOFT_EDGE),
+            ("border_width", bounds::MASK_BORDER_WIDTH, BORDER_WIDTH),
+            ("center", bounds::MASK_CENTER, CENTRE),
+            ("width and height", bounds::MASK_EXTENT, EXTENT),
+            ("corner_radius", bounds::MASK_CORNER_RADIUS, CORNER_RADIUS),
+            ("angle", bounds::MASK_ANGLE, ANGLE),
+            ("size", bounds::MASK_SIZE, SIZE),
+            ("points", bounds::MASK_POINT, POINT),
+        ] {
+            let ours = [ours.default, ours.low, ours.high].map(f64::from);
+            assert_eq!([theirs.default, theirs.low, theirs.high], ours, "{name}");
+        }
+        // Every Paint Mode and Fill Method of the model is one of these.
+        for (theirs, ours) in [
+            (model::PaintMode::Merge, PaintMode::Merge),
+            (model::PaintMode::Add, PaintMode::Add),
+            (model::PaintMode::Subtract, PaintMode::Subtract),
+        ] {
+            assert_eq!(PaintMode::from(theirs), ours);
+        }
+        assert_eq!(model::PaintMode::default(), model::PaintMode::Merge);
+        assert_eq!(
+            FillMethod::from(model::FillMethod::Alternate),
+            FillMethod::Alternate
+        );
+        assert_eq!(
+            FillMethod::from(model::FillMethod::NonZeroWinding),
+            FillMethod::NonZeroWinding
+        );
+        // A node of the model as it is at first is refused by none of the checks here.
+        for kind in [
+            model::Kind::Rectangle,
+            model::Kind::Ellipse,
+            model::Kind::Polygon,
+        ] {
+            let mut composition = model::Composition::default();
+            composition.nodes.push(model::Node::new("m", kind));
+            let link = model::Link::new("m", model::MEDIA_OUT, model::Input::Input);
+            composition.links = vec![link];
+            let fused = composition.at(0.0);
+            let (shape, common) = of_node(&fused.nodes[0].kind).expect("a mask");
+            assert_eq!(shape.check(), Ok(()), "{kind:?}");
+            assert_eq!(common.check(), Ok(()), "{kind:?}");
+            assert_eq!(common, Common::default(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a node of each kind, setting by setting"
+    )]
+    fn a_mask_node_of_the_model_at_a_frame_is_its_shape_and_its_controls_here() {
+        use columbina_model::grade::{Interp, Key, Param};
+        // From `from` at frame 0 to `to` at frame 10, on a straight line.
+        let rising = |from: f64, to: f64| {
+            let key = |frame: i64, value: f64| Key {
+                frame,
+                value,
+                interp: Interp::Linear,
+            };
+            Param::Keys(vec![key(0, from), key(10, to)])
+        };
+        let polygon = model::Polygon {
+            level: rising(0.0, 1.0),
+            soft_edge: Param::Fixed(0.25),
+            border_width: Param::Fixed(-0.5),
+            invert: true,
+            solid: false,
+            paint_mode: model::PaintMode::Subtract,
+            center: model::Center {
+                x: Param::Fixed(0.25),
+                y: rising(0.0, 1.5),
+            },
+            size: Param::Fixed(2.0),
+            angle: Param::Fixed(90.0),
+            points: vec![
+                model::Point::new(-0.25, 0.0),
+                model::Point {
+                    x: rising(0.0, 0.5),
+                    y: Param::Fixed(0.125),
+                },
+            ],
+            fill: model::FillMethod::NonZeroWinding,
+        };
+        let kind = FusedKind::Polygon {
+            mask: None,
+            common: polygon.common_at(5.0),
+            shape: polygon.at(5.0),
+        };
+        let shape = Polygon {
+            centre: [0.25, 0.75],
+            size: 2.0,
+            angle: 90.0,
+            points: vec![[-0.25, 0.0], [0.25, 0.125]],
+            fill: FillMethod::NonZeroWinding,
+        };
+        let common = Common {
+            level: 0.5,
+            soft_edge: 0.25,
+            border_width: -0.5,
+            invert: true,
+            solid: false,
+            paint_mode: PaintMode::Subtract,
+        };
+        assert_eq!(of_node(&kind), Some((Shape::Polygon(shape), common)));
+        let rectangle = model::Rectangle {
+            width: Param::Fixed(1.0),
+            height: Param::Fixed(0.25),
+            corner_radius: Param::Fixed(0.5),
+            angle: rising(0.0, 90.0),
+            ..model::Rectangle::default()
+        };
+        // The mask that comes into the node is not of its shape or of its controls.
+        let kind = FusedKind::Rectangle {
+            mask: Some(3),
+            common: rectangle.common_at(5.0),
+            shape: rectangle.at(5.0),
+        };
+        let shape = Rectangle {
+            centre: [0.5, 0.5],
+            width: 1.0,
+            height: 0.25,
+            corner_radius: 0.5,
+            angle: 45.0,
+        };
+        assert_eq!(
+            of_node(&kind),
+            Some((Shape::Rectangle(shape), Common::default()))
+        );
+        let ellipse = model::Ellipse {
+            width: rising(0.0, 0.5),
+            height: Param::Fixed(0.125),
+            ..model::Ellipse::default()
+        };
+        let kind = FusedKind::Ellipse {
+            mask: None,
+            common: ellipse.common_at(5.0),
+            shape: ellipse.at(5.0),
+        };
+        let shape = Ellipse {
+            centre: [0.5, 0.5],
+            width: 0.25,
+            height: 0.125,
+            angle: 0.0,
+        };
+        assert_eq!(
+            of_node(&kind),
+            Some((Shape::Ellipse(shape), Common::default()))
+        );
+        // A node that makes no mask has neither.
+        assert_eq!(of_node(&FusedKind::MediaIn), None);
+        let colour = FusedKind::Background {
+            rgba: [0.0, 0.0, 0.0, 1.0],
+            mask: Some(0),
+        };
+        assert_eq!(of_node(&colour), None);
     }
 
     #[test]

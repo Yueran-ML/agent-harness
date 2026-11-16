@@ -2020,7 +2020,155 @@ fn fusion_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 }],
             },
         ),
+        (
+            "add_fusion_node of an ellipse, the effect mask of the merge",
+            merged(),
+            ellipse_node(),
+        ),
+        (
+            "add_fusion_node of a polygon with its points, into the mask of an ellipse",
+            masked(),
+            polygon_node(),
+        ),
+        (
+            "connect_fusion of a mask into the effect mask of a background",
+            masked(),
+            Op::ConnectFusion {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                link: fusion::Link::new("n11", "n10", Input::Mask),
+            },
+        ),
+        (
+            "disconnect_fusion of an effect mask",
+            masked(),
+            Op::DisconnectFusion {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                to: "n9".into(),
+                input: Input::Mask,
+            },
+        ),
+        (
+            "set_fusion_node of the controls of a mask",
+            masked(),
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n11".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "invert": true, "paint_mode": "subtract", "soft_edge": 0.05,
+                    "center": {"x": 0.25}, "height": 0.25,
+                })),
+            },
+        ),
+        (
+            "set_fusion_node of the points of a polygon, whole",
+            {
+                let mut setup = masked();
+                setup.push(polygon_node());
+                setup
+            },
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n12".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "fill": "alternate",
+                    "points": [{"x": -0.2, "y": 0}, {"x": 0.2, "y": 0}, {"x": 0, "y": 0.3},
+                        {"x": 0, "y": -0.3}],
+                })),
+            },
+        ),
+        (
+            "set_fusion_keys of a number of a point of a polygon",
+            {
+                let mut setup = masked();
+                setup.push(polygon_node());
+                setup
+            },
+            Op::SetFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n12.points.2.y".into(),
+                param: Param::Keys(vec![
+                    Key {
+                        frame: 0,
+                        value: 0.1,
+                        interp: Interp::Linear,
+                    },
+                    Key {
+                        frame: 24,
+                        value: 0.3,
+                        interp: Interp::Linear,
+                    },
+                ]),
+            },
+        ),
+        (
+            "splice_fusion_keys of the first keys of the soft edge of a mask",
+            masked(),
+            Op::SpliceFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n11.soft_edge".into(),
+                at: 0,
+                remove: 0,
+                keys: vec![Key {
+                    frame: 12,
+                    value: 0.1,
+                    interp: Interp::Hold,
+                }],
+            },
+        ),
     ]
+}
+
+/// Add an Ellipse, n11 after `merge_node` and `background_node`, as the effect mask of the
+/// Merge n9.
+fn ellipse_node() -> Op {
+    Op::AddFusionNode {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+        node: fusion::Node::new("", fusion::Kind::Ellipse),
+        index: None,
+        links: vec![fusion::Link::new("", "n9", Input::Mask)],
+    }
+}
+
+/// The operations that make c1 of its picture over a Background, the Merge n9 limited by
+/// the Ellipse n11.
+fn masked() -> Vec<Op> {
+    vec![
+        first_composition(),
+        merge_node(),
+        background_node(),
+        ellipse_node(),
+    ]
+}
+
+/// Add a Polygon, n12 after `masked`, as another program writes one: every setting, its
+/// three points, and its mask going into that of the Ellipse n11.
+fn polygon_node() -> Op {
+    written_op(serde_json::json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {
+            "id": "", "kind": "polygon", "label": "Garbage", "params": {
+                "level": 1, "soft_edge": 0.02, "border_width": 0, "invert": false,
+                "solid": true, "paint_mode": "subtract", "center": {"x": 0.5, "y": 0.5},
+                "size": 1, "angle": 0,
+                "points": [{"x": -0.2, "y": -0.1}, {"x": 0.2, "y": -0.1}, {"x": 0, "y": 0.1}],
+                "fill": "non_zero_winding",
+            },
+        },
+        "links": [{"from": "", "to": "n11", "input": "mask"}],
+    }))
 }
 
 /// The examples as they are written: one object to a line, in a list.

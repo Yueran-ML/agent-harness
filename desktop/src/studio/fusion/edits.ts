@@ -11,8 +11,8 @@
  */
 import type { Key } from '../../app/keys';
 import {
-  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionKind, type FusionLink, type FusionMerge, type FusionNode,
-  type FusionTransform, type NodePos, type Op,
+  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionEllipse, type FusionKind, type FusionLink, type FusionMaskCommon,
+  type FusionMerge, type FusionNode, type FusionPolygon, type FusionRectangle, type FusionTransform, type NodePos, type Op,
 } from '../engine';
 import { hasOutput, INPUTS } from './graph';
 
@@ -48,6 +48,14 @@ export const newMerge = (): FusionMerge => ({
 export const newTransform = (): FusionTransform => ({ center: { x: 0.5, y: 0.5 }, size: 1, angle: 0, flip_horizontal: false, flip_vertical: false });
 /** The settings of a Background as the engine makes a new one: opaque black. */
 export const newBackground = (): FusionBackground => ({ color: { r: 0, g: 0, b: 0, a: 1 } });
+/** The controls that every mask has, as the engine makes a new one: solid and whole, with a crisp edge and no border, not inverted. */
+const newMask = (): FusionMaskCommon => ({ level: 1, soft_edge: 0, border_width: 0, invert: false, solid: true, paint_mode: 'merge' });
+/** The settings of a Rectangle mask as the engine makes a new one: in the middle, half the picture wide and high. */
+export const newRectangle = (): FusionRectangle => ({ ...newMask(), center: { x: 0.5, y: 0.5 }, width: 0.5, height: 0.5, corner_radius: 0, angle: 0 });
+/** The settings of an Ellipse mask as the engine makes a new one: a circle in the middle, half the picture wide. */
+export const newEllipse = (): FusionEllipse => ({ ...newMask(), center: { x: 0.5, y: 0.5 }, width: 0.5, height: 0.5, angle: 0 });
+/** The settings of a Polygon mask as the engine makes a new one: no points yet. */
+export const newPolygon = (): FusionPolygon => ({ ...newMask(), center: { x: 0.5, y: 0.5 }, size: 1, angle: 0, points: [], fill: 'alternate' });
 
 /** A place as the editor keeps it: to a whole pixel, which is as near as a pointer puts a node. */
 const placeAt = (at: NodePos): NodePos => ({ x: Math.round(at.x), y: Math.round(at.y) });
@@ -59,6 +67,9 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
     case 'merge': return { ...base, kind, params: newMerge() };
     case 'transform': return { ...base, kind, params: newTransform() };
     case 'background': return { ...base, kind, params: newBackground() };
+    case 'rectangle': return { ...base, kind, params: newRectangle() };
+    case 'ellipse': return { ...base, kind, params: newEllipse() };
+    case 'polygon': return { ...base, kind, params: newPolygon() };
     default: return { ...base, kind, params: {} };
   }
 }

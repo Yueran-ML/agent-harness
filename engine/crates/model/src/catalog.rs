@@ -30,9 +30,10 @@
 //! that changes nothing: its entry gives the size that the clients give a new title, 72.
 //!
 //! And it lists what the nodes of the composition of a clip hold, of the Fusion page
-//! ([`fusion`]): the settings of a Merge, of a Transform and of a Background, in Fusion's own
-//! units ([`crate::fusion`]), each with the bounds that the model checks it against.
-//! [`crate::ops::Op::SetFusionKeys`] takes their paths, after the id of the node.
+//! ([`fusion`]): the settings of a Merge, of a Transform, of a Background and of the masks (a
+//! Rectangle, an Ellipse and a Polygon), in Fusion's own units ([`crate::fusion`]), each with
+//! the bounds that the model checks it against. [`crate::ops::Op::SetFusionKeys`] takes their
+//! paths, after the id of the node.
 
 use std::sync::OnceLock;
 
@@ -406,9 +407,84 @@ pub fn clip() -> &'static [Entry] {
     })
 }
 
+/// The entries of settings of a node of a composition, each given by its path, its bounds
+/// and its unit.
+fn fused(settings: &[(&str, Bounds, Unit)]) -> Vec<Entry> {
+    settings
+        .iter()
+        .map(|&(path, bounds, unit)| Entry {
+            path: path.to_owned(),
+            default: bounds.default,
+            low: bounds.low,
+            high: bounds.high,
+            unit,
+            page: Page::Fusion,
+            palette: Palette::Fusion,
+            clock: Clock::SourceFrame,
+        })
+        .collect()
+}
+
+/// The settings of a mask node of a composition that take keys: the controls that every mask
+/// has and where its middle is, and after them `shape`, those of its own shape. A length is
+/// in widths of the picture, but for the Height of a Rectangle.
+fn masked(shape: &[(&str, Bounds, Unit)]) -> Vec<Entry> {
+    use crate::fusion::bounds as f;
+    let mut all = fused(&[
+        ("level", f::MASK_LEVEL, Unit::Number),
+        ("soft_edge", f::MASK_SOFT_EDGE, Unit::Widths),
+        ("border_width", f::MASK_BORDER_WIDTH, Unit::Widths),
+        ("center.x", f::MASK_CENTER, Unit::Widths),
+        ("center.y", f::MASK_CENTER, Unit::Heights),
+    ]);
+    all.extend(fused(shape));
+    all
+}
+
+/// The settings of a mask node of a composition of a kind that take keys, in the order of
+/// its `params`. The two numbers of a point of a Polygon are listed once, with a star for the
+/// place of the point: `points.*.x`.
+fn mask(kind: crate::fusion::Kind) -> &'static [Entry] {
+    use crate::fusion::bounds as f;
+    use crate::fusion::Kind;
+    use Unit::{DegreesCounterclockwise, Heights, Number, Widths};
+    static RECTANGLE: OnceLock<Vec<Entry>> = OnceLock::new();
+    static ELLIPSE: OnceLock<Vec<Entry>> = OnceLock::new();
+    static POLYGON: OnceLock<Vec<Entry>> = OnceLock::new();
+    let angle = ("angle", f::MASK_ANGLE, DegreesCounterclockwise);
+    match kind {
+        Kind::Rectangle => RECTANGLE.get_or_init(|| {
+            masked(&[
+                ("width", f::MASK_EXTENT, Widths),
+                ("height", f::MASK_EXTENT, Heights),
+                ("corner_radius", f::MASK_CORNER_RADIUS, Number),
+                angle,
+            ])
+        }),
+        // The height of an ellipse is in widths, as its width is: alike, they are a circle.
+        Kind::Ellipse => ELLIPSE.get_or_init(|| {
+            masked(&[
+                ("width", f::MASK_EXTENT, Widths),
+                ("height", f::MASK_EXTENT, Widths),
+                angle,
+            ])
+        }),
+        Kind::Polygon => POLYGON.get_or_init(|| {
+            masked(&[
+                ("size", f::MASK_SIZE, Number),
+                angle,
+                ("points.*.x", f::MASK_POINT, Widths),
+                ("points.*.y", f::MASK_POINT, Widths),
+            ])
+        }),
+        Kind::MediaIn | Kind::MediaOut | Kind::Merge | Kind::Transform | Kind::Background => &[],
+    }
+}
+
 /// The settings of a node of a composition of a kind that take keys
 /// ([`crate::fusion`]), each named by its path in the `params` of the node: `center.x`. A
-/// `media_in` and a `media_out` have none.
+/// `media_in` and a `media_out` have none. A point of a Polygon is listed with a star for its
+/// place in the list of points: `points.*.x`.
 #[must_use]
 pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
     use crate::fusion::bounds as f;
@@ -417,21 +493,6 @@ pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
     static MERGE: OnceLock<Vec<Entry>> = OnceLock::new();
     static TRANSFORM: OnceLock<Vec<Entry>> = OnceLock::new();
     static BACKGROUND: OnceLock<Vec<Entry>> = OnceLock::new();
-    let listed = |settings: &[(&str, Bounds, Unit)]| -> Vec<Entry> {
-        settings
-            .iter()
-            .map(|&(path, bounds, unit)| Entry {
-                path: path.to_owned(),
-                default: bounds.default,
-                low: bounds.low,
-                high: bounds.high,
-                unit,
-                page: Page::Fusion,
-                palette: Palette::Fusion,
-                clock: Clock::SourceFrame,
-            })
-            .collect()
-    };
     // Where the middle of a picture is put, how large it is made and how far it is turned.
     let placed = [
         ("center.x", f::CENTER, Widths),
@@ -442,32 +503,34 @@ pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
     match kind {
         Kind::MediaIn | Kind::MediaOut => &[],
         Kind::Merge => MERGE.get_or_init(|| {
-            let mut all = listed(&[
+            let mut all = fused(&[
                 ("subtractive_additive", f::SUBTRACTIVE_ADDITIVE, Number),
                 ("alpha_gain", f::ALPHA_GAIN, Number),
                 ("burn_in", f::BURN_IN, Number),
                 ("blend", f::BLEND, Number),
             ]);
-            all.extend(listed(&placed));
+            all.extend(fused(&placed));
             all
         }),
-        Kind::Transform => TRANSFORM.get_or_init(|| listed(&placed)),
+        Kind::Transform => TRANSFORM.get_or_init(|| fused(&placed)),
         Kind::Background => BACKGROUND.get_or_init(|| {
-            listed(&[
+            fused(&[
                 ("color.r", f::COLOR, Number),
                 ("color.g", f::COLOR, Number),
                 ("color.b", f::COLOR, Number),
                 ("color.a", f::ALPHA, Number),
             ])
         }),
+        Kind::Rectangle | Kind::Ellipse | Kind::Polygon => mask(kind),
     }
 }
 
 /// The entry of a setting of a node of a composition of a kind, by its path in the `params`
-/// of the node, or none if it takes no keys.
+/// of the node, or none if it takes no keys. A point of a Polygon is found by its place:
+/// `points.2.x`.
 #[must_use]
 pub fn of_fusion(kind: crate::fusion::Kind, path: &str) -> Option<&'static Entry> {
-    fusion(kind).iter().find(|entry| entry.path == path)
+    fusion(kind).iter().find(|entry| lists(&entry.path, path))
 }
 
 /// The entry of a setting of a clip, by its path, or none if it takes no keys.
@@ -774,19 +837,51 @@ mod tests {
     }
 
     /// The kinds of node of a composition.
-    const FUSION_KINDS: [crate::fusion::Kind; 5] = [
+    const FUSION_KINDS: [crate::fusion::Kind; 8] = [
         crate::fusion::Kind::MediaIn,
         crate::fusion::Kind::MediaOut,
         crate::fusion::Kind::Merge,
         crate::fusion::Kind::Transform,
         crate::fusion::Kind::Background,
+        crate::fusion::Kind::Rectangle,
+        crate::fusion::Kind::Ellipse,
+        crate::fusion::Kind::Polygon,
     ];
+
+    /// A node of a kind as a new one is set; but a Polygon, which has no points at first,
+    /// with two, each at its centre, so that it has every setting that one may have.
+    fn first_of(kind: crate::fusion::Kind) -> crate::fusion::NodeKind {
+        use crate::fusion::{NodeKind, Point, Polygon};
+        if kind == crate::fusion::Kind::Polygon {
+            NodeKind::Polygon(Polygon {
+                points: vec![Point::new(0.0, 0.0), Point::new(0.0, 0.0)],
+                ..Polygon::default()
+            })
+        } else {
+            NodeKind::new(kind)
+        }
+    }
+
+    /// A path with a star in the stead of each place in a list, as the catalog writes it.
+    fn starred(path: &str) -> String {
+        let parts: Vec<&str> = path
+            .split('.')
+            .map(|part| {
+                if part.bytes().all(|byte| byte.is_ascii_digit()) {
+                    "*"
+                } else {
+                    part
+                }
+            })
+            .collect();
+        parts.join(".")
+    }
 
     #[test]
     fn every_setting_of_a_node_of_a_composition_that_takes_keys_is_listed_and_nothing_else() {
         use crate::fusion::NodeKind;
         for kind in FUSION_KINDS {
-            let whole = NodeKind::new(kind).params();
+            let whole = first_of(kind).params();
             let mut found = Vec::new();
             numbers(&whole, "", &mut found);
             let mut keyed = BTreeSet::new();
@@ -802,36 +897,59 @@ mod tests {
                 );
                 // What the catalog lists is what the operations on keys find, by that path.
                 assert_eq!(
-                    NodeKind::new(kind).setting_mut(path).is_some(),
+                    first_of(kind).setting_mut(path).is_some(),
                     takes_keys,
                     "{kind:?} {path}"
                 );
                 if takes_keys {
-                    keyed.insert(path.clone());
+                    keyed.insert(starred(path));
                 }
             }
             let listed: Vec<String> = fusion(kind).iter().map(|e| e.path.clone()).collect();
             assert_eq!(listed.iter().cloned().collect::<BTreeSet<_>>(), keyed);
-            // Each is listed once, in the order of the settings of the node.
-            assert_eq!(listed, NodeKind::new(kind).settings(), "{kind:?}");
+            // Each is listed once, in the order of the settings of the node: those of the
+            // points of a Polygon once for all of them.
+            let mut settings: Vec<String> = Vec::new();
+            for path in first_of(kind).settings() {
+                let path = starred(&path);
+                if !settings.contains(&path) {
+                    settings.push(path);
+                }
+            }
+            assert_eq!(listed, settings, "{kind:?}");
         }
         assert_eq!(fusion(crate::fusion::Kind::MediaIn), &[] as &[Entry]);
         assert_eq!(fusion(crate::fusion::Kind::MediaOut), &[] as &[Entry]);
         assert_eq!(fusion(crate::fusion::Kind::Merge).len(), 8);
         assert_eq!(fusion(crate::fusion::Kind::Transform).len(), 4);
         assert_eq!(fusion(crate::fusion::Kind::Background).len(), 4);
+        assert_eq!(fusion(crate::fusion::Kind::Rectangle).len(), 9);
+        assert_eq!(fusion(crate::fusion::Kind::Ellipse).len(), 8);
+        assert_eq!(fusion(crate::fusion::Kind::Polygon).len(), 9);
         // A setting is listed for the kind of node that has it, and what is no number is not.
         assert!(of_fusion(crate::fusion::Kind::Transform, "blend").is_none());
         assert!(of_fusion(crate::fusion::Kind::Merge, "apply").is_none());
         assert!(of_fusion(crate::fusion::Kind::Merge, "center").is_none());
         assert!(of_fusion(crate::fusion::Kind::Transform, "flip_vertical").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Ellipse, "corner_radius").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Rectangle, "solid").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Rectangle, "paint_mode").is_none());
+        // A point of a Polygon is found by its place, and is not a setting whole.
+        let polygon = crate::fusion::Kind::Polygon;
+        assert_eq!(
+            of_fusion(polygon, "points.12.y").unwrap().path,
+            "points.*.y"
+        );
+        assert!(of_fusion(polygon, "points.12").is_none());
+        assert!(of_fusion(polygon, "points").is_none());
+        assert!(of_fusion(polygon, "fill").is_none());
     }
 
     #[test]
     fn a_setting_of_a_composition_is_at_first_and_within_what_its_entry_says() {
         use crate::fusion::NodeKind;
         for kind in FUSION_KINDS {
-            let whole = NodeKind::new(kind).params();
+            let whole = first_of(kind).params();
             for entry in fusion(kind) {
                 assert_eq!(
                     (entry.page, entry.palette, entry.clock),
@@ -839,7 +957,11 @@ mod tests {
                     "{}",
                     entry.path
                 );
-                let first = crate::grade::at_path(&whole, &entry.path).unwrap();
+                // A setting of a point, as that of the first point.
+                let path = entry.path.replace('*', "0");
+                let first = whole
+                    .pointer(&format!("/{}", path.replace('.', "/")))
+                    .unwrap();
                 assert_eq!(first, &json!(entry.default), "{kind:?} {}", entry.path);
                 let step = (entry.high - entry.low) * 1e-9;
                 for (value, taken) in [
@@ -849,7 +971,7 @@ mod tests {
                     (entry.high + step, false),
                 ] {
                     let mut changed = whole.clone();
-                    put(&mut changed, &entry.path, json!(value));
+                    put(&mut changed, &path, json!(value));
                     let node = NodeKind::from_params(kind, changed).unwrap();
                     assert_eq!(
                         node.check().is_ok(),

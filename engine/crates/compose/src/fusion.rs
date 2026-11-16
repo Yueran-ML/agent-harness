@@ -43,7 +43,13 @@
 //! - a node that changes nothing is no pass: its picture is that of its input. So is a
 //!   Transform as it is at first, a Merge whose foreground gives no picture or whose Blend is
 //!   0 (its background), and a Merge as it is at first over no background (its foreground). A
-//!   node whose kind is not known here hands on the picture of its first input.
+//!   node whose kind is not known here hands on the picture of its first input;
+//! - the masks are not drawn yet. A Rectangle, an Ellipse and a Polygon are no pass, and read
+//!   as a picture each gives none; and the effect mask of a Merge, of a Transform and of a
+//!   Background is not applied: each is drawn as it is without one. So a composition with
+//!   masks is drawn as it is without them, and its mask nodes are told of as not drawn
+//!   ([`Fusion::unknown`]). What they are to do is told with the model
+//!   ([`columbina_model::fusion`], Masks), and their mathematics is [`crate::mask`].
 //!
 //! A composition whose `MediaOut` shows its `MediaIn`, as the one that a clip has at first
 //! does, has no pass at all: its layer is drawn as that of a clip without a composition, to
@@ -380,21 +386,30 @@ pub(crate) fn plan(composition: &Fused, size: (u32, u32), luma: [f32; 3], source
         };
         let reads = match &node.kind {
             FusedKind::MediaIn if source => Reads::Source,
-            FusedKind::MediaIn => Reads::Nothing,
-            FusedKind::Background { rgba } => match filled(*rgba) {
+            // A `MediaIn` of a source that gives no picture. And a mask node, which is not
+            // drawn yet: read as a picture it gives none, and it does not hand on the mask
+            // that comes into it, which is no picture of its own.
+            FusedKind::MediaIn
+            | FusedKind::Rectangle { .. }
+            | FusedKind::Ellipse { .. }
+            | FusedKind::Polygon { .. } => Reads::Nothing,
+            // The effect mask of a Background, of a Transform and of a Merge is not applied
+            // yet: each is drawn as it is without one.
+            FusedKind::Background { rgba, .. } => match filled(*rgba) {
                 Some(colour) => {
                     passes.push(Pass::Fill(colour));
                     Reads::Pass(passes.len() - 1)
                 }
                 None => Reads::Nothing,
             },
-            FusedKind::Transform { input, settings } => {
-                transformed(read(*input), settings, size, luma, &mut passes)
-            }
+            FusedKind::Transform {
+                input, settings, ..
+            } => transformed(read(*input), settings, size, luma, &mut passes),
             FusedKind::Merge {
                 background,
                 foreground,
                 settings,
+                ..
             } => merged(
                 read(*background),
                 read(*foreground),
@@ -953,7 +968,7 @@ mod tests {
     }
 
     fn background(rgba: [f64; 4]) -> FusedKind {
-        FusedKind::Background { rgba }
+        FusedKind::Background { rgba, mask: None }
     }
 
     fn planned(nodes: Vec<FusedNode>, output: Option<usize>) -> Plan {
@@ -993,6 +1008,7 @@ mod tests {
         for angle in [0.0, 360.0, -720.0] {
             let kind = FusedKind::Transform {
                 input: Some(0),
+                mask: None,
                 settings: Transformed {
                     angle,
                     ..transform()
@@ -1017,6 +1033,7 @@ mod tests {
                         FusedKind::Merge {
                             background,
                             foreground,
+                            mask: None,
                             settings,
                         },
                     ),
@@ -1064,6 +1081,7 @@ mod tests {
         for (input, size) in [(Some(0), 0.0), (None, 2.0)] {
             let kind = FusedKind::Transform {
                 input,
+                mask: None,
                 settings: Transformed {
                     size,
                     ..transform()
@@ -1103,6 +1121,7 @@ mod tests {
                 FusedKind::Merge {
                     background: Some(1),
                     foreground: Some(0),
+                    mask: None,
                     settings: Merged {
                         center: [0.75, 0.5],
                         ..merge()
@@ -1113,6 +1132,7 @@ mod tests {
                 "flip",
                 FusedKind::Transform {
                     input: Some(2),
+                    mask: None,
                     settings: Transformed {
                         flip_horizontal: true,
                         ..transform()
@@ -1155,6 +1175,7 @@ mod tests {
                 "flip",
                 FusedKind::Transform {
                     input: Some(at),
+                    mask: None,
                     settings: Transformed {
                         flip_vertical: true,
                         ..transform()
@@ -1182,6 +1203,7 @@ mod tests {
                 "flip",
                 FusedKind::Transform {
                     input: Some(0),
+                    mask: None,
                     settings: Transformed {
                         flip_horizontal: true,
                         ..transform()
@@ -1194,6 +1216,7 @@ mod tests {
                 FusedKind::Merge {
                     background: Some(2),
                     foreground: Some(1),
+                    mask: None,
                     settings: Merged {
                         blend: 0.0,
                         ..merge()
@@ -1302,6 +1325,81 @@ mod tests {
         assert_eq!(drawn_size((1920, 1080), (0.0, 1080.0), 1.0, most), None);
     }
 
+    /// An Ellipse mask as it is at first, into which the mask `mask` comes.
+    fn ellipse(mask: Option<usize>) -> FusedKind {
+        FusedKind::Ellipse {
+            mask,
+            common: model::Ellipse::default().common_at(0.0),
+            shape: model::Ellipse::default().at(0.0),
+        }
+    }
+
+    #[test]
+    fn a_composition_with_masks_is_drawn_as_it_is_without_them() {
+        let rectangle = FusedKind::Rectangle {
+            mask: None,
+            common: model::Rectangle::default().common_at(0.0),
+            shape: model::Rectangle::default().at(0.0),
+        };
+        let fill = |mask| FusedKind::Background {
+            rgba: [0.0, 0.0, 0.0, 1.0],
+            mask,
+        };
+        let over = |background, foreground, mask| FusedKind::Merge {
+            background,
+            foreground,
+            mask,
+            settings: Merged {
+                center: [0.75, 0.5],
+                ..merge()
+            },
+        };
+        // The picture of the clip over a Background: the Merge limited by an Ellipse into
+        // which a Rectangle comes, and the Background by the Rectangle.
+        let masked = planned(
+            vec![
+                node("r", rectangle),
+                node("bg", fill(Some(0))),
+                node("in", FusedKind::MediaIn),
+                node("e", ellipse(Some(0))),
+                node("over", over(Some(1), Some(2), Some(3))),
+            ],
+            Some(4),
+        );
+        let plain = planned(
+            vec![
+                node("bg", fill(None)),
+                node("in", FusedKind::MediaIn),
+                node("over", over(Some(0), Some(1), None)),
+            ],
+            Some(2),
+        );
+        assert_eq!(masked, plain);
+        assert_eq!(masked.passes.len(), 2);
+        // A mask node is not drawn: read as a picture it gives none, whatever comes into it,
+        // and a Merge whose foreground it is is its background.
+        assert!(!is_drawn(&ellipse(None)));
+        assert_eq!(
+            planned(vec![node("e", ellipse(None))], Some(0)),
+            Plan::default()
+        );
+        let handed = planned(
+            vec![node("in", FusedKind::MediaIn), node("e", ellipse(Some(0)))],
+            Some(1),
+        );
+        assert_eq!(handed, Plan::default());
+        let under = planned(
+            vec![
+                node("bg", fill(None)),
+                node("e", ellipse(None)),
+                node("over", over(Some(0), Some(1), None)),
+            ],
+            Some(2),
+        );
+        assert_eq!(under.passes, vec![Pass::Fill([0.0, 0.0, 0.0, 1.0])]);
+        assert_eq!(under.output, Reads::Pass(0));
+    }
+
     #[test]
     fn the_uniform_of_a_pass_has_its_map_and_its_settings_as_the_maths_takes_them() {
         let settings = Merged {
@@ -1322,6 +1420,7 @@ mod tests {
                     FusedKind::Merge {
                         background: None,
                         foreground: Some(0),
+                        mask: None,
                         settings,
                     },
                 ),

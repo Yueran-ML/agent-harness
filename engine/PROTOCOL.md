@@ -3767,30 +3767,38 @@ nodes), has no `.` in it (`out_of_range` `fusion_id`: a dot ends it in the path 
 and is `n` + `next_id` where the engine makes it. `label` is at most 100 characters; `pos` is
 `{x, y}` or `null`, where the node lies in the node editor, as a node of a grade has it (see
 Grades). `pass_through` is Fusion's Pass Through (Ctrl-P): a node that is passed through hands
-on the picture of its **first** input as it is, and one that has no input then gives no
-picture. The engine always writes `pass_through` and `pos`, and reads a node without them as
-`false` and `null`. A composition has at most 256 nodes (`out_of_range` `fusion_nodes`).
+on the picture of its **first** input as it is (a `merge` its `background`, a `transform` its
+`input`, a mask node the mask that comes into it), and one that has no such input, a
+`media_in` or a `background`, then gives no picture: the effect mask of a node is not a picture
+that it hands on. The engine always writes `pass_through` and `pos`, and reads a node without
+them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
+`fusion_nodes`).
 
 | kind | inputs, the first first | output | `params` |
 |---|---|---|---|
 | `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, and mixed of two pictures where its `retime_process` is `frame_blend`). A composition may have several: they are the same picture; it need not have one |
 | `media_out` | `input` | — | `{}`: the picture that goes back to the timeline. A composition has **exactly one** (`one_media_out`). Where its input is not linked the clip is transparent |
-| `merge` | `background`, `foreground` | yes | the foreground laid over the background, below |
-| `transform` | `input` | yes | its picture moved, made larger or smaller, turned and flipped, below |
-| `background` | — | yes | `{"color": {"r", "g", "b", "a"}}`: one colour over the whole picture (the Solid type; no gradients), each channel from 0 to 1 and not premultiplied by `a`; opaque black at first |
+| `merge` | `background`, `foreground`, `mask` | yes | the foreground laid over the background, below |
+| `transform` | `input`, `mask` | yes | its picture moved, made larger or smaller, turned and flipped, below |
+| `background` | `mask` | yes | `{"color": {"r", "g", "b", "a"}}`: one colour over the whole picture (the Solid type; no gradients), each channel from 0 to 1 and not premultiplied by `a`; opaque black at first |
+| `rectangle` | `mask` | yes | the mask of a rectangle, below (Masks) |
+| `ellipse` | `mask` | yes | the mask of an ellipse, below (Masks) |
+| `polygon` | `mask` | yes | the mask of a polygon of straight sides, below (Masks) |
 
 An input that is not linked gives no picture: a transparent one of the size of the
-composition. The effect mask of a node, and the other kinds (masks, Blur, the keyers, the
-Tracker, Text+), are not there yet: a `kind` or an `input` that is not listed cannot be read.
+composition; but a `mask` that is not linked is **no mask** (Masks, below). The other kinds
+(Blur, the keyers, the Tracker, Text+) are not there yet: a `kind` or an `input` that is not
+listed cannot be read.
 
 **Links.** A link `{from, to, input}` goes from the output of node `from` into the input
 `input` of node `to`. An output may feed any number of inputs; an input takes at most one link
 (`input_linked`); a link into an input that its node has not is `no_input`, and one from a
 `media_out`, which has no output, `no_output`; a node that is not there is `missing` `node`.
-Links never make a loop (`loop`). **Links are kept in one order**, by `to` (compared as
-strings, byte by byte) and then by the name of `input` (so `background`, `foreground`,
-`input`); the engine sorts the links of every composition it is given and of every project it
-reads, and a client copy must keep them so to stay equal to the engine's.
+Links never make a loop (`loop`), through a `mask` neither. Links have no types: any output
+may go into any input. **Links are kept in one order**, by `to` (compared as strings, byte by
+byte) and then by the name of `input` (so `background`, `foreground`, `input`, `mask`); the
+engine sorts the links of every composition it is given and of every project it reads, and a
+client copy must keep them so to stay equal to the engine's.
 
 **Coordinates.** The settings of the nodes are in Fusion's own units, so that a number is what
 DaVinci shows for it and what a tracker gives: a place `center: {x, y}` is a share of the
@@ -3821,11 +3829,71 @@ settings these are, by the same names):
 
 Each of these numbers is a number or `{"keys": [...]}`, as a setting of a grade is (see
 Grades), and is refused out of its range as `out_of_range` with `what` the kind and the path:
-`merge.blend`, `merge.center.x`, `transform.size`, `background.color.a`. The ranges are the
-engine's own (the manual gives none); they are listed with the defaults and the units under
-`fusion_merge`, `fusion_transform` and `fusion_background` in
+`merge.blend`, `merge.center.x`, `transform.size`, `background.color.a`, `ellipse.soft_edge`.
+The ranges are the engine's own (the manual gives none but that of a Corner Radius); they are
+listed with the defaults and the units under `fusion_merge`, `fusion_transform`,
+`fusion_background`, `fusion_rectangle`, `fusion_ellipse` and `fusion_polygon` in
 `crates/model/tests/data/catalog.json` (page and palette `fusion`; an angle is in
-`degrees_counterclockwise`).
+`degrees_counterclockwise`). Every field of the `params` of a node is written, and all of them
+must be there where a node is given whole (`add_fusion_node`, `set_fusion`).
+
+**Masks.** A `rectangle`, an `ellipse` and a `polygon` each make a mask (Reference Manual 20,
+Chapter 108, pp. 2386–2426): 1 where the shape is and 0 where it is not. Their settings are
+those of the mathematics of the masks (`crates/compose/src/mask.rs`, which says what each makes
+of a pixel), by the same names, in the same units, within the same ranges and with the same
+values at first. Every mask has these controls:
+
+| field | default | range |
+|---|---|---|
+| `level` | 1 | 0…1: what the mask is multiplied by |
+| `soft_edge` | 0 | 0…1, in widths of the picture: how wide the ramp across the edge is; 0 is a crisp edge |
+| `border_width` | 0 | −1…1, in widths of the picture: solid, it is added to the shape, half of it on each side of the edge, or taken from it below 0; not solid, it is the line that is drawn |
+| `invert` | `false` | the mask is 1 where the shape is not; it takes no keys |
+| `solid` | `true` | the shape is filled; without it only its border is drawn; it takes no keys |
+| `paint_mode` | `merge` | how the mask is combined with the one that comes into its `mask`: `merge` (`i + m · (1 − i)`), `add` (`min(i + m, 1)`) or `subtract` (`max(i − m, 0)`), `m` this mask and `i` the incoming one; it takes no keys, and is read only where a mask comes in |
+
+and its shape:
+
+| kind | field | default | range |
+|---|---|---|---|
+| all three | `center.x`, `center.y` | 0.5 | −10…10: its middle, and of a `polygon` the place that its points are counted from |
+| `rectangle` | `width` | 0.5 | 0…10, in widths of the picture |
+| `rectangle` | `height` | 0.5 | 0…10, in **heights** of the picture: `width` 1 and `height` 1 are the whole picture |
+| `rectangle` | `corner_radius` | 0 | 0…1: from sharp corners to the short sides as half circles |
+| `ellipse` | `width`, `height` | 0.5 | 0…10, **both in widths** of the picture: alike, they are a circle in a picture of any shape |
+| `rectangle`, `ellipse`, `polygon` | `angle` | 0 | −36000…36000, degrees counter-clockwise, about `center` |
+| `polygon` | `size` | 1 | 0…10: what its points are multiplied by |
+| `polygon` | `points` | `[]` | a list of `{x, y}`, each from `center`, `x` to the right and `y` **up**, both in widths of the picture, each −16…16 (`polygon.points.x`, `polygon.points.y`); at most 128 points (`out_of_range` `polygon.points`); fewer than three are a mask of nothing |
+| `polygon` | `fill` | `alternate` | Fill Method: `alternate` (even-odd: a hole where the outline lies over itself) or `non_zero_winding`; it takes no keys |
+
+The `x` and the `y` of a point of a `polygon` each take keys on their own, as those of a point
+of a Polygon window do (see Grades); the list of points is set whole, by `set_fusion_node`
+with `params` `{"points": [...]}` (a list is put in place of a list, whole), so that a polygon
+has as many points at every frame. Its sides are straight: the Bezier handles of Fusion's
+polyline are not kept.
+
+A mask is a picture, so that a link need have no type (ours: Fusion keeps a mask as a picture
+of one channel):
+
+- What comes out of a mask node is **white premultiplied by the mask**: R, G, B and A are all
+  the value of the mask. It may be linked into any input, as the foreground of a `merge`.
+- A `mask` input reads the **alpha** of the picture that is linked to it, whatever made it: a
+  mask node, or the picture of a clip with an alpha of its own.
+- A `mask` that is not linked, or whose link brings no picture (it comes from a node that is
+  passed through and has nothing to hand on), is no mask: the node is not limited.
+
+What a mask does to the node whose `mask` it comes into:
+
+- a `transform` and a `merge`, which have a picture to hand on (`input`; `background`): where
+  the mask is 1 the result is the node's own, where it is 0 it is the picture of that first
+  input as it came in (transparent where that is not linked), and between them the two are
+  mixed by the value of the mask, channel by channel: `first + (own − first) · mask`;
+- a `background`, which makes its picture of nothing: its picture multiplied by the mask, all
+  four channels;
+- a mask node: the mask that comes in is combined with its own by its `paint_mode`. With
+  nothing coming in the mask is its own, whatever the mode.
+
+A node that is read through a `mask` alone is one that the picture depends on.
 
 **Frames of keys.** The keys of a composition count the frames that the other keys of its clip
 count (Frames of keys, in Grades): of media, the frames of the media, so that a key stays on
@@ -3871,9 +3939,12 @@ They name the clip by `timeline` and `clip`; each is refused on a clip that has 
   be), and a link that would close a loop is `loop`.
 - `set_fusion_keys` and `splice_fusion_keys` change one setting of a node that takes keys,
   named by `path`: the id of the node, a dot, and the path of the setting in the node's
-  `params`: `n4.blend`, `n4.center.x`, `n7.color.a`. A node that is not there is `missing`
-  `node`; a path that names no setting of the node's kind that takes keys (`n4.apply`, `n4`)
-  is `missing` with `what` `setting` and the path. They are `set_keys` and `splice_keys`
+  `params`: `n4.blend`, `n4.center.x`, `n7.color.a`, `n8.soft_edge`; a number of a point of a
+  `polygon` by the place of the point in `points`, from 0, written as a plain number:
+  `n9.points.2.x`. A node that is not there is `missing` `node`; a path that names no setting
+  of the node's kind that takes keys (`n4.apply`, `n4`, `n8.invert`, `n9.points`), or a point
+  that the polygon has not, is `missing` with `what` `setting` and the path. They are
+  `set_keys` and `splice_keys`
   otherwise: `at + remove` beyond the keys is `out_of_list`, a number becomes the keys that
   are put (its `done` then the `set_fusion_keys` of those keys), a setting keeps one key at
   least (`params`), and what either makes is checked as the node is. They are operations of
@@ -3904,7 +3975,8 @@ same `$name`; later operations name it where they name a node, and at the start 
 `missing` also names `fusion` (the composition of a clip that has none), and `node`, `link`
 and `setting` as for a grade; `wrong_track` `fusion` (a composition on a clip of sound);
 `loop`, `taken` `node`, `params`; and `out_of_range` `fusion_nodes`, `fusion_id`, `label`,
-`pos`, `links` and the settings of nodes by kind and path.
+`pos`, `links`, `polygon.points` (more points than a polygon may have) and the settings of
+nodes by kind and path (of a point of a polygon, `polygon.points.x` and `polygon.points.y`).
 
 ### Compositions in the picture
 
@@ -3912,7 +3984,15 @@ and `setting` as for a grade; `wrong_track` `fusion` (a composition on a clip of
 frame (`crates/model/src/resolve.rs`, `Layer::fusion`): the nodes that the picture of its
 `media_out` is made of, each after the nodes whose pictures it reads, each with its settings
 as the numbers that they are at the frame of the clip's keys. A node that nothing reads is not
-among them, and a node that is passed through is left out for the node that it hands on.
+among them, and a node that is passed through is left out for the node that it hands on. A node
+names its mask as it names its pictures, after them; a `mask` that is not linked, or that
+brings no picture, is none, and a node that is read as a mask alone is among them.
+
+**The masks are not drawn yet.** The compositor draws a composition that has masks as it is
+without them: the effect mask of a `merge`, of a `transform` and of a `background` is not
+applied, and a mask node that is read as a picture gives none (a `merge` whose foreground it is
+is its background). The engine logs `fusion_node_not_drawn` once, with the ids of the mask
+nodes of the first such composition that it draws.
 
 The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
 scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a

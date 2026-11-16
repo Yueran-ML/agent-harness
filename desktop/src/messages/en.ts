@@ -869,8 +869,11 @@ export const en = {
       fusionPage: {
         toolbar: 'Fusion page tools', clip: 'Clip', previousClip: 'Previous clip', nextClip: 'Next clip', noClip: 'No clip', viewer: 'Viewer',
         spline: 'Spline', splineEditor: 'Spline Editor', closeSpline: 'Close Spline Editor',
-        kinds: { media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background' },
-        inputs: { input: 'Input', background: 'Background', foreground: 'Foreground' },
+        kinds: {
+          media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
+          rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon',
+        },
+        inputs: { input: 'Input', background: 'Background', foreground: 'Foreground', mask: 'Effect Mask' },
         output: 'Output', passThrough: 'Pass Through', passedThrough: 'Passed through', rename: 'Rename',
         resetComposition: 'Reset Fusion Composition', removeComposition: 'Remove Composition', nodeName: 'Name',
         settings: {

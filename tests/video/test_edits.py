@@ -500,6 +500,103 @@ async def test_the_keys_of_a_setting_of_a_clip_are_set_by_its_path(tmp_path: Pat
         assert opacity(fake) == 0.5
 
 
+async def test_the_fake_engine_keeps_the_masks_of_a_composition(tmp_path: Path) -> None:
+    def composition(fake: fake_engine.Fake) -> Any:
+        return fake.project["timelines"][0]["tracks"][0]["clips"][0]["fusion"]
+
+    def node(name: str, kind: str, **params: Any) -> dict[str, Any]:
+        return {"id": name, "kind": kind, "label": "", "params": params}
+
+    def mask(kind: str, **shape: Any) -> dict[str, Any]:
+        # Every setting of a mask is written, as the engine writes a node: none is left out.
+        common = {
+            "level": 1.0,
+            "soft_edge": 0.0,
+            "border_width": 0.0,
+            "invert": False,
+            "solid": True,
+            "paint_mode": "merge",
+            "center": {"x": 0.5, "y": 0.5},
+        }
+        return node("", kind, **common, **shape)
+
+    def links(fake: fake_engine.Fake) -> list[tuple[str, str, str]]:
+        return [(link["from"], link["to"], link["input"]) for link in composition(fake)["links"]]
+
+    triangle = [{"x": -0.1, "y": -0.1}, {"x": 0.1, "y": -0.1}, {"x": 0.0, "y": 0.1}]
+    rising = {
+        "keys": [
+            {"frame": 0, "value": 0.1, "interp": "linear"},
+            {"frame": 24, "value": 0.3, "interp": "linear"},
+        ]
+    }
+    async with served(tmp_path / "film") as fake:
+        async with await Engine.attach(tmp_path / "film", program=fake_engine.__file__) as one:
+            await one.apply(
+                [edits.add_timeline("Cut", Rate(num=25, den=1), tracks=[edits.track("video")])]
+            )
+            await one.apply([edits.insert("t1", of_color("#000000ff", 50), 0)])
+            at = {
+                "timeline": "t1",
+                "clip": fake.project["timelines"][0]["tracks"][0]["clips"][0]["id"],
+            }
+            colour = {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}
+            first = {
+                "nodes": [node("bg", "background", **colour), node("out", "media_out")],
+                "links": [{"from": "bg", "to": "out", "input": "input"}],
+            }
+            await one.apply([{"op": "set_fusion", **at, "value": first}])
+
+            # An ellipse is the effect mask of the background, and a polygon comes into it.
+            ellipse = mask("ellipse", width=0.5, height=0.5, angle=0.0)
+            into = [{"from": "", "to": "bg", "input": "mask"}]
+            await one.apply([{"op": "add_fusion_node", **at, "node": ellipse, "links": into}])
+            e = composition(fake)["nodes"][-1]["id"]
+            polygon = mask("polygon", size=1.0, angle=0.0, points=triangle, fill="alternate")
+            into = [{"from": "", "to": e, "input": "mask"}]
+            await one.apply([{"op": "add_fusion_node", **at, "node": polygon, "links": into}])
+            p = composition(fake)["nodes"][-1]["id"]
+            kinds = [each["kind"] for each in composition(fake)["nodes"]]
+            assert kinds == ["background", "media_out", "ellipse", "polygon"]
+            # The links are in the engine's order: by the node, then by the name of the input.
+            assert links(fake) == sorted(
+                [(e, "bg", "mask"), (p, e, "mask"), ("bg", "out", "input")],
+                key=lambda link: (link[1], link[2]),
+            )
+
+            # A number of a point is keyed by the place of the point in the list.
+            path = f"{p}.points.2.y"
+            await one.apply([{"op": "set_fusion_keys", **at, "path": path, "param": rising}])
+            points = composition(fake)["nodes"][-1]["params"]["points"]
+            assert points == [triangle[0], triangle[1], {"x": 0.0, "y": rising}]
+            taken = {"op": "splice_fusion_keys", **at, "path": path, "at": 1, "remove": 1}
+            await one.apply([{**taken, "keys": []}])
+            assert composition(fake)["nodes"][-1]["params"]["points"][2]["y"] == {
+                "keys": [rising["keys"][0]]
+            }
+            soft = {"op": "set_fusion_keys", **at, "path": f"{e}.soft_edge", "param": 0.25}
+            await one.apply([soft])
+            assert composition(fake)["nodes"][2]["params"]["soft_edge"] == 0.25
+
+            # The controls of a mask are set by a patch, and the points of a polygon whole.
+            patch = {"fill": "non_zero_winding", "invert": True, "points": [{"x": 0.0, "y": 0.0}]}
+            await one.apply([{"op": "set_fusion_node", **at, "id": p, "params": patch}])
+            params = composition(fake)["nodes"][-1]["params"]
+            assert (params["fill"], params["invert"], params["solid"]) == (
+                "non_zero_winding",
+                True,
+                True,
+            )
+            assert params["points"] == [{"x": 0.0, "y": 0.0}]
+
+            # A mask is unlinked as another input is.
+            await one.apply([{"op": "disconnect_fusion", **at, "to": "bg", "input": "mask"}])
+
+        assert links(fake) == sorted(
+            [(p, e, "mask"), ("bg", "out", "input")], key=lambda link: (link[1], link[2])
+        )
+
+
 def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> None:
     opening = Keys(keys=[Key(frame=0, value=1.0), Key(frame=20, value=0.0)])
 

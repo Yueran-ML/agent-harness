@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use columbina_model::edit::copy_clips;
 use columbina_model::fusion::{
-    Composition, Fused, FusedKind, FusedNode, Input, Kind, Link, Node, NodeKind, MEDIA_IN,
-    MEDIA_OUT, MOST_NODES,
+    Composition, FillMethod, Fused, FusedKind, FusedNode, Input, Kind, Link, Node, NodeKind,
+    PaintMode, Point, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS,
 };
 use columbina_model::grade::{Composite, Interp, Key, Param, Pos, LONGEST_LABEL};
 use columbina_model::resolve::{video_at, Layer};
@@ -1424,18 +1424,20 @@ fn the_nodes_of_a_layer_are_those_that_its_media_out_reads_each_after_its_inputs
     assert_eq!(
         fused.nodes[0].kind,
         FusedKind::Background {
-            rgba: [0.0, 0.0, 0.0, 1.0]
+            rgba: [0.0, 0.0, 0.0, 1.0],
+            mask: None,
         }
     );
     let FusedKind::Merge {
         background,
         foreground,
+        mask,
         settings,
     } = &fused.nodes[2].kind
     else {
         panic!("n3 is a merge")
     };
-    assert_eq!((*background, *foreground), (Some(0), Some(1)));
+    assert_eq!((*background, *foreground, *mask), (Some(0), Some(1), None));
     // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20.
     assert_eq!((settings.blend, settings.apply), (0.5, Composite::Normal));
     assert_eq!((settings.center, settings.size), ([0.5, 0.5], 1.0));
@@ -1651,4 +1653,683 @@ fn a_replacing_source_takes_the_composition_with_its_keys_on_its_frames() {
     let id = replaced.id.clone();
     assert_eq!(x_keys(&project, &id), [(50, 0.0), (90, 1.0)]);
     assert_eq!(seen_at(&project, &[200, 220, 240]), [0.0, 0.5, 1.0]);
+}
+
+// Masks.
+
+/// The sample of `merged` with its Merge, n3, limited by an Ellipse, n5, into which the mask
+/// of a Rectangle, n6, comes: `next_id` is 7.
+fn masked() -> Project {
+    let mut project = merged();
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n3", Input::Mask)],
+        ),
+    );
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Rectangle),
+            vec![Link::new("", "n5", Input::Mask)],
+        ),
+    );
+    assert_eq!(project.next_id, 7);
+    project
+}
+
+/// A Polygon of points that have no keys, for the engine to give an id.
+fn polygon(points: &[[f64; 2]]) -> Node {
+    let mut node = Node::new("", Kind::Polygon);
+    if let NodeKind::Polygon(polygon) = &mut node.kind {
+        polygon.points = points.iter().map(|&[x, y]| Point::new(x, y)).collect();
+    }
+    node
+}
+
+/// `masked` with a triangle, the Polygon n7, that nothing reads: `next_id` is 8.
+fn with_a_polygon() -> Project {
+    let mut project = masked();
+    let triangle = polygon(&[[-0.1, -0.1], [0.1, -0.1], [0.0, 0.1]]);
+    applied(&mut project, add(triangle, vec![]));
+    assert_eq!(project.next_id, 8);
+    project
+}
+
+/// The Polygon n7 of c1.
+fn polygon_of(project: &Project) -> &columbina_model::fusion::Polygon {
+    match &composition(project, "c1").node("n7").unwrap().kind {
+        NodeKind::Polygon(polygon) => polygon,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The ids of the nodes that the layer of c1 draws at frame 20, in their order, with the
+/// place of the mask of each.
+fn drawn(project: &Project) -> Vec<(String, Option<usize>)> {
+    let fused = layer_at(project, 20).fusion.unwrap();
+    fused
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.kind.mask()))
+        .collect()
+}
+
+#[test]
+fn a_composition_without_masks_is_written_as_it_was_to_the_byte() {
+    // What the engine wrote of a Merge over a Background before there were masks.
+    let old = concat!(
+        r#"{"nodes":[{"id":"MediaIn1","kind":"media_in","label":"","pass_through":false,"#,
+        r#""pos":null,"params":{}},{"id":"MediaOut1","kind":"media_out","label":"","#,
+        r#""pass_through":false,"pos":null,"params":{}},{"id":"n3","kind":"merge","#,
+        r#""label":"","pass_through":false,"pos":null,"params":{"apply":"normal","#,
+        r#""operator":"over","subtractive_additive":1.0,"alpha_gain":1.0,"burn_in":0.0,"#,
+        r#""blend":1.0,"center":{"x":0.5,"y":0.5},"size":1.0,"angle":0.0}},{"id":"n4","#,
+        r#""kind":"background","label":"","pass_through":false,"pos":null,"params":"#,
+        r#"{"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0}}}],"links":[{"from":"n3","#,
+        r#""to":"MediaOut1","input":"input"},{"from":"n4","to":"n3","input":"background"},"#,
+        r#"{"from":"MediaIn1","to":"n3","input":"foreground"}]}"#,
+    );
+    let project = merged();
+    let written = serde_json::to_string(composition(&project, "c1")).unwrap();
+    assert_eq!(written, old);
+    let read: Composition = serde_json::from_str(old).unwrap();
+    assert_eq!(&read, composition(&project, "c1"));
+    assert_eq!(serde_json::to_string(&read).unwrap(), old);
+    // And a project with masks is read back as it was written, and written the same again.
+    let project = with_a_polygon();
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    assert_eq!(serde_json::to_string(&read).unwrap(), text);
+    let value = serde_json::to_value(&project).unwrap();
+    assert_eq!(Project::from_value(value).unwrap(), project);
+}
+
+#[test]
+fn a_mask_is_added_with_the_settings_of_its_kind_all_of_them_written() {
+    let mut project = masked();
+    let written = serde_json::to_value(composition(&project, "c1")).unwrap();
+    assert_eq!(
+        written["nodes"][4],
+        json!({
+            "id": "n5", "kind": "ellipse", "label": "", "pass_through": false, "pos": null,
+            "params": {
+                "level": 1.0, "soft_edge": 0.0, "border_width": 0.0, "invert": false,
+                "solid": true, "paint_mode": "merge", "center": {"x": 0.5, "y": 0.5},
+                "width": 0.5, "height": 0.5, "angle": 0.0,
+            },
+        })
+    );
+    assert_eq!(
+        written["nodes"][5]["params"],
+        json!({
+            "level": 1.0, "soft_edge": 0.0, "border_width": 0.0, "invert": false,
+            "solid": true, "paint_mode": "merge", "center": {"x": 0.5, "y": 0.5},
+            "width": 0.5, "height": 0.5, "corner_radius": 0.0, "angle": 0.0,
+        })
+    );
+    // A mask is the last of the inputs of its node, as the links are kept.
+    assert_eq!(
+        written["links"],
+        json!([
+            {"from": "n3", "to": "MediaOut1", "input": "input"},
+            {"from": "n4", "to": "n3", "input": "background"},
+            {"from": "MediaIn1", "to": "n3", "input": "foreground"},
+            {"from": "n5", "to": "n3", "input": "mask"},
+            {"from": "n6", "to": "n5", "input": "mask"},
+        ])
+    );
+    // A polygon as another program writes it, with every setting and its points.
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "polygon", "label": "Garbage", "params": {
+            "level": 0.75, "soft_edge": 0.01, "border_width": -0.005, "invert": true,
+            "solid": true, "paint_mode": "subtract", "center": {"x": 0.25, "y": 0.75},
+            "size": 2, "angle": 30,
+            "points": [{"x": -0.1, "y": -0.1}, {"x": 0.1, "y": -0.1}, {"x": 0, "y": 0.1}],
+            "fill": "non_zero_winding",
+        }},
+        "links": [{"from": "", "to": "n6", "input": "mask"}],
+    }))
+    .unwrap();
+    let (done, inverse) = applied(&mut project, op);
+    assert_eq!(inverse, remove("n7", Some(vec![])));
+    let Op::AddFusionNode { node, links, .. } = done else {
+        panic!("a node was added")
+    };
+    assert_eq!(node.id, "n7");
+    assert_eq!(links, [Link::new("n7", "n6", Input::Mask)]);
+    let polygon = polygon_of(&project);
+    assert_eq!(polygon.paint_mode, PaintMode::Subtract);
+    assert_eq!(polygon.fill, FillMethod::NonZeroWinding);
+    assert!(polygon.invert && polygon.solid);
+    assert_eq!(polygon.size, Param::Fixed(2.0));
+    assert_eq!(
+        polygon.points,
+        [
+            Point::new(-0.1, -0.1),
+            Point::new(0.1, -0.1),
+            Point::new(0.0, 0.1)
+        ]
+    );
+    // A new one has no points, and a mask whose settings are not all there cannot be read.
+    let NodeKind::Polygon(first) = Node::new("", Kind::Polygon).kind else {
+        panic!("it is a polygon")
+    };
+    assert_eq!(first.points, [] as [Point; 0]);
+    for params in [
+        json!({}),
+        json!({"level": 1.0, "soft_edge": 0.0, "border_width": 0.0, "invert": false,
+            "solid": true, "paint_mode": "merge", "center": {"x": 0.5, "y": 0.5},
+            "width": 0.5, "height": 0.5}),
+        json!({"level": 1.0, "soft_edge": 0.0, "border_width": 0.0, "invert": false,
+            "solid": true, "paint_mode": "merge", "center": {"x": 0.5, "y": 0.5},
+            "width": 0.5, "height": 0.5, "angle": 0.0, "corner_radius": 0.0}),
+    ] {
+        let node = json!({"id": "", "kind": "ellipse", "label": "", "params": params});
+        assert!(
+            serde_json::from_value::<Node>(node.clone()).is_err(),
+            "{node}"
+        );
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a refusal for each setting of each mask"
+)]
+fn the_settings_of_a_mask_are_those_of_its_kind_within_their_ranges() {
+    let mut project = with_a_polygon();
+    for (id, patch, what) in [
+        ("n5", json!({"level": 1.5}), "ellipse.level"),
+        ("n5", json!({"soft_edge": -0.1}), "ellipse.soft_edge"),
+        ("n5", json!({"border_width": 1.5}), "ellipse.border_width"),
+        ("n5", json!({"center": {"x": 10.5}}), "ellipse.center.x"),
+        ("n5", json!({"center": {"y": -10.5}}), "ellipse.center.y"),
+        ("n5", json!({"width": 10.5}), "ellipse.width"),
+        ("n5", json!({"height": -1}), "ellipse.height"),
+        ("n5", json!({"angle": 36001}), "ellipse.angle"),
+        ("n6", json!({"level": -0.5}), "rectangle.level"),
+        ("n6", json!({"soft_edge": 1.5}), "rectangle.soft_edge"),
+        (
+            "n6",
+            json!({"border_width": -1.5}),
+            "rectangle.border_width",
+        ),
+        ("n6", json!({"center": {"x": -11}}), "rectangle.center.x"),
+        ("n6", json!({"center": {"y": 11}}), "rectangle.center.y"),
+        ("n6", json!({"width": -0.5}), "rectangle.width"),
+        ("n6", json!({"height": 11}), "rectangle.height"),
+        (
+            "n6",
+            json!({"corner_radius": 1.5}),
+            "rectangle.corner_radius",
+        ),
+        ("n6", json!({"angle": -36001}), "rectangle.angle"),
+        ("n7", json!({"level": 2}), "polygon.level"),
+        ("n7", json!({"soft_edge": 2}), "polygon.soft_edge"),
+        ("n7", json!({"border_width": 2}), "polygon.border_width"),
+        ("n7", json!({"center": {"x": 10.5}}), "polygon.center.x"),
+        ("n7", json!({"center": {"y": 10.5}}), "polygon.center.y"),
+        ("n7", json!({"size": 10.5}), "polygon.size"),
+        ("n7", json!({"angle": 36000.5}), "polygon.angle"),
+        (
+            "n7",
+            json!({"points": [{"x": 16.5, "y": 0}]}),
+            "polygon.points.x",
+        ),
+        (
+            "n7",
+            json!({"points": [{"x": 0, "y": 0}, {"x": 0, "y": -16.5}]}),
+            "polygon.points.y",
+        ),
+    ] {
+        assert_eq!(
+            refused(&project, set_params(id, patch)),
+            range(what),
+            "{what}"
+        );
+    }
+    // A polygon has at most so many points.
+    let most: Vec<serde_json::Value> = (0..MOST_POINTS)
+        .map(|_| json!({"x": 0.0, "y": 0.0}))
+        .collect();
+    let mut more = most.clone();
+    more.push(json!({"x": 0.0, "y": 0.0}));
+    assert_eq!(
+        refused(&project, set_params("n7", json!({"points": more}))),
+        range("polygon.points")
+    );
+    // What is not a setting of the kind, or not written as one, is refused.
+    for (id, patch) in [
+        ("n5", json!({"paint_mode": "maximum"})),
+        ("n5", json!({"corner_radius": 0.5})),
+        ("n5", json!({"fill": "alternate"})),
+        ("n5", json!({"center": 0.5})),
+        ("n6", json!({"invert": 1})),
+        ("n6", json!({"size": 1.0})),
+        ("n7", json!({"points": [{"x": 0.0}]})),
+        ("n7", json!({"points": {"x": 0.0, "y": 0.0}})),
+        ("n7", json!({"fill": "even_odd"})),
+        ("n7", json!({"width": 0.5})),
+    ] {
+        let error = refused(&project, set_params(id, patch.clone()));
+        assert!(
+            matches!(&error, OpError::Params { node, .. } if node == id),
+            "{patch}: {error:?}"
+        );
+    }
+    // What is given is set, and set back by the inverse.
+    let params_of = |op: &Op| match op {
+        Op::SetFusionNode { params, .. } => params.clone(),
+        other => panic!("{other:?}"),
+    };
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({"invert": true, "solid": false, "paint_mode": "add", "border_width": 0.02,
+                "center": {"y": 0.25}}),
+        ),
+    );
+    assert_eq!(
+        params_of(&inverse),
+        Some(
+            json!({"invert": false, "solid": true, "paint_mode": "merge",
+            "border_width": 0.0, "center": {"y": 0.5}})
+        )
+    );
+    let NodeKind::Ellipse(ellipse) = &composition(&project, "c1").node("n5").unwrap().kind else {
+        panic!("n5 is an ellipse")
+    };
+    assert!(ellipse.invert && !ellipse.solid);
+    assert_eq!(ellipse.paint_mode, PaintMode::Add);
+    assert_eq!(ellipse.border_width, Param::Fixed(0.02));
+    assert_eq!(ellipse.center.y, Param::Fixed(0.25));
+    assert_eq!(ellipse.center.x, Param::Fixed(0.5));
+    // The points of a polygon are set whole: as many as it may have, and none.
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n7",
+            json!({"fill": "non_zero_winding", "points": [{"x": 0.25, "y": 0.5}]}),
+        ),
+    );
+    assert_eq!(
+        params_of(&inverse),
+        Some(json!({"fill": "alternate", "points": [
+            {"x": -0.1, "y": -0.1}, {"x": 0.1, "y": -0.1}, {"x": 0.0, "y": 0.1},
+        ]}))
+    );
+    assert_eq!(polygon_of(&project).points, [Point::new(0.25, 0.5)]);
+    applied(&mut project, set_params("n7", json!({"points": most})));
+    assert_eq!(polygon_of(&project).points.len(), MOST_POINTS);
+    applied(&mut project, set_params("n7", json!({"points": []})));
+    assert_eq!(polygon_of(&project).points, [] as [Point; 0]);
+    // The ends of each range are within it.
+    applied(
+        &mut project,
+        set_params(
+            "n6",
+            json!({"level": 0, "soft_edge": 1, "border_width": -1, "center": {"x": -10, "y": 10},
+                "width": 0, "height": 10, "corner_radius": 1, "angle": -36000}),
+        ),
+    );
+    applied(
+        &mut project,
+        set_params(
+            "n7",
+            json!({"size": 10, "angle": 36000, "points": [{"x": -16, "y": 16}]}),
+        ),
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines, reason = "a key for each setting of a mask")]
+fn the_keys_of_a_mask_are_set_by_the_paths_of_its_settings_and_of_its_points() {
+    let mut project = with_a_polygon();
+    for path in [
+        "n5.level",
+        "n5.soft_edge",
+        "n5.border_width",
+        "n5.center.x",
+        "n5.center.y",
+        "n5.width",
+        "n5.height",
+        "n5.angle",
+        "n6.height",
+        "n6.corner_radius",
+        "n7.size",
+        "n7.angle",
+        "n7.points.0.x",
+        "n7.points.2.y",
+    ] {
+        let rising = keys(&[(0, 0.0), (9, 0.25)]);
+        let (done, inverse) = applied(&mut project, set_keys("c1", path, rising.clone()));
+        assert_eq!(done, set_keys("c1", path, rising));
+        assert!(
+            matches!(
+                &inverse,
+                Op::SetFusionKeys {
+                    param: Param::Fixed(_),
+                    ..
+                }
+            ),
+            "{path}: {inverse:?}"
+        );
+    }
+    assert!(composition(&project, "c1").is_animated());
+    // A key of a point is put in place of another, and the first keys of a number of a
+    // point are done as the keys set whole.
+    let (done, inverse) = applied(
+        &mut project,
+        splice("n7.points.2.y", 1, 1, vec![key(5, 0.5)]),
+    );
+    assert_eq!(done, splice("n7.points.2.y", 1, 1, vec![key(5, 0.5)]));
+    assert_eq!(inverse, splice("n7.points.2.y", 1, 1, vec![key(9, 0.25)]));
+    let (done, inverse) = applied(
+        &mut project,
+        splice("n7.points.1.x", 0, 0, vec![key(3, 0.2)]),
+    );
+    assert_eq!(done, set_keys("c1", "n7.points.1.x", keys(&[(3, 0.2)])));
+    assert_eq!(inverse, set_keys("c1", "n7.points.1.x", Param::Fixed(0.1)));
+    let polygon = polygon_of(&project);
+    assert_eq!(polygon.points[2].y, keys(&[(0, 0.0), (5, 0.5)]));
+    assert_eq!(polygon.points[2].x, Param::Fixed(0.0));
+    assert_eq!(polygon.points[1].y, Param::Fixed(-0.1));
+    // The keys of a mask are moved with the frames that they count, as the others are.
+    let later = composition(&project, "c1").with_key_frames(&|frame| frame + 100);
+    let NodeKind::Polygon(moved) = &later.node("n7").unwrap().kind else {
+        panic!("n7 is a polygon")
+    };
+    assert_eq!(moved.points[2].y, keys(&[(100, 0.0), (105, 0.5)]));
+    assert_eq!(moved.points[1].x, keys(&[(103, 0.2)]));
+    // What is no number takes no keys, a kind has its own settings only, and a point is
+    // one that the polygon has, named by its place as the engine writes a number.
+    for path in [
+        "n5.invert",
+        "n5.solid",
+        "n5.paint_mode",
+        "n5.corner_radius",
+        "n5.center",
+        "n5.size",
+        "n6.points.0.x",
+        "n7.fill",
+        "n7.points",
+        "n7.points.0",
+        "n7.points.3.x",
+        "n7.points.x",
+        "n7.points.00.x",
+        "n7.points.-1.x",
+        "n7.width",
+    ] {
+        assert_eq!(
+            refused(&project, set_keys("c1", path, Param::Fixed(0.5))),
+            missing("setting", path),
+            "{path}"
+        );
+        assert_eq!(
+            refused(&project, splice(path, 0, 0, vec![key(0, 0.5)])),
+            missing("setting", path),
+            "{path}"
+        );
+    }
+    // What is put is checked as the node is.
+    assert_eq!(
+        refused(
+            &project,
+            set_keys("c1", "n7.points.0.y", Param::Fixed(16.5))
+        ),
+        range("polygon.points.y")
+    );
+    assert_eq!(
+        refused(
+            &project,
+            set_keys("c1", "n5.soft_edge", keys(&[(0, 0.0), (5, 1.5)]))
+        ),
+        range("ellipse.soft_edge")
+    );
+    assert_eq!(
+        refused(
+            &project,
+            splice("n6.corner_radius", 1, 0, vec![key(20, 1.5)])
+        ),
+        range("rectangle.corner_radius")
+    );
+    // The points set whole take the place of those that had keys: a point that is no
+    // longer there has no setting.
+    applied(
+        &mut project,
+        set_params("n7", json!({"points": [{"x": 0.0, "y": 0.0}]})),
+    );
+    assert_eq!(
+        refused(&project, set_keys("c1", "n7.points.2.y", Param::Fixed(0.0))),
+        missing("setting", "n7.points.2.y")
+    );
+}
+
+#[test]
+fn a_mask_is_linked_into_the_kinds_that_have_one_and_refused_elsewhere() {
+    let mut project = masked();
+    // A Transform, n7, between the Merge and the MediaOut.
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Transform),
+            vec![
+                Link::new("n3", "", Input::Input),
+                Link::new("", MEDIA_OUT, Input::Input),
+            ],
+        ),
+    );
+    // The mask of the rectangle limits a Background and a Transform too: one output may
+    // feed several inputs.
+    for to in ["n4", "n7"] {
+        let (done, inverse) = applied(&mut project, connect(Link::new("n6", to, Input::Mask)));
+        assert_eq!(done, connect(Link::new("n6", to, Input::Mask)));
+        assert_eq!(inverse, disconnect(to, Input::Mask));
+    }
+    // Any picture may be a mask, in place of the one that the input had.
+    let (_, inverse) = applied(
+        &mut project,
+        connect(Link::new(MEDIA_IN, "n3", Input::Mask)),
+    );
+    assert_eq!(inverse, connect(Link::new("n5", "n3", Input::Mask)));
+    applied(&mut project, inverse);
+    // And a mask may be a picture.
+    let (_, inverse) = applied(
+        &mut project,
+        connect(Link::new("n5", "n3", Input::Foreground)),
+    );
+    assert_eq!(
+        inverse,
+        connect(Link::new(MEDIA_IN, "n3", Input::Foreground))
+    );
+    applied(&mut project, inverse);
+    // A MediaIn and a MediaOut have no mask, and a mask node no input but its mask.
+    for node in [MEDIA_IN, MEDIA_OUT] {
+        assert_eq!(
+            refused(&project, connect(Link::new("n6", node, Input::Mask))),
+            OpError::NoInput {
+                node: node.into(),
+                input: Input::Mask
+            }
+        );
+    }
+    for input in [Input::Input, Input::Background, Input::Foreground] {
+        assert_eq!(
+            refused(&project, connect(Link::new(MEDIA_IN, "n5", input))),
+            OpError::NoInput {
+                node: "n5".into(),
+                input
+            }
+        );
+    }
+    // A loop through a mask is a loop.
+    assert_eq!(
+        refused(&project, connect(Link::new("n5", "n5", Input::Mask))),
+        OpError::Loop { node: "n5".into() }
+    );
+    for from in ["n3", "n7"] {
+        assert!(
+            matches!(
+                refused(&project, connect(Link::new(from, "n6", Input::Mask))),
+                OpError::Loop { .. }
+            ),
+            "{from}"
+        );
+    }
+    // A mask is unlinked as another input is.
+    let (_, inverse) = applied(&mut project, disconnect("n3", Input::Mask));
+    assert_eq!(inverse, connect(Link::new("n5", "n3", Input::Mask)));
+    assert_eq!(
+        refused(&project, disconnect("n3", Input::Mask)),
+        missing("link", "n3")
+    );
+    assert_eq!(
+        refused(&project, disconnect(MEDIA_IN, Input::Mask)),
+        missing("link", MEDIA_IN)
+    );
+}
+
+#[test]
+fn the_masks_of_a_layer_are_among_its_nodes_each_before_the_node_that_reads_it() {
+    let at = |id: &str, mask: Option<usize>| (id.to_owned(), mask);
+    let mut project = masked();
+    applied(
+        &mut project,
+        set_keys("c1", "n5.soft_edge", keys(&[(10, 0.0), (30, 0.5)])),
+    );
+    // The masks are read through `mask` alone, and are there: the pictures of a node
+    // before its mask, and a mask that is not linked none.
+    assert_eq!(
+        drawn(&project),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n6", None),
+            at("n5", Some(2)),
+            at("n3", Some(3))
+        ]
+    );
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    assert_eq!(fused.output, Some(4));
+    assert!(matches!(
+        fused.nodes[2].kind,
+        FusedKind::Rectangle { mask: None, .. }
+    ));
+    let FusedKind::Ellipse { common, shape, .. } = &fused.nodes[3].kind else {
+        panic!("n5 is an ellipse")
+    };
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20.
+    assert_eq!((common.level, common.soft_edge), (1.0, 0.25));
+    assert_eq!((common.solid, common.invert), (true, false));
+    assert_eq!(common.paint_mode, PaintMode::Merge);
+    assert_eq!(
+        (shape.center, shape.width, shape.height),
+        ([0.5, 0.5], 0.5, 0.5)
+    );
+    // A mask node that is passed through hands on the mask that comes into it.
+    let through = |id: &str| {
+        let mut op = set_node(id);
+        if let Op::SetFusionNode { pass_through, .. } = &mut op {
+            *pass_through = Some(true);
+        }
+        op
+    };
+    applied(&mut project, through("n5"));
+    assert_eq!(
+        drawn(&project),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n6", None),
+            at("n3", Some(2))
+        ]
+    );
+    // One into which none comes hands on none, and the Merge is not limited.
+    applied(&mut project, through("n6"));
+    assert_eq!(
+        drawn(&project),
+        [at("n4", None), at(MEDIA_IN, None), at("n3", None)]
+    );
+    // A node that is passed through does not hand on its effect mask: a Background that
+    // has one gives no picture.
+    let mut limited = masked();
+    applied(&mut limited, connect(Link::new("n6", "n4", Input::Mask)));
+    assert_eq!(
+        drawn(&limited),
+        [
+            at("n6", None),
+            at("n4", Some(0)),
+            at(MEDIA_IN, None),
+            at("n5", Some(0)),
+            at("n3", Some(3))
+        ]
+    );
+    applied(&mut limited, through("n4"));
+    assert_eq!(
+        drawn(&limited),
+        [
+            at(MEDIA_IN, None),
+            at("n6", None),
+            at("n5", Some(1)),
+            at("n3", Some(2))
+        ]
+    );
+    // A mask that is taken away leaves its node without one; with the links to put in its
+    // place, the mask that came into it comes into the node.
+    let mut bare = masked();
+    applied(&mut bare, remove("n5", None));
+    assert_eq!(
+        drawn(&bare),
+        [at("n4", None), at(MEDIA_IN, None), at("n3", None)]
+    );
+    let mut joined = masked();
+    let bridge = vec![Link::new("n6", "n3", Input::Mask)];
+    let (_, inverse) = applied(&mut joined, remove("n5", Some(bridge)));
+    assert!(matches!(&inverse, Op::AddFusionNode { links, .. } if links.len() == 2));
+    assert_eq!(
+        drawn(&joined),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n6", None),
+            at("n3", Some(2))
+        ]
+    );
+}
+
+#[test]
+fn a_change_of_a_mask_that_changes_nothing_makes_no_step() {
+    let mut history = History::new(masked());
+    let revision = history.revision();
+    for op in [
+        set_params(
+            "n5",
+            json!({"level": 1.0, "invert": false, "paint_mode": "merge"}),
+        ),
+        set_keys("c1", "n6.corner_radius", Param::Fixed(0.0)),
+        connect(Link::new("n5", "n3", Input::Mask)),
+    ] {
+        let nothing = history.change(vec![Change::Op(op.clone())], "desktop", |change, _| change);
+        assert_eq!(nothing.err(), Some(TransactionError::Empty), "{op:?}");
+    }
+    assert_eq!(history.revision(), revision);
+    assert!(!history.can_undo());
+    // One that changes something is a step, and is undone.
+    let before = history.project().clone();
+    history
+        .change(
+            vec![Change::Op(set_params("n5", json!({"invert": true})))],
+            "desktop",
+            |change, _| change,
+        )
+        .unwrap();
+    assert_ne!(history.project(), &before);
+    history.undo("desktop").unwrap().unwrap();
+    assert_eq!(history.project(), &before);
 }

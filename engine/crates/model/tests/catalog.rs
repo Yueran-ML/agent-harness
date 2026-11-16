@@ -24,7 +24,7 @@ fn listed(entries: &[Entry]) -> String {
 }
 
 /// The entries of each kind, under the name that they are written by.
-fn kinds() -> [(&'static str, &'static [Entry]); 9] {
+fn kinds() -> [(&'static str, &'static [Entry]); 11] {
     [
         ("corrector", corrector()),
         ("key_mixer", key_mixer()),
@@ -35,6 +35,8 @@ fn kinds() -> [(&'static str, &'static [Entry]); 9] {
         ("fusion_rectangle", fusion(Kind::Rectangle)),
         ("fusion_ellipse", fusion(Kind::Ellipse)),
         ("fusion_polygon", fusion(Kind::Polygon)),
+        ("fusion_blur", fusion(Kind::Blur)),
+        ("fusion_mosaic", fusion(Kind::Mosaic)),
     ]
 }
 

@@ -744,7 +744,7 @@ export const zhCN: Messages = {
         spline: '样条线', splineEditor: '样条线编辑器', closeSpline: '关闭样条线编辑器',
         kinds: {
           media_in: '媒体输入', media_out: '媒体输出', merge: '合并', transform: '变换', background: '背景',
-          rectangle: '矩形', ellipse: '椭圆', polygon: '多边形',
+          rectangle: '矩形', ellipse: '椭圆', polygon: '多边形', blur: '模糊', mosaic: '马赛克',
         },
         inputs: { input: '输入', background: '背景', foreground: '前景', mask: '效果遮罩' },
         output: '输出', passThrough: '直通', passedThrough: '已直通', rename: '重命名',

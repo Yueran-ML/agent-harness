@@ -1322,9 +1322,10 @@ pub enum OpError {
     /// `label` (the name of a bus); and of a group of tracks, `members` and `linked` (one twice).
     /// Of a composition ([`crate::fusion`]): `fusion_nodes` (more nodes than it may have),
     /// `fusion_id` (the id of a node with a dot in it), and a setting of a node by its kind
-    /// and its path, such as `merge.blend`, `transform.center.x`, `background.color.a` or
-    /// `ellipse.soft_edge`; of a Polygon, `polygon.points` (more points than it may have) and
-    /// `polygon.points.x` or `polygon.points.y` (a number of one of its points).
+    /// and its path, such as `merge.blend`, `transform.center.x`, `background.color.a`,
+    /// `ellipse.soft_edge`, `blur.size.x` or `mosaic.frequency`; of a Polygon,
+    /// `polygon.points` (more points than it may have) and `polygon.points.x` or
+    /// `polygon.points.y` (a number of one of its points).
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.

@@ -727,11 +727,30 @@ export interface FusionPoint { x: Param; y: Param }
  * fewer than three are a mask of nothing.
  */
 export interface FusionPolygon extends FusionMaskCommon { center: FusionCenter; size: Param; angle: Param; points: FusionPoint[]; fill: FusionFillMethod }
+/** How a Blur takes the pixels about each one (Filter): a Gaussian, whose standard deviation its size is, or a box, whose radius it is. */
+export type FusionBlurFilter = 'gaussian' | 'box';
 /**
- * An input of a node of a composition, by its name: `input` of a `media_out` and a `transform`, the two
- * pictures of a `merge`, and `mask`, the effect mask of a `merge`, a `transform` and a `background` and
- * the mask that comes into a mask node. A `mask` reads the alpha of the picture linked to it (a mask node
- * gives white premultiplied by its mask); not linked, it is no mask.
+ * The settings of a Blur node (Reference Manual 20, Chapter 93): `size.x` and `size.y`, the Blur Size
+ * across and down, each 0…500 in pixels of a picture 1080 high, as the filters of the Color page are
+ * counted (a standard deviation of a `gaussian`, a radius of a `box`); with `lock_xy` both are `size.x`,
+ * and `size.y` is kept and not read. `blend`, from 0 to 1, mixes the blurred picture with the picture
+ * as it came in. `filter` and `lock_xy` take no keys.
+ */
+export interface FusionBlur { filter: FusionBlurFilter; lock_xy: boolean; size: { x: Param; y: Param }; blend: Param }
+/**
+ * The settings of a Mosaic node (the Mosaic Blur of Resolve FX, p. 3465): `frequency`, 1…16384, how many
+ * cells lie across the width of the picture; `aspect`, 0.0625…16, how many times as wide as high a cell
+ * is; `offset.x` and `offset.y`, −16384…16384, how many pixels of the picture the grid is moved, to the
+ * right and down. With `whole_cells_only`, which takes no keys, a cell is shown only where the effect
+ * mask of the node is 1 over all of it.
+ */
+export interface FusionMosaic { frequency: Param; aspect: Param; offset: { x: Param; y: Param }; whole_cells_only: boolean }
+/**
+ * An input of a node of a composition, by its name: `input` of a `media_out`, a `transform`, a `blur`
+ * and a `mosaic`, the two pictures of a `merge`, and `mask`, the effect mask of a `merge`, a
+ * `transform`, a `background`, a `blur` and a `mosaic` and the mask that comes into a mask node. A
+ * `mask` reads the alpha of the picture linked to it (a mask node gives white premultiplied by its
+ * mask); not linked, it is no mask.
  */
 export type FusionInput = 'input' | 'background' | 'foreground' | 'mask';
 /**
@@ -748,7 +767,9 @@ export type FusionNode = { id: string; label: string; pass_through?: boolean; po
   | { kind: 'background'; params: FusionBackground }
   | { kind: 'rectangle'; params: FusionRectangle }
   | { kind: 'ellipse'; params: FusionEllipse }
-  | { kind: 'polygon'; params: FusionPolygon });
+  | { kind: 'polygon'; params: FusionPolygon }
+  | { kind: 'blur'; params: FusionBlur }
+  | { kind: 'mosaic'; params: FusionMosaic });
 export type FusionKind = FusionNode['kind'];
 /** A link from the output of node `from` into the input `input` of node `to`. */
 export interface FusionLink { from: string; to: string; input: FusionInput }

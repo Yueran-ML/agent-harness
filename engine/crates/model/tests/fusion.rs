@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use columbina_model::edit::copy_clips;
 use columbina_model::fusion::{
-    Composition, FillMethod, Fused, FusedKind, FusedNode, Input, Kind, Link, Node, NodeKind,
-    PaintMode, Point, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS,
+    BlurFilter, Blurred, Composition, FillMethod, Fused, FusedKind, FusedNode, Input, Kind, Link,
+    Mosaicked, Node, NodeKind, PaintMode, Point, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS,
 };
 use columbina_model::grade::{Composite, Interp, Key, Param, Pos, LONGEST_LABEL};
 use columbina_model::resolve::{video_at, Layer};
@@ -2325,6 +2325,656 @@ fn a_change_of_a_mask_that_changes_nothing_makes_no_step() {
     history
         .change(
             vec![Change::Op(set_params("n5", json!({"invert": true})))],
+            "desktop",
+            |change, _| change,
+        )
+        .unwrap();
+    assert_ne!(history.project(), &before);
+    history.undo("desktop").unwrap().unwrap();
+    assert_eq!(history.project(), &before);
+}
+
+// Blur and Mosaic.
+
+/// The sample of `merged` with the picture of its Merge, n3, blurred by the Blur n5, and
+/// that laid out in cells by the Mosaic n6, which the `MediaOut` shows: `next_id` is 7.
+fn filtered() -> Project {
+    let mut project = merged();
+    for (kind, from) in [(Kind::Blur, "n3"), (Kind::Mosaic, "n5")] {
+        applied(
+            &mut project,
+            add(
+                Node::new("", kind),
+                vec![
+                    Link::new(from, "", Input::Input),
+                    Link::new("", MEDIA_OUT, Input::Input),
+                ],
+            ),
+        );
+    }
+    assert_eq!(project.next_id, 7);
+    project
+}
+
+/// The `params` that a `set_fusion_node` sets.
+fn patch_of(op: &Op) -> Option<serde_json::Value> {
+    match op {
+        Op::SetFusionNode { params, .. } => params.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `set_fusion_node` that passes node `id` of c1 through.
+fn passed_through(id: &str) -> Op {
+    let mut op = set_node(id);
+    if let Op::SetFusionNode { pass_through, .. } = &mut op {
+        *pass_through = Some(true);
+    }
+    op
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each of the two kinds as it is written, read and taken away"
+)]
+fn a_blur_and_a_mosaic_are_added_with_every_setting_written_and_are_read_back() {
+    let mut project = filtered();
+    let written = serde_json::to_value(composition(&project, "c1")).unwrap();
+    assert_eq!(
+        written["nodes"][4],
+        json!({
+            "id": "n5", "kind": "blur", "label": "", "pass_through": false, "pos": null,
+            "params": {
+                "filter": "gaussian", "lock_xy": true, "size": {"x": 5.0, "y": 5.0},
+                "blend": 1.0,
+            },
+        })
+    );
+    assert_eq!(
+        written["nodes"][5],
+        json!({
+            "id": "n6", "kind": "mosaic", "label": "", "pass_through": false, "pos": null,
+            "params": {
+                "frequency": 32.0, "aspect": 1.0, "offset": {"x": 0.0, "y": 0.0},
+                "whole_cells_only": false,
+            },
+        })
+    );
+    // Each has its picture for its first input, as the links are kept.
+    assert_eq!(
+        written["links"],
+        json!([
+            {"from": "n6", "to": "MediaOut1", "input": "input"},
+            {"from": "n4", "to": "n3", "input": "background"},
+            {"from": "MediaIn1", "to": "n3", "input": "foreground"},
+            {"from": "n3", "to": "n5", "input": "input"},
+            {"from": "n5", "to": "n6", "input": "input"},
+        ])
+    );
+    // To the byte, in the order of their settings.
+    let nodes = &composition(&project, "c1").nodes;
+    assert_eq!(
+        serde_json::to_string(&nodes[4]).unwrap(),
+        concat!(
+            r#"{"id":"n5","kind":"blur","label":"","pass_through":false,"pos":null,"#,
+            r#""params":{"filter":"gaussian","lock_xy":true,"size":{"x":5.0,"y":5.0},"#,
+            r#""blend":1.0}}"#,
+        )
+    );
+    assert_eq!(
+        serde_json::to_string(&nodes[5]).unwrap(),
+        concat!(
+            r#"{"id":"n6","kind":"mosaic","label":"","pass_through":false,"pos":null,"#,
+            r#""params":{"frequency":32.0,"aspect":1.0,"offset":{"x":0.0,"y":0.0},"#,
+            r#""whole_cells_only":false}}"#,
+        )
+    );
+    // A project with them is read back as it was written, and written the same again.
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    assert_eq!(serde_json::to_string(&read).unwrap(), text);
+    let value = serde_json::to_value(&project).unwrap();
+    assert_eq!(Project::from_value(value).unwrap(), project);
+    // A Blur as another program writes it, with every setting, limited by the Mosaic.
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "blur", "label": "Soften", "params": {
+            "filter": "box", "lock_xy": false, "size": {"x": 12, "y": 0}, "blend": 0.5,
+        }},
+        "links": [{"from": "n6", "to": "", "input": "mask"}],
+    }))
+    .unwrap();
+    let (done, inverse) = applied(&mut project, op);
+    assert_eq!(inverse, remove("n7", Some(vec![])));
+    let Op::AddFusionNode { node, links, .. } = done else {
+        panic!("a node was added")
+    };
+    assert_eq!(node.id, "n7");
+    assert_eq!(links, [Link::new("n6", "n7", Input::Mask)]);
+    let NodeKind::Blur(blur) = &composition(&project, "c1").node("n7").unwrap().kind else {
+        panic!("n7 is a blur")
+    };
+    assert_eq!(blur.filter, BlurFilter::Box);
+    assert!(!blur.lock_xy);
+    assert_eq!(blur.size.x, Param::Fixed(12.0));
+    assert_eq!(blur.size.y, Param::Fixed(0.0));
+    assert_eq!(blur.blend, Param::Fixed(0.5));
+    // One whose settings are not all there, or that has a setting of another kind, cannot
+    // be read: a Mosaic has no shape to set.
+    for (kind, params) in [
+        ("blur", json!({})),
+        (
+            "blur",
+            json!({"filter": "gaussian", "lock_xy": true, "size": {"x": 5.0, "y": 5.0}}),
+        ),
+        (
+            "blur",
+            json!({"filter": "gaussian", "lock_xy": true, "size": {"x": 5.0}, "blend": 1.0}),
+        ),
+        (
+            "mosaic",
+            json!({"frequency": 32.0, "aspect": 1.0, "offset": {"x": 0.0, "y": 0.0}}),
+        ),
+        (
+            "mosaic",
+            json!({"frequency": 32.0, "aspect": 1.0, "offset": {"x": 0.0, "y": 0.0},
+                "whole_cells_only": false, "shape": "square"}),
+        ),
+    ] {
+        let node = json!({"id": "", "kind": kind, "label": "", "params": params});
+        assert!(
+            serde_json::from_value::<Node>(node.clone()).is_err(),
+            "{node}"
+        );
+    }
+    // Taken away again, each with the link that takes its place, they leave the composition
+    // as it was before them, and written as it was.
+    applied(&mut project, remove("n7", None));
+    let bridge = |from: &str| Some(vec![Link::new(from, MEDIA_OUT, Input::Input)]);
+    applied(&mut project, remove("n6", bridge("n5")));
+    applied(&mut project, remove("n5", bridge("n3")));
+    let before = merged();
+    assert_eq!(composition(&project, "c1"), composition(&before, "c1"));
+    assert_eq!(
+        serde_json::to_string(composition(&project, "c1")).unwrap(),
+        serde_json::to_string(composition(&before, "c1")).unwrap()
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a refusal for each setting of a blur and of a mosaic"
+)]
+fn the_settings_of_a_blur_and_of_a_mosaic_are_those_of_their_kinds_within_their_ranges() {
+    let mut project = filtered();
+    for (id, patch, what) in [
+        ("n5", json!({"size": {"x": 500.5}}), "blur.size.x"),
+        ("n5", json!({"size": {"x": -0.5}}), "blur.size.x"),
+        ("n5", json!({"size": {"y": 501}}), "blur.size.y"),
+        ("n5", json!({"size": {"y": -1}}), "blur.size.y"),
+        ("n5", json!({"blend": 1.5}), "blur.blend"),
+        ("n5", json!({"blend": -0.5}), "blur.blend"),
+        ("n6", json!({"frequency": 0.5}), "mosaic.frequency"),
+        ("n6", json!({"frequency": 16385}), "mosaic.frequency"),
+        ("n6", json!({"aspect": 0.05}), "mosaic.aspect"),
+        ("n6", json!({"aspect": 16.5}), "mosaic.aspect"),
+        ("n6", json!({"offset": {"x": 16385}}), "mosaic.offset.x"),
+        ("n6", json!({"offset": {"x": -16385}}), "mosaic.offset.x"),
+        ("n6", json!({"offset": {"y": 16384.5}}), "mosaic.offset.y"),
+        ("n6", json!({"offset": {"y": -16384.5}}), "mosaic.offset.y"),
+    ] {
+        assert_eq!(
+            refused(&project, set_params(id, patch.clone())),
+            range(what),
+            "{patch}"
+        );
+    }
+    // `size.y` is held to its range though Lock X/Y leaves it unread.
+    assert_eq!(
+        refused(
+            &project,
+            set_params("n5", json!({"lock_xy": true, "size": {"y": 600}}))
+        ),
+        range("blur.size.y")
+    );
+    // What is not a setting of the kind, or not written as one, is refused.
+    for (id, patch) in [
+        ("n5", json!({"filter": "bartlett"})),
+        ("n5", json!({"lock_xy": 1})),
+        ("n5", json!({"size": 5.0})),
+        ("n5", json!({"size": {"z": 5.0}})),
+        ("n5", json!({"frequency": 8.0})),
+        ("n5", json!({"clipping": "frame"})),
+        ("n6", json!({"whole_cells_only": "yes"})),
+        ("n6", json!({"shape": "square"})),
+        ("n6", json!({"offset": 2.0})),
+        ("n6", json!({"blend": 0.5})),
+        ("n6", json!({"size": {"x": 5.0}})),
+    ] {
+        let error = refused(&project, set_params(id, patch.clone()));
+        assert!(
+            matches!(&error, OpError::Params { node, .. } if node == id),
+            "{patch}: {error:?}"
+        );
+    }
+    // What is given is set, and set back by the inverse.
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({"filter": "box", "lock_xy": false, "size": {"y": 12.5}, "blend": 0.25}),
+        ),
+    );
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({"filter": "gaussian", "lock_xy": true, "size": {"y": 5.0}, "blend": 1.0}))
+    );
+    let NodeKind::Blur(blur) = &composition(&project, "c1").node("n5").unwrap().kind else {
+        panic!("n5 is a blur")
+    };
+    assert_eq!(blur.filter, BlurFilter::Box);
+    assert!(!blur.lock_xy);
+    assert_eq!(blur.size.x, Param::Fixed(5.0));
+    assert_eq!(blur.size.y, Param::Fixed(12.5));
+    assert_eq!(blur.blend, Param::Fixed(0.25));
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n6",
+            json!({"frequency": 12, "aspect": 2, "offset": {"x": -8.5}, "whole_cells_only": true}),
+        ),
+    );
+    assert_eq!(
+        patch_of(&inverse),
+        Some(
+            json!({"frequency": 32.0, "aspect": 1.0, "offset": {"x": 0.0},
+            "whole_cells_only": false})
+        )
+    );
+    let NodeKind::Mosaic(mosaic) = &composition(&project, "c1").node("n6").unwrap().kind else {
+        panic!("n6 is a mosaic")
+    };
+    assert_eq!(mosaic.frequency, Param::Fixed(12.0));
+    assert_eq!(mosaic.aspect, Param::Fixed(2.0));
+    assert_eq!(mosaic.offset.x, Param::Fixed(-8.5));
+    assert_eq!(mosaic.offset.y, Param::Fixed(0.0));
+    assert!(mosaic.whole_cells_only);
+    // The ends of each range are within it.
+    applied(
+        &mut project,
+        set_params("n5", json!({"size": {"x": 0, "y": 500}, "blend": 0})),
+    );
+    applied(
+        &mut project,
+        set_params(
+            "n6",
+            json!({"frequency": 1, "aspect": 0.0625, "offset": {"x": -16384, "y": 16384}}),
+        ),
+    );
+    applied(
+        &mut project,
+        set_params(
+            "n6",
+            json!({"frequency": 16384, "aspect": 16, "offset": {"x": 16384, "y": -16384}}),
+        ),
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a key for each setting of a blur and of a mosaic"
+)]
+fn the_keys_of_a_blur_and_of_a_mosaic_are_set_by_the_paths_of_their_settings() {
+    let mut project = filtered();
+    // The first keys of a setting that had none are done as the keys set whole.
+    let mut first = project.clone();
+    let (done, inverse) = applied(&mut first, splice("n5.blend", 0, 0, vec![key(3, 0.5)]));
+    assert_eq!(done, set_keys("c1", "n5.blend", keys(&[(3, 0.5)])));
+    assert_eq!(inverse, set_keys("c1", "n5.blend", Param::Fixed(1.0)));
+    for (path, value) in [
+        ("n5.size.x", 20.0),
+        ("n5.size.y", 40.0),
+        ("n5.blend", 0.5),
+        ("n6.frequency", 8.0),
+        ("n6.aspect", 2.0),
+        ("n6.offset.x", 12.0),
+        ("n6.offset.y", -7.5),
+    ] {
+        let rising = keys(&[(0, 1.0), (9, value)]);
+        let (done, inverse) = applied(&mut project, set_keys("c1", path, rising.clone()));
+        assert_eq!(done, set_keys("c1", path, rising));
+        assert!(
+            matches!(
+                &inverse,
+                Op::SetFusionKeys {
+                    param: Param::Fixed(_),
+                    ..
+                }
+            ),
+            "{path}: {inverse:?}"
+        );
+    }
+    assert!(composition(&project, "c1").is_animated());
+    // A key is put in place of another, and taken back.
+    let (done, inverse) = applied(&mut project, splice("n6.offset.y", 1, 1, vec![key(5, 3.0)]));
+    assert_eq!(done, splice("n6.offset.y", 1, 1, vec![key(5, 3.0)]));
+    assert_eq!(inverse, splice("n6.offset.y", 1, 1, vec![key(9, -7.5)]));
+    let NodeKind::Mosaic(mosaic) = &composition(&project, "c1").node("n6").unwrap().kind else {
+        panic!("n6 is a mosaic")
+    };
+    assert_eq!(mosaic.offset.y, keys(&[(0, 1.0), (5, 3.0)]));
+    assert_eq!(mosaic.offset.x, keys(&[(0, 1.0), (9, 12.0)]));
+    assert_eq!(mosaic.frequency, keys(&[(0, 1.0), (9, 8.0)]));
+    let NodeKind::Blur(blur) = &composition(&project, "c1").node("n5").unwrap().kind else {
+        panic!("n5 is a blur")
+    };
+    assert_eq!(blur.size.x, keys(&[(0, 1.0), (9, 20.0)]));
+    assert_eq!(blur.size.y, keys(&[(0, 1.0), (9, 40.0)]));
+    // The keys are moved with the frames that they count, as the others are.
+    let later = composition(&project, "c1").with_key_frames(&|frame| frame + 100);
+    let NodeKind::Mosaic(moved) = &later.node("n6").unwrap().kind else {
+        panic!("n6 is a mosaic")
+    };
+    assert_eq!(moved.offset.y, keys(&[(100, 1.0), (105, 3.0)]));
+    let NodeKind::Blur(moved) = &later.node("n5").unwrap().kind else {
+        panic!("n5 is a blur")
+    };
+    assert_eq!(moved.blend, keys(&[(100, 1.0), (109, 0.5)]));
+    // What is no number takes no keys, and a kind has its own settings only.
+    for path in [
+        "n5.filter",
+        "n5.lock_xy",
+        "n5.size",
+        "n5.size.z",
+        "n5.frequency",
+        "n5.center.x",
+        "n6.whole_cells_only",
+        "n6.offset",
+        "n6.shape",
+        "n6.blend",
+        "n6.size.x",
+    ] {
+        assert_eq!(
+            refused(&project, set_keys("c1", path, Param::Fixed(0.5))),
+            missing("setting", path),
+            "{path}"
+        );
+        assert_eq!(
+            refused(&project, splice(path, 0, 0, vec![key(0, 0.5)])),
+            missing("setting", path),
+            "{path}"
+        );
+    }
+    // What is put is checked as the node is.
+    assert_eq!(
+        refused(&project, set_keys("c1", "n5.size.x", Param::Fixed(500.5))),
+        range("blur.size.x")
+    );
+    assert_eq!(
+        refused(
+            &project,
+            set_keys("c1", "n6.frequency", keys(&[(0, 8.0), (5, 0.5)]))
+        ),
+        range("mosaic.frequency")
+    );
+    assert_eq!(
+        refused(&project, splice("n5.blend", 2, 0, vec![key(20, 1.5)])),
+        range("blur.blend")
+    );
+    assert_eq!(
+        refused(
+            &project,
+            splice("n6.offset.x", 2, 0, vec![key(20, 16_385.0)])
+        ),
+        range("mosaic.offset.x")
+    );
+}
+
+#[test]
+fn a_blur_and_a_mosaic_take_a_picture_and_a_mask_and_no_other_input() {
+    let mut project = filtered();
+    // An Ellipse, n7, is the effect mask of the Blur, and of the Mosaic too: one output may
+    // feed several inputs.
+    let (_, inverse) = applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n5", Input::Mask)],
+        ),
+    );
+    assert_eq!(inverse, remove("n7", Some(vec![])));
+    let (done, inverse) = applied(&mut project, connect(Link::new("n7", "n6", Input::Mask)));
+    assert_eq!(done, connect(Link::new("n7", "n6", Input::Mask)));
+    assert_eq!(inverse, disconnect("n6", Input::Mask));
+    // Any picture may be the mask, in place of the one that the input had; and the picture
+    // of either may be the mask of another node.
+    let (_, inverse) = applied(
+        &mut project,
+        connect(Link::new(MEDIA_IN, "n6", Input::Mask)),
+    );
+    assert_eq!(inverse, connect(Link::new("n7", "n6", Input::Mask)));
+    applied(&mut project, inverse);
+    applied(&mut project, connect(Link::new("n4", "n5", Input::Input)));
+    applied(&mut project, connect(Link::new("n3", "n5", Input::Input)));
+    // Neither has a background or a foreground.
+    for node in ["n5", "n6"] {
+        for input in [Input::Background, Input::Foreground] {
+            assert_eq!(
+                refused(&project, connect(Link::new(MEDIA_IN, node, input))),
+                OpError::NoInput {
+                    node: node.into(),
+                    input
+                }
+            );
+        }
+    }
+    // A loop through either is a loop.
+    assert_eq!(
+        refused(&project, connect(Link::new("n5", "n5", Input::Mask))),
+        OpError::Loop { node: "n5".into() }
+    );
+    for (from, to, input) in [
+        ("n6", "n5", Input::Mask),
+        ("n6", "n5", Input::Input),
+        ("n6", "n3", Input::Mask),
+        ("n5", "n7", Input::Mask),
+    ] {
+        assert!(
+            matches!(
+                refused(&project, connect(Link::new(from, to, input))),
+                OpError::Loop { .. }
+            ),
+            "{from} into {to}"
+        );
+    }
+    // Its picture and its mask are unlinked as another input is.
+    let (_, inverse) = applied(&mut project, disconnect("n5", Input::Input));
+    assert_eq!(inverse, connect(Link::new("n3", "n5", Input::Input)));
+    assert_eq!(
+        refused(&project, disconnect("n5", Input::Input)),
+        missing("link", "n5")
+    );
+    let (_, inverse) = applied(&mut project, disconnect("n6", Input::Mask));
+    assert_eq!(inverse, connect(Link::new("n7", "n6", Input::Mask)));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the two kinds as a layer has them, and as they are passed through"
+)]
+fn a_blur_and_a_mosaic_of_a_layer_are_their_numbers_at_the_frame_after_what_they_read() {
+    let at = |id: &str, mask: Option<usize>| (id.to_owned(), mask);
+    let mut project = filtered();
+    assert_eq!(
+        drawn(&project),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n3", None),
+            at("n5", None),
+            at("n6", None)
+        ]
+    );
+    // An Ellipse, n7, limits both: it is there once, after the picture of the first that
+    // reads it.
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n5", Input::Mask)],
+        ),
+    );
+    applied(&mut project, connect(Link::new("n7", "n6", Input::Mask)));
+    assert_eq!(
+        drawn(&project),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n3", None),
+            at("n7", None),
+            at("n5", Some(3)),
+            at("n6", Some(3))
+        ]
+    );
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20.
+    applied(
+        &mut project,
+        set_keys("c1", "n5.size.x", keys(&[(10, 0.0), (30, 50.0)])),
+    );
+    applied(
+        &mut project,
+        set_keys("c1", "n5.size.y", Param::Fixed(80.0)),
+    );
+    applied(
+        &mut project,
+        set_keys("c1", "n6.frequency", keys(&[(10, 16.0), (30, 48.0)])),
+    );
+    applied(
+        &mut project,
+        set_params(
+            "n6",
+            json!({"whole_cells_only": true, "offset": {"x": 4.5}}),
+        ),
+    );
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    assert_eq!(fused.output, Some(5));
+    // With Lock X/Y the blur down is the blur across, whatever `size.y` is.
+    assert_eq!(
+        fused.nodes[4].kind,
+        FusedKind::Blur {
+            input: Some(2),
+            mask: Some(3),
+            settings: Blurred {
+                filter: BlurFilter::Gaussian,
+                size: [25.0, 25.0],
+                blend: 1.0,
+            },
+        }
+    );
+    assert_eq!(
+        fused.nodes[5].kind,
+        FusedKind::Mosaic {
+            input: Some(4),
+            mask: Some(3),
+            settings: Mosaicked {
+                frequency: 32.0,
+                aspect: 1.0,
+                offset: [4.5, 0.0],
+                whole_cells_only: true,
+            },
+        }
+    );
+    // Without it each is its own, and the filter is the one that is set.
+    applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({"lock_xy": false, "filter": "box", "blend": 0.5}),
+        ),
+    );
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    let FusedKind::Blur { settings, .. } = &fused.nodes[4].kind else {
+        panic!("n5 is a blur")
+    };
+    assert_eq!(
+        *settings,
+        Blurred {
+            filter: BlurFilter::Box,
+            size: [25.0, 80.0],
+            blend: 0.5,
+        }
+    );
+    // A Blur that is passed through hands on its picture, and not its mask.
+    applied(&mut project, passed_through("n5"));
+    assert_eq!(
+        drawn(&project),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n3", None),
+            at("n7", None),
+            at("n6", Some(3))
+        ]
+    );
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    assert_eq!(fused.nodes[4].kind.first_input(), Some(2));
+    // And a Mosaic too: the `MediaOut` shows the Merge, as it did before them.
+    applied(&mut project, passed_through("n6"));
+    assert_eq!(drawn(&project), drawn(&merged()));
+    assert_eq!(
+        drawn(&project),
+        [at("n4", None), at(MEDIA_IN, None), at("n3", None)]
+    );
+    // One that is taken away with the link to put in its place leaves its picture to what
+    // it fed.
+    let mut joined = filtered();
+    let bridge = vec![Link::new("n3", "n6", Input::Input)];
+    let (_, inverse) = applied(&mut joined, remove("n5", Some(bridge)));
+    assert!(matches!(&inverse, Op::AddFusionNode { links, .. } if links.len() == 2));
+    assert_eq!(
+        drawn(&joined),
+        [
+            at("n4", None),
+            at(MEDIA_IN, None),
+            at("n3", None),
+            at("n6", None)
+        ]
+    );
+}
+
+#[test]
+fn a_change_of_a_blur_or_of_a_mosaic_that_changes_nothing_makes_no_step() {
+    let mut history = History::new(filtered());
+    let revision = history.revision();
+    for op in [
+        set_params(
+            "n5",
+            json!({"filter": "gaussian", "lock_xy": true, "blend": 1.0, "size": {"y": 5.0}}),
+        ),
+        set_params(
+            "n6",
+            json!({"whole_cells_only": false, "offset": {"y": 0.0}}),
+        ),
+        set_keys("c1", "n6.aspect", Param::Fixed(1.0)),
+        set_keys("c1", "n5.size.x", Param::Fixed(5.0)),
+        connect(Link::new("n5", "n6", Input::Input)),
+    ] {
+        let nothing = history.change(vec![Change::Op(op.clone())], "desktop", |change, _| change);
+        assert_eq!(nothing.err(), Some(TransactionError::Empty), "{op:?}");
+    }
+    assert_eq!(history.revision(), revision);
+    assert!(!history.can_undo());
+    // One that changes something is a step, and is undone: `size.y`, too, though Lock X/Y
+    // leaves it unread.
+    let before = history.project().clone();
+    history
+        .change(
+            vec![Change::Op(set_params("n5", json!({"size": {"y": 9.0}})))],
             "desktop",
             |change, _| change,
         )

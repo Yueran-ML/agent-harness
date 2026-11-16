@@ -2127,7 +2127,136 @@ fn fusion_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 }],
             },
         ),
+        (
+            "add_fusion_node of a blur, between the merge and the media_out",
+            merged(),
+            blur_node(),
+        ),
+        (
+            "add_fusion_node of a mosaic with its settings, its key the mask of an ellipse",
+            masked(),
+            mosaic_node(),
+        ),
+        (
+            "set_fusion_node of the filter and the sizes of a blur",
+            {
+                let mut setup = merged();
+                setup.push(blur_node());
+                setup
+            },
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n11".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "filter": "box", "lock_xy": false, "size": {"y": 12.5}, "blend": 0.5,
+                })),
+            },
+        ),
+        (
+            "set_fusion_keys of the size of a blur",
+            {
+                let mut setup = merged();
+                setup.push(blur_node());
+                setup
+            },
+            Op::SetFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n11.size.x".into(),
+                param: Param::Keys(vec![
+                    Key {
+                        frame: 0,
+                        value: 0.0,
+                        interp: Interp::Linear,
+                    },
+                    Key {
+                        frame: 24,
+                        value: 40.0,
+                        interp: Interp::Linear,
+                    },
+                ]),
+            },
+        ),
+        (
+            "set_fusion_node of the grid of a mosaic",
+            {
+                let mut setup = masked();
+                setup.push(mosaic_node());
+                setup
+            },
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n12".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "frequency": 24, "aspect": 2, "offset": {"x": 8.5},
+                    "whole_cells_only": false,
+                })),
+            },
+        ),
+        (
+            "splice_fusion_keys of the first keys of an offset of a mosaic",
+            {
+                let mut setup = masked();
+                setup.push(mosaic_node());
+                setup
+            },
+            Op::SpliceFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n12.offset.y".into(),
+                at: 0,
+                remove: 0,
+                keys: vec![Key {
+                    frame: 12,
+                    value: -6.0,
+                    interp: Interp::Linear,
+                }],
+            },
+        ),
     ]
+}
+
+/// Add a Blur, n11 after `merge_node` and `background_node`, between the Merge n9 and the
+/// `MediaOut` of c1.
+fn blur_node() -> Op {
+    Op::AddFusionNode {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+        node: fusion::Node::new("", fusion::Kind::Blur),
+        index: None,
+        links: vec![
+            fusion::Link::new("n9", "", Input::Input),
+            fusion::Link::new("", fusion::MEDIA_OUT, Input::Input),
+        ],
+    }
+}
+
+/// Add a Mosaic, n12 after `masked`, as another program writes one: every setting, its
+/// picture that of the Merge n9, its effect mask the Ellipse n11, and the `MediaOut` of c1
+/// showing it.
+fn mosaic_node() -> Op {
+    written_op(serde_json::json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {
+            "id": "", "kind": "mosaic", "label": "Witness", "params": {
+                "frequency": 48, "aspect": 1, "offset": {"x": 0, "y": 0},
+                "whole_cells_only": true,
+            },
+        },
+        "links": [
+            {"from": "n9", "to": "", "input": "input"},
+            {"from": "n11", "to": "", "input": "mask"},
+            {"from": "", "to": "MediaOut1", "input": "input"},
+        ],
+    }))
 }
 
 /// Add an Ellipse, n11 after `merge_node` and `background_node`, as the effect mask of the

@@ -822,9 +822,24 @@ enum Pipe {
     /// A pass of the composition of a clip that draws a mask, or a Background times its
     /// effect mask (`fusion_mask.wgsl`): into a texture of the composition alone, too.
     FusionMask,
+    /// The pass of a Blur of the composition of a clip that mixes its picture blurred with
+    /// its picture as it came in (`fusion_blur.wgsl`).
+    FusionBlur,
+    /// A pass of a Mosaic of the composition of a clip (`fusion_mosaic.wgsl`): the colours
+    /// of its cells, across or down, or its picture drawn from them.
+    FusionMosaic,
 }
 
 impl Pipe {
+    /// Whether it draws a pass of the composition of a clip, into a texture of the
+    /// composition or one that its passes share.
+    fn is_fused(self) -> bool {
+        matches!(
+            self,
+            Pipe::Fusion | Pipe::FusionMask | Pipe::FusionBlur | Pipe::FusionMosaic
+        )
+    }
+
     /// The kind that draws the same layer blended with what is under it: another shader, which
     /// reads the canvas as it was before the layer (group 2). A layer that is not blended is
     /// drawn by the kind it always was, and binds nothing more.
@@ -967,9 +982,10 @@ struct StageWork {
 ///
 /// And, for the layers of clips that have compositions, what is drawn into textures before any
 /// of that: the passes, in the order they are drawn; the sources of those clips, each drawn
-/// alone; the uniforms of the passes that lay a foreground over a background and of those
-/// that draw masks; and the sides of the polygons of those masks, one after another. A frame
-/// without such a layer has none of them.
+/// alone; the uniforms of the passes that lay a foreground over a background, of those that
+/// draw masks, of those that mix a blurred picture and of those of mosaics; the sides of the
+/// polygons of those masks, one after another; and the passes of the filters of the Blurs.
+/// A frame without such a layer has none of them.
 #[derive(Default)]
 struct Layered {
     draws: Vec<Draw>,
@@ -981,6 +997,9 @@ struct Layered {
     sources: Vec<Alone>,
     lays: Vec<[f32; fusion::PARAMS]>,
     sides: Vec<[f32; 4]>,
+    /// The passes of the filters of the Blurs of the compositions, in the order they are
+    /// drawn: their uniforms go with those of the filters of the neighbourhoods.
+    filters: Vec<Pass>,
     /// The textures of the compositions drawn so far that no pass after reads: those of the
     /// compositions of the layers after are drawn into them.
     free: Vec<wgpu::Texture>,
@@ -1032,6 +1051,22 @@ enum Offscreen {
         incoming: Option<wgpu::Texture>,
         target: wgpu::Texture,
     },
+    /// A pass of the filter of a Blur (`neighbourhood.wgsl`), from `from` into `to`, by the
+    /// uniform of this number among those of the filters of the compositions of the frame.
+    Filter {
+        uniform: usize,
+        from: wgpu::Texture,
+        to: wgpu::Texture,
+    },
+    /// A pass that reads up to three pictures, by the pipeline of `pipe` and the uniform of
+    /// this number among those of the frame: the pass of a Blur that mixes, and the passes
+    /// of a Mosaic.
+    Read {
+        pipe: Pipe,
+        uniform: usize,
+        pictures: [Option<wgpu::Texture>; 3],
+        target: wgpu::Texture,
+    },
 }
 
 /// What a layer of a clip that has a composition shows.
@@ -1063,10 +1098,19 @@ struct Outcome {
 enum Role {
     /// The colour that a neighbourhood filters.
     Source,
-    /// The first pass of its filter.
+    /// The first pass of its filter; and what the pass across of a Blur or of a Mosaic of a
+    /// composition makes, which its pass down reads at once.
     Between,
     /// The canvas as it is before a layer that is blended with it is drawn.
     Backdrop,
+    /// The picture of a Blur of a composition, blurred: what the second pass of its filter
+    /// makes, which the pass that mixes it reads at once.
+    Blurred,
+    /// The colours of the cells of a Mosaic of a composition, a texel each.
+    Cells,
+    /// The least of the key of a Mosaic of a composition over each of its cells, a texel
+    /// each.
+    Leasts,
 }
 
 /// The textures of neighbourhoods, kept from frame to frame by their sizes: those lent to a
@@ -1780,6 +1824,7 @@ impl Compositor {
             mut sources,
             lays,
             sides,
+            filters,
             waiting: fusing,
             free: _,
         } = laid;
@@ -1941,21 +1986,29 @@ impl Compositor {
         let grade_bind = grade.as_ref().and_then(|_| colour_binds.next());
         let output_bind = output.as_ref().and_then(|_| colour_binds.next());
         let mut tap_binds = colour_binds;
-        // The uniforms of the passes of the filters, in the order they are done.
-        let filter_passes: Vec<Pass> = taps
+        // The uniforms of the passes of the filters, in the order they are done: those of
+        // the Blurs of compositions, which are drawn before anything else, and then those of
+        // the neighbourhoods.
+        let filter_passes: Vec<Pass> = filters
             .iter()
-            .flat_map(|layer| &layer.taps)
+            .copied()
             .chain(
-                [&grade, &output]
-                    .into_iter()
-                    .flatten()
-                    .flat_map(|work| &work.taps),
+                taps.iter()
+                    .flat_map(|layer| &layer.taps)
+                    .chain(
+                        [&grade, &output]
+                            .into_iter()
+                            .flatten()
+                            .flat_map(|work| &work.taps),
+                    )
+                    .flat_map(|tap| tap.passes),
             )
-            .flat_map(|tap| tap.passes)
             .collect();
         let mut filter_offsets = self.write_filter_uniforms(&filter_passes).into_iter();
-        // The uniforms of the passes of compositions that lay a foreground over a background
-        // and of those that draw masks, and the sides of the polygons of those masks.
+        let fused_filters: Vec<u32> = filter_offsets.by_ref().take(filters.len()).collect();
+        // The uniforms of the passes of compositions that lay a foreground over a background,
+        // of those that draw masks, of those that mix a blurred picture and of those of
+        // mosaics, and the sides of the polygons of the masks.
         let lay_offsets = self.write_lays(&lays, &sides);
 
         // The canvases drawn into, one after the other: the frame ends in the target's texture.
@@ -1983,6 +2036,7 @@ impl Compositor {
             &sources,
             &source_calls,
             &lay_offsets,
+            &fused_filters,
         );
         // The neighbourhoods of the layers, each layer drawn into a texture of its own and that
         // filtered, before the layers are laid on the canvas.
@@ -2141,8 +2195,13 @@ impl Compositor {
 
     /// Draw the passes of the compositions of a frame into their textures, in their order:
     /// the sources of the clips alone, by their `calls`, and the passes of their nodes, those
-    /// that lay a foreground over a background and those that draw masks by the uniforms at
-    /// `lays`.
+    /// that lay a foreground over a background, those that draw masks, those that mix a
+    /// blurred picture and those of mosaics by the uniforms at `lays`, and those of the
+    /// filters of Blurs by the uniforms at `filters`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each kind of pass of a composition, one after another"
+    )]
     fn draw_offscreen(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2150,6 +2209,7 @@ impl Compositor {
         sources: &[Alone],
         calls: &[Call],
         lays: &[u32],
+        filters: &[u32],
     ) {
         let laying = (Pipe::Fusion, fusion::FORMAT, None);
         let masking = (Pipe::FusionMask, fusion::FORMAT, None);
@@ -2210,6 +2270,30 @@ impl Compositor {
                         incoming.as_ref(),
                         target,
                     );
+                }
+                Offscreen::Filter { uniform, from, to } => {
+                    let (Some(pipeline), Some(offset)) = (&self.filter, filters.get(*uniform))
+                    else {
+                        continue;
+                    };
+                    self.filter_pass(encoder, pipeline, from, to, *offset);
+                }
+                Offscreen::Read {
+                    pipe,
+                    uniform,
+                    pictures,
+                    target,
+                } => {
+                    let (Some(card), Some(pipeline), Some(offset)) = (
+                        &self.fusion,
+                        self.pipelines.get(&(*pipe, fusion::FORMAT, None)),
+                        lays.get(*uniform),
+                    ) else {
+                        continue;
+                    };
+                    let [first, second, third] = pictures;
+                    let read = [first.as_ref(), second.as_ref(), third.as_ref()];
+                    card.read(self.gpu.device(), encoder, pipeline, *offset, read, target);
                 }
             }
             self.fusion_passes += 1;
@@ -2437,54 +2521,69 @@ impl Compositor {
         tap: &Tap,
         offsets: &mut impl Iterator<Item = u32>,
     ) {
-        let device = self.gpu.device();
         let pipeline = self
             .filter
             .as_ref()
             .expect("the pipeline of filters is made");
         for (from, to) in [(&tap.source, &tap.between), (&tap.between, &tap.out)] {
             let offset = offsets.next().expect("a uniform of each pass");
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("columbina filter"),
-                layout: &self.filter_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.filter_uniform,
-                            offset: 0,
-                            size: wgpu::BufferSize::new(FILTER_PARAMS_SIZE),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &from.create_view(&wgpu::TextureViewDescriptor::default()),
-                        ),
-                    },
-                ],
-            });
-            let view = to.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("columbina filter"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bind, &[offset]);
-            pass.draw(0..3, 0..1);
+            self.filter_pass(encoder, pipeline, from, to, offset);
         }
+    }
+
+    /// One pass of a filter (`neighbourhood.wgsl`), by `pipeline`, that of the filters: from
+    /// the texture `from` into the texture `to`, with the uniform at `offset` of those of
+    /// the filters of the frame. A neighbourhood is filtered by two of them, and so is the
+    /// picture of a Blur of a composition.
+    fn filter_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        from: &wgpu::Texture,
+        to: &wgpu::Texture,
+        offset: u32,
+    ) {
+        let device = self.gpu.device();
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("columbina filter"),
+            layout: &self.filter_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.filter_uniform,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(FILTER_PARAMS_SIZE),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(
+                        &from.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+            ],
+        });
+        let view = to.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("columbina filter"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind, &[offset]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Write the uniforms of the passes of the filters of a frame, a slot each, into their
@@ -3361,22 +3460,30 @@ impl Compositor {
         let (Some(size), Some(kept)) = (drawn, layer.crop.kept(frame)) else {
             return Ok(Composed::Nothing);
         };
-        let mut plan = fusion::plan(&fusion.composition, size, scene.luma, true);
+        let mut plan = fusion::plan(&fusion.composition, size, fusion.size, scene.luma, true);
         match plan.output {
             Reads::Nothing => return Ok(Composed::Nothing),
             Reads::Source => return Ok(Composed::Source),
             Reads::Pass(_) => {}
         }
-        // The pipelines of its passes: that of those that lay, and that of those that draw
-        // masks, each asked for where the composition has such a pass, both before either is
-        // waited for, so that they are made side by side.
+        // The pipelines of its passes: that of those that lay, that of those that draw
+        // masks, that of those that mix a blurred picture and that of those of mosaics, each
+        // asked for where the composition has such a pass, all before any is waited for, so
+        // that they are made side by side.
         let pipes: Vec<Pipe> = [
             (plan.lays(), Pipe::Fusion),
             (plan.masks(), Pipe::FusionMask),
+            (plan.blurs(), Pipe::FusionBlur),
+            (plan.mosaics(), Pipe::FusionMosaic),
         ]
         .into_iter()
         .filter_map(|(needed, pipe)| needed.then_some(pipe))
         .collect();
+        // A Blur is blurred by the filters of the neighbourhoods, whose pipeline is made at
+        // once, as it is for a grade.
+        if plan.blurs() && self.filter.is_none() {
+            self.filter = Some(filter_pipeline(self.gpu.device(), &self.filter_layout));
+        }
         if !pipes.is_empty() {
             self.keep_made();
             let mut made = true;
@@ -3404,7 +3511,7 @@ impl Compositor {
             source = self.alone(index, layer, fusion, size, early, laid)?;
             if source.is_none() {
                 // A title of which nothing is seen: a `MediaIn` is no picture.
-                plan = fusion::plan(&fusion.composition, size, scene.luma, false);
+                plan = fusion::plan(&fusion.composition, size, fusion.size, scene.luma, false);
             }
         }
         let Reads::Pass(output) = plan.output else {
@@ -3476,6 +3583,30 @@ impl Compositor {
                     laid.sides.extend_from_slice(sides);
                     laid.lays.push(uniform);
                 }
+                fusion::Pass::Blur {
+                    input,
+                    mask,
+                    filter,
+                    uniform,
+                } => {
+                    let Some(source) = read(*input) else {
+                        continue;
+                    };
+                    let pictures = (source, read(*mask), target);
+                    self.blur_passes(laid, filter, uniform, pictures);
+                }
+                fusion::Pass::Mosaic {
+                    input,
+                    key,
+                    grid,
+                    whole,
+                } => {
+                    let Some(source) = read(*input) else {
+                        continue;
+                    };
+                    let pictures = (source, read(*key), target);
+                    self.mosaic_passes(laid, grid, *whole, pictures);
+                }
             }
         }
         let Some(out) = read(Reads::Pass(output)) else {
@@ -3510,6 +3641,100 @@ impl Compositor {
             Some(at) => free.swap_remove(at),
             None => self.spares.take(&self.gpu, size),
         }
+    }
+
+    /// Put the passes of a Blur of a composition among those of the frame (`laid`): the two
+    /// passes of its filter, `filter`, across into a texture and down into another, both of
+    /// those that the passes of a frame share, since each is read by the pass after it and
+    /// by none other; and the pass that mixes what they made with the picture as it came in,
+    /// by `uniform`. `pictures` are the picture as it came in, the picture whose alpha is
+    /// the effect mask of the node, where it has one, and the texture of the composition
+    /// that the node is drawn into.
+    fn blur_passes(
+        &mut self,
+        laid: &mut Layered,
+        filter: &[Pass; 2],
+        uniform: &[f32; fusion::PARAMS],
+        pictures: (wgpu::Texture, Option<wgpu::Texture>, wgpu::Texture),
+    ) {
+        let (source, mask, target) = pictures;
+        let between = self
+            .spares
+            .shared(&self.gpu, filter[0].target, Role::Between);
+        let blurred = self
+            .spares
+            .shared(&self.gpu, filter[1].target, Role::Blurred);
+        laid.offscreen.push(Offscreen::Filter {
+            uniform: laid.filters.len(),
+            from: source.clone(),
+            to: between.clone(),
+        });
+        laid.offscreen.push(Offscreen::Filter {
+            uniform: laid.filters.len() + 1,
+            from: between,
+            to: blurred.clone(),
+        });
+        laid.filters.extend_from_slice(filter);
+        laid.offscreen.push(Offscreen::Read {
+            pipe: Pipe::FusionBlur,
+            uniform: laid.lays.len(),
+            pictures: [Some(source), Some(blurred), mask],
+            target,
+        });
+        laid.lays.push(*uniform);
+    }
+
+    /// Put the passes of a Mosaic of a composition among those of the frame (`laid`), as
+    /// `mosaic.rs` lays them out: the colours of the cells of `grid`, across into a texture
+    /// of a texel for each cell across and each row, and down into one of a texel for each
+    /// cell; with `whole`, the least of the key over each cell, made the same way; and the
+    /// pass that draws the picture from them. The textures of the cells are of those that
+    /// the passes of a frame share, each read by the pass after it or by the last.
+    /// `pictures` are the picture as it came in, the picture whose alpha is the key, where
+    /// the node has one, and the texture of the composition that the node is drawn into.
+    fn mosaic_passes(
+        &mut self,
+        laid: &mut Layered,
+        grid: &crate::mosaic::Grid,
+        whole: bool,
+        pictures: (wgpu::Texture, Option<wgpu::Texture>, wgpu::Texture),
+    ) {
+        let (source, key, target) = pictures;
+        let [across, down] = grid.cells();
+        let rows = (across.max(1), grid.frame[1].max(1));
+        let cells = (across.max(1), down.max(1));
+        let between = self.spares.shared(&self.gpu, rows, Role::Between);
+        // The cells of what `from` holds, across and then down into `into`: the means of
+        // its colours, or with `least` the least of its alpha as a key.
+        let mut gathered = |from: wgpu::Texture, into: &wgpu::Texture, least: bool| {
+            for (second, from, to) in [(false, from, &between), (true, between.clone(), into)] {
+                laid.offscreen.push(Offscreen::Read {
+                    pipe: Pipe::FusionMosaic,
+                    uniform: laid.lays.len(),
+                    pictures: [Some(from), None, None],
+                    target: to.clone(),
+                });
+                laid.lays.push(fusion::cells_uniform(grid, second, least));
+            }
+        };
+        let colours = self.spares.shared(&self.gpu, cells, Role::Cells);
+        gathered(source.clone(), &colours, false);
+        let (keyed, limit) = match key {
+            None => (fusion::Keyed::Whole, None),
+            Some(key) if whole => {
+                let leasts = self.spares.shared(&self.gpu, cells, Role::Leasts);
+                gathered(key, &leasts, true);
+                (fusion::Keyed::Cells, Some(leasts))
+            }
+            Some(key) => (fusion::Keyed::Pixels, Some(key)),
+        };
+        laid.offscreen.push(Offscreen::Read {
+            pipe: Pipe::FusionMosaic,
+            uniform: laid.lays.len(),
+            pictures: [Some(source), Some(colours), limit],
+            target,
+        });
+        laid.lays.push(fusion::shown_uniform(grid, keyed));
     }
 
     /// The source of the clip of the layer numbered `index`, to be drawn alone over a texture
@@ -3867,8 +4092,9 @@ impl Compositor {
     /// colour or none, is made: one with a program is asked of the builder if it is not (and is
     /// not made yet as this returns); one without, the compositor's own shader, is made at once.
     /// But those of the passes of compositions ([`Pipe::Fusion`], whose shader has the maths of
-    /// every composite mode in it, and [`Pipe::FusionMask`]) are asked of the builder too: a
-    /// frame that is drawn without waiting is not held up by them.
+    /// every composite mode in it, [`Pipe::FusionMask`], [`Pipe::FusionBlur`] and
+    /// [`Pipe::FusionMosaic`]) are asked of the builder too: a frame that is drawn without
+    /// waiting is not held up by them.
     ///
     /// # Errors
     /// The code of the program is not WGSL that the card takes, or reads what is not bound.
@@ -3898,7 +4124,7 @@ impl Compositor {
         if let Pipe::YuvBetween(texel) | Pipe::YuvBetweenBlended(texel) = pipe {
             self.between_layout(texel);
         }
-        let fused = matches!(pipe, Pipe::Fusion | Pipe::FusionMask);
+        let fused = pipe.is_fused();
         if fused && self.fusion.is_none() {
             self.fusion = Some(fusion::Card::new(&self.gpu, self.slot));
         }
@@ -3923,6 +4149,16 @@ impl Compositor {
             Pipe::FusionMask => match &self.fusion {
                 Some(card) => (fusion::mask_shader(), &card.mask_layout),
                 None => return Err("a mask of a composition has nothing to bind it".into()),
+            },
+            // The pass of a Blur that mixes and the passes of a Mosaic bind what a pass that
+            // lays binds: a uniform and three pictures.
+            Pipe::FusionBlur => match &self.fusion {
+                Some(card) => (fusion::blur_shader(), &card.layout),
+                None => return Err("a blur of a composition has nothing to bind it".into()),
+            },
+            Pipe::FusionMosaic => match &self.fusion {
+                Some(card) => (fusion::mosaic_shader(), &card.layout),
+                None => return Err("a mosaic of a composition has nothing to bind it".into()),
             },
         };
         // What binds the canvas under a layer that is blended: a texture, as a stage reads one.
@@ -4151,7 +4387,7 @@ fn maker(
             .map(|_| device.push_error_scope(wgpu::ErrorFilter::Validation));
         let pipeline = if pipe == Pipe::Stage {
             stage_pipeline(device, &source, &layout, colour.as_ref(), format)
-        } else if matches!(pipe, Pipe::Fusion | Pipe::FusionMask) {
+        } else if pipe.is_fused() {
             fusion::pipeline(device, &source, &layout)
         } else {
             let groups = (colour.as_ref(), backdrop.as_ref());

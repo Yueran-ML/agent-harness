@@ -42,6 +42,9 @@
 //!   nothing by a merge that changes nothing;
 //! - a Rectangle, an Ellipse and a Polygon are one pass each of `fusion_mask.wgsl`
 //!   (`Pass::Mask`), always: see Masks below;
+//! - a Blur (`Pass::Blur`) and a Mosaic (`Pass::Mosaic`) are each a picture of the
+//!   composition made through textures of their own, in three passes of the card, or five:
+//!   see Blur and Mosaic below;
 //! - a node that changes nothing is no pass: its picture is that of its input. So is a
 //!   Transform as it is at first, a Merge whose foreground gives no picture or whose Blend is
 //!   0 (its background), and a Merge as it is at first over no background (its foreground):
@@ -50,7 +53,9 @@
 //!
 //! A composition whose `MediaOut` shows its `MediaIn`, as the one that a clip has at first
 //! does, has no pass at all: its layer is drawn as that of a clip without a composition, to
-//! the bit. One of `n` nodes costs `n` passes at the most, and one more for its source.
+//! the bit. One of `n` nodes, none of them a Blur or a Mosaic, costs `n` passes at the most,
+//! and one more for its source; and a composition without a Blur and without a Mosaic is
+//! drawn by the passes that it was drawn by before there were any, to the bit.
 //!
 //! The textures are those of the neighbourhoods of grades ([`crate::neighbourhood`]), kept from
 //! frame to frame by their size: a pass draws into one that no pass after it reads
@@ -111,14 +116,74 @@
 //! picture: a mask of 0 everywhere is a picture, and limits what reads it to nothing.
 //!
 //! A mask node into which no picture comes has no Paint Mode: the mask is its own.
+//!
+//! # Blur and Mosaic
+//!
+//! What a Blur and a Mosaic are is told with the model ([`columbina_model::fusion`], Blur
+//! and Mosaic). Each makes one picture of the composition, of the size of the others, and
+//! makes it through textures of other sizes, which are of no node: those that the passes of
+//! a frame share, drawn into and read at once (the spares of the neighbourhoods).
+//!
+//! **A Blur** is blurred by the filters of the neighbourhoods of grades
+//! ([`crate::neighbourhood`]), which are not written a second time: its picture goes through
+//! the two passes of `neighbourhood.wgsl`, across and down, a Gaussian of the Blur Size as its
+//! standard deviation or a box of it as its radius, the pixels beyond the edges being those
+//! at the edges; into a texture that is smaller than the picture where the filter is wide
+//! ([`crate::neighbourhood::reduction`]). A third pass, of `fusion_blur.wgsl`, reads that
+//! between its texels, as an operation of colour reads a neighbourhood
+//! ([`crate::neighbourhood::sample`]), and mixes it with the picture as it came in:
+//! `input + (blurred - input) * blend * mask`, the mask 1 where the node has none. Where
+//! `blend * mask` is 0 the pixel is that of the picture as it came in, to the bit, and where
+//! it is 1 that of the blurred picture. The processor does the same
+//! ([`crate::neighbourhood::filtered`]), and the card is held to it as it is for a grade.
+//!
+//! The Blur Size is in pixels of a picture [`crate::color::REFERENCE_HEIGHT`] high, as the
+//! reach of a [`Filter`] is: as many pixels of the picture as it is drawn as that is higher
+//! or lower than 1080, so that a number is the same share of the picture at whatever size
+//! it is drawn, and a preview at half the size looks as the frame does.
+//!
+//! A Blur is no pass, and is its input, where both its Blur Sizes are 0 (with Lock X/Y, its
+//! `size.x`) or its Blend is 0, whatever its mask; and one of no picture is no picture.
+//!
+//! **A Mosaic** is drawn as [`crate::mosaic`] lays it out, and is held to it
+//! (`fusion_mosaic.wgsl`): the colours of the cells are made in two passes, across, into a
+//! texture of a texel for each cell across and each row of the picture, and down, into one
+//! of a texel for each cell; and a third pass draws each pixel from the texel of its cell,
+//! mixed with the picture as it came in by the key at the pixel, which is the effect mask of
+//! the node. With Whole Cells Only, where the node has a mask, two more passes make the least
+//! of the key over each cell the same way, and a cell is shown where that is 1. The grid goes
+//! to the card in whole numbers of steps ([`crate::mosaic::Grid`]), and the card counts the
+//! cell of a pixel in whole numbers, so that the two put every pixel in the same cell.
+//!
+//! The textures are of half floats. Which pixels are of which cell is exact; a pixel under a
+//! key of 0 is the picture as it came in, to the bit; which cells are whole is exact, the
+//! least of half floats being one of them; and the colour of a cell is the mean that the
+//! processor makes but for the rounding of the sum in floats of 32 bits and of two writes of
+//! half floats, each to the nearest or towards 0 as the card has it: within three thousandths
+//! of a colour from 0 to 1.
+//!
+//! The grid is said in pixels of the picture of the composition. Where the pictures are
+//! drawn smaller, the grid is that of the settings for a frame of the size that they are
+//! drawn at, with the offsets made as many times smaller: the same cells cover the same
+//! parts of the picture, their sides at the nearest 256th of a pixel as it is drawn, and no
+//! cell is less than a pixel as it is drawn. At the size of the composition the grid is that
+//! of the processor exactly.
+//!
+//! A Mosaic is no pass, and is its input, where its cells are a pixel wide and a pixel high,
+//! whatever its mask; and one of no picture is no picture.
 
-use columbina_model::fusion::{self as model, Fused, FusedKind, Merged, Transformed};
+use columbina_model::fusion::{
+    self as model, Blurred, Fused, FusedKind, Merged, Mosaicked, Transformed,
+};
 
+use crate::color::Filter;
 use crate::geometry::{fit, raster_scale, samples, Affine};
 use crate::gpu::Gpu;
 use crate::grade::layout;
 use crate::mask::{self, Common, FillMethod, PaintMode, Placed, Shape};
 use crate::merge::{Operator, Settings};
+use crate::mosaic::{self, Grid};
+use crate::neighbourhood;
 use crate::Source;
 
 /// The shader of a pass that lays a foreground over a background.
@@ -126,6 +191,12 @@ const SHADER: &str = include_str!("fusion.wgsl");
 
 /// The shader of a pass that draws a mask, or a Background times its effect mask.
 const MASK_SHADER: &str = include_str!("fusion_mask.wgsl");
+
+/// The shader of the pass that mixes a blurred picture with the picture as it came in.
+const BLUR_SHADER: &str = include_str!("fusion_blur.wgsl");
+
+/// The shader of the passes of a Mosaic.
+const MOSAIC_SHADER: &str = include_str!("fusion_mosaic.wgsl");
 
 /// The format of the pictures of a composition: that of the canvas, half floats, which keep
 /// what is above 1 and below 0.
@@ -159,6 +230,26 @@ pub(crate) const SIDES_AT: usize = 6;
 /// What the uniform of `fusion_mask.wgsl` has as what is drawn (`kind.x`) for a Background
 /// that has an effect mask; a Rectangle is 0, an Ellipse 1 and a Polygon 2.
 const TINTED: f32 = 3.0;
+
+/// What the uniform of `fusion_mosaic.wgsl` has as what the pass makes (`kind.x`) for the
+/// pass that makes the cells down, from what the pass across made, which has 0.
+const CELLS_DOWN: f32 = 1.0;
+
+/// What the uniform of `fusion_mosaic.wgsl` has as what the pass makes (`kind.x`) for the
+/// pass that draws the picture from the colours of its cells.
+const CELLS_SHOWN: f32 = 2.0;
+
+/// How the pass of a Mosaic that draws the picture is keyed (`kind.z` of the uniform of
+/// `fusion_mosaic.wgsl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Keyed {
+    /// By nothing: every cell is shown.
+    Whole,
+    /// By the alpha, at each pixel, of the picture that is the effect mask of the node.
+    Pixels,
+    /// By the least of the key over each cell, a texel each: a cell is shown where it is 1.
+    Cells,
+}
 
 /// What a layer of a clip that has a composition shows ([`crate::Source::Fused`]): the picture
 /// that comes out of the composition, in place of the source of the clip.
@@ -201,6 +292,8 @@ fn is_drawn(kind: &FusedKind) -> bool {
             | FusedKind::Rectangle { .. }
             | FusedKind::Ellipse { .. }
             | FusedKind::Polygon { .. }
+            | FusedKind::Blur { .. }
+            | FusedKind::Mosaic { .. }
     )
 }
 
@@ -355,6 +448,37 @@ pub(crate) enum Pass {
         /// to where it ends (x, y), in the pixels of the picture; none of any other pass.
         sides: Vec<[f32; 4]>,
     },
+    /// A Blur: its picture through the two passes of a filter of the neighbourhoods
+    /// (`neighbourhood.wgsl`), into textures of their own, and that mixed with the picture as
+    /// it came in by a pass of `fusion_blur.wgsl`: three passes of the card, which make one
+    /// picture of the composition.
+    Blur {
+        /// The picture that is blurred: never nothing.
+        input: Reads,
+        /// The picture whose alpha is the effect mask of the node; nothing where it has none.
+        mask: Reads,
+        /// The two passes of its filter, across and down, over a picture of the size that
+        /// the pictures are drawn at.
+        filter: [neighbourhood::Pass; 2],
+        /// The uniform of `fusion_blur.wgsl`.
+        uniform: [f32; PARAMS],
+    },
+    /// A Mosaic: the colours of its cells made in two passes of `fusion_mosaic.wgsl`, across
+    /// and down, into textures of their own; with `whole`, the least of its key over each
+    /// cell made in two more; and the picture drawn from them by one more, which makes one
+    /// picture of the composition.
+    Mosaic {
+        /// The picture that is laid out in cells: never nothing.
+        input: Reads,
+        /// The picture whose alpha is the key, the effect mask of the node; nothing where it
+        /// has none, and every cell is shown.
+        key: Reads,
+        /// The grid, over a picture of the size that the pictures are drawn at.
+        grid: Grid,
+        /// Whole Cells Only, of a node that has a key: a cell is shown only where the key is
+        /// 1 over all of it. Never where there is no key.
+        whole: bool,
+    },
 }
 
 impl Pass {
@@ -369,6 +493,8 @@ impl Pass {
                 ..
             } => [*background, *foreground, *mask],
             Pass::Mask { incoming, .. } => [*incoming, Reads::Nothing, Reads::Nothing],
+            Pass::Blur { input, mask, .. } => [*input, *mask, Reads::Nothing],
+            Pass::Mosaic { input, key, .. } => [*input, *key, Reads::Nothing],
         }
     }
 
@@ -395,6 +521,28 @@ impl Pass {
                 incoming: renumbered(incoming),
                 uniform,
                 sides,
+            },
+            Pass::Blur {
+                input,
+                mask,
+                filter,
+                uniform,
+            } => Pass::Blur {
+                input: renumbered(input),
+                mask: renumbered(mask),
+                filter,
+                uniform,
+            },
+            Pass::Mosaic {
+                input,
+                key,
+                grid,
+                whole,
+            } => Pass::Mosaic {
+                input: renumbered(input),
+                key: renumbered(key),
+                grid,
+                whole,
             },
         }
     }
@@ -440,6 +588,21 @@ impl Plan {
         self.passes
             .iter()
             .any(|pass| matches!(pass, Pass::Mask { .. }))
+    }
+
+    /// Whether a pass of it is a Blur, which needs the pipeline of `fusion_blur.wgsl` and
+    /// that of the filters of neighbourhoods.
+    pub(crate) fn blurs(&self) -> bool {
+        self.passes
+            .iter()
+            .any(|pass| matches!(pass, Pass::Blur { .. }))
+    }
+
+    /// Whether a pass of it is a Mosaic, which needs the pipeline of `fusion_mosaic.wgsl`.
+    pub(crate) fn mosaics(&self) -> bool {
+        self.passes
+            .iter()
+            .any(|pass| matches!(pass, Pass::Mosaic { .. }))
     }
 
     /// The textures of its passes: a pass draws into one that no pass from it on reads, and
@@ -501,11 +664,17 @@ impl Plan {
     }
 }
 
-/// The passes of `composition`, its pictures drawn `size` pixels large, `luma` the weights of
-/// R, G and B in the luma of the working space, which some Apply Modes read. `source` says
-/// whether the source of the clip gives a picture: a title that is not seen gives none, and a
-/// `MediaIn` is then no picture.
-pub(crate) fn plan(composition: &Fused, size: (u32, u32), luma: [f32; 3], source: bool) -> Plan {
+/// The passes of `composition`, whose pictures are of `nominal` pixels, drawn `size` pixels
+/// large; `luma` the weights of R, G and B in the luma of the working space, which some Apply
+/// Modes read. `source` says whether the source of the clip gives a picture: a title that is
+/// not seen gives none, and a `MediaIn` is then no picture.
+pub(crate) fn plan(
+    composition: &Fused,
+    size: (u32, u32),
+    nominal: (u32, u32),
+    luma: [f32; 3],
+    source: bool,
+) -> Plan {
     let mut passes: Vec<Pass> = Vec::new();
     let mut made: Vec<Reads> = Vec::with_capacity(composition.nodes.len());
     for node in &composition.nodes {
@@ -550,6 +719,22 @@ pub(crate) fn plan(composition: &Fused, size: (u32, u32), luma: [f32; 3], source
                 settings,
                 size,
                 luma,
+                &mut passes,
+            ),
+            FusedKind::Blur {
+                input,
+                mask,
+                settings,
+            } => blurred(read(*input), read(*mask), settings, size, &mut passes),
+            FusedKind::Mosaic {
+                input,
+                mask,
+                settings,
+            } => tiled(
+                read(*input),
+                read(*mask),
+                settings,
+                (size, nominal),
                 &mut passes,
             ),
             other => match mask::of_node(other) {
@@ -790,6 +975,179 @@ fn limited(mut uniform: [f32; PARAMS], limit: Reads, first: f32) -> [f32; PARAMS
     uniform
 }
 
+/// A number of a setting as the card takes it, where one below 0 is none: 0 where it is no
+/// number.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "settings of nodes, as the card takes them"
+)]
+fn positive(value: f64) -> f32 {
+    if value > 0.0 {
+        value as f32
+    } else {
+        0.0
+    }
+}
+
+/// How many pixels of a picture drawn `size` pixels large make a pixel of a picture 1080
+/// pixels high ([`crate::color::REFERENCE_HEIGHT`]): what the reach of the filter of a Blur
+/// is multiplied by, as that of a neighbourhood of a stage over a canvas of that size is.
+fn units(size: (u32, u32)) -> f32 {
+    let height = f64::from(size.1);
+    neighbourhood::units(height, height, height)
+}
+
+/// The picture of a Blur of `input`, limited by the effect mask `limit` (nothing: it has
+/// none), drawn `size` pixels large: none where it is given none; that of its input where
+/// it blurs nothing (both its Blur Sizes are 0) or its Blend is 0, whatever its mask; and
+/// else a pass, which blurs it by the filter of the node and mixes that with the picture as
+/// it came in.
+fn blurred(
+    input: Reads,
+    limit: Reads,
+    settings: &Blurred,
+    size: (u32, u32),
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    if input == Reads::Nothing {
+        return Reads::Nothing;
+    }
+    let reach = settings.size.map(positive);
+    let blend = positive(settings.blend).min(1.0);
+    if blend <= 0.0 || (reach[0] <= 0.0 && reach[1] <= 0.0) {
+        return input;
+    }
+    let taken = match settings.filter {
+        model::BlurFilter::Gaussian => Filter::Gaussian { sigma: reach },
+        model::BlurFilter::Box => Filter::Box { radius: reach },
+    };
+    let filter = neighbourhood::passes(taken, units(size), size);
+    let limited = limit != Reads::Nothing;
+    let uniform = blur_uniform(blend, limited, filter[1].target, size);
+    drawn(
+        passes,
+        Pass::Blur {
+            input,
+            mask: limit,
+            filter,
+            uniform,
+        },
+    )
+}
+
+/// The uniform of `fusion_blur.wgsl`: the Blend, within 0 and 1; whether the node has an
+/// effect mask; and how many texels of the blurred picture, which has `filtered` of them,
+/// lie to a pixel of the picture that comes out, of `size` pixels, across and down.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "sizes of textures, which a float holds"
+)]
+fn blur_uniform(
+    blend: f32,
+    limited: bool,
+    filtered: (u32, u32),
+    size: (u32, u32),
+) -> [f32; PARAMS] {
+    let mut uniform = [0.0; PARAMS];
+    uniform[0] = blend;
+    uniform[1] = f32::from(limited);
+    uniform[4] = filtered.0 as f32 / size.0.max(1) as f32;
+    uniform[5] = filtered.1 as f32 / size.1.max(1) as f32;
+    uniform
+}
+
+/// The picture of a Mosaic of `input`, keyed by the effect mask `key` (nothing: it has
+/// none, and every cell is shown), drawn at the first of `sizes`, the second being the size
+/// of the composition: none where it is given none; that of its input where its cells are a
+/// pixel wide and a pixel high, whatever its key; and else a pass.
+fn tiled(
+    input: Reads,
+    key: Reads,
+    settings: &Mosaicked,
+    sizes: ((u32, u32), (u32, u32)),
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    if input == Reads::Nothing {
+        return Reads::Nothing;
+    }
+    let (size, nominal) = sizes;
+    let grid = Grid::new(size.0, size.1, &scaled(settings, size, nominal));
+    if grid.size == [mosaic::STEPS; 2] {
+        return input;
+    }
+    let whole = settings.whole_cells_only && key != Reads::Nothing;
+    drawn(
+        passes,
+        Pass::Mosaic {
+            input,
+            key,
+            grid,
+            whole,
+        },
+    )
+}
+
+/// The settings of a Mosaic as the maths takes them for a picture drawn `size` pixels large,
+/// of the `nominal` pixels of the composition: its offsets, which are pixels of the
+/// composition, made pixels of the picture as it is drawn, so that the grid lies over the
+/// same parts of the picture. At the size of the composition they are as they are.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "offsets in pixels, as the maths takes them"
+)]
+fn scaled(settings: &Mosaicked, size: (u32, u32), nominal: (u32, u32)) -> mosaic::Settings {
+    let per = [
+        f64::from(size.0) / f64::from(nominal.0.max(1)),
+        f64::from(size.1) / f64::from(nominal.1.max(1)),
+    ];
+    let mut held = mosaic::Settings::from(settings);
+    held.offset = [0, 1].map(|axis: usize| (settings.offset[axis] * per[axis]) as f32);
+    held
+}
+
+/// The grid of a Mosaic as the uniform of `fusion_mosaic.wgsl` has it: the size of a cell
+/// and the lead of the grid, in steps, and the size of the picture, in pixels. They are
+/// whole numbers of at most 2^24, which a float keeps apart ([`mosaic::MOST_CELL`]).
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "whole numbers of at most 2^24, which a float keeps apart"
+)]
+fn grid_uniform(grid: &Grid) -> [f32; PARAMS] {
+    let mut uniform = [0.0; PARAMS];
+    uniform[4] = grid.size[0] as f32;
+    uniform[5] = grid.size[1] as f32;
+    uniform[6] = grid.lead[0] as f32;
+    uniform[7] = grid.lead[1] as f32;
+    uniform[8] = grid.frame[0] as f32;
+    uniform[9] = grid.frame[1] as f32;
+    uniform
+}
+
+/// The uniform of `fusion_mosaic.wgsl` for a pass that makes the cells of `grid`: across,
+/// from the picture, or `down`, from what the pass across made; the means of the colours of
+/// the cells, or, with `least`, the least of the key over each.
+pub(crate) fn cells_uniform(grid: &Grid, down: bool, least: bool) -> [f32; PARAMS] {
+    let mut uniform = grid_uniform(grid);
+    if down {
+        uniform[0] = CELLS_DOWN;
+    }
+    uniform[1] = f32::from(least);
+    uniform
+}
+
+/// The uniform of `fusion_mosaic.wgsl` for the pass that draws the picture of a Mosaic of
+/// `grid` from the colours of its cells, keyed as `keyed` says.
+pub(crate) fn shown_uniform(grid: &Grid, keyed: Keyed) -> [f32; PARAMS] {
+    let mut uniform = grid_uniform(grid);
+    uniform[0] = CELLS_SHOWN;
+    uniform[2] = match keyed {
+        Keyed::Whole => 0.0,
+        Keyed::Pixels => 1.0,
+        Keyed::Cells => 2.0,
+    };
+    uniform
+}
+
 /// The settings of a Merge of the model as the mathematics takes them
 /// ([`Settings::held`]).
 #[allow(
@@ -930,9 +1288,22 @@ pub(crate) fn mask_shader() -> String {
     format!("{}\n{MASK_SHADER}", crate::grade::window_edge_library())
 }
 
-/// The pipeline of the passes that lay, of the shader `source` ([`shader`]), or of those that
-/// draw masks ([`mask_shader`]), `layout` binding what they read: it writes each pixel as it
-/// makes it, into a texture of [`FORMAT`].
+/// The shader of the pass that mixes the blurred picture of a Blur with the picture as it
+/// came in: `fusion_blur.wgsl`, as it is. The passes that blur are those of
+/// `neighbourhood.wgsl`, by the pipeline of the filters of neighbourhoods.
+pub(crate) fn blur_shader() -> String {
+    BLUR_SHADER.to_owned()
+}
+
+/// The shader of the passes of a Mosaic: `fusion_mosaic.wgsl`, as it is.
+pub(crate) fn mosaic_shader() -> String {
+    MOSAIC_SHADER.to_owned()
+}
+
+/// The pipeline of the passes that lay, of the shader `source` ([`shader`]), of those that
+/// draw masks ([`mask_shader`]), of that which mixes a blurred picture ([`blur_shader`]) or
+/// of those of a Mosaic ([`mosaic_shader`]), `layout` binding what they read: it writes each
+/// pixel as it makes it, into a texture of [`FORMAT`].
 pub(crate) fn pipeline(
     device: &wgpu::Device,
     source: &str,
@@ -1041,7 +1412,8 @@ pub(crate) fn floats(gpu: &Gpu, width: u32, pixels: &[[f32; 4]]) -> wgpu::Textur
 /// has such a pass, so that a compositor that draws none has nothing of it.
 pub(crate) struct Card {
     /// What binds the uniform of a pass that lays, its background, its foreground and its
-    /// effect mask.
+    /// effect mask; and the uniform and the three pictures of the pass of a Blur that mixes
+    /// and of the passes of a Mosaic.
     pub layout: wgpu::BindGroupLayout,
     /// What binds the uniform of a pass that draws a mask, the mask that comes into it and
     /// the sides of the polygons of the frame.
@@ -1227,6 +1599,42 @@ impl Card {
         draw(encoder, pipeline, &bind, offset, target);
     }
 
+    /// Draw a pass that reads up to three pictures into `target`, by `pipeline` and the
+    /// uniform at `offset`: the pass of a Blur that mixes, and the passes of a Mosaic, whose
+    /// shaders bind what a pass that lays binds. `pictures` are bound in their order, a
+    /// texel of nothing in the place of one that the pass has not, which it does not read.
+    pub(crate) fn read(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        offset: u32,
+        pictures: [Option<&wgpu::Texture>; 3],
+        target: &wgpu::Texture,
+    ) {
+        let [first, second, third] = pictures.map(|picture| self.view(picture));
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("columbina composition"),
+            layout: &self.layout,
+            entries: &[
+                self.params(),
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&first),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&second),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&third),
+                },
+            ],
+        });
+        draw(encoder, pipeline, &bind, offset, target);
+    }
+
     /// What binds the uniform of a pass: a slot of the buffer of the uniforms of the frame,
     /// which the offset of the pass chooses.
     fn params(&self) -> wgpu::BindGroupEntry<'_> {
@@ -1394,7 +1802,7 @@ mod tests {
         size: (u32, u32),
         source: bool,
     ) -> Plan {
-        plan(&Fused { nodes, output }, size, REC709_LUMA, source)
+        plan(&Fused { nodes, output }, size, size, REC709_LUMA, source)
     }
 
     #[test]
@@ -1415,6 +1823,7 @@ mod tests {
                 nodes: vec![node("in", FusedKind::MediaIn)],
                 output: Some(0),
             },
+            SIZE,
             SIZE,
             REC709_LUMA,
             false,
@@ -2313,6 +2722,438 @@ mod tests {
         let lays = super::shader();
         assert_eq!(lays.matches("var effect_mask: texture_2d<f32>;").count(), 1);
         assert!(!lays.contains("sides"));
+    }
+
+    /// A Gaussian Blur of the picture at `input`, with the effect mask `mask`, shown whole:
+    /// its Blur Size `size`, across and down.
+    fn blur(input: Option<usize>, mask: Option<usize>, size: [f64; 2]) -> FusedKind {
+        FusedKind::Blur {
+            input,
+            mask,
+            settings: Blurred {
+                filter: model::BlurFilter::Gaussian,
+                size,
+                blend: 1.0,
+            },
+        }
+    }
+
+    /// A Mosaic of the picture at `input`, keyed by the mask `mask`, of `frequency` square
+    /// cells across, its grid where it lies.
+    fn cells(input: Option<usize>, mask: Option<usize>, frequency: f64) -> FusedKind {
+        FusedKind::Mosaic {
+            input,
+            mask,
+            settings: Mosaicked {
+                frequency,
+                aspect: 1.0,
+                offset: [0.0, 0.0],
+                whole_cells_only: false,
+            },
+        }
+    }
+
+    /// The settings of a mosaic at first, but with `frequency` cells across and the grid moved
+    /// by `offset`.
+    fn grid_of(frequency: f32, offset: [f32; 2]) -> mosaic::Settings {
+        mosaic::Settings {
+            frequency,
+            offset,
+            ..mosaic::Settings::default()
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a blur at two sizes, and one of the other filter with a mask"
+    )]
+    fn a_blur_is_its_picture_through_a_filter_of_the_neighbourhoods_and_a_pass_that_mixes() {
+        assert!(is_drawn(&blur(None, None, [5.0, 5.0])));
+        let full = (1920, 1080);
+        let graph = || {
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("soft", blur(Some(0), None, [5.0, 5.0])),
+            ]
+        };
+        // In a picture 1080 high a Blur Size is so many pixels: a Gaussian of 5, which is
+        // wide enough to be taken at a pixel of two.
+        let plan = plan_of(graph(), Some(1), full, true);
+        assert_eq!(plan.output, Reads::Pass(0));
+        assert!(plan.blurs() && plan.reads_source());
+        assert!(!plan.lays() && !plan.masks() && !plan.mosaics());
+        let [Pass::Blur {
+            input,
+            mask,
+            filter,
+            uniform,
+        }] = plan.passes.as_slice()
+        else {
+            panic!("a blur");
+        };
+        assert_eq!((*input, *mask), (Reads::Source, Reads::Nothing));
+        let gaussian = Filter::Gaussian { sigma: [5.0; 2] };
+        assert_eq!(*filter, neighbourhood::passes(gaussian, 1.0, full));
+        assert_eq!((filter[0].reach, filter[0].taps), (5.0, 15.0));
+        assert_eq!(filter[0].target, (960, 1080));
+        assert_eq!(filter[1].target, (960, 540));
+        // Shown whole, with no mask; read at half a texel to a pixel, across and down.
+        assert_eq!(uniform[..4], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(uniform[4..8], [0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(uniform[8..], [0.0; 12]);
+        // One picture of the composition: the textures of its filter are of no slot.
+        assert_eq!(
+            plan.slots(),
+            Slots {
+                source: Some(0),
+                passes: vec![1],
+                count: 2
+            }
+        );
+        // Drawn at half the size, it reaches half as many pixels: the same share of the
+        // picture, which is then read texel for pixel.
+        let half = plan_of(graph(), Some(1), (960, 540), true);
+        let [Pass::Blur {
+            filter, uniform, ..
+        }] = half.passes.as_slice()
+        else {
+            panic!("a blur");
+        };
+        assert_eq!(*filter, neighbourhood::passes(gaussian, 0.5, (960, 540)));
+        assert_eq!((filter[0].reach, filter[0].taps), (2.5, 8.0));
+        assert_eq!(filter[1].target, (960, 540));
+        assert_eq!(uniform[4..6], [1.0, 1.0]);
+        // A Box of another radius across than down, half blended in, with a mask: the mask
+        // is read by the pass, after it is drawn.
+        let boxed = FusedKind::Blur {
+            input: Some(1),
+            mask: Some(0),
+            settings: Blurred {
+                filter: model::BlurFilter::Box,
+                size: [16.0, 2.0],
+                blend: 0.5,
+            },
+        };
+        let plan = plan_of(
+            vec![
+                node("e", ellipse(None)),
+                node("in", FusedKind::MediaIn),
+                node("soft", boxed),
+            ],
+            Some(2),
+            full,
+            true,
+        );
+        assert!(plan.blurs() && plan.masks());
+        let [Pass::Mask { .. }, Pass::Blur {
+            input,
+            mask,
+            filter,
+            uniform,
+        }] = plan.passes.as_slice()
+        else {
+            panic!("a mask and a blur");
+        };
+        assert_eq!((*input, *mask), (Reads::Source, Reads::Pass(0)));
+        let radii = Filter::Box {
+            radius: [16.0, 2.0],
+        };
+        assert_eq!(*filter, neighbourhood::passes(radii, 1.0, full));
+        assert!(!filter[0].gaussian && filter[0].across && !filter[1].across);
+        assert_eq!((filter[0].reach, filter[1].reach), (16.0, 2.0));
+        assert_eq!(filter[1].target, (480, 1080));
+        assert_eq!(uniform[..2], [0.5, 1.0]);
+        assert_eq!(uniform[4..6], [0.25, 1.0]);
+        assert_eq!(
+            plan.slots(),
+            Slots {
+                source: Some(0),
+                passes: vec![1, 2],
+                count: 3
+            }
+        );
+        assert_eq!(u64::try_from(uniform.len() * 4).unwrap(), PARAMS_SIZE);
+    }
+
+    #[test]
+    fn a_blur_that_blurs_nothing_or_is_not_blended_in_is_its_input_and_no_pass() {
+        // In each graph an Ellipse, which may be the mask, is at 0 and the `MediaIn` at 1.
+        let with = |kind: FusedKind| {
+            planned(
+                vec![
+                    node("e", ellipse(None)),
+                    node("in", FusedKind::MediaIn),
+                    node("soft", kind),
+                ],
+                Some(2),
+            )
+        };
+        let blended = |blend: f64, mask: Option<usize>| FusedKind::Blur {
+            input: Some(1),
+            mask,
+            settings: Blurred {
+                filter: model::BlurFilter::Box,
+                size: [40.0, 40.0],
+                blend,
+            },
+        };
+        // A Blur Size of 0 across and down, and one that is no number; and a Blend of 0:
+        // whatever the mask, which nothing reads then, and is not drawn.
+        for mask in [None, Some(0)] {
+            for kind in [
+                blur(Some(1), mask, [0.0, 0.0]),
+                blur(Some(1), mask, [f64::NAN, -1.0]),
+                blended(0.0, mask),
+                blended(f64::NAN, mask),
+            ] {
+                let plan = with(kind.clone());
+                assert_eq!(plan.passes, [] as [Pass; 0], "{kind:?}");
+                assert_eq!(plan.output, Reads::Source, "{kind:?}");
+            }
+            // A Blur of no picture is no picture.
+            assert_eq!(with(blur(None, mask, [40.0, 40.0])), Plan::default());
+        }
+        // A Blur across alone, or down alone, is a pass; and a Blend above 1 is 1.
+        for size in [[40.0, 0.0], [0.0, 40.0]] {
+            let plan = with(blur(Some(1), None, size));
+            assert_eq!(plan.passes.len(), 1, "{size:?}");
+            assert!(plan.blurs(), "{size:?}");
+        }
+        let plan = with(blended(1.5, None));
+        let [Pass::Blur { uniform, .. }] = plan.passes.as_slice() else {
+            panic!("a blur");
+        };
+        assert_eq!(uniform[0], 1.0);
+        // A Blur of a Blur: two pictures, each drawn into a texture that the other does not
+        // read.
+        let chain = planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("first", blur(Some(0), None, [40.0, 40.0])),
+                node("second", blur(Some(1), None, [40.0, 40.0])),
+            ],
+            Some(2),
+        );
+        assert_eq!(chain.passes.len(), 2);
+        let Pass::Blur { input, .. } = &chain.passes[1] else {
+            panic!("a blur");
+        };
+        assert_eq!(*input, Reads::Pass(0));
+        // The second is drawn into the texture of the source, which the first was the last
+        // to read.
+        assert_eq!(
+            chain.slots(),
+            Slots {
+                source: Some(0),
+                passes: vec![1, 0],
+                count: 2
+            }
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a mosaic with and without a key, and what its passes are given"
+    )]
+    fn a_mosaic_is_a_pass_of_its_grid_in_whole_steps_keyed_by_its_mask() {
+        assert!(is_drawn(&cells(None, None, 4.0)));
+        // Four cells across a picture of 16 by 8: cells of four pixels, 1024 steps.
+        let plan = planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node("tiles", cells(Some(0), None, 4.0)),
+            ],
+            Some(1),
+        );
+        assert_eq!(plan.output, Reads::Pass(0));
+        assert!(plan.mosaics() && plan.reads_source());
+        assert!(!plan.blurs() && !plan.lays() && !plan.masks());
+        let [Pass::Mosaic {
+            input,
+            key,
+            grid,
+            whole,
+        }] = plan.passes.as_slice()
+        else {
+            panic!("a mosaic");
+        };
+        assert_eq!(
+            (*input, *key, *whole),
+            (Reads::Source, Reads::Nothing, false)
+        );
+        assert_eq!(*grid, Grid::new(16, 8, &grid_of(4.0, [0.0, 0.0])));
+        assert_eq!((grid.size, grid.cells()), ([1024, 1024], [4, 2]));
+        // What its passes are given: the grid, in whole numbers; and what each makes.
+        let across = cells_uniform(grid, false, false);
+        assert_eq!(across[..4], [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(across[4..8], [1024.0, 1024.0, 128.0, 128.0]);
+        assert_eq!(across[8..12], [16.0, 8.0, 0.0, 0.0]);
+        assert_eq!(across[12..], [0.0; 8]);
+        assert_eq!(cells_uniform(grid, true, false)[..4], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(cells_uniform(grid, false, true)[..4], [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(cells_uniform(grid, true, true)[4..], across[4..]);
+        for (keyed, number) in [
+            (Keyed::Whole, 0.0),
+            (Keyed::Pixels, 1.0),
+            (Keyed::Cells, 2.0),
+        ] {
+            let shown = shown_uniform(grid, keyed);
+            assert_eq!(shown[..4], [2.0, 0.0, number, 0.0], "{keyed:?}");
+            assert_eq!(shown[4..], across[4..], "{keyed:?}");
+        }
+        assert_eq!(u64::try_from(across.len() * 4).unwrap(), PARAMS_SIZE);
+        assert_eq!(
+            plan.slots(),
+            Slots {
+                source: Some(0),
+                passes: vec![1],
+                count: 2
+            }
+        );
+        // With a mask it is keyed by it; and with Whole Cells Only the least of the key over
+        // each cell is made too. Without a mask Whole Cells Only is nothing.
+        let keyed = |mask: Option<usize>, whole_cells_only: bool| {
+            let kind = FusedKind::Mosaic {
+                input: Some(1),
+                mask,
+                settings: Mosaicked {
+                    frequency: 4.0,
+                    aspect: 2.0,
+                    offset: [1.5, -2.25],
+                    whole_cells_only,
+                },
+            };
+            planned(
+                vec![
+                    node("e", ellipse(None)),
+                    node("in", FusedKind::MediaIn),
+                    node("tiles", kind),
+                ],
+                Some(2),
+            )
+        };
+        let moved = mosaic::Settings {
+            aspect: 2.0,
+            ..grid_of(4.0, [1.5, -2.25])
+        };
+        for (mask, whole_cells_only, wanted) in [
+            (Some(0), false, false),
+            (Some(0), true, true),
+            (None, true, false),
+        ] {
+            let plan = keyed(mask, whole_cells_only);
+            let Some(Pass::Mosaic {
+                input,
+                key,
+                grid,
+                whole,
+            }) = plan.passes.last()
+            else {
+                panic!("a mosaic");
+            };
+            assert_eq!(*whole, wanted, "{mask:?}, {whole_cells_only}");
+            assert_eq!(*input, Reads::Source);
+            assert_eq!(*grid, Grid::new(16, 8, &moved));
+            // The mask is drawn where it is read alone.
+            let reads = mask.map_or(Reads::Nothing, |_| Reads::Pass(0));
+            assert_eq!(*key, reads);
+            assert_eq!(plan.masks(), mask.is_some());
+        }
+    }
+
+    #[test]
+    fn a_mosaic_of_cells_of_a_pixel_is_its_input_and_one_drawn_smaller_has_its_grid_smaller() {
+        let with = |kind: FusedKind| {
+            planned(
+                vec![
+                    node("e", ellipse(None)),
+                    node("in", FusedKind::MediaIn),
+                    node("tiles", kind),
+                ],
+                Some(2),
+            )
+        };
+        // As many cells across as the picture has pixels, or more: each is a pixel, and the
+        // picture is as it came in, whatever the mask, which is not drawn then.
+        for mask in [None, Some(0)] {
+            for frequency in [16.0, 100.0, 16_384.0] {
+                let plan = with(cells(Some(1), mask, frequency));
+                assert_eq!(plan.passes, [] as [Pass; 0], "{frequency}");
+                assert_eq!(plan.output, Reads::Source, "{frequency}");
+            }
+            // A Mosaic of no picture is no picture.
+            assert_eq!(with(cells(None, mask, 4.0)), Plan::default());
+        }
+        // Cells a pixel wide and two high are cells: a pass.
+        let tall = FusedKind::Mosaic {
+            input: Some(1),
+            mask: None,
+            settings: Mosaicked {
+                frequency: 16.0,
+                aspect: 0.5,
+                offset: [0.0, 0.0],
+                whole_cells_only: false,
+            },
+        };
+        let upright = with(tall);
+        let [Pass::Mosaic { grid, .. }] = upright.passes.as_slice() else {
+            panic!("a mosaic");
+        };
+        assert_eq!(grid.size, [mosaic::STEPS, 2 * mosaic::STEPS]);
+        // A composition of 32 by 16 drawn at half its size: as many cells across, and the
+        // offsets, which are pixels of the composition, half as many pixels as it is drawn.
+        let moved = FusedKind::Mosaic {
+            input: Some(0),
+            mask: None,
+            settings: Mosaicked {
+                frequency: 4.0,
+                aspect: 1.0,
+                offset: [4.0, -2.0],
+                whole_cells_only: false,
+            },
+        };
+        let drawn_at = |size: (u32, u32)| {
+            let composition = Fused {
+                nodes: vec![node("in", FusedKind::MediaIn), node("tiles", moved.clone())],
+                output: Some(1),
+            };
+            let made = super::plan(&composition, size, (32, 16), REC709_LUMA, true);
+            let [Pass::Mosaic { grid, .. }] = made.passes.as_slice() else {
+                panic!("a mosaic");
+            };
+            *grid
+        };
+        assert_eq!(
+            drawn_at((32, 16)),
+            Grid::new(32, 16, &grid_of(4.0, [4.0, -2.0]))
+        );
+        let half = drawn_at((16, 8));
+        assert_eq!(half, Grid::new(16, 8, &grid_of(4.0, [2.0, -1.0])));
+        assert_eq!(half.cells(), drawn_at((32, 16)).cells());
+    }
+
+    #[test]
+    fn the_shaders_of_a_blur_and_of_a_mosaic_bind_what_a_pass_that_lays_binds() {
+        for shader in [blur_shader(), mosaic_shader()] {
+            assert_eq!(shader.matches("@vertex").count(), 1);
+            assert_eq!(shader.matches("@fragment").count(), 1);
+            assert_eq!(shader.matches("var<uniform> params:").count(), 1);
+            for binding in 0..4 {
+                let bound = format!("@group(0) @binding({binding}) var");
+                assert_eq!(shader.matches(&bound).count(), 1, "{bound}");
+            }
+            assert!(!shader.contains("@binding(4)"));
+            // No sampler: every picture is read texel by texel.
+            assert!(!shader.contains("textureSample"));
+        }
+        // The steps of the grid are those of the maths, which the shader is held to.
+        let steps = format!("const MOSAIC_STEPS: u32 = {}u;", mosaic::STEPS);
+        assert!(mosaic_shader().contains(&steps), "{steps}");
+        // The shader that lays is as it was: it has nothing of either.
+        let lays = super::shader();
+        assert!(!lays.contains("fn blur_at(") && !lays.contains("MOSAIC_STEPS"));
     }
 
     #[test]

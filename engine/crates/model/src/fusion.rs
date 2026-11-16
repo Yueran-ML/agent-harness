@@ -40,15 +40,20 @@
 //!   larger or smaller, turned and flipped ([`Transform`]).
 //! - `background`, no input but its effect mask, `mask`: one colour over the whole picture
 //!   ([`Background`]).
+//! - `blur`, one input, `input`, and its effect mask, `mask`: its picture blurred ([`Blur`];
+//!   see Blur and Mosaic below).
+//! - `mosaic`, one input, `input`, and its effect mask, `mask`: its picture laid out in cells
+//!   of one colour each ([`Mosaic`]).
 //! - `rectangle`, `ellipse` and `polygon`, one input each, `mask`: the masks ([`Rectangle`],
 //!   [`Ellipse`], [`Polygon`]; see Masks below).
 //!
 //! An input that is not linked gives no picture: a transparent one of the size of the
 //! composition; but a `mask` that is not linked is no mask at all (see Masks). A node that is
 //! passed through (Fusion's Pass Through, Ctrl-P) hands on the picture of its first input as
-//! it is ([`Kind::through`]): a Merge its background, a Transform its picture, and a mask node
-//! the mask that comes into it. A node that has no such input, a `media_in` or a `background`,
-//! then gives none: the effect mask of a node is not a picture that it hands on.
+//! it is ([`Kind::through`]): a Merge its background, a Transform, a Blur and a Mosaic their
+//! picture, and a mask node the mask that comes into it. A node that has no such input, a
+//! `media_in` or a `background`, then gives none: the effect mask of a node is not a picture
+//! that it hands on.
 //!
 //! # Masks
 //!
@@ -73,11 +78,12 @@
 //!
 //! What a mask does to the node whose `mask` it comes into, which the compositor is held to:
 //!
-//! - A node that has a picture to hand on (a `transform`, its `input`; a `merge`, its
-//!   `background`): where the mask is 1 its result is its own, where it is 0 it is the
-//!   picture of that first input as it came in (transparent where that is not linked), and
-//!   between them the two are mixed by the value of the mask, channel by channel:
-//!   `first + (own − first) · mask`.
+//! - A node that has a picture to hand on (a `transform`, a `blur` and a `mosaic`, their
+//!   `input`; a `merge`, its `background`): where the mask is 1 its result is its own, where
+//!   it is 0 it is the picture of that first input as it came in (transparent where that is
+//!   not linked), and between them the two are mixed by the value of the mask, channel by
+//!   channel: `first + (own − first) · mask`. (A `mosaic` with Whole Cells Only reads its
+//!   mask cell by cell: see Blur and Mosaic.)
 //! - A `background`, which makes its picture of nothing: its picture multiplied by the
 //!   mask, all four channels.
 //! - A mask node: the mask that comes in is combined with its own by its Paint Mode
@@ -86,6 +92,37 @@
 //!
 //! A node that is read through a `mask` alone is still one that the picture depends on: it
 //! is among the nodes of [`Fused`], and a loop through a `mask` is a loop.
+//!
+//! # Blur and Mosaic
+//!
+//! A Blur is Fusion's Blur node (Reference Manual 20, Chapter 93, pp. 2059–2061), with its
+//! daily controls: the Filter, Lock X/Y, the Blur Size and Blend. Of its filters the Gaussian
+//! and the Box are kept. It has no Clipping Mode: a picture is blurred within its own size,
+//! and the pixels beyond its edges are those at its edges. The pictures are premultiplied, so
+//! that the alpha of a picture is blurred with its colour.
+//!
+//! The Blur Size is counted as the filters of the Color page are (ours: the manual gives the
+//! slider no unit), so that a number is the same blur on either page: of a Gaussian it is a
+//! standard deviation and of a Box a radius, in pixels of a picture 1080 pixels high. In a
+//! picture of another height it is as many pixels as that height is of 1080: a Blur Size of 5
+//! is 5 pixels of a picture 1080 high and 10 of one 2160 high, the same share of either. With
+//! Lock X/Y the blur across and the blur down are both `size.x`; `size.y` is kept as it is,
+//! and is not read. What comes out is the picture as it came in mixed with the blurred one by
+//! Blend, and by the effect mask where there is one: `input + (blurred − input) · blend ·
+//! mask`.
+//!
+//! Fusion has no node of its own that makes a mosaic: it uses the Mosaic Blur of Resolve FX
+//! (p. 3465). Ours is a node, `mosaic`, whose settings are those of the mathematics of the
+//! mosaic of the compositor, by the same names, in the same units, within the same ranges and
+//! with the same values at first; what each makes of a pixel is told there. Pixel Frequency
+//! is how many cells lie across the width of the picture, Aspect how many times as wide as
+//! high a cell is, and the offsets how many pixels of the picture the grid is moved, to the
+//! right and down. The cells are squares, or rectangles by the Aspect: the other Cell Shapes
+//! are not kept. The key of that mathematics is the effect mask of the node: each pixel is
+//! `input + (cell − input) · mask`, `cell` the colour of its cell; and with Whole Cells Only
+//! a cell is shown only where the mask is 1 over all of it, and every other cell is the
+//! picture as it came in. Without a mask every cell is shown, and Whole Cells Only changes
+//! nothing.
 //!
 //! # Coordinates
 //!
@@ -183,14 +220,30 @@ pub mod bounds {
     /// An `x` or a `y` of a point of a Polygon, from its centre, in widths of the picture: as
     /// far as 16 pictures either way.
     pub const MASK_POINT: Bounds = Bounds::new(0.0, -16.0, 16.0);
+    /// Blur Size of a Blur, across and down (p. 2060), in pixels of a picture 1080 high: 5 at
+    /// first, so that a new Blur is seen; 0 blurs nothing.
+    pub const BLUR_SIZE: Bounds = Bounds::new(5.0, 0.0, 500.0);
+    /// Blend of a Blur (p. 2061): 1, the blurred picture, at first; 0 is the picture as it
+    /// came in.
+    pub const BLUR_BLEND: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// Pixel Frequency of a Mosaic (p. 3465), how many cells lie across the picture: 32 at
+    /// first; from 1 to the 16384 pixels of the widest picture. That of the mathematics of
+    /// the mosaic of the compositor, which is held to it.
+    pub const MOSAIC_FREQUENCY: Bounds = Bounds::new(32.0, 1.0, 16_384.0);
+    /// Aspect of a Mosaic (p. 3465), the width of a cell against its height: 1, squares, at
+    /// first; from a sixteenth to 16.
+    pub const MOSAIC_ASPECT: Bounds = Bounds::new(1.0, 0.0625, 16.0);
+    /// X Offset and Y Offset of a Mosaic (p. 3465), in pixels of the picture: none at first;
+    /// as far either way as the widest picture is wide.
+    pub const MOSAIC_OFFSET: Bounds = Bounds::new(0.0, -16_384.0, 16_384.0);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Kinds, inputs and links
 // ---------------------------------------------------------------------------------------------
 
-/// The kinds of node, as they are named in `kind`. Others are to come: Blur, Mosaic, the
-/// Delta Keyer, the Tracker and Text+.
+/// The kinds of node, as they are named in `kind`. Others are to come: the Delta Keyer, the
+/// Tracker and Text+.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -211,6 +264,10 @@ pub enum Kind {
     Ellipse,
     /// The mask of a polygon.
     Polygon,
+    /// A picture blurred.
+    Blur,
+    /// A picture laid out in cells of one colour each.
+    Mosaic,
 }
 
 impl Kind {
@@ -226,6 +283,8 @@ impl Kind {
             Self::Rectangle => "rectangle",
             Self::Ellipse => "ellipse",
             Self::Polygon => "polygon",
+            Self::Blur => "blur",
+            Self::Mosaic => "mosaic",
         }
     }
 
@@ -237,7 +296,7 @@ impl Kind {
         match self {
             Self::MediaIn => &[],
             Self::MediaOut => &[Input::Input],
-            Self::Transform => &[Input::Input, Input::Mask],
+            Self::Transform | Self::Blur | Self::Mosaic => &[Input::Input, Input::Mask],
             Self::Merge => &[Input::Background, Input::Foreground, Input::Mask],
             Self::Background | Self::Rectangle | Self::Ellipse | Self::Polygon => &[Input::Mask],
         }
@@ -251,7 +310,7 @@ impl Kind {
     pub fn through(self) -> Option<Input> {
         match self {
             Self::MediaIn | Self::Background => None,
-            Self::MediaOut | Self::Transform => Some(Input::Input),
+            Self::MediaOut | Self::Transform | Self::Blur | Self::Mosaic => Some(Input::Input),
             Self::Merge => Some(Input::Background),
             Self::Rectangle | Self::Ellipse | Self::Polygon => Some(Input::Mask),
         }
@@ -275,15 +334,17 @@ impl Kind {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Input {
-    /// The one input of a node that has one: of `media_out` and of `transform`.
+    /// The one input of a node that has one picture: of `media_out`, of `transform`, of
+    /// `blur` and of `mosaic`.
     Input,
     /// The background of a Merge (the orange input of an editor).
     Background,
     /// The foreground of a Merge (the green one).
     Foreground,
     /// The effect mask of a node (the blue input of an editor): the mask that limits a
-    /// `merge`, a `transform` or a `background`, and the mask that comes into a mask node.
-    /// It reads the alpha of the picture that is linked to it; not linked, it is no mask.
+    /// `merge`, a `transform`, a `background`, a `blur` or a `mosaic`, and the mask that
+    /// comes into a mask node. It reads the alpha of the picture that is linked to it; not
+    /// linked, it is no mask.
     Mask,
 }
 
@@ -1121,6 +1182,192 @@ impl Polygon {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Blur and Mosaic
+// ---------------------------------------------------------------------------------------------
+
+/// How a Blur takes the pixels about each one (Filter, p. 2060): of Fusion's five, the two
+/// that the filters of the compositor have. It is written `"gaussian"` or `"box"`, and takes
+/// no keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlurFilter {
+    /// A Gaussian, whose standard deviation the Blur Size is. Every Blur has it at first.
+    #[default]
+    Gaussian,
+    /// The mean of the pixels within the Blur Size of each one, its radius.
+    Box,
+}
+
+/// The Blur Size of a [`Blur`]: how far it reaches across, `x`, and down, `y`, each a number
+/// or keys, in pixels of a picture 1080 pixels high (see the [module](self)).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlurSize {
+    /// How far the blur reaches across; and down too, with Lock X/Y.
+    pub x: Param,
+    /// How far the blur reaches down, without Lock X/Y.
+    pub y: Param,
+}
+
+/// The settings of a Blur (pp. 2059–2061), its daily controls: the picture is blurred by
+/// `filter` as far as `size`, across and down, and mixed with the picture as it came in by
+/// `blend`. The pixels beyond the edges of the picture are those at its edges, and its alpha
+/// is blurred with its colour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Blur {
+    /// Filter (p. 2060).
+    pub filter: BlurFilter,
+    /// Lock X/Y (p. 2060): the blur across and the blur down are both `size.x`, and `size.y`
+    /// is kept and not read. It takes no keys.
+    pub lock_xy: bool,
+    /// Blur Size (p. 2060).
+    pub size: BlurSize,
+    /// Blend (p. 2061): from 0, the picture as it came in, to 1, the blurred picture.
+    pub blend: Param,
+}
+
+impl Default for Blur {
+    /// A Gaussian of 5 pixels of a picture 1080 high, across and down alike, shown whole.
+    fn default() -> Self {
+        Self {
+            filter: BlurFilter::Gaussian,
+            lock_xy: true,
+            size: BlurSize {
+                x: bounds::BLUR_SIZE.param(),
+                y: bounds::BLUR_SIZE.param(),
+            },
+            blend: bounds::BLUR_BLEND.param(),
+        }
+    }
+}
+
+impl Blur {
+    /// Its settings at a frame of its keys: the Blur Size as it is read, both `size.x` with
+    /// Lock X/Y.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> Blurred {
+        let across = self.size.x.value_at(frame);
+        let down = if self.lock_xy {
+            across
+        } else {
+            self.size.y.value_at(frame)
+        };
+        Blurred {
+            filter: self.filter,
+            size: [across, down],
+            blend: self.blend.value_at(frame),
+        }
+    }
+
+    fn check(&self) -> Result<(), OpError> {
+        bounds::BLUR_SIZE.check("blur.size.x", &self.size.x)?;
+        bounds::BLUR_SIZE.check("blur.size.y", &self.size.y)?;
+        bounds::BLUR_BLEND.check("blur.blend", &self.blend)
+    }
+
+    fn settings(&self) -> [(&'static str, &Param); 3] {
+        [
+            ("size.x", &self.size.x),
+            ("size.y", &self.size.y),
+            ("blend", &self.blend),
+        ]
+    }
+
+    fn settings_mut(&mut self) -> [(&'static str, &mut Param); 3] {
+        [
+            ("size.x", &mut self.size.x),
+            ("size.y", &mut self.size.y),
+            ("blend", &mut self.blend),
+        ]
+    }
+}
+
+/// How far the grid of a [`Mosaic`] is moved: `x` to the right and `y` down, each a number or
+/// keys, in pixels of the picture.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MosaicOffset {
+    /// X Offset: how many pixels to the right.
+    pub x: Param,
+    /// Y Offset: how many pixels down.
+    pub y: Param,
+}
+
+/// The settings of a Mosaic (the Mosaic Blur of Resolve FX, p. 3465): those of the
+/// mathematics of the mosaic of the compositor, by the same names. The picture is laid out
+/// in a grid of cells, `frequency` of them across its width, each `aspect` times as wide as
+/// high, the grid moved by `offset`; and each cell is shown in one colour, the mean of the
+/// picture under it. The cells are squares, or rectangles where `aspect` is not 1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mosaic {
+    /// Pixel Frequency: how many cells lie across the width of the picture.
+    pub frequency: Param,
+    /// Aspect: how many times as wide as high a cell is.
+    pub aspect: Param,
+    /// X Offset and Y Offset.
+    pub offset: MosaicOffset,
+    /// Whole Cells Only: a cell is shown only where the effect mask of the node is 1 over all
+    /// of it. Without a mask it changes nothing. It takes no keys.
+    pub whole_cells_only: bool,
+}
+
+impl Default for Mosaic {
+    /// 32 square cells across, the grid where it lies, and every cell shown where the mask
+    /// reaches it.
+    fn default() -> Self {
+        Self {
+            frequency: bounds::MOSAIC_FREQUENCY.param(),
+            aspect: bounds::MOSAIC_ASPECT.param(),
+            offset: MosaicOffset {
+                x: bounds::MOSAIC_OFFSET.param(),
+                y: bounds::MOSAIC_OFFSET.param(),
+            },
+            whole_cells_only: false,
+        }
+    }
+}
+
+impl Mosaic {
+    /// Its settings at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> Mosaicked {
+        Mosaicked {
+            frequency: self.frequency.value_at(frame),
+            aspect: self.aspect.value_at(frame),
+            offset: [self.offset.x.value_at(frame), self.offset.y.value_at(frame)],
+            whole_cells_only: self.whole_cells_only,
+        }
+    }
+
+    fn check(&self) -> Result<(), OpError> {
+        bounds::MOSAIC_FREQUENCY.check("mosaic.frequency", &self.frequency)?;
+        bounds::MOSAIC_ASPECT.check("mosaic.aspect", &self.aspect)?;
+        bounds::MOSAIC_OFFSET.check("mosaic.offset.x", &self.offset.x)?;
+        bounds::MOSAIC_OFFSET.check("mosaic.offset.y", &self.offset.y)
+    }
+
+    fn settings(&self) -> [(&'static str, &Param); 4] {
+        [
+            ("frequency", &self.frequency),
+            ("aspect", &self.aspect),
+            ("offset.x", &self.offset.x),
+            ("offset.y", &self.offset.y),
+        ]
+    }
+
+    fn settings_mut(&mut self) -> [(&'static str, &mut Param); 4] {
+        [
+            ("frequency", &mut self.frequency),
+            ("aspect", &mut self.aspect),
+            ("offset.x", &mut self.offset.x),
+            ("offset.y", &mut self.offset.y),
+        ]
+    }
+}
+
 /// Settings that are named by fixed paths, as a list that settings named otherwise may be
 /// added to.
 fn named<P>(settings: impl IntoIterator<Item = (&'static str, P)>) -> Vec<(Cow<'static, str>, P)> {
@@ -1154,6 +1401,10 @@ pub enum NodeKind {
     Ellipse(Ellipse),
     /// The mask of a polygon.
     Polygon(Polygon),
+    /// A picture blurred.
+    Blur(Blur),
+    /// A picture laid out in cells of one colour each.
+    Mosaic(Mosaic),
 }
 
 /// The settings of a kind that has none, as they are written: `{}`.
@@ -1174,6 +1425,8 @@ impl NodeKind {
             Self::Rectangle(_) => Kind::Rectangle,
             Self::Ellipse(_) => Kind::Ellipse,
             Self::Polygon(_) => Kind::Polygon,
+            Self::Blur(_) => Kind::Blur,
+            Self::Mosaic(_) => Kind::Mosaic,
         }
     }
 
@@ -1189,6 +1442,8 @@ impl NodeKind {
             Kind::Rectangle => Self::Rectangle(Rectangle::default()),
             Kind::Ellipse => Self::Ellipse(Ellipse::default()),
             Kind::Polygon => Self::Polygon(Polygon::default()),
+            Kind::Blur => Self::Blur(Blur::default()),
+            Kind::Mosaic => Self::Mosaic(Mosaic::default()),
         }
     }
 
@@ -1212,6 +1467,8 @@ impl NodeKind {
             Kind::Rectangle => Self::Rectangle(serde_json::from_value(params)?),
             Kind::Ellipse => Self::Ellipse(serde_json::from_value(params)?),
             Kind::Polygon => Self::Polygon(serde_json::from_value(params)?),
+            Kind::Blur => Self::Blur(serde_json::from_value(params)?),
+            Kind::Mosaic => Self::Mosaic(serde_json::from_value(params)?),
         })
     }
 
@@ -1230,6 +1487,8 @@ impl NodeKind {
             Self::Rectangle(params) => serde_json::to_value(params),
             Self::Ellipse(params) => serde_json::to_value(params),
             Self::Polygon(params) => serde_json::to_value(params),
+            Self::Blur(params) => serde_json::to_value(params),
+            Self::Mosaic(params) => serde_json::to_value(params),
         };
         value.expect("the settings of a node are written as JSON")
     }
@@ -1245,6 +1504,8 @@ impl NodeKind {
             Self::Rectangle(rectangle) => rectangle.check(),
             Self::Ellipse(ellipse) => ellipse.check(),
             Self::Polygon(polygon) => polygon.check(),
+            Self::Blur(blur) => blur.check(),
+            Self::Mosaic(mosaic) => mosaic.check(),
         }
     }
 
@@ -1258,6 +1519,8 @@ impl NodeKind {
             Self::Rectangle(rectangle) => named(rectangle.settings()),
             Self::Ellipse(ellipse) => named(ellipse.settings()),
             Self::Polygon(polygon) => polygon.settings(),
+            Self::Blur(blur) => named(blur.settings()),
+            Self::Mosaic(mosaic) => named(mosaic.settings()),
         }
     }
 
@@ -1271,6 +1534,8 @@ impl NodeKind {
             Self::Rectangle(rectangle) => named(rectangle.settings_mut()),
             Self::Ellipse(ellipse) => named(ellipse.settings_mut()),
             Self::Polygon(polygon) => polygon.settings_mut(),
+            Self::Blur(blur) => named(blur.settings_mut()),
+            Self::Mosaic(mosaic) => named(mosaic.settings_mut()),
         }
     }
 
@@ -1316,9 +1581,9 @@ impl NodeKind {
 ///
 /// It is written `{"id", "kind", "label", "pass_through", "pos", "params"}`, where `params` is
 /// what a node of its kind is set by: a [`Merge`], a [`Transform`], a [`Background`], a
-/// [`Rectangle`], an [`Ellipse`] or a [`Polygon`], and an object with no fields for `media_in`
-/// and `media_out`. `pass_through` and `pos` are always written, and may be left out where a
-/// node is read: they are then `false` and `null`.
+/// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`] or a [`Mosaic`], and an object with
+/// no fields for `media_in` and `media_out`. `pass_through` and `pos` are always written, and
+/// may be left out where a node is read: they are then `false` and `null`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     /// What it is known by in its composition: `n` and a number where the engine made it. It
@@ -1383,6 +1648,8 @@ impl Serialize for Node {
             NodeKind::Rectangle(params) => node.serialize_field("params", params)?,
             NodeKind::Ellipse(params) => node.serialize_field("params", params)?,
             NodeKind::Polygon(params) => node.serialize_field("params", params)?,
+            NodeKind::Blur(params) => node.serialize_field("params", params)?,
+            NodeKind::Mosaic(params) => node.serialize_field("params", params)?,
         }
         node.end()
     }
@@ -1700,6 +1967,16 @@ impl Composition {
                 common: polygon.common_at(frame),
                 shape: polygon.at(frame),
             },
+            NodeKind::Blur(blur) => FusedKind::Blur {
+                input: read(Input::Input),
+                mask: read(Input::Mask),
+                settings: blur.at(frame),
+            },
+            NodeKind::Mosaic(mosaic) => FusedKind::Mosaic {
+                input: read(Input::Input),
+                mask: read(Input::Mask),
+                settings: mosaic.at(frame),
+            },
         };
         let at = nodes.len();
         nodes.push(FusedNode {
@@ -1832,12 +2109,34 @@ pub enum FusedKind {
         /// Its shape.
         shape: PolygonShape,
     },
+    /// A picture blurred.
+    Blur {
+        /// The picture.
+        input: Option<usize>,
+        /// Its effect mask: the picture blurred, and mixed by its Blend, where it is 1, and as
+        /// it came in where it is 0. None where it has none.
+        mask: Option<usize>,
+        /// How it is blurred.
+        settings: Blurred,
+    },
+    /// A picture laid out in cells of one colour each.
+    Mosaic {
+        /// The picture.
+        input: Option<usize>,
+        /// Its effect mask, the key of the mosaic: the colour of the cell where it is 1, the
+        /// picture as it came in where it is 0; and with Whole Cells Only, the colour of the
+        /// cell where it is 1 over all of the cell, and the picture as it came in elsewhere.
+        /// None where it has none: every cell is shown.
+        mask: Option<usize>,
+        /// How it is laid out.
+        settings: Mosaicked,
+    },
 }
 
 impl FusedKind {
     /// The picture that the first input of a node of the kind reads, by its place in
-    /// [`Fused::nodes`]: of a Merge its background, of a Transform its one input, and of a
-    /// mask node the mask that comes into it. None of a kind that has no such input, and
+    /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur and a Mosaic their
+    /// one input, and of a mask node the mask that comes into it. None of a kind that has no such input, and
     /// where the input reads no picture. It is the picture that a node that is passed through
     /// hands on ([`Kind::through`]), and that what cannot draw a kind may hand on in its
     /// place.
@@ -1846,7 +2145,9 @@ impl FusedKind {
         match self {
             Self::MediaIn | Self::Background { .. } => None,
             Self::Merge { background, .. } => *background,
-            Self::Transform { input, .. } => *input,
+            Self::Transform { input, .. }
+            | Self::Blur { input, .. }
+            | Self::Mosaic { input, .. } => *input,
             Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
             | Self::Polygon { mask, .. } => *mask,
@@ -1854,9 +2155,9 @@ impl FusedKind {
     }
 
     /// The mask that the `mask` input of a node of the kind reads, by its place in
-    /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform and of a Background, and
-    /// the mask that comes into a mask node. None of a `MediaIn`, which has no such input,
-    /// and where the input is not linked or brings no picture.
+    /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform, of a Background, of a
+    /// Blur and of a Mosaic, and the mask that comes into a mask node. None of a `MediaIn`,
+    /// which has no such input, and where the input is not linked or brings no picture.
     #[must_use]
     pub fn mask(&self) -> Option<usize> {
         match self {
@@ -1866,7 +2167,9 @@ impl FusedKind {
             | Self::Transform { mask, .. }
             | Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
-            | Self::Polygon { mask, .. } => *mask,
+            | Self::Polygon { mask, .. }
+            | Self::Blur { mask, .. }
+            | Self::Mosaic { mask, .. } => *mask,
         }
     }
 }
@@ -1972,6 +2275,35 @@ pub struct Transformed {
     pub flip_horizontal: bool,
     /// Whether it is flipped top for bottom.
     pub flip_vertical: bool,
+}
+
+/// The settings of a [`Blur`] at one moment, each that takes keys as the number that it is
+/// there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blurred {
+    /// Filter.
+    pub filter: BlurFilter,
+    /// The Blur Size as it is read, across and down, in pixels of a picture 1080 pixels high:
+    /// of a Gaussian its standard deviation, of a Box its radius. With Lock X/Y both are the
+    /// `size.x` of the node.
+    pub size: [f64; 2],
+    /// Blend: from 0, the picture as it came in, to 1, the blurred picture.
+    pub blend: f64,
+}
+
+/// The settings of a [`Mosaic`] at one moment, each that takes keys as the number that it is
+/// there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mosaicked {
+    /// Pixel Frequency: how many cells lie across the width of the picture.
+    pub frequency: f64,
+    /// Aspect: how many times as wide as high a cell is.
+    pub aspect: f64,
+    /// X Offset and Y Offset: how many pixels of the picture the grid is moved, to the right
+    /// and down.
+    pub offset: [f64; 2],
+    /// Whole Cells Only: a cell is shown only where the mask is 1 over all of it.
+    pub whole_cells_only: bool,
 }
 
 #[cfg(test)]
@@ -2088,14 +2420,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(short, Node::new("a", Kind::MediaIn));
-        // The settings of another kind, a setting that is not known, and settings of a kind
-        // that has none are refused.
+        // The settings of another kind, a setting that is not known, settings of a kind that
+        // has none, and a kind that is not known are refused.
         for wrong in [
             json!({"id": "a", "kind": "media_in", "label": "", "params": {"size": 1.0}}),
             json!({"id": "a", "kind": "transform", "label": "", "params": {}}),
             json!({"id": "a", "kind": "background", "label": "",
                    "params": {"color": {"r": 0, "g": 0, "b": 0, "a": 1}, "type": "solid"}}),
             json!({"id": "a", "kind": "blur", "label": "", "params": {}}),
+            json!({"id": "a", "kind": "delta_keyer", "label": "", "params": {}}),
             json!({"id": "a", "kind": "media_in", "label": "", "params": {}, "enabled": true}),
         ] {
             assert!(
@@ -2124,6 +2457,13 @@ mod tests {
             assert_eq!(mask.through(), Some(Input::Mask));
             assert!(mask.is_mask());
         }
+        // A Blur and a Mosaic have their picture and their effect mask, as a Transform has,
+        // hand on their picture, and make no mask.
+        for filter in [Kind::Blur, Kind::Mosaic] {
+            assert_eq!(filter.inputs(), &[Input::Input, Input::Mask]);
+            assert_eq!(filter.through(), Some(Input::Input));
+            assert!(!filter.is_mask());
+        }
         assert_eq!(Kind::MediaIn.through(), None);
         assert_eq!(Kind::Background.through(), None);
         assert_eq!(Kind::MediaOut.through(), Some(Input::Input));
@@ -2138,6 +2478,8 @@ mod tests {
             Kind::Rectangle,
             Kind::Ellipse,
             Kind::Polygon,
+            Kind::Blur,
+            Kind::Mosaic,
         ] {
             // What is handed on is an input of the kind, and its mask comes after its pictures.
             let inputs = kind.inputs();
@@ -2517,6 +2859,11 @@ mod tests {
                 "height",
                 "angle"
             ]
+        );
+        assert_eq!(paths(Kind::Blur), ["size.x", "size.y", "blend"]);
+        assert_eq!(
+            paths(Kind::Mosaic),
+            ["frequency", "aspect", "offset.x", "offset.y"]
         );
         // A Polygon has the two numbers of each point that it has, after the others.
         let fixed = [
@@ -3079,6 +3426,288 @@ mod tests {
         assert!(wrong(&|params| params["paint_mode"] = json!("maximum")));
         assert!(wrong(&|params| params["invert"] = json!(1)));
         assert!(!wrong(&|params| params["invert"] = json!(true)));
+    }
+
+    /// The composition of `merged` with the picture of its Merge blurred by `soft` and that
+    /// laid out in cells by `cells`, into `out`; the Ellipse `e` is the effect mask of both.
+    fn filtered() -> Composition {
+        let mut composition = merged();
+        composition.links.retain(|link| link.to != "out");
+        composition.nodes.push(Node::new("soft", Kind::Blur));
+        composition.nodes.push(Node::new("cells", Kind::Mosaic));
+        composition.nodes.push(Node::new("e", Kind::Ellipse));
+        composition.links.extend([
+            Link::new("move", "soft", Input::Input),
+            Link::new("soft", "cells", Input::Input),
+            Link::new("cells", "out", Input::Input),
+            Link::new("e", "soft", Input::Mask),
+            Link::new("e", "cells", Input::Mask),
+        ]);
+        composition.sort_links();
+        composition
+    }
+
+    #[test]
+    fn a_blur_and_a_mosaic_are_written_with_every_setting_and_read_back() {
+        let written = |kind: Kind| serde_json::to_value(Node::new("f", kind)).unwrap();
+        assert_eq!(
+            written(Kind::Blur),
+            json!({
+                "id": "f", "kind": "blur", "label": "", "pass_through": false, "pos": null,
+                "params": {
+                    "filter": "gaussian", "lock_xy": true, "size": {"x": 5.0, "y": 5.0},
+                    "blend": 1.0,
+                },
+            })
+        );
+        assert_eq!(
+            written(Kind::Mosaic)["params"],
+            json!({
+                "frequency": 32.0, "aspect": 1.0, "offset": {"x": 0.0, "y": 0.0},
+                "whole_cells_only": false,
+            })
+        );
+        for kind in [Kind::Blur, Kind::Mosaic] {
+            let read: Node = serde_json::from_value(written(kind)).unwrap();
+            assert_eq!(read, Node::new("f", kind));
+        }
+        // The other filter, and keys of a setting, as they are written.
+        let mut boxed = written(Kind::Blur);
+        boxed["params"]["filter"] = json!("box");
+        boxed["params"]["lock_xy"] = json!(false);
+        boxed["params"]["size"]["y"] =
+            json!({"keys": [{"frame": 0, "value": 12.5, "interp": "hold"}]});
+        let read: Node = serde_json::from_value(boxed.clone()).unwrap();
+        let NodeKind::Blur(blur) = &read.kind else {
+            panic!("it is a blur")
+        };
+        assert_eq!(blur.filter, BlurFilter::Box);
+        assert!(!blur.lock_xy && blur.size.y.is_animated());
+        assert_eq!(serde_json::to_value(&read).unwrap(), boxed);
+        assert_eq!(BlurFilter::default(), BlurFilter::Gaussian);
+        // A setting that is left out, one that is not known, and a filter that is not one of
+        // the two are refused, as those of the other kinds are: a Mosaic has no shape to set.
+        let wrong = |kind: Kind, change: &dyn Fn(&mut serde_json::Value)| {
+            let mut node = written(kind);
+            change(&mut node["params"]);
+            serde_json::from_value::<Node>(node).is_err()
+        };
+        assert!(wrong(Kind::Blur, &|params| {
+            params.as_object_mut().unwrap().remove("lock_xy");
+        }));
+        assert!(wrong(Kind::Blur, &|params| {
+            params["size"].as_object_mut().unwrap().remove("y");
+        }));
+        let bartlett = json!("bartlett");
+        assert!(wrong(Kind::Blur, &|params| params["filter"] = bartlett.clone()));
+        assert!(wrong(Kind::Blur, &|params| params["size"] = json!(5.0)));
+        assert!(wrong(Kind::Blur, &|params| params["clipping"] = json!("frame")));
+        assert!(wrong(Kind::Mosaic, &|params| {
+            params.as_object_mut().unwrap().remove("whole_cells_only");
+        }));
+        assert!(wrong(Kind::Mosaic, &|params| params["shape"] = json!("square")));
+        assert!(wrong(Kind::Mosaic, &|params| params["offset"] = json!(0.0)));
+        assert!(wrong(Kind::Mosaic, &|params| params["whole_cells_only"] =
+            json!(1)));
+        assert!(!wrong(Kind::Mosaic, &|params| params["aspect"] = json!(2)));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each of the two as it is at a frame, and as it is passed through"
+    )]
+    fn a_blur_and_a_mosaic_at_a_frame_are_their_numbers_there_after_what_they_read() {
+        let mut composition = filtered();
+        assert_eq!(composition.check(), Ok(()));
+        if let NodeKind::Blur(blur) = &mut composition.nodes[5].kind {
+            blur.size.x = keys(&[(0, 0.0), (10, 20.0)]);
+            blur.size.y = Param::Fixed(40.0);
+            blur.blend = keys(&[(0, 1.0), (10, 0.5)]);
+        }
+        if let NodeKind::Mosaic(mosaic) = &mut composition.nodes[6].kind {
+            mosaic.frequency = keys(&[(0, 16.0), (10, 48.0)]);
+            mosaic.offset.y = Param::Fixed(-3.5);
+            mosaic.whole_cells_only = true;
+        }
+        assert_eq!(composition.check(), Ok(()));
+        assert!(composition.is_animated());
+        let fused = composition.at(5.0);
+        // Each after its picture and then its mask, which is there once though two read it.
+        assert_eq!(
+            ids(&fused),
+            ["bg", "in", "over", "move", "e", "soft", "cells"]
+        );
+        assert_eq!(fused.output, Some(6));
+        // With Lock X/Y the blur down is the blur across, whatever `size.y` is.
+        assert_eq!(
+            fused.nodes[5].kind,
+            FusedKind::Blur {
+                input: Some(3),
+                mask: Some(4),
+                settings: Blurred {
+                    filter: BlurFilter::Gaussian,
+                    size: [10.0, 10.0],
+                    blend: 0.75,
+                },
+            }
+        );
+        assert_eq!(
+            fused.nodes[6].kind,
+            FusedKind::Mosaic {
+                input: Some(5),
+                mask: Some(4),
+                settings: Mosaicked {
+                    frequency: 32.0,
+                    aspect: 1.0,
+                    offset: [0.0, -3.5],
+                    whole_cells_only: true,
+                },
+            }
+        );
+        assert_eq!(fused.nodes[5].kind.first_input(), Some(3));
+        assert_eq!(fused.nodes[6].kind.first_input(), Some(5));
+        assert_eq!(fused.nodes[6].kind.mask(), Some(4));
+        // Without Lock X/Y each is its own; and the filter is the one that is set.
+        if let NodeKind::Blur(blur) = &mut composition.nodes[5].kind {
+            blur.lock_xy = false;
+            blur.filter = BlurFilter::Box;
+        }
+        let unlocked = composition.at(5.0);
+        let FusedKind::Blur { settings, .. } = &unlocked.nodes[5].kind else {
+            panic!("the sixth node is the blur")
+        };
+        assert_eq!(settings.size, [10.0, 40.0]);
+        assert_eq!(settings.filter, BlurFilter::Box);
+        // The keys are moved with the frames that they count, as those of the others are.
+        let later = composition.with_key_frames(&|frame| frame + 5);
+        assert_eq!(later.at(10.0), composition.at(5.0));
+        // Passed through, each hands on its picture, and not its mask: the Ellipse, which
+        // nothing reads then, is not there.
+        composition.nodes[5].pass_through = true;
+        let fused = composition.at(5.0);
+        assert_eq!(ids(&fused), ["bg", "in", "over", "move", "e", "cells"]);
+        assert!(matches!(
+            fused.nodes[5].kind,
+            FusedKind::Mosaic {
+                input: Some(3),
+                mask: Some(4),
+                ..
+            }
+        ));
+        composition.nodes[6].pass_through = true;
+        let fused = composition.at(5.0);
+        assert_eq!(ids(&fused), ["bg", "in", "over", "move"]);
+        assert_eq!(fused, merged().at(5.0));
+        // One whose picture is not linked reads none, and is there still.
+        let mut bare = filtered();
+        bare.links.retain(|link| link.to != "soft");
+        let fused = bare.at(0.0);
+        assert_eq!(ids(&fused), ["soft", "e", "cells"]);
+        assert!(matches!(
+            fused.nodes[0].kind,
+            FusedKind::Blur {
+                input: None,
+                mask: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_blur_and_a_mosaic_have_their_picture_and_their_mask_and_no_other_input() {
+        let with = |link: Link| {
+            let mut composition = filtered();
+            composition
+                .links
+                .retain(|had| had.target() != link.target());
+            composition.links.push(link);
+            composition.sort_links();
+            composition.check()
+        };
+        for to in ["soft", "cells"] {
+            assert_eq!(with(Link::new("in", to, Input::Mask)), Ok(()), "{to}");
+            assert_eq!(with(Link::new("bg", to, Input::Input)), Ok(()), "{to}");
+            for input in [Input::Background, Input::Foreground] {
+                assert_eq!(
+                    with(Link::new("in", to, input)),
+                    Err(OpError::NoInput {
+                        node: to.into(),
+                        input
+                    })
+                );
+            }
+        }
+        // Each has an output, and a loop through either is a loop.
+        assert_eq!(with(Link::new("soft", "out", Input::Input)), Ok(()));
+        assert!(matches!(
+            with(Link::new("cells", "soft", Input::Mask)),
+            Err(OpError::Loop { .. })
+        ));
+        assert_eq!(
+            with(Link::new("soft", "soft", Input::Input)),
+            Err(OpError::Loop {
+                node: "soft".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_setting_of_a_blur_or_a_mosaic_is_refused_out_of_its_range_by_its_kind_and_its_path() {
+        for kind in [Kind::Blur, Kind::Mosaic] {
+            let node = NodeKind::new(kind);
+            for path in node.settings() {
+                let entry = crate::catalog::of_fusion(kind, &path).expect("it is listed");
+                let what = format!("{}.{path}", kind.name());
+                for (value, fits) in [
+                    (entry.low, true),
+                    (entry.high, true),
+                    (entry.low - 0.001, false),
+                    (entry.high + 0.001, false),
+                    (f64::NAN, false),
+                    (f64::INFINITY, false),
+                ] {
+                    let mut set = node.clone();
+                    *set.setting_mut(&path).expect("it takes keys") = Param::Fixed(value);
+                    match set.check() {
+                        Ok(()) => assert!(fits, "{what} at {value}"),
+                        Err(OpError::OutOfRange { what: named }) => {
+                            assert!(!fits, "{what} at {value}");
+                            assert_eq!(named, what);
+                        }
+                        Err(other) => panic!("{what} at {value}: {other:?}"),
+                    }
+                }
+                // And at each key: keys that are not in the order of their frames are refused.
+                let mut keyed = node.clone();
+                *keyed.setting_mut(&path).expect("it takes keys") =
+                    keys(&[(5, entry.default), (5, entry.default)]);
+                assert!(
+                    matches!(keyed.check(), Err(OpError::OutOfRange { .. })),
+                    "{what}"
+                );
+            }
+        }
+        // `size.y` is held to its range though Lock X/Y leaves it unread; and what is no number
+        // takes no keys.
+        let mut blur = NodeKind::new(Kind::Blur);
+        *blur.setting_mut("size.y").unwrap() = Param::Fixed(500.5);
+        assert_eq!(
+            blur.check(),
+            Err(OpError::OutOfRange {
+                what: "blur.size.y"
+            })
+        );
+        for path in ["filter", "lock_xy", "size"] {
+            assert!(blur.setting_mut(path).is_none(), "{path}");
+        }
+        let mut mosaic = NodeKind::new(Kind::Mosaic);
+        for path in ["whole_cells_only", "offset", "shape", "size.x"] {
+            assert!(mosaic.setting_mut(path).is_none(), "{path}");
+        }
+        *mosaic.setting_mut("offset.y").unwrap() = keys(&[(0, -16_384.0), (9, 16_384.0)]);
+        assert_eq!(mosaic.check(), Ok(()));
+        assert!(mosaic.is_animated());
     }
 
     #[test]

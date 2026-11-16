@@ -871,7 +871,7 @@ export const en = {
         spline: 'Spline', splineEditor: 'Spline Editor', closeSpline: 'Close Spline Editor',
         kinds: {
           media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
-          rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon',
+          rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic',
         },
         inputs: { input: 'Input', background: 'Background', foreground: 'Foreground', mask: 'Effect Mask' },
         output: 'Output', passThrough: 'Pass Through', passedThrough: 'Passed through', rename: 'Rename',

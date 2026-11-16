@@ -793,7 +793,7 @@ export const ja: Messages = {
         spline: 'スプライン', splineEditor: 'スプラインエディター', closeSpline: 'スプラインエディターを閉じる',
         kinds: {
           media_in: 'メディア入力', media_out: 'メディア出力', merge: 'マージ', transform: '変形', background: '背景',
-          rectangle: '長方形', ellipse: '楕円', polygon: 'ポリゴン',
+          rectangle: '長方形', ellipse: '楕円', polygon: 'ポリゴン', blur: 'ブラー', mosaic: 'モザイク',
         },
         inputs: { input: '入力', background: '背景', foreground: '前景', mask: 'エフェクトマスク' },
         output: '出力', passThrough: 'パススルー', passedThrough: 'パススルー中', rename: '名前を変更',

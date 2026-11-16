@@ -30,10 +30,10 @@
 //! that changes nothing: its entry gives the size that the clients give a new title, 72.
 //!
 //! And it lists what the nodes of the composition of a clip hold, of the Fusion page
-//! ([`fusion`]): the settings of a Merge, of a Transform, of a Background and of the masks (a
-//! Rectangle, an Ellipse and a Polygon), in Fusion's own units ([`crate::fusion`]), each with
-//! the bounds that the model checks it against. [`crate::ops::Op::SetFusionKeys`] takes their
-//! paths, after the id of the node.
+//! ([`fusion`]): the settings of a Merge, of a Transform, of a Background, of the masks (a
+//! Rectangle, an Ellipse and a Polygon), of a Blur and of a Mosaic, in Fusion's own units
+//! ([`crate::fusion`]), each with the bounds that the model checks it against.
+//! [`crate::ops::Op::SetFusionKeys`] takes their paths, after the id of the node.
 
 use std::sync::OnceLock;
 
@@ -62,7 +62,8 @@ pub enum Unit {
     Heights,
     /// Widths of the picture.
     Widths,
-    /// Pixels of the timeline.
+    /// Pixels of the timeline; and, of a setting of a node of a composition, pixels of the
+    /// pictures of the composition.
     Pixels,
 }
 
@@ -477,7 +478,49 @@ fn mask(kind: crate::fusion::Kind) -> &'static [Entry] {
                 ("points.*.y", f::MASK_POINT, Widths),
             ])
         }),
-        Kind::MediaIn | Kind::MediaOut | Kind::Merge | Kind::Transform | Kind::Background => &[],
+        Kind::MediaIn
+        | Kind::MediaOut
+        | Kind::Merge
+        | Kind::Transform
+        | Kind::Background
+        | Kind::Blur
+        | Kind::Mosaic => &[],
+    }
+}
+
+/// The settings of a Blur or of a Mosaic of a composition that take keys, in the order of
+/// its `params`. A Blur Size is in pixels of a picture 1080 high, as the filters of the Color
+/// page are, and the offsets of a Mosaic are in pixels of the picture.
+fn filter(kind: crate::fusion::Kind) -> &'static [Entry] {
+    use crate::fusion::bounds as f;
+    use crate::fusion::Kind;
+    use Unit::{Number, Pixels, Pixels1080};
+    static BLUR: OnceLock<Vec<Entry>> = OnceLock::new();
+    static MOSAIC: OnceLock<Vec<Entry>> = OnceLock::new();
+    match kind {
+        Kind::Blur => BLUR.get_or_init(|| {
+            fused(&[
+                ("size.x", f::BLUR_SIZE, Pixels1080),
+                ("size.y", f::BLUR_SIZE, Pixels1080),
+                ("blend", f::BLUR_BLEND, Number),
+            ])
+        }),
+        Kind::Mosaic => MOSAIC.get_or_init(|| {
+            fused(&[
+                ("frequency", f::MOSAIC_FREQUENCY, Number),
+                ("aspect", f::MOSAIC_ASPECT, Number),
+                ("offset.x", f::MOSAIC_OFFSET, Pixels),
+                ("offset.y", f::MOSAIC_OFFSET, Pixels),
+            ])
+        }),
+        Kind::MediaIn
+        | Kind::MediaOut
+        | Kind::Merge
+        | Kind::Transform
+        | Kind::Background
+        | Kind::Rectangle
+        | Kind::Ellipse
+        | Kind::Polygon => &[],
     }
 }
 
@@ -522,6 +565,7 @@ pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
             ])
         }),
         Kind::Rectangle | Kind::Ellipse | Kind::Polygon => mask(kind),
+        Kind::Blur | Kind::Mosaic => filter(kind),
     }
 }
 
@@ -837,7 +881,7 @@ mod tests {
     }
 
     /// The kinds of node of a composition.
-    const FUSION_KINDS: [crate::fusion::Kind; 8] = [
+    const FUSION_KINDS: [crate::fusion::Kind; 10] = [
         crate::fusion::Kind::MediaIn,
         crate::fusion::Kind::MediaOut,
         crate::fusion::Kind::Merge,
@@ -846,6 +890,8 @@ mod tests {
         crate::fusion::Kind::Rectangle,
         crate::fusion::Kind::Ellipse,
         crate::fusion::Kind::Polygon,
+        crate::fusion::Kind::Blur,
+        crate::fusion::Kind::Mosaic,
     ];
 
     /// A node of a kind as a new one is set; but a Polygon, which has no points at first,
@@ -926,6 +972,13 @@ mod tests {
         assert_eq!(fusion(crate::fusion::Kind::Rectangle).len(), 9);
         assert_eq!(fusion(crate::fusion::Kind::Ellipse).len(), 8);
         assert_eq!(fusion(crate::fusion::Kind::Polygon).len(), 9);
+        assert_eq!(fusion(crate::fusion::Kind::Blur).len(), 3);
+        assert_eq!(fusion(crate::fusion::Kind::Mosaic).len(), 4);
+        assert!(of_fusion(crate::fusion::Kind::Blur, "lock_xy").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Blur, "filter").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Blur, "size").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Mosaic, "whole_cells_only").is_none());
+        assert!(of_fusion(crate::fusion::Kind::Mosaic, "blend").is_none());
         // A setting is listed for the kind of node that has it, and what is no number is not.
         assert!(of_fusion(crate::fusion::Kind::Transform, "blend").is_none());
         assert!(of_fusion(crate::fusion::Kind::Merge, "apply").is_none());
@@ -990,6 +1043,23 @@ mod tests {
             (0.5, -15.5, 16.5, Unit::Widths)
         );
         assert_eq!(of_fusion(merge, "center.y").unwrap().unit, Unit::Heights);
+        // A Blur Size is counted as the filters of the Color page are, and the offsets of a
+        // Mosaic in pixels of the picture.
+        let size = of_fusion(crate::fusion::Kind::Blur, "size.y").unwrap();
+        assert_eq!(
+            (size.default, size.low, size.high, size.unit),
+            (5.0, 0.0, 500.0, Unit::Pixels1080)
+        );
+        let offset = of_fusion(crate::fusion::Kind::Mosaic, "offset.x").unwrap();
+        assert_eq!(
+            (offset.default, offset.low, offset.high, offset.unit),
+            (0.0, -16_384.0, 16_384.0, Unit::Pixels)
+        );
+        let frequency = of_fusion(crate::fusion::Kind::Mosaic, "frequency").unwrap();
+        assert_eq!(
+            (frequency.default, frequency.low, frequency.high),
+            (32.0, 1.0, 16_384.0)
+        );
         let angle = of_fusion(merge, "angle").unwrap();
         assert_eq!(
             serde_json::to_value(angle).unwrap(),

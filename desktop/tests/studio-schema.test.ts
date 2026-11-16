@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   applyOp, CopyMismatch, defaultColorSettings, emptyGrade, firstComposition, fixedOf, keptColor, mergePatch, SOUND_FIELDS,
   sortFusionLinks, sortLinks,
-  type Clip, type ClipTrack, type FusionLink, type FusionNode, type FusionPolygon, type GradeNode, type Link, type Media, type Op, type Project, type Timeline,
+  type Clip, type ClipTrack, type FusionBlur, type FusionLink, type FusionMosaic, type FusionNode, type FusionPolygon, type GradeNode, type Link, type Media,
+  type Op, type Project, type Timeline,
 } from '../src/studio/engine';
 
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
@@ -218,6 +219,65 @@ describe('the masks of the compositions of the copy', () => {
     expect(nodeOf(redrawn, 'p1').params).toStrictEqual({ ...polygon.params, fill: 'non_zero_winding', points: [{ x: 0, y: 0 }] });
     // A point that the polygon has not, a point whole, and a setting that takes no keys are not settings of the copy.
     for (const path of ['p1.points.3.x', 'p1.points.2', 'p1.points', 'e1.invert', 'e1.paint_mode', 'e1.corner_radius', 'p1.fill']) {
+      expect(() => applyOp(project, { op: 'set_fusion_keys', ...AT, path, param: 0.5 }), path).toThrow(CopyMismatch);
+    }
+  });
+});
+
+describe('the Blur and the Mosaic of the compositions of the copy', () => {
+  const at = (name: string) => structuredClone(examples.find(example => example.name === name)!);
+  const clipOf = (project: Project) => (project.timelines[0].tracks[0] as ClipTrack).clips[0];
+  const AT = { timeline: 't1', clip: 'c1' } as const;
+  /** A Blur and a Mosaic as the engine writes a new one: every setting, none left out. */
+  const blur: FusionNode = {
+    id: 'b1', kind: 'blur', label: '', pass_through: false, pos: null,
+    params: { filter: 'gaussian', lock_xy: true, size: { x: 5, y: 5 }, blend: 1 },
+  };
+  const mosaic: FusionNode = {
+    id: 'm1', kind: 'mosaic', label: '', pass_through: false, pos: null,
+    params: { frequency: 32, aspect: 1, offset: { x: 0, y: 0 }, whole_cells_only: false },
+  };
+  /** The composition of a Merge, n9, over a Background, n10: the picture of the Merge blurred, and that laid out in cells, keyed by the Background, into the MediaOut. */
+  const filtered = (): Project => {
+    const project = applyOp(at('set_fusion_node').before, {
+      op: 'add_fusion_node', ...AT, node: blur, links: [{ from: 'n9', to: 'b1', input: 'input' }, { from: 'b1', to: 'MediaOut1', input: 'input' }],
+    });
+    return applyOp(project, {
+      op: 'add_fusion_node', ...AT, node: mosaic,
+      links: [{ from: 'b1', to: 'm1', input: 'input' }, { from: 'm1', to: 'MediaOut1', input: 'input' }, { from: 'n10', to: 'm1', input: 'mask' }],
+    });
+  };
+  const nodeOf = (project: Project, id: string) => clipOf(project).fusion!.nodes.find(node => node.id === id)!;
+
+  it('adds each with every setting, its picture before its mask as the engine orders the names of the inputs', () => {
+    const project = filtered();
+    expect(clipOf(project).fusion!.nodes.map(node => node.kind)).toEqual(['media_in', 'media_out', 'merge', 'background', 'blur', 'mosaic']);
+    expect(nodeOf(project, 'b1')).toStrictEqual(blur);
+    expect(nodeOf(project, 'm1')).toStrictEqual(mosaic);
+    expect(clipOf(project).fusion!.links.map(link => `${link.from}>${link.to}.${link.input}`)).toEqual([
+      'm1>MediaOut1.input', 'n9>b1.input', 'b1>m1.input', 'n10>m1.mask', 'n10>n9.background', 'MediaIn1>n9.foreground',
+    ]);
+    // Taken away with the link to put in its place, a Blur leaves its picture to what it fed.
+    const removed = applyOp(project, { op: 'remove_fusion_node', ...AT, id: 'b1', links: [{ from: 'n9', to: 'm1', input: 'input' }] });
+    expect(clipOf(removed).fusion!.links.filter(link => link.to === 'm1').map(link => `${link.from}.${link.input}`)).toEqual(['n9.input', 'n10.mask']);
+    expect(project).toStrictEqual(filtered());
+  });
+
+  it('sets their settings by a patch, and their numbers by their paths', () => {
+    const project = filtered();
+    const set = applyOp(project, { op: 'set_fusion_node', ...AT, id: 'b1', params: { filter: 'box', lock_xy: false, size: { y: 12.5 }, blend: 0.5 } });
+    expect(nodeOf(set, 'b1').params).toStrictEqual({ filter: 'box', lock_xy: false, size: { x: 5, y: 12.5 }, blend: 0.5 });
+    const keys = { keys: [{ frame: 0, value: 0, interp: 'linear' as const }, { frame: 24, value: 40, interp: 'linear' as const }] };
+    const keyed = applyOp(project, { op: 'set_fusion_keys', ...AT, path: 'b1.size.x', param: keys });
+    expect((nodeOf(keyed, 'b1').params as FusionBlur).size).toStrictEqual({ x: keys, y: 5 });
+    const spliced = applyOp(keyed, { op: 'splice_fusion_keys', ...AT, path: 'b1.size.x', at: 1, remove: 1, keys: [] });
+    expect((nodeOf(spliced, 'b1').params as FusionBlur).size.x).toStrictEqual({ keys: [keys.keys[0]] });
+    const moved = applyOp(project, { op: 'set_fusion_node', ...AT, id: 'm1', params: { frequency: 24, offset: { x: 8.5 }, whole_cells_only: true } });
+    expect(nodeOf(moved, 'm1').params).toStrictEqual({ frequency: 24, aspect: 1, offset: { x: 8.5, y: 0 }, whole_cells_only: true });
+    const offset = applyOp(project, { op: 'set_fusion_keys', ...AT, path: 'm1.offset.y', param: -6 });
+    expect((nodeOf(offset, 'm1').params as FusionMosaic).offset).toStrictEqual({ x: 0, y: -6 });
+    // What is no number, a pair of numbers whole, and a setting of another kind are not settings of the copy.
+    for (const path of ['b1.filter', 'b1.lock_xy', 'b1.size', 'b1.frequency', 'm1.whole_cells_only', 'm1.offset', 'm1.blend']) {
       expect(() => applyOp(project, { op: 'set_fusion_keys', ...AT, path, param: 0.5 }), path).toThrow(CopyMismatch);
     }
   });

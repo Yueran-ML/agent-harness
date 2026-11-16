@@ -3767,10 +3767,10 @@ nodes), has no `.` in it (`out_of_range` `fusion_id`: a dot ends it in the path 
 and is `n` + `next_id` where the engine makes it. `label` is at most 100 characters; `pos` is
 `{x, y}` or `null`, where the node lies in the node editor, as a node of a grade has it (see
 Grades). `pass_through` is Fusion's Pass Through (Ctrl-P): a node that is passed through hands
-on the picture of its **first** input as it is (a `merge` its `background`, a `transform` its
-`input`, a mask node the mask that comes into it), and one that has no such input, a
-`media_in` or a `background`, then gives no picture: the effect mask of a node is not a picture
-that it hands on. The engine always writes `pass_through` and `pos`, and reads a node without
+on the picture of its **first** input as it is (a `merge` its `background`, a `transform`, a
+`blur` and a `mosaic` their `input`, a mask node the mask that comes into it), and one that has
+no such input, a `media_in` or a `background`, then gives no picture: the effect mask of a node
+is not a picture that it hands on. The engine always writes `pass_through` and `pos`, and reads a node without
 them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 `fusion_nodes`).
 
@@ -3784,11 +3784,13 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 | `rectangle` | `mask` | yes | the mask of a rectangle, below (Masks) |
 | `ellipse` | `mask` | yes | the mask of an ellipse, below (Masks) |
 | `polygon` | `mask` | yes | the mask of a polygon of straight sides, below (Masks) |
+| `blur` | `input`, `mask` | yes | its picture blurred, below (Blur and Mosaic) |
+| `mosaic` | `input`, `mask` | yes | its picture laid out in cells of one colour each, below (Blur and Mosaic) |
 
 An input that is not linked gives no picture: a transparent one of the size of the
 composition; but a `mask` that is not linked is **no mask** (Masks, below). The other kinds
-(Blur, the keyers, the Tracker, Text+) are not there yet: a `kind` or an `input` that is not
-listed cannot be read.
+(the keyers, the Tracker, Text+) are not there yet: a `kind` or an `input` that is not listed
+cannot be read.
 
 **Links.** A link `{from, to, input}` goes from the output of node `from` into the input
 `input` of node `to`. An output may feed any number of inputs; an input takes at most one link
@@ -3829,13 +3831,16 @@ settings these are, by the same names):
 
 Each of these numbers is a number or `{"keys": [...]}`, as a setting of a grade is (see
 Grades), and is refused out of its range as `out_of_range` with `what` the kind and the path:
-`merge.blend`, `merge.center.x`, `transform.size`, `background.color.a`, `ellipse.soft_edge`.
+`merge.blend`, `merge.center.x`, `transform.size`, `background.color.a`, `ellipse.soft_edge`,
+`blur.size.x`, `mosaic.frequency`.
 The ranges are the engine's own (the manual gives none but that of a Corner Radius); they are
 listed with the defaults and the units under `fusion_merge`, `fusion_transform`,
-`fusion_background`, `fusion_rectangle`, `fusion_ellipse` and `fusion_polygon` in
-`crates/model/tests/data/catalog.json` (page and palette `fusion`; an angle is in
-`degrees_counterclockwise`). Every field of the `params` of a node is written, and all of them
-must be there where a node is given whole (`add_fusion_node`, `set_fusion`).
+`fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur` and
+`fusion_mosaic` in `crates/model/tests/data/catalog.json` (page and palette `fusion`; an angle
+is in `degrees_counterclockwise`, a Blur Size in `pixels1080`, pixels of a picture 1080 high,
+and an offset of a mosaic in `pixels`, pixels of the picture of the composition). Every field
+of the `params` of a node is written, and all of them must be there where a node is given whole
+(`add_fusion_node`, `set_fusion`).
 
 **Masks.** A `rectangle`, an `ellipse` and a `polygon` each make a mask (Reference Manual 20,
 Chapter 108, pp. 2386–2426): 1 where the shape is and 0 where it is not. Their settings are
@@ -3884,16 +3889,54 @@ of one channel):
 
 What a mask does to the node whose `mask` it comes into:
 
-- a `transform` and a `merge`, which have a picture to hand on (`input`; `background`): where
-  the mask is 1 the result is the node's own, where it is 0 it is the picture of that first
-  input as it came in (transparent where that is not linked), and between them the two are
-  mixed by the value of the mask, channel by channel: `first + (own − first) · mask`;
+- a `transform`, a `blur`, a `mosaic` and a `merge`, which have a picture to hand on (`input`;
+  of a `merge`, `background`): where the mask is 1 the result is the node's own, where it is 0
+  it is the picture of that first input as it came in (transparent where that is not linked),
+  and between them the two are mixed by the value of the mask, channel by channel:
+  `first + (own − first) · mask` (a `mosaic` with `whole_cells_only` reads its mask cell by
+  cell: Blur and Mosaic, below);
 - a `background`, which makes its picture of nothing: its picture multiplied by the mask, all
   four channels;
 - a mask node: the mask that comes in is combined with its own by its `paint_mode`. With
   nothing coming in the mask is its own, whatever the mode.
 
 A node that is read through a `mask` alone is one that the picture depends on.
+
+**Blur and Mosaic.** A `blur` is Fusion's Blur node (Reference Manual 20, Chapter 93,
+pp. 2059–2061), with its daily controls; of its filters the Gaussian and the Box are kept, and
+it has no Clipping Mode: a picture is blurred within its own size, the pixels beyond its edges
+being those at its edges. The pictures are premultiplied, so the alpha is blurred with the
+colour. Its `params`:
+
+| field | default | range |
+|---|---|---|
+| `filter` | `gaussian` | Filter: `gaussian` or `box`; it takes no keys |
+| `lock_xy` | `true` | Lock X/Y: the blur across and the blur down are both `size.x`; `size.y` is kept, checked and not read; it takes no keys |
+| `size.x`, `size.y` | 5 | 0…500: the Blur Size across and down. **Unit (the engine's own; the manual gives none):** that of the filters of the Color page (Grades, `blur`), so that a number is the same blur on either page: of a `gaussian` a standard deviation and of a `box` a radius (the mean of the pixels whose middles are within it), in pixels of a picture **1080 pixels high**. In a picture of another height it is as many pixels as that height is of 1080 (5 is 5 pixels of a picture 1080 high, 10 of one 2160 high): the same share of the picture. 0 across and down blurs nothing |
+| `blend` | 1 | 0…1: from the picture as it came in to the blurred picture |
+
+What comes out is `input + (blurred − input) · blend · mask`, of each of R, G, B and A
+premultiplied, `mask` being 1 where the node has no effect mask.
+
+A `mosaic` is the Mosaic Blur of Resolve FX (p. 3465) as a node (Fusion has none of its own):
+the picture is laid out in a grid of cells and each cell is shown in one colour, the mean of
+the picture under it (of R, G, B and A premultiplied). Its settings are those of the
+mathematics of the mosaic (`crates/compose/src/mosaic.rs`, which says where the grid lies and
+what each makes of a pixel), by the same names, in the same units, within the same ranges and
+with the same values at first. Its `params`:
+
+| field | default | range |
+|---|---|---|
+| `frequency` | 32 | 1…16384: Pixel Frequency, how many cells lie across the width of the picture; a cell is never less than a pixel |
+| `aspect` | 1 | 0.0625…16: how many times as wide as high a cell is |
+| `offset.x`, `offset.y` | 0 | −16384…16384: how far the grid is moved, to the right and **down**, in pixels of the picture of the composition (an offset of the size of a cell puts the grid where it was) |
+| `whole_cells_only` | `false` | Whole Cells Only: a cell is shown only where the effect mask is 1 at every pixel of it, and every other cell is the picture as it came in; without a mask it changes nothing; it takes no keys |
+
+The grid is anchored at the middle of the picture: with no offset a side of cells lies on the
+middle across and down. The cells are squares, or rectangles by `aspect`: there is no Cell
+Shape. The effect mask is the key of the mosaic: each pixel is `input + (cell − input) · mask`,
+`cell` the colour of its cell, which is the mean of all of the cell, what the mask does not
+cover too. Without a mask every cell is shown.
 
 **Frames of keys.** The keys of a composition count the frames that the other keys of its clip
 count (Frames of keys, in Grades): of media, the frames of the media, so that a key stays on
@@ -3939,11 +3982,12 @@ They name the clip by `timeline` and `clip`; each is refused on a clip that has 
   be), and a link that would close a loop is `loop`.
 - `set_fusion_keys` and `splice_fusion_keys` change one setting of a node that takes keys,
   named by `path`: the id of the node, a dot, and the path of the setting in the node's
-  `params`: `n4.blend`, `n4.center.x`, `n7.color.a`, `n8.soft_edge`; a number of a point of a
-  `polygon` by the place of the point in `points`, from 0, written as a plain number:
-  `n9.points.2.x`. A node that is not there is `missing` `node`; a path that names no setting
-  of the node's kind that takes keys (`n4.apply`, `n4`, `n8.invert`, `n9.points`), or a point
-  that the polygon has not, is `missing` with `what` `setting` and the path. They are
+  `params`: `n4.blend`, `n4.center.x`, `n7.color.a`, `n8.soft_edge`, `n10.size.x`,
+  `n11.offset.y`; a number of a point of a `polygon` by the place of the point in `points`,
+  from 0, written as a plain number: `n9.points.2.x`. A node that is not there is `missing`
+  `node`; a path that names no setting of the node's kind that takes keys (`n4.apply`, `n4`,
+  `n8.invert`, `n9.points`, `n10.lock_xy`, `n10.size`), or a point that the polygon has not,
+  is `missing` with `what` `setting` and the path. They are
   `set_keys` and `splice_keys`
   otherwise: `at + remove` beyond the keys is `out_of_list`, a number becomes the keys that
   are put (its `done` then the `set_fusion_keys` of those keys), a setting keeps one key at
@@ -4007,6 +4051,37 @@ to nothing. Every kind of node is drawn: `fusion_node_not_drawn`, which the engi
 with the ids of the nodes of a kind that it does not draw, in the first composition that has
 any, is logged of none of these kinds.
 
+**A Blur and a Mosaic are drawn.** A `blur` is blurred by the filters that the Color page's
+blurs are made by (`crates/compose/src/neighbourhood.rs`): two passes, across and down, a
+Gaussian out to three standard deviations or the mean within the radius, the pixels beyond the
+edges being those at the edges; a wide filter is taken at fewer points (a Gaussian from a
+standard deviation of 4 pixels as the picture is drawn, a box from a radius of 8), into a
+smaller picture that is read between its points. A third pass mixes that with the picture as
+it came in, `input + (blurred − input) · blend · mask`: where `blend · mask` is 0 the pixel is
+that of the input to the bit, and where it is 1 that of the blurred picture. The Blur Size is
+made pixels of the picture as it is drawn (Sizes, below), so that a frame drawn smaller shows
+the same blur.
+
+A `mosaic` is drawn as `crates/compose/src/mosaic.rs` lays it out, and is held to it: the
+colours of the cells are made in two passes, across and down, and a third draws each pixel from
+its cell, mixed with the picture as it came in by the mask at the pixel; with
+`whole_cells_only` and a mask, two more passes make the least of the mask over each cell, and
+a cell is shown where that is 1. Every pixel is in the cell that the mathematics puts it in,
+exactly (the grid is counted in whole numbers, 256 steps to a pixel); a pixel under a mask of 0
+is that of the input to the bit; which cells are whole is exact; and the colour of a cell is
+within three thousandths of the mean, of a picture from 0 to 1 (it goes through two half
+floats). Where the pictures are drawn smaller than the composition, the grid is that of the
+settings for the picture as it is drawn, the offsets made as many times smaller: the same cells
+cover the same parts of the picture, their sides at the nearest 256th of a pixel as it is
+drawn, and no cell is less than a pixel as it is drawn.
+
+A `blur` costs three passes and a `mosaic` three, or five with `whole_cells_only` and a mask.
+Neither is drawn, and each is its input at no cost, where it changes nothing: a `blur` whose
+`size` is 0 across and down (with `lock_xy`, whose `size.x` is 0) or whose `blend` is 0, and a
+`mosaic` whose cells are a pixel wide and high as it is drawn, each whatever its mask. One
+whose `input` gives no picture gives none. A composition without a `blur` and without a
+`mosaic` is drawn as it was before there were any, by the same passes and to the bit.
+
 The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
 scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a
 composition as what comes out of it. (The tracker of a window reads the media of the clip
@@ -4038,7 +4113,8 @@ transform of graphics.
 
 **Sizes.** Every picture of a composition is of one size, that of the composition (above):
 what a `media_in` shows fills it; a `background` covers it; a `transform` gives a picture of
-the size that came in, and what it moves beyond the edges is cut; a `merge` gives a picture of
+the size that came in, and what it moves beyond the edges is cut (a `blur` and a `mosaic` give
+one of the size that came in too); a `merge` gives a picture of
 the size of its background, and one whose `background` is not linked lays its foreground over
 a transparent picture of the size of the composition. The settings are shares of the picture,
 and the engine draws the pictures at the pixels that are seen: at the size of the composition
@@ -4078,7 +4154,9 @@ card, the first time a composition with a `merge` or a `transform` is shown), an
 draws masks (once for each card, the first time a composition with a mask node, or with a
 `background` that has a mask, is shown), a clip is shown as its source, without its
 composition, and the frame is drawn again when they are made; an export, a still and a frame
-drawn off screen wait for them.
+drawn off screen wait for them. So it is with the one that mixes a blurred picture and the one
+of the mosaics, each made the first time a composition with a `blur` or a `mosaic` that is
+drawn is shown.
 
 ## Scopes
 

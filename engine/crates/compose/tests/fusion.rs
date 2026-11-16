@@ -3,8 +3,10 @@
 //! mode and its opacity. The composition that a clip has at first draws the clip as it is, to
 //! the bit; the shader of a Merge is held to the mathematics of the processor (`merge.rs`), and
 //! that of the masks to theirs (`mask.rs`); an effect mask mixes what a node draws with the
-//! picture of its first input; and a layer without a composition is drawn as it always was.
-//! Without an adapter the tests are skipped, unless `COLUMBINA_REQUIRE_GPU` is 1.
+//! picture of its first input; a Blur is held to the filters of the neighbourhoods on the
+//! processor (`neighbourhood.rs`) and a Mosaic to its mathematics (`mosaic.rs`); and a layer
+//! without a composition is drawn as it always was. Without an adapter the tests are skipped,
+//! unless `COLUMBINA_REQUIRE_GPU` is 1.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -14,14 +16,17 @@ use columbina_compose::grade::maths::Constants;
 use columbina_compose::grade::REC709_LUMA;
 use columbina_compose::mask::{self, Common, Shape};
 use columbina_compose::merge::{merge_pixel, Settings};
+use columbina_compose::mosaic;
+use columbina_compose::neighbourhood::{self, Image};
 use columbina_compose::{
-    card_for_tests, gpu_for_tests, ColorOp, ColorRange, Composite, Compositor, Crop, Fusion, Gpu,
-    LayerColor, Scene, SceneLayer, Source, Stage, Target, Text, Transform, YuvCoding, YuvMatrix,
+    card_for_tests, gpu_for_tests, ColorOp, ColorRange, Composite, Compositor, Crop, Filter,
+    Fusion, Gpu, LayerColor, Scene, SceneLayer, Source, Stage, Target, Text, Transform, YuvCoding,
+    YuvMatrix,
 };
 use columbina_media::{Alpha, NativePicture, PictureFormat};
 use columbina_model::fusion::{
-    EllipseShape, FillMethod, Fused, FusedKind, FusedNode, Masked, Merged, Operator, PaintMode,
-    PolygonShape, RectangleShape, Transformed, MOST_POINTS,
+    BlurFilter, Blurred, EllipseShape, FillMethod, Fused, FusedKind, FusedNode, Masked, Merged,
+    Mosaicked, Operator, PaintMode, PolygonShape, RectangleShape, Transformed, MOST_POINTS,
 };
 use columbina_model::project::{Rgba, Styled, TextAlign};
 
@@ -1104,6 +1109,16 @@ fn the_nodes_that_are_not_drawn_are_told_of() {
             rgba: [0.0, 0.0, 0.0, 1.0],
             mask: Some(5),
         },
+        FusedKind::Blur {
+            input: Some(6),
+            mask: Some(5),
+            settings: blur_of(BlurFilter::Gaussian, [5.0, 5.0], 1.0),
+        },
+        FusedKind::Mosaic {
+            input: Some(7),
+            mask: None,
+            settings: tiles(32.0),
+        },
     ]);
     let Source::Fused(fusion) = fused(Source::Color([1.0; 4]), nodes, output) else {
         panic!("a composition");
@@ -1230,7 +1245,9 @@ fn with_mask(kind: &FusedKind, mask: Option<usize>) -> FusedKind {
     | FusedKind::Transform { mask: own, .. }
     | FusedKind::Rectangle { mask: own, .. }
     | FusedKind::Ellipse { mask: own, .. }
-    | FusedKind::Polygon { mask: own, .. } = &mut kind
+    | FusedKind::Polygon { mask: own, .. }
+    | FusedKind::Blur { mask: own, .. }
+    | FusedKind::Mosaic { mask: own, .. } = &mut kind
     {
         *own = mask;
     }
@@ -2018,5 +2035,738 @@ fn a_composition_of_masks_is_shown_as_its_source_until_its_pipelines_are_made() 
     assert_eq!(halves(&gpu, &mut compositor, &limited), wanted);
     assert!(!compositor.is_provisional());
     assert_eq!(compositor.fusion_passes(), 3);
+    assert_no_errors(&gpu);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Blur and Mosaic
+// ---------------------------------------------------------------------------------------------
+
+/// How far what the card makes of a Blur may be from what the processor makes of it
+/// (`neighbourhood.rs`): what the neighbourhoods of a grade are held to (`tests/blur.rs`).
+/// The picture goes through the textures of half floats of the two passes of the filter, which
+/// the card may round towards 0 and the processor rounds to the nearest, and then through
+/// that of the composition and that of the frame.
+const BLUR_TOLERANCE: f32 = 4e-3;
+
+/// The same for a Blur that is limited by an effect mask: the mask that the processor is given
+/// is read from a frame, and may be a step of a half float off the one that the card read.
+const BLUR_LIMITED_TOLERANCE: f32 = 5e-3;
+
+/// How far the colour of a cell of a Mosaic on the card may be from the mean that the
+/// processor makes of it (`mosaic.rs`), of a picture from 0 to 1: the card sums in floats of 32
+/// bits, and its two passes write half floats, each to the nearest or towards 0, a thousandth
+/// of the value at the most each; and the picture that the processor is given is read from a
+/// frame, and may be a step of a half float off the one that the card read.
+const MOSAIC_TOLERANCE: f32 = 3e-3;
+
+/// The same for a Mosaic that is keyed: the key that the processor is given is read from a
+/// frame too, and the pixel that is mixed is written into one half float more.
+const MOSAIC_KEYED_TOLERANCE: f32 = 5e-3;
+
+/// The size of the frames that the mosaics are drawn in: neither side is a whole number of
+/// most of the cells of the tests.
+const MOSAIC: (u32, u32) = (40, 24);
+
+/// The settings of a Blur of `filter`, of the Blur Size `size` across and down, blended in by
+/// `blend`.
+fn blur_of(filter: BlurFilter, size: [f64; 2], blend: f64) -> Blurred {
+    Blurred {
+        filter,
+        size,
+        blend,
+    }
+}
+
+/// A Blur of the picture at `input`, with no effect mask.
+fn blur(input: usize, settings: Blurred) -> FusedKind {
+    FusedKind::Blur {
+        input: Some(input),
+        mask: None,
+        settings,
+    }
+}
+
+/// The settings of a Mosaic as it is at first, but of `frequency` cells across.
+fn tiles(frequency: f64) -> Mosaicked {
+    Mosaicked {
+        frequency,
+        aspect: 1.0,
+        offset: [0.0, 0.0],
+        whole_cells_only: false,
+    }
+}
+
+/// A Mosaic of the picture at `input`, with no effect mask.
+fn tiled(input: usize, settings: Mosaicked) -> FusedKind {
+    FusedKind::Mosaic {
+        input: Some(input),
+        mask: None,
+        settings,
+    }
+}
+
+/// A number of pixels as a float.
+fn float(pixels: u32) -> f32 {
+    f32::from(u16::try_from(pixels).unwrap())
+}
+
+/// A picture of R'G'B'A of `width` × `height`, opaque, no two neighbours of which are of one
+/// colour.
+fn busy(width: u32, height: u32) -> Arc<NativePicture> {
+    let format = PictureFormat::Rgba64;
+    let mut luma = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            let words = [
+                6000 + (x * 7919 + y * 104_729) % 40_000,
+                9000 + (x * 3571 + y * 1543) % 30_000,
+                4000 + 9000 * ((x + 2 * y) % 5),
+                u32::from(u16::MAX),
+            ];
+            for word in words {
+                luma.extend(u16::try_from(word).unwrap().to_le_bytes());
+            }
+        }
+    }
+    Arc::new(NativePicture {
+        frame: 0,
+        width,
+        height,
+        format,
+        bits: 16,
+        matrix: YuvMatrix::Bt709,
+        range: ColorRange::Full,
+        chroma_location: 0,
+        alpha: Alpha::Opaque,
+        luma,
+        chroma: Vec::new(),
+        luma_stride: width as usize * format.pixel_bytes(),
+        chroma_stride: 0,
+        ..NativePicture::default()
+    })
+}
+
+/// The pixels of a frame: R, G, B and A of each, row after row.
+fn pixels_of(frame: &[f32]) -> Vec<[f32; 4]> {
+    frame.as_chunks::<4>().0.to_vec()
+}
+
+/// R, G and B of each of `pixels`.
+fn rgb_of(pixels: &[[f32; 4]]) -> Vec<[f32; 3]> {
+    pixels
+        .iter()
+        .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect()
+}
+
+/// The red of each pixel of a frame: of the frame of a mask over black, the mask.
+fn reds(frame: &[f32]) -> Vec<f32> {
+    frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|pixel| pixel[0])
+        .collect()
+}
+
+/// Whether two frames differ somewhere by more than `by`.
+fn differ(one: &[f32], other: &[f32], by: f32) -> bool {
+    one.iter()
+        .zip(other)
+        .any(|(one, other)| (one - other).abs() > by)
+}
+
+/// Check that R, G and B of each pixel of the frame `shown` are those of `wanted`, within
+/// `tolerance`.
+#[track_caller]
+fn assert_colours(shown: &[f32], wanted: &[[f32; 3]], tolerance: f32, what: &str) {
+    assert_eq!(shown.len(), wanted.len() * 4, "{what}");
+    for (at, (pixel, wanted)) in shown.as_chunks::<4>().0.iter().zip(wanted).enumerate() {
+        for channel in 0..3 {
+            assert!(
+                (pixel[channel] - wanted[channel]).abs() <= tolerance,
+                "{what}: pixel {at} is {pixel:?}, not {wanted:?}"
+            );
+        }
+    }
+}
+
+/// What a Blur of `settings` makes on the processor of the frame `input`, of `size` pixels,
+/// each pixel mixed with that of the frame by `share` of it (its Blend, times its mask
+/// there): R, G and B of each pixel.
+///
+/// The frame is filtered as the card filters the picture (`neighbourhood::filtered`), a Blur
+/// Size being so many pixels of a picture 1080 high, and what that makes is read between its
+/// texels at the middle of each pixel (`neighbourhood::sample`). A frame is the picture laid
+/// over what is under it, and the filter is a mean whose weights are 1 in all: so the frame of
+/// a blurred picture is the frame of the picture, blurred, whatever the alpha of the picture.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a Blur Size, as the card takes it"
+)]
+fn blurred_of(
+    input: &[f32],
+    size: (u32, u32),
+    settings: &Blurred,
+    share: &dyn Fn(usize) -> f32,
+) -> Vec<[f32; 3]> {
+    let image = Image {
+        width: size.0,
+        height: size.1,
+        pixels: pixels_of(input),
+    };
+    let reach = settings.size.map(|reach| reach as f32);
+    let filter = match settings.filter {
+        BlurFilter::Gaussian => Filter::Gaussian { sigma: reach },
+        BlurFilter::Box => Filter::Box { radius: reach },
+    };
+    let height = f64::from(size.1);
+    let units = neighbourhood::units(height, height, height);
+    let soft = neighbourhood::filtered(&image, filter, units);
+    let mut mixed = Vec::with_capacity(image.pixels.len());
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let at = (y * size.0 + x) as usize;
+            let place = [
+                (float(x) + 0.5) / float(size.0),
+                (float(y) + 0.5) / float(size.1),
+            ];
+            let own = neighbourhood::sample(&soft, place);
+            let first = image.pixels[at];
+            let share = share(at).clamp(0.0, 1.0);
+            let mix = |channel: usize| first[channel] + (own[channel] - first[channel]) * share;
+            mixed.push([mix(0), mix(1), mix(2)]);
+        }
+    }
+    mixed
+}
+
+/// A picture of colours that needs no source: a soft white Ellipse, turned, over a
+/// Background. The picture is that of the node at 2; the Ellipse alone, whose alpha is not 1
+/// all over, is at 1.
+fn soft_over() -> Vec<FusedKind> {
+    vec![
+        FusedKind::Background {
+            rgba: [0.2, 0.4, 0.6, 1.0],
+            mask: None,
+        },
+        ellipse(
+            Masked {
+                soft_edge: 0.1,
+                ..masked()
+            },
+            EllipseShape {
+                center: [0.55, 0.45],
+                width: 0.7,
+                height: 0.3,
+                angle: -40.0,
+            },
+        ),
+        FusedKind::Merge {
+            background: Some(0),
+            foreground: Some(1),
+            mask: None,
+            settings: merge(),
+        },
+    ]
+}
+
+#[test]
+fn the_blur_of_a_composition_is_that_of_the_filters_of_the_processor() {
+    // A Blur of the picture of the clip, in a frame that is not square: what the processor
+    // makes of the frame of the clip by the filters of the neighbourhoods. A Blur Size is so
+    // many pixels of a picture 1080 high: in one 8 pixels high, 270 is 2 pixels.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let size = (WIDTH, HEIGHT);
+    let picture = Source::Picture(pattern(), 0);
+    let source = frame_of(&gpu, &mut compositor, None, picture.clone(), size);
+    let cases: [(&str, Blurred, f32); 5] = [
+        (
+            "a gaussian",
+            blur_of(BlurFilter::Gaussian, [200.0, 200.0], 1.0),
+            1.0,
+        ),
+        ("a box", blur_of(BlurFilter::Box, [300.0, 300.0], 1.0), 1.0),
+        (
+            "a gaussian wider across than down",
+            blur_of(BlurFilter::Gaussian, [300.0, 100.0], 1.0),
+            1.0,
+        ),
+        (
+            "a box across alone",
+            blur_of(BlurFilter::Box, [400.0, 0.0], 1.0),
+            1.0,
+        ),
+        (
+            "a gaussian half blended in",
+            blur_of(BlurFilter::Gaussian, [200.0, 200.0], 0.5),
+            0.5,
+        ),
+    ];
+    let mut drawn = 0;
+    for (what, settings, share) in cases {
+        let wanted = blurred_of(&source, size, &settings, &|_| share);
+        let nodes = vec![FusedKind::MediaIn, blur(0, settings)];
+        let clip = fused(picture.clone(), nodes, Some(1));
+        let shown = frame_of(&gpu, &mut compositor, None, clip, size);
+        assert_colours(&shown, &wanted, BLUR_TOLERANCE, what);
+        // The blur does something.
+        assert!(differ(&shown, &source, 0.01), "{what}");
+        drawn += 4;
+    }
+    // The source alone, the two passes of the filter and the pass that mixes, each time.
+    assert_eq!(compositor.fusion_passes(), drawn);
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_wide_blur_is_taken_at_fewer_points_and_blurs_the_alpha_with_the_colour() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    // In a picture 32 pixels high, 270 is 8 pixels and 540 is 16: wide enough for the filter
+    // to be taken at a pixel of four, into a texture that is read between its texels.
+    let cases = [
+        (
+            "a gaussian of 8 pixels",
+            blur_of(BlurFilter::Gaussian, [270.0, 270.0], 1.0),
+        ),
+        (
+            "a box of 16 pixels across and 4 down",
+            blur_of(BlurFilter::Box, [540.0, 135.0], 1.0),
+        ),
+    ];
+    for (what, settings) in cases {
+        // A picture of colours, which is opaque; and an Ellipse alone, whose alpha is its
+        // mask: over white its frame is white all over, and so is that of its blur, the alpha
+        // being blurred as the colour is.
+        for (picture, at) in [(soft_over(), 2), (soft_over()[..2].to_vec(), 1)] {
+            for under in [None, Some([1.0; 4])] {
+                let what = format!("{what}, of the node at {at}, over {under:?}");
+                let clip = clip_of(picture.clone(), at, MASK);
+                let input = frame_of(&gpu, &mut compositor, under, clip, MASK);
+                let mut nodes = picture.clone();
+                nodes.push(blur(at, settings));
+                let clip = clip_of(nodes, at + 1, MASK);
+                let shown = frame_of(&gpu, &mut compositor, under, clip, MASK);
+                let wanted = blurred_of(&input, MASK, &settings, &|_| 1.0);
+                assert_colours(&shown, &wanted, BLUR_TOLERANCE, &what);
+                // Over black the blur does something.
+                assert!(under.is_some() || differ(&shown, &input, 0.01), "{what}");
+            }
+        }
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_blur_is_the_same_share_of_the_picture_at_whatever_size_it_is_drawn() {
+    // A Blur Size is a share of the height of the picture: drawn at another size, the blur is
+    // what the processor makes of the picture as it is drawn at that size. 270 is 8 pixels of
+    // a picture 32 high, and 16 of one 64 high.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let settings = blur_of(BlurFilter::Gaussian, [270.0, 135.0], 1.0);
+    // The size of the composition, and that of the frame that shows it.
+    let sizes: [((u32, u32), (u32, u32)); 3] = [
+        ((48, 32), (48, 32)),
+        ((96, 64), (48, 32)),
+        ((96, 64), (96, 64)),
+    ];
+    for (nominal, seen) in sizes {
+        let what = format!("a composition of {nominal:?} in a frame of {seen:?}");
+        let clip = clip_of(soft_over(), 2, nominal);
+        let input = frame_of(&gpu, &mut compositor, None, clip, seen);
+        let mut nodes = soft_over();
+        nodes.push(blur(2, settings));
+        let clip = clip_of(nodes, 3, nominal);
+        let shown = frame_of(&gpu, &mut compositor, None, clip, seen);
+        let wanted = blurred_of(&input, seen, &settings, &|_| 1.0);
+        assert_colours(&shown, &wanted, BLUR_TOLERANCE, &what);
+        assert!(differ(&shown, &input, 0.01), "{what}");
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn the_blend_and_the_effect_mask_of_a_blur_mix_it_with_its_picture_as_it_came_in() {
+    // `input + (blurred - input) * blend * mask` of each of R, G and B: the mask is the red
+    // of the frame of its picture over black.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let size = (WIDTH, HEIGHT);
+    let picture = Source::Picture(pattern(), 0);
+    let source = frame_of(&gpu, &mut compositor, None, picture.clone(), size);
+    let alone = fused(picture.clone(), limiting(), Some(0));
+    let mask = reds(&frame_of(&gpu, &mut compositor, None, alone, size));
+    assert!(mask.iter().any(|value| *value >= 0.999));
+    assert!(mask.iter().any(|value| *value <= 0.001));
+    assert!(mask.iter().any(|value| (0.2..0.8).contains(value)));
+    let cases: [(&str, Blurred, f32); 2] = [
+        (
+            "a gaussian",
+            blur_of(BlurFilter::Gaussian, [300.0, 200.0], 1.0),
+            1.0,
+        ),
+        (
+            "a box half blended in",
+            blur_of(BlurFilter::Box, [300.0, 200.0], 0.5),
+            0.5,
+        ),
+    ];
+    for (what, settings, blend) in cases {
+        let mut nodes = limiting();
+        nodes.push(with_mask(&blur(1, settings), Some(0)));
+        let clip = fused(picture.clone(), nodes, Some(3));
+        let shown = frame_of(&gpu, &mut compositor, None, clip, size);
+        let wanted = blurred_of(&source, size, &settings, &|at| blend * mask[at]);
+        assert_colours(&shown, &wanted, BLUR_LIMITED_TOLERANCE, what);
+        // The mask does something: the node with it is not the node without it.
+        let nodes = vec![FusedKind::MediaIn, blur(0, settings)];
+        let clip = fused(picture.clone(), nodes, Some(1));
+        let whole = frame_of(&gpu, &mut compositor, None, clip, size);
+        assert!(differ(&shown, &whole, 0.005), "{what}");
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_blur_that_changes_nothing_is_no_pass_and_its_mask_keeps_its_ends_to_the_bit() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let picture = Source::Picture(pattern(), 0);
+    let drawn = |compositor: &mut Compositor, nodes: Vec<FusedKind>, output: usize| {
+        let clip = fused(picture.clone(), nodes, Some(output));
+        halves(
+            &gpu,
+            compositor,
+            &scene(vec![layer(clip, ColorRange::Full)]),
+        )
+    };
+    let source = drawn(&mut compositor, vec![FusedKind::MediaIn], 0);
+    assert_eq!(compositor.fusion_passes(), 0);
+    // A Blur Size of 0 and a Blend of 0, and a Mosaic whose cells are a pixel: the clip as it
+    // is, to the bit, and no pass.
+    for idle in [
+        blur(0, blur_of(BlurFilter::Gaussian, [0.0, 0.0], 1.0)),
+        blur(0, blur_of(BlurFilter::Box, [300.0, 300.0], 0.0)),
+        tiled(0, tiles(f64::from(WIDTH))),
+    ] {
+        let shown = drawn(&mut compositor, vec![FusedKind::MediaIn, idle.clone()], 1);
+        assert!(shown == source, "{idle:?}");
+    }
+    assert_eq!(compositor.fusion_passes(), 0);
+    // A composition without a Blur or a Mosaic is drawn by the passes that it was drawn by,
+    // the source alone and two flips; and with either after them, changing nothing, by the
+    // same passes and to the bit.
+    let (nodes, _) = there_and_back();
+    let plain = drawn(&mut compositor, nodes.clone(), 2);
+    assert_eq!(compositor.fusion_passes(), 3);
+    let mut longer = nodes;
+    longer.push(blur(2, blur_of(BlurFilter::Gaussian, [0.0, 0.0], 1.0)));
+    longer.push(tiled(3, tiles(16_384.0)));
+    assert_eq!(drawn(&mut compositor, longer, 4), plain);
+    assert_eq!(compositor.fusion_passes(), 6);
+    // A Blur: the source alone, the two passes of its filter and the pass that mixes.
+    let settings = blur_of(BlurFilter::Gaussian, [300.0, 200.0], 1.0);
+    let blurred = drawn(
+        &mut compositor,
+        vec![FusedKind::MediaIn, blur(0, settings)],
+        1,
+    );
+    assert_ne!(blurred, source);
+    assert_eq!(compositor.fusion_passes(), 10);
+    // A Rectangle as large as the picture: a mask of 1 all over, and inverted one of 0.
+    let limited = |invert: bool| {
+        let whole = rectangle(
+            Masked { invert, ..masked() },
+            RectangleShape {
+                width: 1.0,
+                height: 1.0,
+                ..rectangle_shape()
+            },
+        );
+        vec![
+            whole,
+            FusedKind::MediaIn,
+            with_mask(&blur(1, settings), Some(0)),
+        ]
+    };
+    // Limited by a mask of 1: one pass more, that of the mask, and the same picture to the
+    // bit.
+    let all = drawn(&mut compositor, limited(false), 2);
+    assert_eq!(all, blurred);
+    assert_eq!(compositor.fusion_passes(), 15);
+    // Limited by a mask of 0: the picture as it came in, which went through a texture of the
+    // composition, and is within a step of the source.
+    let none = drawn(&mut compositor, limited(true), 2);
+    assert_within(&none, &source, 1, "a mask of 0");
+    assert_eq!(compositor.fusion_passes(), 20);
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn the_shader_of_a_mosaic_is_held_to_the_mathematics_of_the_processor() {
+    // The picture of the clip laid out in cells, in a frame whose sides are no whole number
+    // of most of them: each pixel is the mean of its cell as the processor makes it of the
+    // frame of the clip, and every pixel of a cell is of one colour, to the bit, so that the
+    // cells of the card are those of the processor.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let (width, height) = MOSAIC;
+    let picture = Source::Picture(busy(width, height), 0);
+    let source = frame_of(&gpu, &mut compositor, None, picture.clone(), MOSAIC);
+    let src = pixels_of(&source);
+    let cases = [
+        ("an even number of cells across", tiles(6.0)),
+        ("an odd number of cells across", tiles(5.0)),
+        (
+            "cells twice as wide as high",
+            Mosaicked {
+                aspect: 2.0,
+                ..tiles(6.0)
+            },
+        ),
+        (
+            "cells half as wide as high, the grid moved",
+            Mosaicked {
+                aspect: 0.5,
+                offset: [1.5, -2.25],
+                ..tiles(7.0)
+            },
+        ),
+        (
+            "the grid moved by more than a cell",
+            Mosaicked {
+                offset: [-11.0, 30.5],
+                ..tiles(4.0)
+            },
+        ),
+        ("a cell as wide as the frame", tiles(1.0)),
+    ];
+    let mut drawn = 0;
+    for (what, settings) in cases {
+        let kind = tiled(0, settings);
+        let held = mosaic::of_node(&kind).expect("a mosaic");
+        let wanted = mosaic::mosaic(&src, width, height, &held, None);
+        let nodes = vec![FusedKind::MediaIn, kind];
+        let clip = fused_of(picture.clone(), nodes, Some(1), MOSAIC);
+        let shown = frame_of(&gpu, &mut compositor, None, clip, MOSAIC);
+        assert_colours(&shown, &rgb_of(&wanted), MOSAIC_TOLERANCE, what);
+        assert!(differ(&shown, &source, 0.05), "{what}");
+        let grid = mosaic::Grid::new(width, height, &held);
+        let colours = pixels_of(&shown);
+        let [across, down] = grid.cells();
+        for j in 0..down {
+            for i in 0..across {
+                let rect = grid.rect([i, j]);
+                assert!(!rect.is_empty(), "{what}: the cell {i}, {j}");
+                let first = colours[(rect.y0 * width + rect.x0) as usize];
+                for y in rect.y0..rect.y1 {
+                    for x in rect.x0..rect.x1 {
+                        // One colour, but for what the laying of the picture of the
+                        // composition on the canvas rounds: two steps of a half float.
+                        let pixel = colours[(y * width + x) as usize];
+                        let apart = pixel
+                            .iter()
+                            .zip(&first)
+                            .map(|(one, other)| (one - other).abs())
+                            .fold(0.0, f32::max);
+                        assert!(
+                            apart <= 1.0 / 1024.0,
+                            "{what}: the cell {i}, {j} at {x}, {y}: {pixel:?} and {first:?}"
+                        );
+                    }
+                }
+            }
+        }
+        drawn += 4;
+    }
+    // The source alone, the cells across and down, and the picture, each time.
+    assert_eq!(compositor.fusion_passes(), drawn);
+    assert_no_errors(&gpu);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a soft key, and a crisp one with and without Whole Cells Only"
+)]
+fn the_effect_mask_of_a_mosaic_is_its_key_and_whole_cells_only_shows_the_cells_it_covers() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let (width, height) = MOSAIC;
+    let picture = Source::Picture(busy(width, height), 0);
+    let source = frame_of(&gpu, &mut compositor, None, picture.clone(), MOSAIC);
+    let src = pixels_of(&source);
+    // What the card makes of the picture of the clip keyed by the mask `mask`; what the
+    // processor makes of the frame of the clip by the key that the frame of the mask shows;
+    // and that key.
+    let mut keyed = |mask: &FusedKind, settings: Mosaicked| {
+        let alone = fused_of(picture.clone(), vec![mask.clone()], Some(0), MOSAIC);
+        let key = reds(&frame_of(&gpu, &mut compositor, None, alone, MOSAIC));
+        let kind = with_mask(&tiled(1, settings), Some(0));
+        let held = mosaic::of_node(&kind).expect("a mosaic");
+        let wanted = mosaic::mosaic(&src, width, height, &held, Some(key.as_slice()));
+        let nodes = vec![mask.clone(), FusedKind::MediaIn, kind];
+        let clip = fused_of(picture.clone(), nodes, Some(2), MOSAIC);
+        let shown = frame_of(&gpu, &mut compositor, None, clip, MOSAIC);
+        (shown, wanted, key)
+    };
+    // A soft Ellipse: each pixel is as far from the picture to the colour of its cell as the
+    // key is there.
+    let soft = ellipse(
+        Masked {
+            soft_edge: 0.125,
+            ..masked()
+        },
+        EllipseShape {
+            height: 0.25,
+            ..ellipse_shape()
+        },
+    );
+    let (shown, wanted, key) = keyed(&soft, tiles(6.0));
+    assert!(key.iter().any(|value| *value >= 0.999));
+    assert!(key.iter().any(|value| *value <= 0.001));
+    assert!(key.iter().any(|value| (0.2..0.8).contains(value)));
+    assert_colours(
+        &shown,
+        &rgb_of(&wanted),
+        MOSAIC_KEYED_TOLERANCE,
+        "a soft key",
+    );
+    // The key does something: the picture is neither as it came in nor all in cells.
+    let held = mosaic::of_node(&tiled(0, tiles(6.0))).expect("a mosaic");
+    let whole = mosaic::mosaic(&src, width, height, &held, None);
+    assert!(differ(&shown, &source, 0.05));
+    assert!(differ(&shown, whole.as_flattened(), 0.05));
+    // A crisp Rectangle whose sides lie between pixels, from 10 to 30 across and from 3 to
+    // 21 down: a key of 0 and of 1 alone. Over cells of 8 pixels, whose sides are at 4, 12,
+    // 20, 28 and 36 across and at 4, 12 and 20 down, it covers four cells whole.
+    let crisp = rectangle(
+        masked(),
+        RectangleShape {
+            height: 0.75,
+            ..rectangle_shape()
+        },
+    );
+    let only = Mosaicked {
+        whole_cells_only: true,
+        ..tiles(5.0)
+    };
+    let (covered, wanted, key) = keyed(&crisp, only);
+    assert!(key.iter().all(|value| *value <= 0.0 || *value >= 1.0));
+    let held = mosaic::of_node(&tiled(0, only)).expect("a mosaic");
+    let grid = mosaic::Grid::new(width, height, &held);
+    let leasts = mosaic::cell_leasts(&key, &grid);
+    assert_eq!(leasts.iter().filter(|least| **least >= 1.0).count(), 4);
+    assert_colours(
+        &covered,
+        &rgb_of(&wanted),
+        MOSAIC_KEYED_TOLERANCE,
+        "whole cells only",
+    );
+    assert!(differ(&covered, &source, 0.05));
+    // Without Whole Cells Only the same key shows the cells that it crosses too, cut by its
+    // edge: more of the picture is in cells.
+    let (cut, wanted, _) = keyed(&crisp, tiles(5.0));
+    assert_colours(
+        &cut,
+        &rgb_of(&wanted),
+        MOSAIC_KEYED_TOLERANCE,
+        "cells cut by the key",
+    );
+    assert!(differ(&cut, &covered, 0.05));
+    // The mask alone, each time; and then the mask, the source alone, the cells across and
+    // down, the picture, and with Whole Cells Only the least of the key across and down.
+    assert_eq!(compositor.fusion_passes(), 6 + 8 + 6);
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_mosaic_drawn_smaller_has_the_same_cells_over_the_same_parts_of_the_picture() {
+    // A composition of twice the size of the frame that shows it is drawn at the size of the
+    // frame: as many cells lie across it, and its offsets, which are pixels of the
+    // composition, are half as many pixels of the frame. At its own size they are as they
+    // are.
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let (width, height) = MOSAIC;
+    let picture = Source::Picture(busy(width, height), 0);
+    let source = frame_of(&gpu, &mut compositor, None, picture.clone(), MOSAIC);
+    let halved = Mosaicked {
+        offset: [1.5, -2.25],
+        ..tiles(6.0)
+    };
+    let held = mosaic::of_node(&tiled(0, halved)).expect("a mosaic");
+    let wanted = rgb_of(&mosaic::mosaic(
+        &pixels_of(&source),
+        width,
+        height,
+        &held,
+        None,
+    ));
+    let twice = (width * 2, height * 2);
+    let doubled = Mosaicked {
+        offset: [3.0, -4.5],
+        ..tiles(6.0)
+    };
+    for (what, nominal, settings) in [
+        ("at its own size", MOSAIC, halved),
+        ("at half its size", twice, doubled),
+    ] {
+        let nodes = vec![FusedKind::MediaIn, tiled(0, settings)];
+        let clip = fused_of(picture.clone(), nodes, Some(1), nominal);
+        let shown = frame_of(&gpu, &mut compositor, None, clip, MOSAIC);
+        assert_colours(&shown, &wanted, MOSAIC_TOLERANCE, what);
+        assert!(differ(&shown, &source, 0.05), "{what}");
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_composition_with_a_blur_and_a_mosaic_is_shown_as_its_source_until_its_pipelines_are_made() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let picture = Source::Picture(pattern(), 0);
+    let under = colour([0.2, 0.5, 0.3, 1.0]);
+    let plain = scene(vec![
+        under.clone(),
+        layer(picture.clone(), ColorRange::Full),
+    ]);
+    // The picture of the clip blurred, and that laid out in cells of four pixels: the passes
+    // of a filter of the neighbourhoods, whose pipeline is made at once, and a pass that mixes
+    // and the passes of a mosaic, each by a pipeline of its own.
+    let nodes = vec![
+        FusedKind::MediaIn,
+        blur(0, blur_of(BlurFilter::Gaussian, [300.0, 200.0], 1.0)),
+        tiled(1, tiles(4.0)),
+    ];
+    let filtered = scene(vec![
+        under,
+        layer(fused(picture, nodes, Some(2)), ColorRange::Full),
+    ]);
+    // A compositor that waits for its pipelines draws each frame as its scene says.
+    let mut waiting = Compositor::new(Arc::clone(&gpu));
+    let source = halves(&gpu, &mut waiting, &plain);
+    let pipelines = waiting.pipelines_made();
+    let wanted = halves(&gpu, &mut waiting, &filtered);
+    assert_ne!(source, wanted);
+    assert!(!waiting.is_provisional());
+    assert_eq!(waiting.pipelines_made(), pipelines + 2);
+    // The source alone; the two passes of the filter and the pass that mixes; and the cells
+    // across and down, and the picture.
+    assert_eq!(waiting.fusion_passes(), 7);
+    // One that does not shows the clip without its composition at first, and says so.
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    compositor.compile_in_background(|| {});
+    assert_eq!(halves(&gpu, &mut compositor, &filtered), source);
+    assert!(compositor.is_provisional());
+    assert_eq!(compositor.fusion_passes(), 0);
+    // Once both pipelines are made, it draws the frame as it is.
+    compositor.finish_compiling();
+    assert_eq!(halves(&gpu, &mut compositor, &filtered), wanted);
+    assert!(!compositor.is_provisional());
+    assert_eq!(compositor.fusion_passes(), 7);
     assert_no_errors(&gpu);
 }

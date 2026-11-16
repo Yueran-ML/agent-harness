@@ -212,7 +212,7 @@ describe('the layout of a composition', () => {
   it('names a node by its label, or by its kind and its number among those of its kind', () => {
     const kinds = {
       media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
-      rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon',
+      rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic',
     };
     const labelled: Composition = { ...comp(), nodes: [...comp().nodes.map(node => (node.id === 'n4' ? { ...node, label: 'Over the sky' } : node)), transform('n6')] };
     expect([...namesOf(labelled, kinds)]).toEqual([
@@ -560,5 +560,39 @@ describe('the settings of the masks', () => {
     const more = applied(withNode(shape), second).nodes[2];
     expect([paramOf(more, settingOf(more, 'points.1.x')!), paramOf(more, settingOf(more, 'points.2.x')!)]).toEqual([0.1, keys]);
     expect(pathOf(more, settingOf(more, 'points.2.x')!)).toBe('p1.points.2.x');
+  });
+});
+
+// A Blur and a Mosaic (PROTOCOL.md, "Blur and Mosaic"): each has a picture, `input`, and an effect mask.
+describe('a Blur and a Mosaic', () => {
+  it('are made with every setting, as the engine writes a new one, and have their picture and their mask', () => {
+    const base = { label: '', pass_through: false, pos: null };
+    expect(newNode('blur', null, 'b1')).toStrictEqual({ id: 'b1', ...base, kind: 'blur', params: { filter: 'gaussian', lock_xy: true, size: { x: 5, y: 5 }, blend: 1 } });
+    expect(newNode('mosaic', null, 'm1')).toStrictEqual({
+      id: 'm1', ...base, kind: 'mosaic', params: { frequency: 32, aspect: 1, offset: { x: 0, y: 0 }, whole_cells_only: false },
+    });
+    for (const kind of ['blur', 'mosaic'] as const) {
+      expect(INPUTS[kind]).toEqual(['input', 'mask']);
+      expect(pictureInputs(kind)).toEqual(['input']);
+      expect([hasOutput(kind), hasMaskInput(kind), isMaskKind(kind), handedOn(kind)]).toEqual([true, true, false, 'input']);
+    }
+  });
+
+  it('have the settings of the catalog of the engine, with its defaults, ranges and units', () => {
+    const catalog: Record<string, Entry[]> = JSON.parse(readFileSync('../engine/crates/model/tests/data/catalog.json', 'utf8'));
+    for (const kind of ['blur', 'mosaic'] as const) {
+      const entries = catalog[`fusion_${kind}`];
+      expect(FUSION_SETTINGS[kind].map(setting => ({ path: setting.path, default: setting.bounds.neutral, low: setting.bounds.low, high: setting.bounds.high, unit: setting.unit })), kind)
+        .toEqual(entries.map(entry => ({ path: entry.path, default: entry.default, low: entry.low, high: entry.high, unit: entry.unit })));
+      expect(entries.every(entry => entry.page === 'fusion' && entry.palette === 'fusion' && entry.clock === 'source_frame')).toBe(true);
+    }
+    // A new node has every setting at the default of the catalog; what is no number is no setting.
+    for (const node of [newNode('blur', null, 'b1'), newNode('mosaic', null, 'm1')]) {
+      for (const setting of settingsOf(node)) expect(paramOf(node, setting), `${node.kind}.${setting.path}`).toBe(setting.bounds.neutral);
+    }
+    expect(paths(newNode('blur', null, 'b1'))).toEqual(['size.x', 'size.y', 'blend']);
+    expect(paths(newNode('mosaic', null, 'm1'))).toEqual(['frequency', 'aspect', 'offset.x', 'offset.y']);
+    expect(settingOf(newNode('blur', null, 'b1'), 'lock_xy')).toBeUndefined();
+    expect(settingOf(newNode('mosaic', null, 'm1'), 'whole_cells_only')).toBeUndefined();
   });
 });

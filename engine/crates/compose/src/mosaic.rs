@@ -130,6 +130,21 @@
 //!   half floats lower.
 //! - A pixel under a key of 0 is the source exactly either way, and under a key of 1 it is as
 //!   close as the colour of its cell.
+//!
+//! # The Mosaic node of a composition
+//!
+//! The Mosaic node of the composition of a clip ([`columbina_model::fusion`]) keeps these
+//! settings, by these names, in these units, within these ranges and with these values at
+//! first ([`of_node`] gives those of a node at one moment); it has no Cell Shape, and its cells
+//! are squares. Its key is its effect mask, the alpha of the picture that is linked to its
+//! `mask` input; without one the whole frame is keyed. The frame is the picture of the
+//! composition, and an offset is so many pixels of that picture.
+//!
+//! The compositor draws it as told above (`fusion_mosaic.wgsl`), through textures of half
+//! floats: the two passes that make the colours of the cells, two more that make the least of
+//! the key over each cell where there is a key and Whole Cells Only, and one that draws the
+//! picture. The least of a key is the least of half floats, and is kept exactly, so that
+//! which cells are whole is as it is here.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -137,6 +152,8 @@
     clippy::cast_sign_loss,
     reason = "places of pixels and counts of steps, far within the types that they are cast to"
 )]
+
+use columbina_model::fusion::{FusedKind, Mosaicked};
 
 /// The steps that a pixel is divided into: the grid is laid out in whole numbers of them, so
 /// that the card and the processor agree on the cell of every pixel (see the module).
@@ -268,6 +285,32 @@ impl Settings {
         ASPECT.check("mosaic.aspect", self.aspect)?;
         OFFSET.check("mosaic.offset.x", self.offset[0])?;
         OFFSET.check("mosaic.offset.y", self.offset[1])
+    }
+}
+
+// The settings of the Mosaic node of the model (`columbina_model::fusion`) are these, by the
+// same names and within the same ranges: a node at one moment is these settings as they are.
+
+impl From<&Mosaicked> for Settings {
+    fn from(settings: &Mosaicked) -> Self {
+        Self {
+            frequency: settings.frequency as f32,
+            shape: CellShape::Square,
+            aspect: settings.aspect as f32,
+            offset: settings.offset.map(|offset| offset as f32),
+            whole_cells_only: settings.whole_cells_only,
+        }
+    }
+}
+
+/// The settings of a Mosaic node of a composition at one moment, as the maths takes them.
+/// None of a node that is no Mosaic. The key of the mosaic is not among them: it is the
+/// effect mask of the node, the `key` of [`mosaic`].
+#[must_use]
+pub fn of_node(kind: &FusedKind) -> Option<Settings> {
+    match kind {
+        FusedKind::Mosaic { settings, .. } => Some(settings.into()),
+        _ => None,
     }
 }
 
@@ -1086,6 +1129,79 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the setting mosaic.aspect is not a number within its range"
+        );
+    }
+
+    #[test]
+    fn the_mosaic_of_the_model_has_these_settings_by_their_ranges_and_first_values() {
+        use columbina_model::fusion::{self as model, bounds};
+        use columbina_model::grade::{Interp, Key, Param};
+        // What a Mosaic node of the model is at first, at any frame, is what these are at first.
+        let first = model::Mosaic::default();
+        assert_eq!(Settings::from(&first.at(12.0)), Settings::default());
+        // Each range of the model is the range of that setting here, with the same value at
+        // first: what the model takes these take, and what it refuses these refuse.
+        for (name, theirs, ours) in [
+            ("frequency", bounds::MOSAIC_FREQUENCY, FREQUENCY),
+            ("aspect", bounds::MOSAIC_ASPECT, ASPECT),
+            ("offset", bounds::MOSAIC_OFFSET, OFFSET),
+        ] {
+            let ours = [ours.default, ours.low, ours.high].map(f64::from);
+            assert_eq!([theirs.default, theirs.low, theirs.high], ours, "{name}");
+        }
+        // A node of the model as it is at first is refused by none of the checks here; and a
+        // node of another kind has no settings of a mosaic.
+        let mut composition = model::Composition::default();
+        composition
+            .nodes
+            .push(model::Node::new("m", model::Kind::Mosaic));
+        composition.links = vec![
+            model::Link::new(model::MEDIA_IN, "m", model::Input::Input),
+            model::Link::new("m", model::MEDIA_OUT, model::Input::Input),
+        ];
+        composition.sort_links();
+        let fused = composition.at(0.0);
+        assert_eq!(fused.nodes.len(), 2);
+        let settings = of_node(&fused.nodes[1].kind).expect("a mosaic");
+        assert_eq!(settings.check(), Ok(()));
+        assert_eq!(settings, Settings::default());
+        assert_eq!(of_node(&fused.nodes[0].kind), None);
+        // A node at a frame of its keys is its numbers there, by the same names.
+        let rising = Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 8.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 10,
+                value: 24.0,
+                interp: Interp::Linear,
+            },
+        ]);
+        let node = model::Mosaic {
+            frequency: rising,
+            aspect: Param::Fixed(2.0),
+            offset: model::MosaicOffset {
+                x: Param::Fixed(1.5),
+                y: Param::Fixed(-2.25),
+            },
+            whole_cells_only: true,
+        };
+        let kind = FusedKind::Mosaic {
+            input: None,
+            mask: None,
+            settings: node.at(5.0),
+        };
+        assert_eq!(
+            of_node(&kind),
+            Some(Settings {
+                frequency: 16.0,
+                shape: CellShape::Square,
+                aspect: 2.0,
+                offset: [1.5, -2.25],
+                whole_cells_only: true,
+            })
         );
     }
 

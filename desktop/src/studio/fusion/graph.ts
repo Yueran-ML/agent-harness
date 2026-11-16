@@ -17,11 +17,12 @@ import { COLUMN_GAP, linkHalves, linkPath, MARGIN, NODE_HEIGHT, NODE_WIDTH, PORT
 /**
  * The inputs of each kind of node, the first first, as the engine names them (PROTOCOL.md,
  * "Compositions"): the pictures of a node, and after them its `mask`, the effect mask of a Merge, a
- * Transform and a Background and the mask that comes into a mask node.
+ * Transform, a Background, a Blur and a Mosaic and the mask that comes into a mask node.
  */
 export const INPUTS: Record<FusionKind, readonly FusionInput[]> = {
   media_in: [], media_out: ['input'], merge: ['background', 'foreground', 'mask'], transform: ['input', 'mask'], background: ['mask'],
   rectangle: ['mask'], ellipse: ['mask'], polygon: ['mask'],
+  blur: ['input', 'mask'], mosaic: ['input', 'mask'],
 };
 
 /** The kinds of node that make a mask (PROTOCOL.md, "Masks"). */

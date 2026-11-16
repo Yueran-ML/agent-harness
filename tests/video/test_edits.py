@@ -597,6 +597,110 @@ async def test_the_fake_engine_keeps_the_masks_of_a_composition(tmp_path: Path) 
         )
 
 
+async def test_the_fake_engine_keeps_a_blur_and_a_mosaic_of_a_composition(tmp_path: Path) -> None:
+    def composition(fake: fake_engine.Fake) -> Any:
+        return fake.project["timelines"][0]["tracks"][0]["clips"][0]["fusion"]
+
+    def node(name: str, kind: str, **params: Any) -> dict[str, Any]:
+        return {"id": name, "kind": kind, "label": "", "params": params}
+
+    def links(fake: fake_engine.Fake) -> list[tuple[str, str, str]]:
+        return [(link["from"], link["to"], link["input"]) for link in composition(fake)["links"]]
+
+    def params(fake: fake_engine.Fake, name: str) -> Any:
+        return next(each for each in composition(fake)["nodes"] if each["id"] == name)["params"]
+
+    # Every setting of each is written, as the engine writes a node: none is left out.
+    blur = node("", "blur", filter="gaussian", lock_xy=True, size={"x": 5.0, "y": 5.0}, blend=1.0)
+    mosaic = node(
+        "",
+        "mosaic",
+        frequency=32.0,
+        aspect=1.0,
+        offset={"x": 0.0, "y": 0.0},
+        whole_cells_only=False,
+    )
+    rising = {
+        "keys": [
+            {"frame": 0, "value": 0.0, "interp": "linear"},
+            {"frame": 24, "value": 40.0, "interp": "linear"},
+        ]
+    }
+    async with served(tmp_path / "film") as fake:
+        async with await Engine.attach(tmp_path / "film", program=fake_engine.__file__) as one:
+            await one.apply(
+                [edits.add_timeline("Cut", Rate(num=25, den=1), tracks=[edits.track("video")])]
+            )
+            await one.apply([edits.insert("t1", of_color("#000000ff", 50), 0)])
+            at = {
+                "timeline": "t1",
+                "clip": fake.project["timelines"][0]["tracks"][0]["clips"][0]["id"],
+            }
+            colour = {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}
+            first = {
+                "nodes": [node("bg", "background", **colour), node("out", "media_out")],
+                "links": [{"from": "bg", "to": "out", "input": "input"}],
+            }
+            await one.apply([{"op": "set_fusion", **at, "value": first}])
+
+            # A blur of the background goes to the media_out in its place, and a mosaic of the
+            # blur after it, keyed by the background.
+            into = [
+                {"from": "bg", "to": "", "input": "input"},
+                {"from": "", "to": "out", "input": "input"},
+            ]
+            await one.apply([{"op": "add_fusion_node", **at, "node": blur, "links": into}])
+            b = composition(fake)["nodes"][-1]["id"]
+            into = [
+                {"from": b, "to": "", "input": "input"},
+                {"from": "", "to": "out", "input": "input"},
+                {"from": "bg", "to": "", "input": "mask"},
+            ]
+            await one.apply([{"op": "add_fusion_node", **at, "node": mosaic, "links": into}])
+            m = composition(fake)["nodes"][-1]["id"]
+            kinds = [each["kind"] for each in composition(fake)["nodes"]]
+            assert kinds == ["background", "media_out", "blur", "mosaic"]
+            # The links are in the engine's order: by the node, then by the name of the input.
+            assert links(fake) == sorted(
+                [(m, "out", "input"), ("bg", b, "input"), (b, m, "input"), ("bg", m, "mask")],
+                key=lambda link: (link[1], link[2]),
+            )
+
+            # A number is keyed by its path in the params of its node.
+            path = f"{b}.size.x"
+            await one.apply([{"op": "set_fusion_keys", **at, "path": path, "param": rising}])
+            assert params(fake, b)["size"] == {"x": rising, "y": 5.0}
+            taken = {"op": "splice_fusion_keys", **at, "path": path, "at": 1, "remove": 1}
+            await one.apply([{**taken, "keys": []}])
+            assert params(fake, b)["size"]["x"] == {"keys": [rising["keys"][0]]}
+            down = {"op": "set_fusion_keys", **at, "path": f"{m}.offset.y", "param": -6.0}
+            await one.apply([down])
+            assert params(fake, m)["offset"] == {"x": 0.0, "y": -6.0}
+
+            # The other settings are set by a patch, which leaves what it does not name.
+            patch = {"filter": "box", "lock_xy": False, "size": {"y": 12.5}, "blend": 0.5}
+            await one.apply([{"op": "set_fusion_node", **at, "id": b, "params": patch}])
+            assert (params(fake, b)["filter"], params(fake, b)["lock_xy"]) == ("box", False)
+            assert params(fake, b)["size"]["y"] == 12.5
+            assert params(fake, b)["blend"] == 0.5
+            patch = {"frequency": 24.0, "whole_cells_only": True}
+            await one.apply([{"op": "set_fusion_node", **at, "id": m, "params": patch}])
+            assert params(fake, m) == {
+                "frequency": 24.0,
+                "aspect": 1.0,
+                "offset": {"x": 0.0, "y": -6.0},
+                "whole_cells_only": True,
+            }
+
+            # The key of a mosaic is unlinked as another input is.
+            await one.apply([{"op": "disconnect_fusion", **at, "to": m, "input": "mask"}])
+
+        assert links(fake) == sorted(
+            [(m, "out", "input"), ("bg", b, "input"), (b, m, "input")],
+            key=lambda link: (link[1], link[2]),
+        )
+
+
 def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> None:
     opening = Keys(keys=[Key(frame=0, value=1.0), Key(frame=20, value=0.0)])
 

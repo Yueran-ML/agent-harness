@@ -11,8 +11,9 @@
  */
 import type { Key } from '../../app/keys';
 import {
-  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionEllipse, type FusionKind, type FusionLink, type FusionMaskCommon,
-  type FusionMerge, type FusionNode, type FusionPoint, type FusionPolygon, type FusionRectangle, type FusionTransform, type NodePos, type Op,
+  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionBlur, type FusionEllipse, type FusionKind, type FusionLink,
+  type FusionMaskCommon, type FusionMerge, type FusionMosaic, type FusionNode, type FusionPoint, type FusionPolygon, type FusionRectangle, type FusionTransform,
+  type NodePos, type Op,
 } from '../engine';
 import { valueAt } from '../keyframes/value';
 import { handedOn, hasMaskInput, hasOutput, isMaskKind, MASK_KINDS, pictureInputs, type MaskKind } from './graph';
@@ -60,6 +61,11 @@ export const newEllipse = (): FusionEllipse => ({ ...newMask(), center: { x: 0.5
 /** The settings of a Polygon mask as the engine makes a new one: no points yet. */
 export const newPolygon = (): FusionPolygon => ({ ...newMask(), center: { x: 0.5, y: 0.5 }, size: 1, angle: 0, points: [], fill: 'alternate' });
 
+/** The settings of a Blur as the engine makes a new one (PROTOCOL.md, "Blur and Mosaic"): a Gaussian of 5, across and down alike, shown whole. */
+export const newBlur = (): FusionBlur => ({ filter: 'gaussian', lock_xy: true, size: { x: 5, y: 5 }, blend: 1 });
+/** The settings of a Mosaic as the engine makes a new one: 32 square cells across, the grid where it lies. */
+export const newMosaic = (): FusionMosaic => ({ frequency: 32, aspect: 1, offset: { x: 0, y: 0 }, whole_cells_only: false });
+
 /** The most points that a Polygon may have (PROTOCOL.md, "Masks"). */
 export const MOST_POINTS = 128;
 /** The fewest points that make a shape: with fewer a Polygon is a mask of nothing, so the page takes none away below them. */
@@ -85,6 +91,8 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
     case 'rectangle': return { ...base, kind, params: newRectangle() };
     case 'ellipse': return { ...base, kind, params: newEllipse() };
     case 'polygon': return { ...base, kind, params: newPolygon() };
+    case 'blur': return { ...base, kind, params: newBlur() };
+    case 'mosaic': return { ...base, kind, params: newMosaic() };
     default: return { ...base, kind, params: {} };
   }
 }

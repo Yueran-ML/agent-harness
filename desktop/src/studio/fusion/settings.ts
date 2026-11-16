@@ -7,8 +7,8 @@
  *
  * The settings, their defaults and their ranges are those of the engine's catalog of the settings
  * that take keys (`engine/crates/model/tests/data/catalog.json`, `fusion_merge`, `fusion_transform`,
- * `fusion_background`, `fusion_rectangle`, `fusion_ellipse` and `fusion_polygon`; the tests hold
- * the two together). A setting is named by its path in the `params` of its node, and in an
+ * `fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur` and
+ * `fusion_mosaic`; the tests hold the two together). A setting is named by its path in the `params` of its node, and in an
  * operation by the id of the node, a dot, and that path (`n4.center.x`). The two numbers of a point
  * of a Polygon are settings each, named by the place of the point in the list of points, from 0
  * (`points.2.x`); the catalog writes them once, for every point (`points.*.x`). The keys are at the
@@ -23,8 +23,12 @@ import { spliceOf } from '../keyframes/curveGeometry';
 import { valueAt } from '../keyframes/value';
 import type { FusionAt } from './edits';
 
-/** What a setting counts in, as the catalog names it: a plain number, a share of the width or of the height of the picture, or degrees counter-clockwise. */
-export type FusionUnit = 'number' | 'widths' | 'heights' | 'degrees_counterclockwise';
+/**
+ * What a setting counts in, as the catalog names it: a plain number, a share of the width or of the
+ * height of the picture, degrees counter-clockwise, pixels of a picture 1080 high (a Blur Size), or
+ * pixels of the picture of the composition (an offset of a Mosaic).
+ */
+export type FusionUnit = 'number' | 'widths' | 'heights' | 'degrees_counterclockwise' | 'pixels1080' | 'pixels';
 /** A setting of a node that takes keys: its path in the node's `params`, its default and its range, and its unit. */
 export interface FusionSetting { path: string; bounds: Bounds; unit: FusionUnit }
 
@@ -57,6 +61,9 @@ export const FUSION_SETTINGS: Record<Exclude<FusionKind, 'media_in' | 'media_out
   // Both the width and the height of an Ellipse are in widths of the picture, so that alike they are a circle.
   ellipse: [...MASK, ...MASK_CENTER, s('width', 0.5, 0, 10, 'widths'), s('height', 0.5, 0, 10, 'widths'), MASK_ANGLE],
   polygon: [...MASK, ...MASK_CENTER, s('size', 1, 0, 10), MASK_ANGLE, s(POINT_X, 0, -16, 16, 'widths'), s(POINT_Y, 0, -16, 16, 'widths')],
+  // The Blur Size is counted as the filters of the Color page are, in pixels of a picture 1080 high.
+  blur: [s('size.x', 5, 0, 500, 'pixels1080'), s('size.y', 5, 0, 500, 'pixels1080'), s('blend', 1, 0, 1)],
+  mosaic: [s('frequency', 32, 1, 16384), s('aspect', 1, 0.0625, 16), s('offset.x', 0, -16384, 16384, 'pixels'), s('offset.y', 0, -16384, 16384, 'pixels')],
 };
 
 const NONE: readonly FusionSetting[] = [];

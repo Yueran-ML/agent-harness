@@ -18,6 +18,11 @@
 //!
 //! The textures are of half floats, and the card writes into them as it may (to the nearest, or
 //! towards 0); the processor rounds to the nearest.
+//!
+//! The Blur node of the composition of a clip is blurred by these filters too, by the same two
+//! passes and held to the same reference (`fusion.rs`): its picture is the one filtered, of
+//! all four channels, premultiplied, and what is read of the texture between its texels
+//! ([`sample`]) is mixed with the picture as it came in.
 
 use crate::color::{Filter, REFERENCE_HEIGHT};
 

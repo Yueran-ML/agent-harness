@@ -228,4 +228,15 @@
 {"path":"angle","default":0.0,"low":-36000.0,"high":36000.0,"unit":"degrees_counterclockwise","page":"fusion","palette":"fusion","clock":"source_frame"},
 {"path":"points.*.x","default":0.0,"low":-16.0,"high":16.0,"unit":"widths","page":"fusion","palette":"fusion","clock":"source_frame"},
 {"path":"points.*.y","default":0.0,"low":-16.0,"high":16.0,"unit":"widths","page":"fusion","palette":"fusion","clock":"source_frame"}
+],
+"fusion_blur":[
+{"path":"size.x","default":5.0,"low":0.0,"high":500.0,"unit":"pixels1080","page":"fusion","palette":"fusion","clock":"source_frame"},
+{"path":"size.y","default":5.0,"low":0.0,"high":500.0,"unit":"pixels1080","page":"fusion","palette":"fusion","clock":"source_frame"},
+{"path":"blend","default":1.0,"low":0.0,"high":1.0,"unit":"number","page":"fusion","palette":"fusion","clock":"source_frame"}
+],
+"fusion_mosaic":[
+{"path":"frequency","default":32.0,"low":1.0,"high":16384.0,"unit":"number","page":"fusion","palette":"fusion","clock":"source_frame"},
+{"path":"aspect","default":1.0,"low":0.0625,"high":16.0,"unit":"number","page":"fusion","palette":"fusion","clock":"source_frame"},
+{"path":"offset.x","default":0.0,"low":-16384.0,"high":16384.0,"unit":"pixels","page":"fusion","palette":"fusion","clock":"source_frame"},
+{"path":"offset.y","default":0.0,"low":-16384.0,"high":16384.0,"unit":"pixels","page":"fusion","palette":"fusion","clock":"source_frame"}
 ]}

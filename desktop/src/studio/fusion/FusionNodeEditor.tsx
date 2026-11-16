@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Blend, Circle, Ellipsis, ImagePlus, Move, Pentagon, RectangleHorizontal, Square, X } from 'lucide-react';
+import { Blend, Circle, Droplet, Ellipsis, Grid3x3, ImagePlus, Move, Pentagon, RectangleHorizontal, Square, X } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
@@ -35,6 +35,8 @@ const NO_PLACES: Placed = {};
 const ADD_ICONS = {
   merge: Blend, transform: Move, background: Square, media_in: ImagePlus,
   rectangle: RectangleHorizontal, ellipse: Circle, polygon: Pentagon,
+  // A Blur and a Mosaic have their faces here, and are not among the kinds that the editor adds yet.
+  blur: Droplet, mosaic: Grid3x3,
 } as const;
 
 /** The nodes that are chosen: the one chosen last, whose settings the Inspector shows where it is the only one, and the others. */

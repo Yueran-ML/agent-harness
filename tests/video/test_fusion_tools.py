@@ -1137,3 +1137,37 @@ async def test_a_refusal_of_the_engine_is_told_with_what_can_be_done_about_it(
     outcome = await answered(reason="locked", index=0)
     assert outcome.error.code == "VIDEO_LOCKED"
     assert params(fake, blur)["blend"] == 1
+
+
+async def test_a_node_of_a_composition_is_measured_alone_off_screen(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    blur = await blurred(desk)
+    # The picture of one node, as the Fusion view shows it: without the grade of the clip, its
+    # transform or the other layers. It is asked of the engine with the frame, off screen.
+    told = result(await desk.call("video_grade_scopes", clip="c1", frame=110, fusion=blur))
+    assert fake.looked[-1] == (
+        "scopes.statistics",
+        {"timeline": "t1", "frame": 110, "fusion": {"clip": "c1", "node": blur}, "bins": 1024},
+    )
+    assert told["measured"]["fusion"] == {"clip": "c1", "node": blur}
+    assert {"min", "max", "mean"} <= set(told["luma"])
+    # What the MediaOut shows is asked without a node, at the middle of the clip by default.
+    told = result(await desk.call("video_grade_scopes", clip="c1", fusion="output"))
+    asked = fake.looked[-1][1]
+    assert asked["fusion"] == {"clip": "c1"}
+    assert 100 <= asked["frame"] <= 149
+    assert told["measured"]["fusion"] == {"clip": "c1"}
+    # A frame as it is exported is measured as it was.
+    told = result(await desk.call("video_grade_scopes", frame=110))
+    assert "fusion" not in fake.looked[-1][1]
+    assert told["measured"] == "the frame as an export draws it"
+    for asked, said in [
+        ({"fusion": blur}, "fusion needs clip"),
+        ({"clip": "c1", "fusion": blur, "node": 1}, "leave grade, node and at out"),
+        ({"clip": "c1", "fusion": blur, "at": "input"}, "leave grade, node and at out"),
+    ]:
+        refused = await desk.call("video_grade_scopes", **asked)
+        assert refused.error is not None
+        assert said in refused.text

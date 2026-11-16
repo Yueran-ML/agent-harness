@@ -1789,12 +1789,24 @@ class Grader:
         node: str | int | None,
         at: NodeSide | None,
         histogram: int | None,
+        fusion: str | None = None,
     ) -> dict[str, Any]:
         """The figures of a frame drawn off screen, or of the picture at a node there.
 
         The frame is ``frame``, or the middle of ``clip``; a node is of ``given`` (the grade of
-        ``clip`` where that is left out). Nothing is changed, and no monitor is needed.
+        ``clip`` where that is left out). With ``fusion``, the id of a node of the composition
+        of ``clip`` or ``output`` for what its ``MediaOut`` shows, the picture is that of the
+        node alone, as the Fusion view shows it. Nothing is changed, and no monitor is needed.
         """
+        viewed: dict[str, Any] | None = None
+        if fusion is not None:
+            if node is not None or given is not None or at is not None:
+                raise GradeError(
+                    "fusion measures a node of a composition: leave grade, node and at out"
+                )
+            if clip is None:
+                raise GradeError("fusion needs clip, the clip whose composition the node is of")
+            viewed = {"clip": clip} if fusion == "output" else {"clip": clip, "node": fusion}
         if node is None and (given is not None or at is not None):
             raise GradeError("grade and at are of a node: give node too")
         if node is not None and given is None and clip is None:
@@ -1822,6 +1834,7 @@ class Grader:
             node=id,
             at=at,
             clip=clip if target is not None and target["level"] != "clip" else None,
+            fusion=viewed,
             bins=_BINS,
         )
         told: dict[str, Any] = {
@@ -1833,6 +1846,8 @@ class Grader:
             "measured": (
                 {"grade": target, "node": id, "at": at or "output"}
                 if target is not None
+                else {"fusion": viewed, "of": "the node alone: no grade, transform or layers"}
+                if viewed is not None
                 else "the frame as an export draws it"
             ),
         }

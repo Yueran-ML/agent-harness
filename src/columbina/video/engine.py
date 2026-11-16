@@ -1273,6 +1273,7 @@ class Engine:
         node: str | None = None,
         at: NodeSide | None = None,
         clip: str | None = None,
+        fusion: Mapping[str, Any] | None = None,
     ) -> Statistics:
         """Return the figures of a frame, measured on the card.
 
@@ -1280,8 +1281,11 @@ class Engine:
         (the desktop's) has; or, where ``timeline`` is given, of its ``frame`` drawn off screen
         as an export draws it, in a headless engine too. With ``grade`` (a target of grades) and
         ``node``, of the picture going into the node or coming out of it (``at``, ``output``
-        unless given; ``clip`` names the clip of a group's grade). ``bins`` is the number of
-        levels of the histogram, 16 to 1024 (256 unless given).
+        unless given; ``clip`` names the clip of a group's grade). With ``fusion`` (``clip`` and,
+        unless it is what its ``MediaOut`` shows, ``node``), of the picture of that node of the
+        composition of the clip alone, as the Fusion view shows it: without the grade and the
+        transform of the clip and without the other layers; of a frame of a timeline only.
+        ``bins`` is the number of levels of the histogram, 16 to 1024 (256 unless given).
 
         Raises:
             EngineError: The engine is headless and a monitor is named (``-32601``), the monitor
@@ -1298,6 +1302,8 @@ class Engine:
             params["at"] = at
         if clip is not None:
             params["clip"] = clip
+        if fusion is not None:
+            params["fusion"] = dict(fusion)
         if bins is not None:
             params["bins"] = bins
         return _statistics(await self._call("scopes.statistics", params))

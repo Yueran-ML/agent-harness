@@ -564,6 +564,9 @@ class Fake:
                     "node": params["node"],
                     "at": params.get("at", "output"),
                 }
+            if "fusion" in params:
+                # The picture of one node of a composition, as the Fusion view shows it.
+                said["fusion"] = {**params["fusion"], "shown": True}
             return said
         if self.headless is not False:
             raise RefusedError(-32601, "there is no method scopes.statistics in a headless engine")

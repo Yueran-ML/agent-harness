@@ -703,6 +703,10 @@ class _GradeScopes(_Graded):
     at: Literal["input", "output"] | None = Field(
         default=None, description="Into the node or out of it (default)."
     )
+    fusion: str | None = Field(
+        default=None,
+        description="With clip: a node id of its composition, or output; that node alone.",
+    )
     histogram: int | None = Field(
         default=None, ge=4, le=256, description="Also a histogram of this many levels, in %."
     )
@@ -799,6 +803,7 @@ async def _graded(args: _Project, grader: grading.Grader) -> dict[str, Any]:
             node=args.node,
             at=args.at,
             histogram=args.histogram,
+            fusion=args.fusion,
         )
     if isinstance(args, _ShotMatch):
         return await grader.shot_match(
@@ -1493,7 +1498,8 @@ _FUSION_NODE = (
     'from the keyer into its foreground, and from it ("") into MediaOut1.input. Reframe or '
     "picture-in-picture: add transform after MediaIn1 (size, center). The result tells the "
     "composition after the change; video_fusion_info with reference true tells every kind and "
-    "setting. To check the picture, video_grade_scopes measures a frame as exported."
+    "setting. To check the picture, video_grade_scopes measures a frame as exported, or one node "
+    "alone with fusion."
 )
 
 _FUSION_KEYS = (

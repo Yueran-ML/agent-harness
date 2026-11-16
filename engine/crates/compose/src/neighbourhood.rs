@@ -11,10 +11,13 @@
 //! each the mean about its centre as wide as ever, so that the texture read is smaller by as many
 //! across or down, and the operations read it between its texels. A Gaussian is taken so from a
 //! standard deviation of 4 pixels of the picture, at a pixel for each half of it at most
-//! (2, 4, 8, … to 64), and a box from a radius of 8, at a pixel for each quarter of it: a
+//! (2, 4, 8, … to 1024), and a box from a radius of 8, at a pixel for each quarter of it: a
 //! Gaussian of 20 pixels of a picture of 4K is so taken at a pixel of 8, in a texture of 480 ×
 //! 270, and costs a pass across that reads some 15 pixels for each of the picture, and little
-//! more.
+//! more. So a filter costs some 12 to 24 pixels read for each of the picture however wide it
+//! is, up to a standard deviation of 2048 pixels of the picture, which a filter as wide as any
+//! that is asked for (a Blur of a composition at its most, in a picture of 8K) is within; past
+//! it the cost grows with the width.
 //!
 //! The textures are of half floats, and the card writes into them as it may (to the nearest, or
 //! towards 0); the processor rounds to the nearest.
@@ -33,8 +36,11 @@ const GAUSSIAN_SPARSE: f32 = 4.0;
 /// The least radius of a box, in pixels of its picture, that is taken at fewer points.
 const BOX_SPARSE: f32 = 8.0;
 
-/// The most pixels of a picture that make a pixel of a filtered texture, along one axis.
-const MOST_REDUCTION: u32 = 64;
+/// The most pixels of a picture that make a pixel of a filtered texture, along one axis. It is
+/// what keeps the cost of the widest filters that are asked for from growing with their width:
+/// at 64, which it was, a Gaussian of 2000 pixels of a picture of 8K read some 190 pixels for
+/// each of the picture in its pass across, eight times what it reads now.
+const MOST_REDUCTION: u32 = 1024;
 
 /// The least standard deviation of a Gaussian, in pixels of its picture: below it, a pixel is
 /// taken as it is.
@@ -45,7 +51,7 @@ const LEAST_SIGMA: f32 = 1e-3;
 /// box of that radius: 1 below 4 pixels of a Gaussian and 8 of a box, and then the power of 2
 /// within a half of the standard deviation, or a quarter of the radius.
 #[must_use]
-#[allow(clippy::cast_precision_loss, reason = "a power of 2, up to 64")]
+#[allow(clippy::cast_precision_loss, reason = "a power of 2, up to 1024")]
 pub fn reduction(gaussian: bool, reach: f32) -> u32 {
     let (least, per) = if gaussian {
         (GAUSSIAN_SPARSE, 2.0)
@@ -338,6 +344,9 @@ mod tests {
         assert_eq!(reduction(true, 7.9), 2);
         assert_eq!(reduction(true, 8.0), 4);
         assert_eq!(reduction(true, 20.0), 8);
+        assert_eq!(reduction(true, 300.0), 128);
+        assert_eq!(reduction(true, 2000.0), 512);
+        assert_eq!(reduction(true, 2048.0), 1024);
         assert_eq!(reduction(true, 1e6), MOST_REDUCTION);
         assert_eq!(reduction(false, 7.0), 1);
         assert_eq!(reduction(false, 8.0), 2);

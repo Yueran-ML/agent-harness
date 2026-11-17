@@ -92,6 +92,9 @@ mod window_nodes;
 #[path = "rpc/tracking.rs"]
 mod tracking;
 
+#[path = "rpc/fusion_tracking.rs"]
+mod fusion_tracking;
+
 #[path = "rpc/processor_curves.rs"]
 mod processor_curves;
 #[path = "rpc/protocol.rs"]

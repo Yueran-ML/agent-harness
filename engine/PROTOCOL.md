@@ -237,7 +237,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Window controls of every shape (see Circular and Gradient Window controls, Linear and Polygon Window controls, Curve Window controls) |
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete"\|"clear_points"\|"delete_points",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}`; `clear_points` and `delete_points` (Esc and Backspace on a Curve's point selection) answer `{binding,phase:"cleared",cleared}` and `{binding,phase:"deleted",selected,points,revision}` (see Curve Window controls) |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
-| `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}` | `{job,first,last,frame_size,direction}` at once, then `track.progress` and `track.state` (see Window tracking) |
+| `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}`, or for the patterns of a Tracker of a composition `{fusion:{timeline,clip,node,trackers?},revision,frame,direction}` | `{job,first,last,frame_size,direction}` (and `trackers` with `fusion`) at once, then `track.progress` and `track.state` (see Window tracking, and The patterns of a Tracker there) |
 | `track.stop` | `{job}` | `{}`; the track ends between frames, keeping what it tracked |
 | `track.edit` | `{grade,node,window,revision?,edit:{kind,...}}` | `{revision}`; one step to undo (see Window tracking) |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n, "audio"?:{"bus"?, "rate"?, "codec"?, "bitrate"?, "normalize"?}}`, or with `"video":null` and no `codec` or `quality` for the sound alone | `{"job": "render-1"}` (see Rendering a timeline, and The sound of an export) |
@@ -1825,6 +1825,68 @@ stores `tracking` (T23). Not yet: Interactive Mode's point cloud editing, the cr
 motion path drawn on the viewer (Show Track) and dragged there, the outline drawn through a
 Perspective 3D homography, tracking across a transition's handles, timeline and group grades,
 and the move of tracking frames when a grade is copied to another clip with its keyframes.
+
+**The patterns of a Tracker** (T17b). `track.start` `{fusion: {timeline, clip, node,
+trackers?}, revision, frame, direction}` follows the patterns of the `tracker` node `node` of
+the composition of the clip through the frames of the clip, and writes their paths (see
+Compositions, The Tracker). A request gives a window (`grade`, `node` and `window`) or `fusion`,
+one of the two, and `tracker` and `components` with a window alone; anything else is `-32602`
+with `reason: "fusion"`. The track goes as a track of a window does: one at a time in an engine
+(`busy`), `revision` the project's (`stale_revision`), answered at once, run on a thread of its
+own, written as the next change of one native gesture of the connection that asked (any client:
+`desktop`, `agent` or `cli`), as often as a window's track is written, **one step to undo**;
+`track.stop`, the same events, and the same endings and reasons of `stopped` (the table above).
+
+- `trackers`: the places in the node's `trackers` of the patterns to follow, each followed once;
+  left out, every pattern that is `enabled`. Refused: no such clip, a clip without a composition
+  or a composition without that node (`target`); a node of another kind (`wrong_node`, with
+  `node` and its `kind`); a place that the node has not, or of a pattern that is off
+  (`tracker`, with `tracker`, the place); no pattern to follow (`no_trackers`); a clip that has
+  no moving picture of media, a title, a colour or a still (`untrackable`); a `frame` outside the
+  frames the clip shows (`frame`).
+- `frame` and `direction` are a window's: `frame` is the playhead as the keys of the clip count
+  frames (of media, its source frames, which are the frames of the paths), and `direction` goes
+  on the timeline, so that a clip played backward is tracked backward in its source. A clip with
+  speed points is tracked over the source frames from the first that it shows to the last.
+- **What is read** is the clip's own media, as a window's track reads it (its proxy where
+  usable, upright, at most 720 lines at the picture's aspect, as luma): the picture of its
+  `media_in`. **Not the picture that comes into the Tracker**: the nodes before it (a
+  Transform, a keyer, a mask) are not seen by the track, which follows the source as it is.
+- **Where each pattern starts**: where its path has it at `frame` (on the line between two of
+  its frames, as a path is read), or at `pattern.x` and `pattern.y` where it has no path. A
+  pattern whose middle lies outside the picture there is lost at once.
+- **How it is followed**: each pattern on its own, by the pyramidal Lucas–Kanade of the point
+  tracker with a square window, the largest of an odd side within its box in pixels of the
+  frames read (`pattern.width · W` by `pattern.height · H`), from 7 × 7 to 63 × 63. Its search
+  area is centred where it was in the frame before and it is to stay within it: its middle
+  moves at most `(search − pattern) / 2` across and down from a frame to the next (and half a
+  pixel more), none where the search area is no larger than the box; the pyramid has as many
+  levels as the farthest reach needs, at most 6. Each frame the window is taken from the frame
+  before (Fusion's Adaptive Mode Every Frame), and the pattern is looked for first where it
+  would be if it went on as it went. **A pattern is lost**, and is followed no further that way,
+  where its window is too flat, where it leaves the frame, where tracked back it lands more than
+  a pixel from where it was, where its windows in the two frames correlate below 0.7, and where
+  it is found beyond its search area.
+- **What is written**: each frame at which a pattern was found, and the frame that it started
+  from, become places of its path, the pixel `(i, j)` of the frames read being the place
+  `[(i + 0.5) / W, 1 − (j + 0.5) / H]` (the half pixel of the paths, The Tracker), written to
+  the seventh decimal. Those frames are overwritten and the other frames of the path are kept;
+  the frames after a pattern was lost keep what they had. The write is `set_fusion_node` with
+  `params: {"trackers": [...]}`: the node's whole list as the project has it, with those
+  paths. Every client sees the paths grow; a track that found nothing beyond the frames that
+  its patterns started from writes nothing.
+- The answer is `{job, first, last, frame_size, direction, trackers}`: `frame_size` is the
+  `[width, height]` of the frames read (the analysis size: a pixel of it is as fine as a path
+  is followed), `direction` the way in the source, and `trackers` the places of the patterns
+  followed. `track.progress` adds `following`, the places of the patterns still followed on the
+  way going on, and its `lost` counts the patterns lost so far. `track.state` adds `trackers`,
+  `[{tracker, frames, lost}]`: for each pattern followed its place, at how many frames it was
+  found (the frame it started from not counted), and the frames at which it was lost (at most
+  one each way). Its `tracked` is the first and the last frame written into a path, or `null`;
+  `frames` the frames stepped through, and `lost` the patterns lost.
+
+Not yet: tracking the picture that comes into the Tracker through the nodes before it, and a
+pattern kept from its first frame (Fusion's Adaptive Mode None) or by its best match.
 
 ## The transport
 
@@ -4047,7 +4109,8 @@ Operation tab. Corner Positioning and Perspective Positioning are not kept. The 
 `crates/track/src/matchmove.rs`, which says what a motion is; the node is
 `crates/model/src/fusion/tracker.rs`. **Following a pattern through the pictures of a clip is
 not an operation of the model**: a path is a setting, set as any other, which the tracking
-writes. Its `params`, all of which are written:
+writes (`track.start` with `fusion`: The patterns of a Tracker, in Window tracking). Its
+`params`, all of which are written:
 
 | field | default | meaning |
 |---|---|---|
@@ -5565,8 +5628,8 @@ real ids. For example:
 | `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys,selected_points}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |
 | `window.points` | `{binding,sequence,revision,selected_points:[]}`: owner-only, when a project change drops the selected Curve's point selection (see Curve Window controls) |
-| `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`: to the connection that started the track, each time the track so far is written (see Window tracking) |
-| `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
+| `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`, and `following` of a track of a Tracker: to the connection that started the track, each time the track so far is written (see Window tracking) |
+| `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`, and `trackers` of a track of a Tracker: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
 | `automation.written` | `{"timeline", "punch", "lanes", "revision", "failed": [...]}`: a pass of the recording of automation, or a Punch In, written, to every connection (see Recording automation) |
 | `audio.analysis` | `{job, state: "running", done, total}` (seconds of sound measured, at most 4 a second), then `{job, state: "done", method, ...}`, `{job, state: "failed", message}` or `{job, state: "cancelled"}`: how an `audio.analyze`, `audio.normalize`, `audio.level_profile`, `audio.level_match` or `audio.noise_learn` goes and ends, to every connection (see Meters, loudness and the analysis of sound) |
 

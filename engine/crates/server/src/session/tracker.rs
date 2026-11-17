@@ -27,6 +27,10 @@
 //! Frames the tracker lost the subject at are taken off the curves, which a line bridges
 //! (the core's behaviour). A clip's transition handles, timeline and group grades, and titles
 //! or colours, which have no frames of a source to track, are not tracked.
+//!
+//! `track.start` with `fusion` in the place of a window follows the patterns of a Tracker of a
+//! composition through the frames of its clip instead (T17b): the same job, gesture, writes,
+//! events and endings (see `fusion`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -39,7 +43,7 @@ use columbina_model::grade::{
 };
 use columbina_model::keyframes::KeyClock;
 use columbina_model::span::Reading;
-use columbina_model::{Clip, Media, Source};
+use columbina_model::{Clip, Media, Source, Timeline, VideoFacts};
 use columbina_track::{
     CloudOptions, Component, Components, Direction, Job, Luma, PointOptions, Region, TrackData,
     TrackError, Tracker,
@@ -52,6 +56,8 @@ use super::{
     Ordering, OwnedGesture, RawValue, Reply, State, Value,
 };
 use crate::proxy;
+
+mod fusion;
 
 /// How often the track so far is written into the window while it goes on, while it is short.
 pub const COMMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
@@ -96,13 +102,14 @@ fn refused(reason: &str, message: &str) -> Fault {
     Fault::new(rpc::REFUSED, message.to_owned()).with_data(json!({"reason":reason}))
 }
 
+/// A track of a window, as `track.start` asks for it, but for the revision that it was asked
+/// at.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Start {
     grade: Target,
     node: String,
     window: String,
-    revision: u64,
     /// The playhead, as the keys of the grade count frames.
     frame: i64,
     direction: Direction,
@@ -110,6 +117,90 @@ struct Start {
     tracker: TrackerKind,
     #[serde(default)]
     components: Components,
+}
+
+/// What `track.start` takes, as it is written.
+const START_TAKES: &str = "{grade,node,window,revision,frame,direction,tracker?,components?} \
+     or {fusion:{timeline,clip,node,trackers?},revision,frame,direction}";
+
+/// `track.start` as it is written: a window (`grade`, `node` and `window`, with the settings of
+/// its tracker) or the patterns of a Tracker of a composition (`fusion`), one of the two.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Request {
+    #[serde(default)]
+    grade: Option<Target>,
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    fusion: Option<fusion::Aim>,
+    revision: u64,
+    frame: i64,
+    direction: Direction,
+    #[serde(default)]
+    tracker: Option<TrackerKind>,
+    #[serde(default)]
+    components: Option<Components>,
+}
+
+/// What a `track.start` asks to track.
+enum Asked {
+    Window(Start),
+    Fusion(fusion::Start),
+}
+
+/// A track checked against the project, to be started: the plan of a window or of a Tracker.
+enum Launch {
+    Window(Box<Plan>),
+    Fusion(Box<fusion::Plan>),
+}
+
+impl Request {
+    /// The revision that it was asked at, and what it asks to track; refused where it gives
+    /// both a window and `fusion`, neither of them whole, or the settings of the tracker of a
+    /// window with `fusion`.
+    fn asked(self) -> Result<(u64, Asked), Fault> {
+        let Request {
+            grade,
+            node,
+            window,
+            fusion,
+            revision,
+            frame,
+            direction,
+            tracker,
+            components,
+        } = self;
+        let asked = match (fusion, grade, node, window) {
+            (None, Some(grade), Some(node), Some(window)) => Asked::Window(Start {
+                grade,
+                node,
+                window,
+                frame,
+                direction,
+                tracker: tracker.unwrap_or_default(),
+                components: components.unwrap_or_default(),
+            }),
+            (Some(aim), None, None, None) if tracker.is_none() && components.is_none() => {
+                Asked::Fusion(fusion::Start {
+                    aim,
+                    frame,
+                    direction,
+                })
+            }
+            _ => {
+                return Err(Fault::params(
+                    "track.start tracks a window, given by grade, node and window, or the \
+                     patterns of a Tracker, given by fusion: one of the two, and tracker and \
+                     components with a window alone",
+                )
+                .with_data(json!({"reason": "fusion"})));
+            }
+        };
+        Ok((revision, asked))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -278,20 +369,7 @@ fn plan(
     };
     let (timeline, clip) =
         clip_of(project, timeline, clip).ok_or_else(|| refused("target", "no such clip"))?;
-    let Source::Media { media, .. } = &clip.source else {
-        return Err(untrackable("a title or a colour has no frames to track"));
-    };
-    let media = project
-        .media
-        .iter()
-        .find(|m| &m.id == media)
-        .ok_or_else(|| untrackable("its media is not in the project"))?;
-    let video = media
-        .facts
-        .video
-        .as_ref()
-        .filter(|v| !v.still)
-        .ok_or_else(|| untrackable("a still has no motion"))?;
+    let (media, video) = picture_of(project, clip, &untrackable)?;
     let c = corrector(project, &request.grade, &request.node)
         .ok_or_else(|| refused("target", "no such corrector"))?;
     let window = c
@@ -302,31 +380,14 @@ fn plan(
     if !window.enabled || window.shape.is_draft() {
         return Err(untrackable("the window is off or an unfinished Curve"));
     }
-    // The frames: those of the media the clip shows, within the media.
-    let clock = KeyClock::of(clip, project, timeline.rate);
-    let mut map = BTreeMap::new();
-    for t in clip.start..clip.start + clip.length.max(1) {
-        map.entry(clock.at(t)).or_insert(t);
-    }
-    let count = {
-        let d = media.facts.duration;
-        let n = i128::from(d.ticks) * i128::from(video.rate.num);
-        let s = i128::from(d.scale) * i128::from(video.rate.den);
-        i64::try_from((n + s - 1) / s.max(1)).unwrap_or(i64::MAX)
-    };
-    let (Some(&lo), Some(&hi)) = (map.keys().next(), map.keys().next_back()) else {
-        return Err(untrackable("the clip has no frames"));
-    };
-    let (first, last) = (lo.max(0), hi.min(count - 1));
-    if request.frame < first || request.frame > last {
-        return Err(refused(
-            "frame",
-            &format!(
-                "frame {} is outside the clip, from {first} to {last}",
-                request.frame
-            ),
-        ));
-    }
+    let Shown { map, first, last } = shown_frames(
+        project,
+        timeline,
+        clip,
+        (media, video),
+        request.frame,
+        &untrackable,
+    )?;
     // The upright analysis size, at the picture's aspect.
     let size = analysis_size(video);
     let (wf, hf) = (size[0] as f64, size[1] as f64);
@@ -399,23 +460,7 @@ fn plan(
             }
         }
     };
-    // Forward is forward on the timeline: backward in the source where the clip plays it
-    // backward at the frame that first shows the picture of the playhead.
-    let shown_at = map
-        .range(..=request.frame)
-        .next_back()
-        .map_or(clip.start, |(_, at)| *at);
-    let direction = if backward_at(clip, shown_at - clip.start) {
-        match request.direction {
-            Direction::Forward => Direction::Reverse,
-            Direction::Reverse => Direction::Forward,
-            Direction::OneForward => Direction::OneReverse,
-            Direction::OneReverse => Direction::OneForward,
-            Direction::ForwardAndBack => Direction::ForwardAndBack,
-        }
-    } else {
-        request.direction
-    };
+    let direction = on_source(&map, clip, request.frame, request.direction);
     Ok(Plan {
         job,
         owner,
@@ -459,6 +504,103 @@ fn backward_at(clip: &Clip, k: i64) -> bool {
         .chain(segments[..at].iter().rev())
         .find(|segment| !segment.speed.is_freeze())
         .is_some_and(|segment| segment.speed.is_backward())
+}
+
+/// The media of `clip` and its moving picture, which a track reads; or, by `untrackable`, why
+/// it has none: a title or a colour, media that the project has not, or a still.
+fn picture_of<'a>(
+    project: &'a columbina_model::Project,
+    clip: &Clip,
+    untrackable: &dyn Fn(&str) -> Fault,
+) -> Result<(&'a Media, &'a VideoFacts), Fault> {
+    let Source::Media { media, .. } = &clip.source else {
+        return Err(untrackable("a title or a colour has no frames to track"));
+    };
+    let media = project
+        .media
+        .iter()
+        .find(|m| &m.id == media)
+        .ok_or_else(|| untrackable("its media is not in the project"))?;
+    let video = media
+        .facts
+        .video
+        .as_ref()
+        .filter(|v| !v.still)
+        .ok_or_else(|| untrackable("a still has no motion"))?;
+    Ok((media, video))
+}
+
+/// The frames that a track of a clip goes over, as the keys of the clip count them (its source
+/// frames).
+struct Shown {
+    /// Each frame that the clip shows, with the first frame of its timeline that shows it.
+    map: BTreeMap<i64, i64>,
+    /// The first of them within the media.
+    first: i64,
+    /// The last of them within the media.
+    last: i64,
+}
+
+/// The frames that a track of `clip` of `timeline` goes over, of `picture`, its media and the
+/// facts of its picture: those of the media that the clip shows, within the media. Refused
+/// where `frame`, the playhead as the keys count frames, is not among them (`frame`), and, by
+/// `untrackable`, where the clip shows none.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the frames of a sum of ticks and rates"
+)]
+fn shown_frames(
+    project: &columbina_model::Project,
+    timeline: &Timeline,
+    clip: &Clip,
+    picture: (&Media, &VideoFacts),
+    frame: i64,
+    untrackable: &dyn Fn(&str) -> Fault,
+) -> Result<Shown, Fault> {
+    let (media, video) = picture;
+    let clock = KeyClock::of(clip, project, timeline.rate);
+    let mut map = BTreeMap::new();
+    for t in clip.start..clip.start + clip.length.max(1) {
+        map.entry(clock.at(t)).or_insert(t);
+    }
+    let count = {
+        let d = media.facts.duration;
+        let n = i128::from(d.ticks) * i128::from(video.rate.num);
+        let s = i128::from(d.scale) * i128::from(video.rate.den);
+        i64::try_from((n + s - 1) / s.max(1)).unwrap_or(i64::MAX)
+    };
+    let (Some(&lo), Some(&hi)) = (map.keys().next(), map.keys().next_back()) else {
+        return Err(untrackable("the clip has no frames"));
+    };
+    let (first, last) = (lo.max(0), hi.min(count - 1));
+    if frame < first || frame > last {
+        return Err(refused(
+            "frame",
+            &format!("frame {frame} is outside the clip, from {first} to {last}"),
+        ));
+    }
+    Ok(Shown { map, first, last })
+}
+
+/// `direction`, forward being forward on the timeline, as a track of `clip` goes in its source
+/// from `frame`, the playhead as its keys count frames: the other way where the clip plays its
+/// source backward at the frame that first shows the picture of the playhead (`map`, as
+/// [`Shown`] has it).
+fn on_source(map: &BTreeMap<i64, i64>, clip: &Clip, frame: i64, direction: Direction) -> Direction {
+    let shown_at = map
+        .range(..=frame)
+        .next_back()
+        .map_or(clip.start, |(_, at)| *at);
+    if !backward_at(clip, shown_at - clip.start) {
+        return direction;
+    }
+    match direction {
+        Direction::Forward => Direction::Reverse,
+        Direction::Reverse => Direction::Forward,
+        Direction::OneForward => Direction::OneReverse,
+        Direction::OneReverse => Direction::OneForward,
+        Direction::ForwardAndBack => Direction::ForwardAndBack,
+    }
 }
 
 /// The window's outline in its local coordinates at `at`, for the tracker to look within.
@@ -629,32 +771,41 @@ impl State {
         gesture: &mut OwnedGesture,
         data: &TrackData,
     ) -> Result<(u64, usize), Fault> {
+        self.track_write(plan.owner, plan.kind, gesture, |project| {
+            set_tracking(
+                project,
+                &plan.target,
+                &plan.node,
+                &plan.window,
+                |window, _| {
+                    tracking_of(window).data = data.clone();
+                    Ok(())
+                },
+            )
+        })
+    }
+
+    /// Apply the operation that `work` makes of the project as it is, as the next change of
+    /// `gesture`, the gesture of a track of the connection `owner` of `kind`. Gives the revision
+    /// and the size of the operation as it is sent.
+    fn track_write(
+        &mut self,
+        owner: u64,
+        kind: Kind,
+        gesture: &mut OwnedGesture,
+        work: impl FnOnce(&columbina_model::Project) -> Result<Value, Fault>,
+    ) -> Result<(u64, usize), Fault> {
         let now = Instant::now();
         // Only a gesture that is still the track's own is kept from going idle by its write (a
         // frame may take long to decode); a refused write refreshes no one's.
-        self.check_owned_gesture(plan.owner, gesture)?;
+        self.check_owned_gesture(owner, gesture)?;
         if self.history.gesture() == Some((gesture.key.as_str(), gesture.base)) {
             self.gesture_last = Some(now);
         }
         let result = self
-            .apply_worked_out_locked(
-                plan.kind,
-                None,
-                Some((plan.owner, gesture)),
-                now,
-                |project| {
-                    Ok(vec![set_tracking(
-                        project,
-                        &plan.target,
-                        &plan.node,
-                        &plan.window,
-                        |window, _| {
-                            tracking_of(window).data = data.clone();
-                            Ok(())
-                        },
-                    )?])
-                },
-            )
+            .apply_worked_out_locked(kind, None, Some((owner, gesture)), now, |project| {
+                Ok(vec![work(project)?])
+            })
             .map_err(|error| match error {
                 super::WorkedOutError::Input(fault) | super::WorkedOutError::Apply(fault) => fault,
             })?;
@@ -673,6 +824,17 @@ impl State {
             self.finish_gesture();
         }
     }
+
+    /// End the track `job` of the connection `owner`: its gesture ended
+    /// ([`State::track_finish`]), the engine left free for another track, and `track.state`
+    /// told it, `state`.
+    fn track_end(&mut self, owner: u64, job: &str, gesture: OwnedGesture, state: &Value) {
+        self.track_finish(owner, gesture);
+        if self.tracks.running.as_ref().is_some_and(|r| r.job == job) {
+            self.tracks.running = None;
+        }
+        self.track_tell(owner, "track.state", state);
+    }
 }
 
 /// The phase a track ended in, and why.
@@ -681,6 +843,53 @@ fn ended(phase: &str, reason: Option<&str>, report: &Value) -> Value {
     out["phase"] = json!(phase);
     out["reason"] = json!(reason);
     out
+}
+
+/// Why a write of a track was refused, which ends it: the reason of the refusal, or
+/// `project_changed` where it gives none.
+fn reason_of(fault: &Fault) -> String {
+    fault
+        .data
+        .as_ref()
+        .and_then(|d| d["reason"].as_str())
+        .unwrap_or("project_changed")
+        .to_owned()
+}
+
+/// `track.state` of a track that told `report` as it ended: stopped for `stopped_by` (a write
+/// refused, the connection gone) or by Stop (`user_stop`); failed for `error`, which media
+/// that could not be opened (`unreadable`, its message) makes `cannot_read`; and done.
+fn end_of(
+    error: Option<&TrackError>,
+    stopped_by: Option<&str>,
+    user_stop: bool,
+    unreadable: Option<&str>,
+    report: &Value,
+) -> Value {
+    match (error, stopped_by) {
+        (_, Some(reason)) => ended("stopped", Some(reason), report),
+        (None, None) if user_stop => ended("stopped", Some("stop"), report),
+        (None, None) => ended("done", None, report),
+        (Some(TrackError::MissingFrame(_)), None) if user_stop => {
+            ended("stopped", Some("stop"), report)
+        }
+        (Some(error), None) => {
+            let reason = match error {
+                TrackError::NoFeatures | TrackError::EmptyRegion => "no_features",
+                TrackError::NoPoints => "no_points",
+                TrackError::MissingFrame(_) => "missing_frame",
+                _ => "failed",
+            };
+            let reason = if unreadable.is_some() {
+                "cannot_read"
+            } else {
+                reason
+            };
+            let mut v = ended("failed", Some(reason), report);
+            v["message"] = json!(unreadable.map_or_else(|| error.to_string(), str::to_owned));
+            v
+        }
+    }
 }
 
 #[allow(
@@ -769,14 +978,7 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
                             interval = commit_interval(bytes, held.elapsed());
                         }
                         Err(fault) => {
-                            stopped_by = Some(
-                                fault
-                                    .data
-                                    .as_ref()
-                                    .and_then(|d| d["reason"].as_str())
-                                    .unwrap_or("project_changed")
-                                    .to_owned(),
-                            );
+                            stopped_by = Some(reason_of(&fault));
                             stop.store(true, Ordering::Relaxed);
                         }
                     }
@@ -789,55 +991,20 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
     if stopped_by.is_none() && done > 0 && data != plan.data {
         match tell(&mut locked, &mut gesture, &data, reached, done, lost) {
             Ok((revision, _)) => written = Some(revision),
-            Err(fault) => {
-                stopped_by = Some(
-                    fault
-                        .data
-                        .as_ref()
-                        .and_then(|d| d["reason"].as_str())
-                        .unwrap_or("project_changed")
-                        .to_owned(),
-                );
-            }
+            Err(fault) => stopped_by = Some(reason_of(&fault)),
         }
     }
     let user_stop = stop.load(Ordering::Relaxed) && stopped_by.is_none();
     let report = json!({"job":plan.job,"frames":done,"lost":lost,"frame":reached,
         "revision":written.unwrap_or(locked.history.revision()),"tracked":data.tracked_range()});
-    let state_value = match (&outcome, &stopped_by) {
-        (_, Some(reason)) => ended("stopped", Some(reason), &report),
-        (Ok(_), None) if user_stop => ended("stopped", Some("stop"), &report),
-        (Ok(_), None) => ended("done", None, &report),
-        (Err(TrackError::MissingFrame(_)), None) if user_stop => {
-            ended("stopped", Some("stop"), &report)
-        }
-        (Err(error), None) => {
-            let reason = match error {
-                TrackError::NoFeatures | TrackError::EmptyRegion => "no_features",
-                TrackError::NoPoints => "no_points",
-                TrackError::MissingFrame(_) => "missing_frame",
-                _ => "failed",
-            };
-            let reason = if unreadable.is_some() {
-                "cannot_read"
-            } else {
-                reason
-            };
-            let mut v = ended("failed", Some(reason), &report);
-            v["message"] = json!(unreadable.clone().unwrap_or_else(|| error.to_string()));
-            v
-        }
-    };
-    locked.track_finish(plan.owner, gesture);
-    if locked
-        .tracks
-        .running
-        .as_ref()
-        .is_some_and(|r| r.job == plan.job)
-    {
-        locked.tracks.running = None;
-    }
-    locked.track_tell(plan.owner, "track.state", &state_value);
+    let state_value = end_of(
+        outcome.as_ref().err(),
+        stopped_by.as_deref(),
+        user_stop,
+        unreadable.as_deref(),
+        &report,
+    );
+    locked.track_end(plan.owner, &plan.job, gesture, &state_value);
 }
 
 #[allow(
@@ -854,41 +1021,52 @@ pub(super) async fn call(
 ) -> Result<Reply, Reply> {
     let result = match method {
         "track.start" => {
-            let request: Start = rpc::params(
-                method,
-                "{grade,node,window,revision,frame,direction,tracker?,components?}",
-                params,
-            )?;
+            let request: Request = rpc::params(method, START_TAKES, params)?;
+            let (revision, asked) = request.asked()?;
             let mut state = engine.state.lock().await;
             if state.tracks.running.is_some() {
                 return Err(refused("busy", "a track is going on").into());
             }
-            if request.revision != state.history.revision() {
-                return Err(
-                    super::stale_revision(request.revision, state.history.revision()).into(),
-                );
+            if revision != state.history.revision() {
+                return Err(super::stale_revision(revision, state.history.revision()).into());
             }
             state.tracks.next += 1;
             let job = format!("track-{}", state.tracks.next);
-            let plan = plan(
-                state.history.project(),
-                &request,
-                connection.id,
-                kind,
-                job.clone(),
-            )?;
-            let gesture = state.begin_owned_gesture(connection.id, request.revision)?;
+            let project = state.history.project();
+            let (answer, launch) = match asked {
+                Asked::Window(request) => {
+                    let plan = plan(project, &request, connection.id, kind, job.clone())?;
+                    let answer = json!({"job":job,"first":plan.first,"last":plan.last,
+                        "frame_size":plan.size,"direction":plan.track.direction});
+                    (answer, Launch::Window(Box::new(plan)))
+                }
+                Asked::Fusion(request) => {
+                    let plan = fusion::plan(project, &request, connection.id, kind, job.clone())?;
+                    let answer = json!({"job":job,"first":plan.first,"last":plan.last,
+                        "frame_size":plan.size,"direction":plan.direction,
+                        "trackers":plan.followed});
+                    (answer, Launch::Fusion(Box::new(plan)))
+                }
+            };
+            let gesture = state.begin_owned_gesture(connection.id, revision)?;
             let stop = Arc::new(AtomicBool::new(false));
             state.tracks.running = Some(Running {
                 job: job.clone(),
                 owner: connection.id,
                 stop: Arc::clone(&stop),
             });
-            let answer = json!({"job":job,"first":plan.first,"last":plan.last,
-                "frame_size":plan.size,"direction":plan.track.direction});
             drop(state);
             let shared = Arc::clone(&engine.state);
-            tokio::task::spawn_blocking(move || run(&shared, &plan, gesture, &stop));
+            match launch {
+                Launch::Window(plan) => {
+                    tokio::task::spawn_blocking(move || run(&shared, &plan, gesture, &stop));
+                }
+                Launch::Fusion(plan) => {
+                    tokio::task::spawn_blocking(move || {
+                        fusion::run(&shared, &plan, gesture, &stop);
+                    });
+                }
+            }
             answer
         }
         "track.stop" => {
@@ -1089,10 +1267,8 @@ mod tests {
     }
 
     fn start(window: &str) -> Start {
-        serde_json::from_value(
-            json!({"grade":clip(),"node":"n1","window":window,"revision":0,
-            "frame":12,"direction":"forward"}),
-        )
+        serde_json::from_value(json!({"grade":clip(),"node":"n1","window":window,
+            "frame":12,"direction":"forward"}))
         .unwrap()
     }
 

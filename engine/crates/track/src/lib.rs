@@ -19,6 +19,10 @@
 //!   zoom at least three (p. 3237): one gives a shift, two a shift and a rotation, three or more
 //!   a similarity, and with Perspective 3D on three an affine map and four a homography
 //!   ([`Model::for_points`]).
+//! - [`PatternTracker`] (the patterns of a Tracker of the Fusion page, Reference Manual 20,
+//!   pp. 1724–1759): each pattern followed on its own with a window of the size of its box, the
+//!   checks of the crosshairs, and its search area ([`pattern`]). It fits no motion: what the
+//!   paths of the patterns tell of one is [`matchmove`].
 //! - The motion is fitted as a homography with Perspective 3D and as a similarity without; the
 //!   boxes that are off then put their components back to no motion ([`Motion::masked`]).
 //! - [`run`] makes the commands of the palette (forward, reverse, forward and back, one frame
@@ -58,6 +62,7 @@ mod linalg;
 mod lk;
 pub mod matchmove;
 mod motion;
+pub mod pattern;
 mod point;
 mod region;
 mod run;
@@ -69,6 +74,7 @@ pub use fit::Model;
 pub use image::{Luma, Pyramid};
 pub use linalg::{Mat3, Point};
 pub use motion::{Component, Components, Motion};
+pub use pattern::{Pattern, PatternOptions, PatternTracker};
 pub use point::{PointOptions, PointStep, PointTracker};
 pub use region::Region;
 pub use run::{run, run_watching, Direction, Job, Report, Tracker};

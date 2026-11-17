@@ -1374,6 +1374,40 @@ class Engine:
             params["bins"] = bins
         return _statistics(await self._call("scopes.statistics", params))
 
+    async def thumbnail(
+        self, timeline: str, frame: int, *, clip: str | None = None, height: int | None = None
+    ) -> tuple[int, int, bytes]:
+        """Return a PNG of a frame of a timeline drawn off screen: its width, height and bytes.
+
+        The frame is drawn as an export draws it (graded, through the output transform, with its
+        layers and titles, no subtitles), or with ``clip`` that clip's layer alone, fitted to the
+        frame, by its own grades; in a headless engine too. The picture is opaque, of 8 bits,
+        ``height`` high (1 to 270, 90 unless given; no higher than the timeline) and as wide as
+        the timeline's aspect makes it (``PROTOCOL.md``, Thumbnails of the Color page).
+
+        Raises:
+            EngineError: The timeline is not there, the clip is not seen at the frame, or the
+                height is out of its range (``-32602``, with ``reason`` ``timeline``, ``clip`` or
+                ``height``), or the card could not draw it (``-32004``, ``draw``).
+        """
+        method = "timeline.thumbnail"
+        params: dict[str, Any] = {"timeline": timeline, "frame": frame}
+        if clip is not None:
+            params["clip"] = clip
+        if height is not None:
+            params["height"] = height
+        said = await self._call(method, params)
+        png = said.get("png")
+        if not isinstance(png, str):
+            raise _unexpected(method)
+        try:
+            data = base64.b64decode(png, validate=True)
+        except ValueError as error:
+            raise _unexpected(method) from error
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise _unexpected(method)
+        return _whole(said, "width"), _whole(said, "height"), data
+
     async def luts(self, folder: str | None = None) -> LutLibrary:
         """Return the folders that LUTs are looked for in, and the ``.cube`` files in them.
 

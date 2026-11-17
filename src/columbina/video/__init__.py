@@ -13,7 +13,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -23,7 +23,7 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video import audio, clip_keys, duck, fusion, grading
+from columbina.video import audio, clip_keys, duck, fusion, grading, look
 from columbina.video.editing import Editor, chosen_subtitles, receipt, safe_name, sidecars
 from columbina.video.edits import FusionKind
 from columbina.video.engine import (
@@ -66,6 +66,7 @@ _FAILURES = (
     grading.GradeError,
     clip_keys.KeysError,
     fusion.FusionError,
+    look.LookError,
     ProjectError,
     StoryError,
     WordsError,
@@ -570,6 +571,15 @@ class _FusionTrack(_Graded):
 _FUSION = (_FusionInfo, _FusionNode, _FusionKeys, _FusionTrack)
 
 
+class _Look(_Graded):
+    frames: list[int] = Field(
+        default_factory=list[int], max_length=look.MOST_FRAMES, description="Timeline frames."
+    )
+    clip: str | None = Field(default=None, description="Clip id, of a video track.")
+    alone: bool = False
+    height: int = Field(default=look.HIGHEST, ge=look.LOWEST, le=look.HIGHEST)
+
+
 async def _fused(args: _Project, engine: Engine) -> dict[str, Any]:
     """Do what a tool of compositions asks."""
     if isinstance(args, _FusionInfo):
@@ -925,10 +935,19 @@ def _failing(error: Exception) -> ToolFailure:
     return ToolFailure(str(error), code=f"VIDEO_{reason.upper()}")
 
 
-def tools_of(videos: Videos) -> list[Tool[Any, str]]:
-    """Tools phrased in editing terms, with the engine as the only project writer."""
+def _text(args: _Project, said: str | look.Looked) -> str:
+    """What the model reads of a result: the receipt, or the one beside the pictures."""
+    return said if isinstance(said, str) else said.text
 
-    async def execute(args: _Project, run: ToolRun, tool: str) -> str:
+
+def tools_of(videos: Videos) -> list[Tool[Any, str | look.Looked]]:
+    """Tools phrased in editing terms, with the engine as the only project writer.
+
+    A tool gives back a receipt, which the model reads; ``video_look`` gives pictures beside its
+    receipt (:class:`columbina.video.look.Looked`), which a model that takes pictures is shown.
+    """
+
+    async def execute(args: _Project, run: ToolRun, tool: str) -> str | look.Looked:
         try:
             # Check external paths before connecting to or changing the project.
             paths = (
@@ -1079,6 +1098,23 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                         failure = _failing(error)
                         raise ToolFailure(f"{failure}; {hint}", code=failure.code) from None
 
+                if isinstance(args, _Look):
+                    try:
+                        return await look.look(
+                            editor.engine,
+                            args.timeline,
+                            frames=args.frames,
+                            clip=args.clip,
+                            alone=args.alone,
+                            height=args.height,
+                        )
+                    except EngineError as error:
+                        hint = look.hint_of(error)
+                        if hint is None:
+                            raise
+                        failure = _failing(error)
+                        raise ToolFailure(f"{failure}; {hint}", code=failure.code) from None
+
                 def readable(path: str) -> Path | None:
                     try:
                         return videos.checked(run, tool, path, "read")
@@ -1114,14 +1150,15 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         *,
         effect: Literal["read", "write"] = "write",
         long: bool = False,
-    ) -> Tool[Any, str]:
-        async def called(args: _Project, run: ToolRun) -> str:
+    ) -> Tool[Any, str | look.Looked]:
+        async def called(args: _Project, run: ToolRun) -> str | look.Looked:
             said = await execute(args, run, name)
             directory = await asyncio.to_thread((run.cwd / args.project).resolve)
             if reports := videos.migrations(directory):
-                result = json.loads(said)
+                result = json.loads(_text(args, said))
                 result["migrations"] = reports
-                return json.dumps(result, ensure_ascii=False)
+                merged = json.dumps(result, ensure_ascii=False)
+                return merged if isinstance(said, str) else replace(said, text=merged)
             return said
 
         return Tool(
@@ -1129,6 +1166,7 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             parameters=parameters,
             description=description,
             execute=called,
+            render=_text,
             effect=effect,
             target=lambda args, run: args.project,
             timeout_seconds=_LONG_SECONDS if long else 30,
@@ -1340,6 +1378,7 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         tool("video_fusion_node", _FusionNode, _FUSION_NODE),
         tool("video_fusion_keys", _FusionKeys, _FUSION_KEYS),
         tool("video_fusion_track", _FusionTrack, _FUSION_TRACK, long=True),
+        tool("video_look", _Look, _LOOK, effect="read"),
     ]
 
 
@@ -1548,6 +1587,16 @@ _FUSION_TRACK = (
     '{"trackers.+": {"pattern": {"x": 0.4, "y": 0.6}}}, shares of the picture from its lower '
     "left, on a feature with texture. Then operation match_move with merge bg_only stabilizes, "
     "and a mask's center.follow follows a pattern."
+)
+
+_LOOK = (
+    "Look at frames of the timeline as pictures, to check what you changed: a grade, a "
+    "composition, a title, a crop or a transform. Each frame is drawn off screen as an export "
+    "draws it: graded, through the output transform, with every layer, title and composition "
+    "(no subtitles). frames: 1 to 4 timeline frames, shown in order. clip: its middle frame, or "
+    "with frames, frames of it; alone (with clip): that clip's layer alone, by its own grades. "
+    "height: lines of each picture. Where numbers are needed, video_grade_scopes measures a "
+    "frame."
 )
 
 VIDEOS = ServiceKey[Videos]("videos")

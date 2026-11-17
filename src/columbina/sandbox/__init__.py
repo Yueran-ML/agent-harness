@@ -229,6 +229,7 @@ def _studio_file(access: Access) -> bool:
         "video_fusion_node",
         "video_fusion_keys",
         "video_fusion_track",
+        "video_look",
     }:
         return True
     return (

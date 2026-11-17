@@ -67,12 +67,15 @@ It imports nothing of Columbina.
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import copy
 import json
 import os
+import struct
 import sys
 import time
+import zlib
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -277,7 +280,8 @@ class Fake:
             that it starts from, in widths of the picture.
         track_lost: The frame of the clip's keys at which a pattern is lost, by its place.
         rendered: What each ``render.start`` was asked, in order.
-        looked: What each ``scopes.statistics`` and ``luts.list`` was asked, in order.
+        looked: What each ``scopes.statistics``, ``timeline.thumbnail`` and ``luts.list`` was
+            asked, in order.
         transactions: The operations and edits of every ``transaction.apply``, as they were sent.
         gestures: The ``gesture`` of every ``transaction.apply``, or ``None``, in order.
         measure: What ``scopes.statistics`` of a frame drawn off screen answers, from its
@@ -622,6 +626,39 @@ class Fake:
             "percentiles": {name: {"1": grey, "50": grey, "99": grey} for name in names},
             "histogram": {"bins": bins, **dict.fromkeys(names, counts)},
         }
+
+    def timeline_thumbnail(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """A frame of a timeline as an opaque PNG, every pixel the grey of its number (mod 256).
+
+        It is ``height`` high (90 unless asked, no higher than the timeline) and as wide as the
+        timeline's aspect makes it; with ``clip``, only of a clip that is on and covers the frame.
+        Refused as the engine refuses it.
+        """
+        self.looked.append(("timeline.thumbnail", copy.deepcopy(params)))
+        named, frame = params.get("timeline"), params.get("frame")
+        timeline = next((one for one in self.project["timelines"] if one["id"] == named), None)
+        if timeline is None:
+            raise RefusedError(-32602, f"there is no timeline {named}", {"reason": "timeline"})
+        height = params.get("height", 90)
+        if type(height) is not int or not 1 <= height <= 270:
+            message = f"a thumbnail is from 1 to 270 pixels high, not {height}"
+            raise RefusedError(-32602, message, {"reason": "height"})
+        if type(frame) is not int:
+            raise RefusedError(-32602, "timeline.thumbnail takes a frame", {"reason": "params"})
+        clip = params.get("clip")
+        if clip is not None and not any(
+            one["id"] == clip
+            and one.get("enabled", True)
+            and one["start"] <= frame < one["start"] + one["length"]
+            for track in timeline["tracks"]
+            for one in track.get("clips", [])
+        ):
+            message = f"clip {clip} is not seen at frame {frame} of the timeline"
+            raise RefusedError(-32602, message, {"reason": "clip"})
+        high = min(height, timeline["height"])
+        wide = max(round(timeline["width"] * high / timeline["height"]), 1)
+        png = base64.b64encode(png_of_grey(wide, high, frame % 256)).decode()
+        return {"width": wide, "height": high, "png": png, "frame": frame}
 
     def luts_list(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         """One LUT in the folder of the project, and a library that is not there."""
@@ -1889,6 +1926,25 @@ def frame_of(pixels: list[tuple[float, float, float]], bins: int) -> dict[str, A
         },
         "histogram": {"bins": bins, **counts},
     }
+
+
+def png_of_grey(width: int, height: int, level: int) -> bytes:
+    """An opaque PNG of R'G'B' of 8 bits, every pixel the grey ``level``, as a thumbnail is."""
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        crc = zlib.crc32(kind + body) & 0xFFFFFFFF
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", crc)
+
+    row = b"\x00" + bytes([level]) * (width * 3)
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"".join(
+        (
+            b"\x89PNG\r\n\x1a\n",
+            chunk(b"IHDR", header),
+            chunk(b"IDAT", zlib.compress(row * height)),
+            chunk(b"IEND", b""),
+        )
+    )
 
 
 def _same_project(one: dict[str, Any], other: dict[str, Any]) -> bool:

@@ -579,13 +579,22 @@ export type TrackEdit =
   | { kind: 'add_key' | 'delete_key'; frame: number }
   | { kind: 'crosshairs'; points: [number, number][] }
   | { kind: 'paste'; from: string };
-export interface TrackStarted { job: string; first: number; last: number; frame_size: [number, number]; direction: TrackDirection }
-/** `track.progress`, to the connection that started the track. */
-export interface TrackProgress { job: string; frame: number; timeline_frame: number | null; done: number; total: number; lost: number; revision: number }
-/** `track.state`: how a track ended. */
+/** The answer of `track.start`; a track of the patterns of a Tracker adds the places of the patterns that it follows (`trackers`). */
+export interface TrackStarted { job: string; first: number; last: number; frame_size: [number, number]; direction: TrackDirection; trackers?: number[] }
+/**
+ * `track.progress`, to the connection that started the track. A track of the patterns of a Tracker adds `following`, the places of
+ * the patterns still followed, and its `lost` counts the patterns lost so far.
+ */
+export interface TrackProgress {
+  job: string; frame: number; timeline_frame: number | null; done: number; total: number; lost: number; revision: number;
+  following?: number[];
+}
+/** How one pattern of a Tracker was tracked: its place, at how many frames it was found, and the frames of the keys where it was lost. */
+export interface TrackedPattern { tracker: number; frames: number; lost: number[] }
+/** `track.state`: how a track ended; that of the patterns of a Tracker says how each pattern was tracked (`trackers`). */
 export interface TrackEnded {
   job: string; phase: 'done' | 'stopped' | 'failed'; reason: string | null; frames: number; lost: number; frame: number;
-  revision: number; tracked: [number, number] | null; message?: string;
+  revision: number; tracked: [number, number] | null; message?: string; trackers?: TrackedPattern[];
 }
 export interface Corrector {
   primaries: Primaries; log: LogWheels; curves: Curves; hsl: HslCurves; lut: string | null; soft_clip: SoftClip;

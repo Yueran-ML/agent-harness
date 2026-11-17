@@ -1,20 +1,13 @@
 import { useCallback, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useWords } from '../../app/locale';
-import { callEngine, type PowerWindow, type TrackComponents, type TrackDirection, type TrackEdit } from '../engine';
+import { callEngine, type PowerWindow, type TrackComponents, type TrackEdit } from '../engine';
+import { TrackButtons } from './TrackButtons';
 import { GRAPH_COLUMNS, GRAPH_CURVES, graph, keyAt, selected as selectedCurves, withCrosshair, withoutCrosshair, type Selection } from './tracker';
 import type { EditedNode } from './useNodeEdit';
 import type { Tracking } from './useTracking';
 import './tracker.css';
 
 const VIEW = { width: GRAPH_COLUMNS, height: 120 };
-const BUTTONS: readonly { direction: TrackDirection | 'stop'; glyph: string; word: 'trackOneReverse' | 'trackReverse' | 'stop' | 'trackForward' | 'trackForwardBack' | 'trackOneForward' }[] = [
-  { direction: 'one_reverse', glyph: '◀|', word: 'trackOneReverse' },
-  { direction: 'reverse', glyph: '◀', word: 'trackReverse' },
-  { direction: 'stop', glyph: '■', word: 'stop' },
-  { direction: 'forward', glyph: '▶', word: 'trackForward' },
-  { direction: 'forward_and_back', glyph: '◀▶', word: 'trackForwardBack' },
-  { direction: 'one_forward', glyph: '|▶', word: 'trackOneForward' },
-];
 const BOXES: readonly (keyof TrackComponents)[] = ['pan', 'tilt', 'zoom', 'rotate', 'perspective'];
 
 /** The window last copied (Copy Track Data, p. 3233), kept while the page is open: pasted within its node. */
@@ -99,12 +92,7 @@ export function TrackerPalette({ edited, window: id, run }: {
           <span style={{ color: GRAPH_CURVES.find(curve => curve.box === each)?.color }}>{said[each]}</span>
         </label>)}
       </div>
-      <div className="tracker-analyze" role="group" aria-label={said.analyze}>
-        {BUTTONS.map(each => <button key={each.direction} type="button" className="icon-btn" data-test={`tracker-${each.direction}`}
-          aria-label={said[each.word]} title={said[each.word]}
-          disabled={each.direction === 'stop' ? running === null : running !== null}
-          onClick={() => (each.direction === 'stop' ? stop() : start(each.direction))}>{each.glyph}</button>)}
-      </div>
+      <TrackButtons running={running !== null} onStart={start} onStop={stop} />
       <div className="tracker-mode" role="group" aria-label={said.mode}>
         {(['clip', 'frame'] as const).map(each => <button key={each} type="button" aria-pressed={mode === each} data-test={`tracker-mode-${each}`}
           onClick={() => { if (mode !== each) edit({ kind: 'mode', mode: each }); }}>{said[each]}</button>)}

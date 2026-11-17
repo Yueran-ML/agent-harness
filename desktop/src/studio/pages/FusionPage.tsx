@@ -13,6 +13,7 @@ import { FusionNodeEditor, NO_SELECTION, type FusionSelection } from '../fusion/
 import { shownComposition, type FusionAt } from '../fusion/edits';
 import { namesOf } from '../fusion/graph';
 import { useFusionOnscreen } from '../fusion/useFusionOnscreen';
+import { useFusionTracking } from '../fusion/useFusionTracking';
 import { useFusionView } from '../fusion/useFusionView';
 import { refusalText } from '../inspector/refusal';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
@@ -87,7 +88,9 @@ interface Props {
  * and so does a node that is taken away. The page left, the monitor shows the timeline again. Over
  * the picture the node that is chosen has its on-screen controls, where its kind has any: the
  * outline and the handles of a mask, the centre of a Merge or a Transform, and the patterns of a
- * Tracker with their paths, dragged on the picture (`useFusionOnscreen`).
+ * Tracker with their paths, dragged on the picture (`useFusionOnscreen`). A Tracker chosen tracks its patterns from the
+ * playhead, by the buttons of its Inspector and the keys of the Tracker menu of the Color page (`useFusionTracking`); the track
+ * is stopped as another clip or node is chosen and as the page is left.
  *
  * The clip is the one at the playhead on the topmost enabled video track, or the one clip of
  * picture chosen on the Edit page (`fusionClip`); the bar names it, and goes to the clip before and
@@ -183,10 +186,21 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
   // The Fusion view as the monitor tells it: on while the page is shown and has a clip, and off again as the page is left.
   const told = timelineState?.monitor === 'timeline' && typeof timelineState.fusion === 'object' && timelineState.fusion !== null ? timelineState.fusion : null;
   useFusionView({ bridge, session, on: native && timelineState !== null && timelineMonitor.loaded, clip: clipId, node: viewed, told: told?.clip ?? null, onNodeGone: toOutput });
+  // The tracking of the patterns of the Tracker chosen, from the playhead: the clip tracked is pinned, so that it stays the one
+  // shown as the track takes the playhead over a clip on a track above; the viewer follows the frames that the track reaches.
+  const pinTracked = useCallback((id: string) => { pinnedAt.current = null; setPin(id); }, []);
+  const seekTo = useCallback((to: number) => seek(to, false), [seek]);
+  const tracking = useFusionTracking({
+    bridge, session, revision, timeline: selected, clip, media, node, frame, locked, keys: area === 'nodes' || area === 'inspector', onSeek: seekTo,
+    onStarted: pinTracked,
+  });
+  // While the Tracker chosen is tracked nothing of it is changed: a change of the project would stop the track.
+  const tracked = tracking.running && node?.kind === 'tracker' && (tracking.node === null || tracking.node === node.id);
   // The controls of the node that is chosen, over the picture of the composition of this clip, where the monitor shows it.
   const viewerPressed = useCallback(() => setArea('viewer'), []);
   useFusionOnscreen({
-    bridge, session, revision, native, timeline: selected, clip, media, composition, node, frame: frame ?? 0, view: told !== null && told.clip === clipId ? told : null, locked,
+    bridge, session, revision, native, timeline: selected, clip, media, composition, node, frame: frame ?? 0, view: told !== null && told.clip === clipId ? told : null,
+    locked: locked || tracked,
     onPress: viewerPressed,
     onFailure: (failure) => { if (!isEmpty(failure)) editing.setProblem(refusalText(failure, now.current.words.hint.studio)); },
   });
@@ -264,7 +278,7 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
       <h2 className="overline">{words.label.studio.editPage.inspector}</h2>
       {selected !== null && clip !== null
         ? <FusionInspector key={`${clip.id}/${node?.id ?? ''}`} bridge={bridge} session={session} revision={revision} timeline={selected} clip={clip} media={media}
-          node={node} name={node ? names.get(node.id) ?? node.id : ''} frame={frame ?? 0} onSeek={seek} locked={locked} />
+          node={node} name={node ? names.get(node.id) ?? node.id : ''} frame={frame ?? 0} onSeek={seek} locked={locked} tracking={tracking} />
         : <p className="caption" data-test="fusion-inspector-empty">{empty}</p>}
     </aside>
   </div>;

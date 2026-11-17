@@ -1881,6 +1881,29 @@ export const en = {
         keyerThreshold: 'The low threshold cannot be above the high threshold.',
         /** A Tracker that has no patterns to place on the picture. */
         noTrackers: 'There are no trackers in this node yet. Add Tracker puts one in the middle of the picture.',
+        /**
+         * The tracking of the patterns of a Tracker: the frame of the timeline reached (`{timecode}`), how many frames of how many
+         * are done and how many patterns were lost; how it ended, with where each pattern (`{name}`) was lost; and why the
+         * engine would not track, by its reason.
+         */
+        track: {
+          tracking: 'Tracking {timecode}: frame {done} of {total}. Patterns lost: {lost}.',
+          done: 'Frames tracked: {frames}.',
+          lostAt: '{name} was lost at {timecode}.',
+          stopped: 'Tracking stopped. The frames already tracked are kept.',
+          changed: 'Tracking stopped because the project changed. The frames already tracked are kept.',
+          failed: {
+            missing_frame: 'A frame could not be read. The frames already tracked are kept.',
+            cannot_read: 'The media of this clip could not be read.',
+            untrackable: 'A title, a color or a still has no frames to track.',
+            frame: 'The playhead is outside the clip. Move it onto the clip to track from there.',
+            busy: 'Another track is running. Try again when it has ended.',
+            no_trackers: 'There is no pattern to track. Enable a pattern or add one.',
+            stale_revision: 'The project changed. Try again.',
+            target: 'This Tracker is no longer in the composition of the clip.',
+            other: 'Tracking failed.',
+          },
+        },
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

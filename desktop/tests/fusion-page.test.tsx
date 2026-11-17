@@ -116,6 +116,8 @@ function fakeEngine(given: Project) {
   let project = given;
   let revision = 0;
   let refusal: Record<string, unknown> | null = null;
+  // What `track.start` answers: a job at once, as the real engine answers (the track itself is told by `news`).
+  let trackAnswer: unknown = { ok: true, result: { job: 'track-1', first: 20, last: 119, frame_size: [256, 144], direction: 'forward', trackers: [0, 1] } };
   const listeners = new Set<(event: EngineEvent) => void>();
   const tell = (method: string, params: unknown) => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));
   let state: TransportState = { monitor: 'timeline', timeline: null, frame: null, shown: null, last: null, speed: 1, playing: false, proxies: true, exact: true, sound: 'off', source: null, late: 0 };
@@ -158,6 +160,7 @@ function fakeEngine(given: Project) {
         return { ok: true, result: { done, names: {}, revision, next_id: project.next_id, clamped: [] } };
       }
       if (method === 'history.undo' || method === 'history.redo') return { ok: true, result: { revision, done: null } };
+      if (method === 'track.start') return trackAnswer;
       return { ok: true, result: {} };
     }),
     importFiles: vi.fn(async () => ({ ok: true, result: null })), viewRect: vi.fn(async () => {}), viewShow: vi.fn(async () => {}), close: vi.fn(async () => {}),
@@ -174,6 +177,10 @@ function fakeEngine(given: Project) {
       tell('project.changed', { revision, made_by: 'agent', by: 'agent', next_id: project.next_id, done: ops });
     }),
     notify: (fields: Record<string, unknown>) => act(() => { state = { ...state, ...fields } as TransportState; tell('transport.state', state); }),
+    /** What `track.start` answers from now on. */
+    answerTrack: (answer: unknown) => { trackAnswer = answer; },
+    /** The engine tells the page a notification of its own, as of a track (`track.progress`, `track.state`). */
+    news: (method: string, params: unknown) => act(() => { tell(method, params); }),
   };
 }
 const tab = (name: string) => screen.getByRole('tab', { name });
@@ -2019,6 +2026,148 @@ describe('a Tracker on the Fusion page', () => {
     expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n7']);
     expect((paramsIn(project(), 'n7') as FusionRectangle).center).toStrictEqual({ x: 0.5, y: 0.5 });
     expect(problem()).toBeNull();
+  });
+});
+
+// The tracking of the patterns of a Tracker (PROTOCOL.md, "The patterns of a Tracker"), driven as the Color page drives a window's.
+describe('tracking the patterns of a Tracker on the Fusion page', () => {
+  const track = en.hint.studio.fusionPage.track;
+  const button = (name: string) => marked(`tracker-${name}`) as HTMLButtonElement;
+  const status = () => marked('fusion-track-status')?.textContent ?? null;
+  const offs = () => [
+    (marked('add-pattern') as HTMLButtonElement).disabled,
+    inspector().querySelector<HTMLInputElement>('[data-test="pattern-enabled"]')!.disabled,
+    box('pattern.x').disabled,
+    (marked('clear-path') as HTMLButtonElement).disabled,
+  ];
+  /** The fusion target of a track of the Tracker n6 of the clip c1, at the revision of the project. */
+  const target = { fusion: { timeline: 't1', clip: 'c1', node: 'n6' }, revision: expect.any(Number) };
+  /** How a track ended, as the engine tells it. */
+  const ended = (job: string, phase: string, reason: string | null, trackers: unknown[] = []) => ({
+    job, phase, reason, frames: 5, lost: 0, frame: 55, revision: 4, tracked: [50, 55], trackers,
+  });
+  /**
+   * The studio on the composition of `trackerComp`, its clip c1 cut from picture 20 of its media: the playhead at frame 30 of the
+   * timeline, which is frame 50 of the keys, and the Tracker chosen.
+   */
+  const tracking = async () => {
+    const engine = await mount(projectOf([trackerTimeline(trackerComp())]));
+    await engine.notify({ frame: 30, shown: 30 });
+    press(card('n6'), T.n6);
+    return engine;
+  };
+
+  it('tracks the enabled patterns from the frame of the keys at the playhead, follows it in the viewer, and stops with Stop', async () => {
+    const { bridge, news } = await tracking();
+    // The buttons in the order of Fusion's, and Track Forward and Back; Stop off while nothing goes on.
+    expect([...marked('fusion-track')!.querySelectorAll<HTMLButtonElement>('button')].map(each => [each.getAttribute('aria-label'), each.disabled])).toEqual([
+      ['Track Reverse', false], ['Track One Frame Reverse', false], ['Stop Tracking', true], ['Track One Frame Forward', false], ['Track Forward', false],
+      ['Track Forward and Back', false],
+    ]);
+    expect(offs()).toEqual([false, false, false, false]);
+    fireEvent.click(button('forward')); await settle();
+    // Every enabled pattern (no `trackers`), from frame 50 of the keys, which the playhead at frame 30 of the timeline shows.
+    expect(calls(bridge, 'track.start')).toEqual([{ ...target, frame: 50, direction: 'forward' }]);
+    // While it goes, Stop alone is on, and nothing of the Tracker is changed.
+    expect([button('forward').disabled, button('reverse').disabled, button('one_forward').disabled, button('stop').disabled]).toEqual([true, true, true, false]);
+    expect(offs()).toEqual([true, true, true, true]);
+    // The frame reached is shown in the viewer, and said with the patterns lost so far.
+    await news('track.progress', { job: 'track-1', frame: 55, timeline_frame: 35, done: 5, total: 70, lost: 1, revision: 3, following: [0] });
+    await settle();
+    expect(calls(bridge, 'transport.seek').at(-1)).toEqual({ monitor: 'timeline', frame: 35, scrubbing: false });
+    expect(status()).toBe('Tracking 00:00:01:10: frame 5 of 70. Patterns lost: 1.');
+    expect(marked('fusion-clip-name')!.dataset.clip).toBe('c1');
+    // The news of another job is not this one's.
+    await news('track.progress', { job: 'track-9', frame: 90, timeline_frame: 70, done: 1, total: 2, lost: 0, revision: 3, following: [] });
+    await news('track.state', ended('track-9', 'done', null));
+    expect([button('stop').disabled, status()]).toEqual([false, 'Tracking 00:00:01:10: frame 5 of 70. Patterns lost: 1.']);
+    fireEvent.click(button('stop')); await settle();
+    expect(calls(bridge, 'track.stop')).toEqual([{ job: 'track-1' }]);
+    // How it ended, and where each pattern was lost, at the frame of the timeline that shows frame 53 of the keys.
+    await news('track.state', ended('track-1', 'stopped', 'stop', [{ tracker: 0, frames: 5, lost: [] }, { tracker: 1, frames: 3, lost: [53] }]));
+    expect(status()).toBe(`${track.stopped} Tracker 2 was lost at 00:00:01:08.`);
+    expect([button('forward').disabled, button('stop').disabled]).toEqual([false, true]);
+    expect(offs()).toEqual([false, false, false, false]);
+    // Each other button tracks its own way.
+    for (const direction of ['reverse', 'one_reverse', 'one_forward', 'forward_and_back']) {
+      fireEvent.click(button(direction)); await settle();
+      await news('track.state', ended('track-1', 'done', null));
+    }
+    expect(calls(bridge, 'track.start').map(each => (each as { direction: string }).direction)).toEqual(['forward', 'reverse', 'one_reverse', 'one_forward', 'forward_and_back']);
+    expect(status()).toBe(track.done.replace('{frames}', '5'));
+    expect(marked('fusion-inspector-problem')).toBeNull();
+  });
+
+  it('says why the engine would not track, and tracks nothing then', async () => {
+    const { bridge, answerTrack, news } = await tracking();
+    for (const reason of ['untrackable', 'busy', 'no_trackers', 'stale_revision', 'frame', 'target'] as const) {
+      answerTrack({ ok: false, error: { code: -32001, message: 'refused', data: { reason } } });
+      fireEvent.click(button('forward')); await settle();
+      expect([status(), button('forward').disabled, button('stop').disabled]).toEqual([track.failed[reason], false, true]);
+    }
+    expect(calls(bridge, 'track.start')).toHaveLength(6);
+    expect(calls(bridge, 'track.stop')).toEqual([]);
+    // A track that the engine could not finish says why too.
+    answerTrack({ ok: true, result: { job: 'track-2', first: 20, last: 119, frame_size: [256, 144], direction: 'forward', trackers: [0, 1] } });
+    fireEvent.click(button('forward')); await settle();
+    expect(button('stop').disabled).toBe(false);
+    await news('track.state', { ...ended('track-2', 'failed', 'cannot_read'), message: 'no decoder', tracked: null });
+    expect([status(), button('forward').disabled, button('stop').disabled]).toEqual([track.failed.cannot_read, false, true]);
+  });
+
+  it('takes the keys of the Tracker menu of the Color page while a Tracker is chosen', async () => {
+    const { bridge, news } = await tracking();
+    const directions = () => calls(bridge, 'track.start').map(each => (each as { direction: string }).direction);
+    key('t', { code: 'KeyT', altKey: true }); await settle();
+    expect(directions()).toEqual(['reverse']);
+    key('t', { code: 'KeyT', ctrlKey: true, altKey: true }); await settle();
+    expect(calls(bridge, 'track.stop')).toEqual([{ job: 'track-1' }]);
+    await news('track.state', ended('track-1', 'stopped', 'stop'));
+    expect(status()).toBe(track.stopped);
+    key('ArrowRight', { altKey: true }); await settle();
+    await news('track.state', ended('track-1', 'done', null));
+    key('ArrowLeft', { altKey: true }); await settle();
+    await news('track.state', ended('track-1', 'done', null));
+    key('t', { code: 'KeyT', ctrlKey: true }); await settle();
+    await news('track.state', ended('track-1', 'done', null));
+    expect(directions()).toEqual(['reverse', 'one_forward', 'one_reverse', 'forward']);
+    // With no track going on Stop is no key of the page; with a node of another kind chosen, nothing is tracked.
+    const stop = new KeyboardEvent('keydown', { key: 't', code: 'KeyT', ctrlKey: true, altKey: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(stop);
+    press(card('n7'), T.n7);
+    const forward = new KeyboardEvent('keydown', { key: 't', code: 'KeyT', ctrlKey: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(forward);
+    await settle();
+    expect([stop.defaultPrevented, forward.defaultPrevented, directions().length, calls(bridge, 'track.stop').length]).toEqual([false, false, 4, 1]);
+  });
+
+  it('stops the track as another node is chosen and as the page is left', async () => {
+    const { bridge, news } = await tracking();
+    fireEvent.click(button('forward')); await settle();
+    press(card('n7'), T.n7); await settle();
+    expect(calls(bridge, 'track.stop')).toEqual([{ job: 'track-1' }]);
+    expect(marked('fusion-track')).toBeNull();
+    await news('track.state', ended('track-1', 'stopped', 'stop'));
+    // The Tracker chosen again says how its track ended.
+    press(card('n6'), T.n6);
+    expect(status()).toBe(track.stopped);
+    fireEvent.click(button('forward')); await settle();
+    expect(button('stop').disabled).toBe(false);
+    await open('Edit');
+    expect(calls(bridge, 'track.stop')).toEqual([{ job: 'track-1' }, { job: 'track-1' }]);
+  });
+
+  it('takes over a track of the patterns of a Tracker that it did not start, and not a track of a window', async () => {
+    const { bridge, news } = await tracking();
+    await news('track.progress', { job: 'track-5', frame: 12, timeline_frame: 40, done: 1, total: 9, lost: 0, revision: 2 });
+    expect([button('stop').disabled, status()]).toEqual([true, null]);
+    await news('track.progress', { job: 'track-6', frame: 60, timeline_frame: 40, done: 2, total: 9, lost: 0, revision: 2, following: [0, 1] });
+    expect([button('stop').disabled, button('forward').disabled, (marked('add-pattern') as HTMLButtonElement).disabled]).toEqual([false, true, true]);
+    expect(status()).toBe('Tracking 00:00:01:15: frame 2 of 9. Patterns lost: 0.');
+    fireEvent.click(button('stop')); await settle();
+    expect(calls(bridge, 'track.stop')).toEqual([{ job: 'track-6' }]);
+    await news('track.state', ended('track-6', 'stopped', 'stale_revision'));
+    expect([status(), button('forward').disabled]).toEqual([track.changed, false]);
   });
 });
 

@@ -483,6 +483,27 @@
   padding-left: var(--s1);
 }
 
+/*
+ * The buttons that track the patterns of a Tracker, on one line that wraps where the Inspector is narrow, and what the track
+ * says under them: the frame reached, how it ended, or why it did not start.
+ */
+.fusion-page .fusion-track {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0 0 var(--s2);
+}
+
+.fusion-page .fusion-track .tracker-analyze {
+  gap: 2px;
+}
+
+.fusion-page .fusion-track-status {
+  margin: 0;
+  color: var(--moon-2);
+  overflow-wrap: anywhere;
+}
+
 /* Connect To of a centre: the button says what it follows, and the line under it says so while it does. */
 .fusion-connect-button {
   min-width: 0;

@@ -5,6 +5,7 @@ import type { EngineBridge } from '../../bridge';
 import type { Menu, MenuItem } from '../color/ColorMenu';
 import { CoveringMenu } from '../color/CoveringMenu';
 import { COMPOSITES } from '../color/nodeEdits';
+import { TrackButtons, type TrackButton } from '../color/TrackButtons';
 import {
   EngineError, type Clip, type Composite, type Composition, type FusionBlurFilter, type FusionFillMethod, type FusionFollow, type FusionKeyerReplace,
   type FusionKeyerSpill, type FusionKeyerView, type FusionMaskCommon, type FusionNode, type FusionPaintMode, type FusionTrackerMerge, type FusionTrackerOperation,
@@ -30,6 +31,7 @@ import {
   addPattern, clearPath, enablePattern, followChoices, followName, pathSamples, PATTERN_FIELDS, patternName, patternValue, removePattern, renamePattern,
   setPatternValue, setTracker, TRACKER_PLACE, type PatternField,
 } from './tracker';
+import type { FusionTracking } from './useFusionTracking';
 
 /** How a setting is written and dragged: its decimals, how much a pixel of dragging changes it, its unit, and the range of its slider, where it has one. */
 interface Shape { digits: number; scrub: number; unit?: string; slider?: { min: number; max: number; step: number } }
@@ -47,6 +49,12 @@ const SPILLS: readonly FusionKeyerSpill[] = ['none', 'rare', 'medium', 'well_don
 const OPERATIONS: readonly FusionTrackerOperation[] = ['none', 'match_move'];
 const TRACKER_MERGES: readonly FusionTrackerMerge[] = ['bg_only', 'fg_only', 'fg_over_bg', 'bg_over_fg'];
 const PIVOTS: readonly FusionTrackerPivot[] = ['tracker_average', 'selected_tracker', 'manual'];
+/**
+ * The buttons that track the patterns of a Tracker, in the order of Fusion's (Track Reverse, one frame reverse, Stop, one frame
+ * forward, Track Forward), and Track Forward and Back, which the Tracker palette of the Color page has too. Each tracks from the
+ * playhead.
+ */
+const TRACK_BUTTONS: readonly TrackButton[] = ['reverse', 'one_reverse', 'stop', 'one_forward', 'forward', 'forward_and_back'];
 /** The switches of the nodes, which take no keys: each a field of the `params` of its node. */
 type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy' | 'whole_cells_only' | 'garbage_invert' | 'position' | 'rotation' | 'scaling';
 
@@ -142,7 +150,9 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  *   colour is not picked in the viewer yet, though the viewer can show the picture that comes into
  *   the keyer (the node before it, viewed);
  * - a Tracker (Reference Manual 20, pp. 2773–2784; PROTOCOL.md, "The Tracker"), in two sections,
- *   which are the tabs of Fusion's: Trackers, the list of its patterns, each with its switch, its
+ *   which are the tabs of Fusion's: Trackers, the buttons that track its enabled patterns from the
+ *   playhead with what the track says (`useFusionTracking`; while it goes none of the settings of
+ *   the Tracker is changed), the list of its patterns, each with its switch, its
  *   name, how many frames its path has and which frames of the timeline it reaches from and to, and
  *   a button that takes it away; Add Tracker (a pattern in the middle of the picture, at most 16);
  *   and of the pattern chosen in the list its name, where it was put, how large it and its search
@@ -176,7 +186,7 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * that changes something is off, and the Inspector says why. The buttons that go to the key before
  * and after stay, since they move the playhead alone.
  */
-export function FusionInspector({ bridge, session, revision, timeline, clip, media, node, name, frame, onSeek, locked = false }: {
+export function FusionInspector({ bridge, session, revision, timeline, clip, media, node, name, frame, onSeek, locked: onLockedTrack = false, tracking }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline;
   /** The clip whose composition the node is of. */
   clip: Clip;
@@ -190,7 +200,14 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   onSeek: (frame: number, scrubbing: boolean) => void;
   /** Whether the clip lies on a locked track: its settings are shown, and none is changed. */
   locked?: boolean;
+  /** The tracking of the patterns of a Tracker, the page's: its buttons, what it says, and the track going on. */
+  tracking?: FusionTracking;
 }) {
+  // A Tracker whose patterns are tracked is changed by the track alone, which any other change of the project would stop: its
+  // settings are shown, and none is changed, as on a locked track.
+  const tracked = tracking !== undefined && tracking.running && node !== null && node.kind === 'tracker'
+    && (tracking.node === null || tracking.node === node.id);
+  const locked = onLockedTrack || tracked;
   const words = useWords();
   const t = useFairlightText();
   const labels = words.label.studio.fusionPage;
@@ -421,8 +438,16 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     // The patterns that the pivot may name: those that the Tracker has, and the one that it names, where that is not among them.
     const pivotPlaces = [...new Set([...patterns.map((_, index) => index), params.pivot_tracker])].sort((a, b) => a - b);
     const lastFrame = clip.start + Math.max(clip.length, 1) - 1;
+    // What tracking says of this Tracker, or of whichever is chosen where the page took over a track that it did not start.
+    const trackStatus = tracking?.status ?? null;
+    const trackSaid = trackStatus !== null && (trackStatus.node === null || trackStatus.node === shown.id) ? trackStatus.text : null;
     return <>
       <h3 className="inspector-section">{labels.trackerTabs.trackers}</h3>
+      {/* The enabled patterns tracked from the playhead; a clip on a locked track is not tracked, and Stop stops a track that goes on. */}
+      {tracking && <div className="fusion-track" data-test="fusion-track">
+        <TrackButtons running={tracking.running} buttons={TRACK_BUTTONS} disabled={onLockedTrack} onStart={tracking.start} onStop={tracking.stop} />
+        {trackSaid !== null && <p className="caption fusion-track-status" role="status" data-test="fusion-track-status">{trackSaid}</p>}
+      </div>}
       <div className="fusion-points-tools" role="group" aria-label={labels.trackerTabs.trackers}>
         {/* A pattern in the middle of the picture, after the others: it is the one chosen then. */}
         <button type="button" className="color-tool" disabled={locked || count >= MOST_TRACKERS} data-test="add-pattern"
@@ -669,7 +694,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       <span className="caption">{labels.kinds[node.kind]}</span>
     </div>
     {/* Why the settings are off, in the words of the Inspector of the Edit page. */}
-    {locked && <p className="caption" data-test="fusion-inspector-locked">{words.hint.studio.inspector.locked}</p>}
+    {onLockedTrack && <p className="caption" data-test="fusion-inspector-locked">{words.hint.studio.inspector.locked}</p>}
     <FieldsLocked.Provider value={locked}>
       <div className="inspector-panel" data-panel="fusion">
         <TextField name="label" label={labels.nodeName} value={node.label} allowEmpty

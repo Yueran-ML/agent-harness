@@ -559,7 +559,15 @@ class _FusionKeys(_Graded):
     interp: str | dict[str, Any] | None = Field(default=None, description="As video_grade_keys.")
 
 
-_FUSION = (_FusionInfo, _FusionNode, _FusionKeys)
+class _FusionTrack(_Graded):
+    clip: str = Field(description="Clip id, of a video track.")
+    node: str = Field(description="The tracker's id.")
+    trackers: list[int] | None = Field(default=None, description="Places of patterns, from 0.")
+    frame: int | None = Field(default=None, description="A timeline frame within the clip.")
+    direction: fusion.TrackDirection = "forward"
+
+
+_FUSION = (_FusionInfo, _FusionNode, _FusionKeys, _FusionTrack)
 
 
 async def _fused(args: _Project, engine: Engine) -> dict[str, Any]:
@@ -580,6 +588,16 @@ async def _fused(args: _Project, engine: Engine) -> dict[str, Any]:
             frame=args.frame,
             value=args.value,
             interp=args.interp,
+        )
+    if isinstance(args, _FusionTrack):
+        return await fusion.track(
+            engine,
+            args.timeline,
+            args.clip,
+            args.node,
+            trackers=args.trackers,
+            frame=args.frame,
+            direction=args.direction,
         )
     assert isinstance(args, _FusionNode)
     return await fusion.node(
@@ -1051,7 +1069,11 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                     try:
                         return receipt(await _fused(args, editor.engine))
                     except EngineError as error:
-                        hint = fusion.hint_of(error)
+                        hint = (
+                            fusion.track_hint_of(error)
+                            if isinstance(args, _FusionTrack)
+                            else fusion.hint_of(error)
+                        )
                         if hint is None:
                             raise
                         failure = _failing(error)
@@ -1317,6 +1339,7 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         tool("video_fusion_info", _FusionInfo, _FUSION_INFO, effect="read"),
         tool("video_fusion_node", _FusionNode, _FUSION_NODE),
         tool("video_fusion_keys", _FusionKeys, _FUSION_KEYS),
+        tool("video_fusion_track", _FusionTrack, _FUSION_TRACK, long=True),
     ]
 
 
@@ -1503,7 +1526,7 @@ _FUSION_NODE = (
     "picture-in-picture: add transform after MediaIn1 (size, center). Stabilize: add tracker "
     'after MediaIn1, settings {"trackers": [{"pattern": {"x": 0.4, "y": 0.6}}], "operation": '
     '"match_move"}, the pattern on a fixed feature (merge bg_only holds the picture still); '
-    "tracking on the Fusion page fills its paths. A mask follows what a tracker tracks by "
+    "video_fusion_track fills its paths. A mask follows what a tracker tracks by "
     'settings {"center.follow": {"node": its id, "output": "tracker", "tracker": N}}; null lets '
     "go. The result tells the composition after the change; video_fusion_info with reference "
     "true tells every kind and setting. To check the picture, video_grade_scopes measures a "
@@ -1514,6 +1537,17 @@ _FUSION_KEYS = (
     "Put, remove or clear one keyframe of a number of a node of a clip's composition; one undo "
     "step. frame: a timeline frame within the clip; the key is kept on the picture shown there "
     "(the result gives both frames). Words, true/false settings and a tracker's take no keys."
+)
+
+_FUSION_TRACK = (
+    "Track the patterns of a tracker node through its clip (Fusion's Track): from frame, a "
+    "timeline frame (default the clip's first, its last for reverse), each of trackers (default "
+    "every enabled pattern) is followed the way of direction and its path written as it goes, "
+    "one undo step (video_undo takes it back). Waits for the end; tells the timeline frames "
+    "tracked and where a pattern was lost. Place a pattern first with video_fusion_node: "
+    '{"trackers.+": {"pattern": {"x": 0.4, "y": 0.6}}}, shares of the picture from its lower '
+    "left, on a feature with texture. Then operation match_move with merge bg_only stabilizes, "
+    "and a mask's center.follow follows a pattern."
 )
 
 VIDEOS = ServiceKey[Videos]("videos")

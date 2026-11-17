@@ -1,16 +1,20 @@
 """The agent's tools of the Fusion page: a composition read, and changed one transaction a call."""
 
+import asyncio
+import contextlib
 import copy
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 import pytest
 
 from columbina.kernel import Context
 from columbina.video import Config, Videos, edits, fusion, tools_of
+from columbina.video.engine import Changes, Engine, EngineError
 from columbina.video.grading import Choice, Flag
+from support import fake_engine
 from support.desk import Desk
 from support.fake_engine import Fake, served
 from support.studio import clip_of, timeline_of, track_of
@@ -290,8 +294,13 @@ def test_the_operations_of_a_composition_are_written_as_the_engine_reads_them() 
 def test_the_tools_of_the_fusion_page_are_given_and_tell_what_a_composition_is() -> None:
     tools = {tool.name: tool for tool in tools_of(Videos(Config(), None))}
     names = [name for name in tools if name.startswith("video_fusion")]
-    assert names == ["video_fusion_info", "video_fusion_node", "video_fusion_keys"]
-    assert [tools[name].effect for name in names] == ["read", "write", "write"]
+    assert names == [
+        "video_fusion_info",
+        "video_fusion_node",
+        "video_fusion_keys",
+        "video_fusion_track",
+    ]
+    assert [tools[name].effect for name in names] == ["read", "write", "write", "write"]
     told = tools["video_fusion_node"].schema.description
     for kind in fusion.KINDS:
         assert kind in told, kind
@@ -299,8 +308,16 @@ def test_the_tools_of_the_fusion_page_are_given_and_tell_what_a_composition_is()
         "LOWER LEFT", "counter-clockwise", "MediaIn1 -> MediaOut1.input", "mask_of",
         "Blur or pixelate a face", "Green screen", "picture-in-picture", "video_fusion_keys",
         "video_fusion_info", "video_grade_scopes", "Stabilize", "match_move", "center.follow",
+        "video_fusion_track",
     ):  # fmt: skip
         assert word in told, word
+    # The track tells how a pattern is put, and what is done with its path.
+    tracking = tools["video_fusion_track"].schema.description
+    for word in ("video_undo", '"trackers.+"', "lower left", "match_move", "center.follow"):
+        assert word in tracking, word
+    track = cast("dict[str, Any]", tools["video_fusion_track"].schema.parameters["properties"])
+    assert {"clip", "node", "trackers", "frame", "direction"} <= set(track)
+    assert track["direction"]["enum"] == list(get_args(fusion.TrackDirection))
     schema = tools["video_fusion_node"].schema.parameters
     properties = cast("dict[str, Any]", schema["properties"])
     # One pattern of a tracker is changed, added or taken away without its paths being sent.
@@ -313,10 +330,11 @@ def test_the_tools_of_the_fusion_page_are_given_and_tell_what_a_composition_is()
         name: len(tools[name].schema.description) + len(json.dumps(tools[name].schema.parameters))
         for name in names
     }
-    # What the three cost on every request: the node tool carries what a composition is.
+    # What the four cost on every request: the node tool carries what a composition is.
     assert sizes["video_fusion_info"] < 2000
     assert sizes["video_fusion_keys"] < 1600
-    assert sum(sizes.values()) < 9000
+    assert sizes["video_fusion_track"] < 1500
+    assert sum(sizes.values()) < 10500
 
 
 async def test_the_reference_tells_every_kind_with_its_inputs_and_settings(
@@ -343,6 +361,7 @@ async def test_the_reference_tells_every_kind_with_its_inputs_and_settings(
     assert "trackers.+ adds one" in tracker["settings"]["trackers"]
     assert "center.follow" in told["kinds"]["ellipse"]["settings"]
     assert "center.follow" in told["tracking"]
+    assert "video_fusion_track" in told["tracking"]
     alone = await refused(desk, fake, "video_fusion_info", reference=True)
     assert "reference is told alone" in alone
 
@@ -1502,3 +1521,265 @@ async def test_a_node_of_a_composition_is_measured_alone_off_screen(
         refused = await desk.call("video_grade_scopes", **asked)
         assert refused.error is not None
         assert said in refused.text
+
+
+# ---------------------------------------------------------------------------------------------
+# Tracking
+# ---------------------------------------------------------------------------------------------
+
+
+async def track_call(desk: Desk, clip: str = "c1", **asked: Any) -> dict[str, Any]:
+    return result(await desk.call("video_fusion_track", clip=clip, **asked))
+
+
+def path_frames(fake: Fake, node: str, place: int = 0, id: str = "c1") -> list[int]:
+    """The frames of the path of a pattern of a tracker, as the fake engine keeps it, in order."""
+    return sorted(map(int, params(fake, node, id)["trackers"][place]["path"]))
+
+
+async def drained(changes: Changes) -> list[str]:
+    """The methods of what was told that is not read yet, in order."""
+    methods: list[str] = []
+    with contextlib.suppress(TimeoutError):
+        while True:
+            methods.append((await asyncio.wait_for(anext(changes), 0.1)).method)
+    return methods
+
+
+async def test_the_patterns_of_a_tracker_are_tracked_through_its_clip_in_one_step(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    patterns = [
+        {"name": "eye", "pattern": {"x": 0.4, "y": 0.6}},
+        {"name": "ear", "enabled": False},
+    ]
+    tracker = await tracked(desk, settings={"trackers": patterns})
+    revision, steps = fake.revision, len(fake.steps)
+
+    told = await track_call(desk, node=tracker)
+
+    # From the first frame of c1, 100, which shows frame 19 of its media, forward; the pattern
+    # that is off is not followed.
+    aim = {"timeline": "t1", "clip": "c1", "node": tracker}
+    assert fake.track_starts == [
+        {"fusion": aim, "revision": revision, "frame": 19, "direction": "forward"}
+    ]
+    assert told["phase"] == "done"
+    assert "reason" not in told
+    assert told["from"] == {"timeline_frame": 100, "frame": 19}
+    # What was tracked is told at the frames of the timeline that show it.
+    assert told["tracked"] == [100, 149]
+    assert told["frames"] == 49
+    assert told["patterns"] == [{"index": 0, "name": "eye", "frames_found": 49}]
+    assert any("video_undo takes the whole track back" in note for note in told["notes"])
+    eye, ear = params(fake, tracker)["trackers"]
+    assert path_frames(fake, tracker) == list(range(19, 69))
+    assert eye["path"]["19"] == [0.4, 0.6]
+    assert eye["path"]["29"] == pytest.approx([0.41, 0.6])
+    assert ear["path"] == {}
+    info = result(await desk.call("video_fusion_info", clip="c1"))
+    last = told_node(info, tracker)["settings"]["trackers"][0]["path"]["last"]
+    assert last == {"timeline_frame": 149, "frame": 68}
+    # The whole track is one step, which video_undo takes back.
+    assert len(fake.steps) == steps + 1
+    result(await desk.call("video_undo"))
+    assert params(fake, tracker)["trackers"][0]["path"] == {}
+
+
+async def test_a_track_starts_at_the_frame_of_the_media_that_the_timeline_shows_there(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    tracker = await tracked(desk, settings={"trackers": [{"name": "eye"}]})
+
+    # Frame 120 of the timeline shows frame 39 of c1's media: back from there to the first.
+    told = await track_call(desk, node=tracker, frame=120, direction="reverse")
+    assert (fake.track_starts[-1]["frame"], fake.track_starts[-1]["direction"]) == (39, "reverse")
+    assert told["from"] == {"timeline_frame": 120, "frame": 39}
+    assert told["tracked"] == [100, 120]
+    assert path_frames(fake, tracker) == list(range(19, 40))
+    # One frame back from the last frame of the clip, where no frame is given.
+    told = await track_call(desk, node=tracker, direction="one_reverse")
+    assert fake.track_starts[-1]["frame"] == 68
+    assert (told["tracked"], told["frames"]) == ([148, 149], 1)
+    # c2 plays its media twice as fast, backward: its first frame, 10, shows frame 83, and a
+    # track forward on the timeline goes backward in the media, to frame 25 at frame 39.
+    settings = {"trackers": [{"name": "eye"}]}
+    added = await node(desk, "add", clip="c2", kind="tracker", after="MediaIn1", settings=settings)
+    other = added["added"]
+    told = await track_call(desk, clip="c2", node=other)
+    assert (fake.track_starts[-1]["frame"], fake.track_starts[-1]["direction"]) == (83, "forward")
+    assert told["from"] == {"timeline_frame": 10, "frame": 83}
+    assert (told["tracked"], told["frames"]) == ([10, 39], 58)
+    frames = path_frames(fake, other, id="c2")
+    assert (frames[0], frames[-1], len(frames)) == (25, 83, 59)
+
+
+async def test_the_patterns_that_are_named_are_tracked_and_where_one_is_lost_is_told(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    patterns = [{"name": "eye"}, {"name": "ear"}, {"name": "nose", "pattern": {"x": 0.3}}]
+    tracker = await tracked(desk, settings={"trackers": patterns})
+    # The nose is lost at frame 30 of the media, which frame 111 of the timeline shows.
+    fake.track_lost = {2: 30}
+
+    told = await track_call(desk, node=tracker, trackers=[2, 0, 2])
+
+    assert fake.track_starts[-1]["fusion"]["trackers"] == [0, 2]
+    assert told["patterns"] == [
+        {"index": 0, "name": "eye", "frames_found": 49},
+        {"index": 2, "name": "nose", "frames_found": 10, "lost_at": [111]},
+    ]
+    assert any("followed no further" in note for note in told["notes"])
+    assert path_frames(fake, tracker, 0) == list(range(19, 69))
+    assert params(fake, tracker)["trackers"][1]["path"] == {}
+    assert path_frames(fake, tracker, 2) == list(range(19, 30))
+
+
+async def test_what_cannot_be_tracked_is_said_before_anything_is_sent(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+
+    async def unsent(asked: dict[str, Any]) -> str:
+        outcome = await desk.call("video_fusion_track", **asked)
+        assert outcome.error is not None, outcome.text
+        assert outcome.error.code == "VIDEO_FUSION", outcome.text
+        assert "track.start" not in fake.asked
+        return outcome.text
+
+    said = await unsent({"clip": "c1", "node": "n20"})
+    assert "clip c1 has no composition, and so no tracker" in said
+    patterns = [{"name": "eye"}, {"name": "ear", "enabled": False}]
+    tracker = await tracked(desk, settings={"trackers": patterns})
+    blur = await blurred(desk)
+    said = await unsent({"clip": "c1", "node": blur})
+    assert f"node {blur} is a blur: video_fusion_track follows the patterns of a tracker" in said
+    said = await unsent({"clip": "c1", "node": "n99"})
+    assert "the composition has no node n99" in said
+    said = await unsent({"clip": "c1", "node": tracker, "trackers": [5]})
+    assert f"node {tracker} has 2 patterns, numbered from 0: there is no pattern 5" in said
+    said = await unsent({"clip": "c1", "node": tracker, "trackers": [1]})
+    assert f"pattern 1 of node {tracker} is off: trackers.1.enabled true turns it on" in said
+    assert "enabled: 0" in said
+    said = await unsent({"clip": "c1", "node": tracker, "trackers": []})
+    assert "trackers is a list of the places of patterns, from 0" in said
+    said = await unsent({"clip": "c1", "node": tracker, "frame": 99})
+    assert "frame 99 is not in clip c1, which is at frames 100 to 149 of timeline t1" in said
+    await node(desk, "set", node=tracker, settings={"trackers.0.enabled": False})
+    said = await unsent({"clip": "c1", "node": tracker})
+    assert f"every pattern of node {tracker} is off" in said
+    empty = (await node(desk, "add", kind="tracker"))["added"]
+    said = await unsent({"clip": "c1", "node": empty})
+    assert f"node {empty} has no pattern to follow" in said
+    assert '"trackers.+"' in said
+    settings = {"trackers": [{"name": "eye"}]}
+    title = (await node(desk, "add", clip="c3", kind="tracker", settings=settings))["added"]
+    said = await unsent({"clip": "c3", "node": title})
+    assert "clip c3 is a title: a title, a colour or a still has no frames to track" in said
+
+
+async def test_a_refusal_of_a_track_is_told_with_what_can_be_done_about_it(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    tracker = await tracked(desk, settings={"trackers": [{"name": "eye"}]})
+
+    async def answered(**data: Any) -> Any:
+        fake.refusals["track.start"] = {"code": -32001, "message": "refused", "data": data}
+        outcome = await desk.call("video_fusion_track", clip="c1", node=tracker)
+        assert outcome.error is not None
+        return outcome
+
+    outcome = await answered(reason="busy")
+    assert outcome.error.code == "VIDEO_BUSY"
+    assert "another track is running" in outcome.text
+    outcome = await answered(reason="untrackable")
+    assert "a title, a colour or a still has no frames to track" in outcome.text
+    outcome = await answered(reason="no_trackers")
+    assert "trackers.+" in outcome.text
+    outcome = await answered(reason="stale_revision")
+    assert "call again" in outcome.text
+    # A frame that the engine refuses is told as the timeline counts it.
+    outcome = await answered(reason="frame")
+    assert outcome.error.code == "VIDEO_FRAME"
+    assert "clip c1 is at frames 100 to 149 of the timeline" in outcome.text
+    assert "frame 100 of it shows frame 19 of the clip's media" in outcome.text
+    assert params(fake, tracker)["trackers"][0]["path"] == {}
+
+
+async def test_a_track_that_takes_too_long_is_stopped_and_what_it_tracked_is_kept(
+    studio: tuple[Desk, Fake], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    desk, fake = studio
+    tracker = await tracked(desk, settings={"trackers": [{"name": "eye"}]})
+    monkeypatch.setattr(fusion, "_TRACK_SECONDS", (0.3, 0.0))
+    # The track goes one frame, and goes on no further until it is stopped.
+    fake.track_hold = True
+
+    told = await track_call(desk, node=tracker)
+
+    assert fake.asked.count("track.stop") == 1
+    assert (told["phase"], told["reason"]) == ("stopped", "timeout")
+    assert told["tracked"] == [100, 101]
+    assert "took longer than 0.3 s and was stopped at frame 101" in told["notes"][0]
+    assert path_frames(fake, tracker) == [19, 20]
+    # It is over: the next track goes on from where it was stopped.
+    fake.track_hold = False
+    told = await track_call(desk, node=tracker, frame=101)
+    assert (told["phase"], told["tracked"]) == ("done", [101, 149])
+    assert path_frames(fake, tracker) == list(range(19, 69))
+
+
+async def test_a_track_is_told_to_the_connection_that_started_it_alone(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    tracker = await tracked(desk, settings={"trackers": [{"name": "eye"}]})
+    directory = desk.work / ".columbina" / "studio"
+    program = str(Path(fake_engine.__file__))
+    one = await Engine.attach(directory, program=program)
+    other = await Engine.attach(directory, program=program, client="cli")
+    heard = other.changes()
+    fake.track_hold = True
+    revision, _ = await one.project()
+    aim = {"timeline": "t1", "clip": "c1", "node": tracker}
+    asked = {"fusion": aim, "revision": revision, "frame": 19, "direction": "forward"}
+
+    tracking = await one.track(asked, session=one.session)
+    # It goes on until it is stopped: what it told so far is heard, and it has not ended.
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(tracking.ended(), 0.3)
+    progress = tracking.last
+    # One track at a time.
+    with pytest.raises(EngineError) as busy:
+        await one.track({**asked, "revision": fake.revision})
+    await tracking.stop()
+    end = await asyncio.wait_for(tracking.ended(), 5)
+    again = await tracking.ended()
+    await other.project()
+    told = await drained(heard)
+    await heard.aclose()
+    await one.aclose()
+    await other.aclose()
+
+    assert tracking.started == {
+        "job": tracking.job,
+        "first": 19,
+        "last": 68,
+        "frame_size": [1280, 720],
+        "direction": "forward",
+        "trackers": [0],
+    }
+    assert progress is not None
+    assert progress["following"] == [0]
+    assert busy.value.data is not None
+    assert busy.value.data["reason"] == "busy"
+    assert (end["phase"], end["reason"], end["tracked"]) == ("stopped", "stop", [19, 20])
+    assert again is end
+    # Every client is told of the change; of the track, only the one that started it.
+    assert "project.changed" in told
+    assert "track.progress" not in told
+    assert "track.state" not in told

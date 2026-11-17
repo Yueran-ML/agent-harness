@@ -36,6 +36,12 @@ kind (the masks ``rectangle``, ``ellipse`` and ``polygon`` among them) and a lin
 is found by its path in the ``params`` of its node, a point of a polygon by its place in the
 list of its points.
 
+A track of the patterns of a Tracker of a composition (``track.start`` with ``fusion``) is refused
+as the engine refuses one, and is made up: each pattern followed is found a step further to the
+right each frame, from where it starts to the end of the clip each way that the track goes; the
+paths are written as one change, and ``track.progress`` and ``track.state`` are told to the
+connection that started it alone. ``track.stop`` ends it. A window of a grade is not tracked.
+
 In a test, :func:`served` serves a project in the loop of the test. As a program, run it the way
 the engine is run, ``python fake_engine.py --project DIR --headless [--idle-seconds N]``, and with
 ``--mode`` it ends as an engine that cannot start ends instead:
@@ -194,6 +200,17 @@ _RETIMING = {
 }
 """The edits of the Retime Controls, which change the speed points of a clip."""
 
+_BACKWARD = {
+    "forward": "reverse",
+    "reverse": "forward",
+    "one_forward": "one_reverse",
+    "one_reverse": "one_forward",
+}
+"""The way that a track goes in the source of a clip that plays it backward."""
+
+_WINDOW = {"grade", "node", "window", "tracker", "components"}
+"""What ``track.start`` takes of a track of a window of a grade."""
+
 _EDITS = (
     _PLACING
     | _RETIMING
@@ -246,12 +263,19 @@ class Fake:
         render_frames: How many frames a render writes, if not as many as its timeline lasts.
         render_end: How a render ends, unless it is cancelled: ``done`` or ``failed``.
         render_hold: Whether a render holds on after it begins, until it is cancelled.
-        jobs: The state of each render, and of each analysis of sound, by its job.
+        jobs: The state of each render, of each analysis of sound and of each track, by its job.
         sounds: What each ``audio.analyze``, ``audio.normalize`` and ``audio.level_match`` was
             asked, in order.
         sound_end: How an analysis of sound ends, unless it is cancelled: ``done`` or ``failed``.
         sound_hold: Whether an analysis of sound holds on after it begins, until it is cancelled.
         sound_found: What an analysis of sound that is done tells besides its job and state.
+        track_starts: What each ``track.start`` was asked, in order.
+        track_plans: What each track that began follows, and what it found, by its job.
+        track_hold: Whether a track goes one frame each way and holds on there, until it is
+            stopped.
+        track_step: How much further to the right a pattern is found each frame from the one
+            that it starts from, in widths of the picture.
+        track_lost: The frame of the clip's keys at which a pattern is lost, by its place.
         rendered: What each ``render.start`` was asked, in order.
         looked: What each ``scopes.statistics`` and ``luts.list`` was asked, in order.
         transactions: The operations and edits of every ``transaction.apply``, as they were sent.
@@ -297,6 +321,11 @@ class Fake:
         self.sound_end = "done"
         self.sound_hold = False
         self.sound_found: dict[str, Any] = {}
+        self.track_starts: list[dict[str, Any]] = []
+        self.track_plans: dict[str, dict[str, Any]] = {}
+        self.track_hold = False
+        self.track_step = 0.001
+        self.track_lost: dict[int, int] = {}
         self.standards: list[dict[str, Any]] = []
         self.rendered: list[dict[str, Any]] = []
         self.looked: list[tuple[str, dict[str, Any]]] = []
@@ -714,6 +743,218 @@ class Fake:
         else:
             told["message"] = "a clip cannot be read"
         self.tell("audio.analysis", told)
+
+    def track_start(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """Follow the patterns of a Tracker (``fusion``), refused as the engine refuses it."""
+        self.track_starts.append(copy.deepcopy(params))
+        if not isinstance(params.get("fusion"), dict) or _WINDOW & set(params):
+            message = "track.start takes a window or fusion, one of the two"
+            raise RefusedError(-32602, message, {"reason": "fusion"})
+        if any(job.startswith("track-") and now == "running" for job, now in self.jobs.items()):
+            raise RefusedError(-32001, "a track is going on", {"reason": "busy"})
+        if params.get("revision") != self.revision:
+            told = {"reason": "stale_revision", "expected": params.get("revision")}
+            raise RefusedError(-32001, "the project changed", {**told, "actual": self.revision})
+        aim = cast("dict[str, Any]", params["fusion"])
+        clip, node = self._tracker_of(aim)
+        source = clip["source"]
+        media = next(
+            (one for one in self.project["media"] if one["id"] == source.get("media")), None
+        )
+        video = None if media is None else media["facts"].get("video")
+        if source["kind"] != "media" or video is None or video.get("still"):
+            message = "this Tracker cannot be tracked: it has no moving picture"
+            raise RefusedError(-32001, message, {"reason": "untrackable"})
+        patterns: list[dict[str, Any]] = node["params"].get("trackers", [])
+        named = aim.get("trackers")
+        followed = [at for at, one in enumerate(patterns) if one.get("enabled", True)]
+        if named is not None:
+            for at in cast("list[int]", named):
+                if at >= len(patterns) or not patterns[at].get("enabled", True):
+                    message = f"pattern {at} cannot be followed"
+                    raise RefusedError(-32001, message, {"reason": "tracker", "tracker": at})
+            followed = sorted(set(cast("list[int]", named)))
+        if not followed:
+            message = "the Tracker has no pattern to follow"
+            raise RefusedError(-32001, message, {"reason": "no_trackers"})
+        # The frames of the media that the clip shows, as a clip of one speed shows them: the
+        # speed points of a clip are not followed here.
+        begins, speed, rate = source["in"], clip["speed"], video["rate"]
+        first = begins["ticks"] * rate["num"] // (begins["scale"] * rate["den"])
+        last = first + (clip["length"] - 1) * speed["num"] // speed["den"]
+        frame = params.get("frame")
+        if not isinstance(frame, int) or not first <= frame <= last:
+            message = f"frame {frame} is outside the clip, from {first} to {last}"
+            raise RefusedError(-32001, message, {"reason": "frame"})
+        direction = str(params.get("direction"))
+        if clip.get("reverse"):
+            direction = _BACKWARD.get(direction, direction)
+        starts: dict[int, list[float]] = {}
+        for at in followed:
+            pattern = patterns[at]
+            place = pattern.get("path", {}).get(str(frame))
+            starts[at] = place or [pattern["pattern"]["x"], pattern["pattern"]["y"]]
+        job = f"track-{len(self.track_starts)}"
+        self.jobs[job] = "running"
+        self.track_plans[job] = {
+            "asking": asking,
+            "timeline": aim["timeline"],
+            "clip": aim["clip"],
+            "node": aim["node"],
+            "followed": followed,
+            "starts": starts,
+            "frame": frame,
+            "first": first,
+            "last": last,
+            "direction": direction,
+        }
+        asyncio.get_running_loop().call_later(0.01, self._followed, job)
+        told = {"job": job, "first": first, "last": last, "frame_size": [1280, 720]}
+        return {**told, "direction": direction, "trackers": followed}
+
+    def track_stop(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        job = str(params.get("job"))
+        plan = self.track_plans.get(job)
+        if plan is None or self.jobs.get(job) != "running" or plan["asking"] is not asking:
+            raise RefusedError(-32001, "no such track is going on", {"reason": "job"})
+        # It ends between frames, after the answer, as the engine's thread ends it.
+        self.jobs[job] = "stopped"
+        asyncio.get_running_loop().call_soon(self._track_ended, job, "stopped", "stop")
+        return {}
+
+    def _tracker_of(self, aim: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The clip and the Tracker that a track names, refused as the engine refuses them."""
+        timelines = [one for one in self.project["timelines"] if one["id"] == aim.get("timeline")]
+        for timeline in timelines:
+            for track in timeline["tracks"]:
+                for clip in track.get("clips", []):
+                    if clip["id"] != aim.get("clip"):
+                        continue
+                    nodes = clip.get("fusion", {}).get("nodes", [])
+                    node = next((one for one in nodes if one["id"] == aim.get("node")), None)
+                    if node is None:
+                        break
+                    if node["kind"] != "tracker":
+                        data = {"reason": "wrong_node", "node": node["id"], "kind": node["kind"]}
+                        raise RefusedError(-32001, f"{node['id']} is not a tracker", data)
+                    return clip, node
+        message = "the clip's composition has no such node"
+        raise RefusedError(-32001, message, {"reason": "target"})
+
+    def _followed(self, job: str) -> None:
+        """Write the paths of a track of a Tracker, made up, as one change of the project.
+
+        Each pattern followed is found ``track_step`` further to the right a frame from where
+        it starts, on to the end of the clip each way that the track goes, but at the frame of
+        ``track_lost``, where it is lost, and beyond it that way. A track held (``track_hold``)
+        goes one frame each way, and waits there to be stopped.
+        """
+        plan = self.track_plans[job]
+        if self.jobs.get(job) != "running":
+            return
+        start, first, last = plan["frame"], plan["first"], plan["last"]
+        ways: dict[str, list[tuple[int, int]]] = {
+            "forward": [(1, last)],
+            "reverse": [(-1, first)],
+            "forward_and_back": [(1, last), (-1, first)],
+            "one_forward": [(1, min(start + 1, last))],
+            "one_reverse": [(-1, max(start - 1, first))],
+        }
+        followed: list[int] = plan["followed"]
+        paths: dict[int, dict[str, list[float]]] = {at: {} for at in followed}
+        found = dict.fromkeys(followed, 0)
+        lost: dict[int, list[int]] = {at: [] for at in followed}
+        stepped, reached = 0, start
+        for way, end in ways[plan["direction"]]:
+            frames = list(range(start + way, end + way, way))[: 1 if self.track_hold else None]
+            for at in followed:
+                x, y = plan["starts"][at]
+                paths[at][str(start)] = [x, y]
+                for frame in frames:
+                    if self.track_lost.get(at) == frame:
+                        lost[at].append(frame)
+                        break
+                    paths[at][str(frame)] = [round(x + self.track_step * (frame - start), 7), y]
+                    found[at] += 1
+            stepped += len(frames)
+            reached = frames[-1] if frames else reached
+        written = any(found.values())
+        if written:
+            try:
+                self._paths_written(plan, paths)
+            except RefusedError:
+                self._track_ended(job, "stopped", "target")
+                return
+        frames_of = sorted(int(frame) for path in paths.values() for frame in path)
+        trackers = [{"tracker": at, "frames": found[at], "lost": lost[at]} for at in followed]
+        report: dict[str, Any] = {
+            "frames": stepped,
+            "lost": sum(len(one) for one in lost.values()),
+            "frame": reached,
+            "tracked": [frames_of[0], frames_of[-1]] if written else None,
+            "trackers": trackers,
+        }
+        plan["report"] = report
+        progress = {"job": job, "frame": reached, "timeline_frame": None, "done": stepped}
+        following = [at for at in followed if not lost[at]]
+        self._told_to(
+            plan,
+            "track.progress",
+            {
+                **progress,
+                "total": stepped,
+                "lost": report["lost"],
+                "revision": self.revision,
+                "following": following,
+            },
+        )
+        if not self.track_hold:
+            self._track_ended(job, "done", None)
+
+    def _paths_written(
+        self, plan: dict[str, Any], paths: dict[int, dict[str, list[float]]]
+    ) -> None:
+        """Write the paths found into the Tracker, its list of patterns set whole, one change."""
+        _, node = self._tracker_of(plan)
+        trackers = copy.deepcopy(node["params"]["trackers"])
+        for at, path in paths.items():
+            trackers[at]["path"] = {**trackers[at].get("path", {}), **path}
+        op = {
+            "op": "set_fusion_node",
+            "timeline": plan["timeline"],
+            "clip": plan["clip"],
+            "id": plan["node"],
+            "params": {"trackers": trackers},
+        }
+        before = copy.deepcopy(self.project)
+        done, _, _ = self._applied([op])
+        self.changed(str(cast("Connection", plan["asking"]).client), done, before)
+
+    def _track_ended(self, job: str, phase: str, reason: str | None) -> None:
+        """End a track: ``track.state``, with what it found, to the connection that started it."""
+        plan = self.track_plans[job]
+        self.jobs[job] = phase
+        report: dict[str, Any] = plan.get("report") or {
+            "frames": 0,
+            "lost": 0,
+            "frame": plan["frame"],
+            "tracked": None,
+            "trackers": [{"tracker": at, "frames": 0, "lost": []} for at in plan["followed"]],
+        }
+        said: dict[str, Any] = {
+            "job": job,
+            "phase": phase,
+            "reason": reason,
+            **report,
+            "revision": self.revision,
+        }
+        self._told_to(plan, "track.state", said)
+
+    def _told_to(self, plan: dict[str, Any], method: str, params: dict[str, Any]) -> None:
+        """Tell the connection that started a track, and no other, as the engine tells it."""
+        asking = cast("Connection", plan["asking"])
+        if asking in self.connections:
+            asking.send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _progress(self, job: str, path: Path, frames: int, frame: int) -> None:
         """Tell how far a render has come, and go on with it a moment later."""

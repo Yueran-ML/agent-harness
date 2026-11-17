@@ -9,7 +9,8 @@ connection to it.
 **What it is asked.** A transaction holds operations and edits (:mod:`columbina.video.edits`),
 and is one step of the history of the project. A timeline is rendered by the engine too, in the
 background, :meth:`Engine.render`: what it tells of the render is followed by the
-:class:`Rendering` that is returned.
+:class:`Rendering` that is returned. A track runs there too, :meth:`Engine.track`, followed by
+the :class:`Tracking` that is returned.
 
 **Reaching it.** The engine that has a project open says where it listens in ``engine.lock`` of
 the project. That address is tried first, and once more a moment later, since it may name an
@@ -95,6 +96,7 @@ __all__ = [
     "StillKeyframes",
     "StillLevel",
     "StillMode",
+    "Tracking",
     "not_found",
     "program_of",
     "unsupported",
@@ -642,6 +644,70 @@ class Rendering:
 
     async def aclose(self) -> None:
         """Hear nothing more of the render. It goes on in the engine."""
+        await self._heard.aclose()
+
+
+class Tracking:
+    """A track that the engine runs in the background, as :meth:`Engine.track` started it.
+
+    What the engine tells of it, ``track.progress`` as it goes and ``track.state`` at its end, it
+    tells the connection that started it alone; it is heard from before the track was asked for,
+    so none of it is missed. :meth:`ended` waits for the end, and may be waited on again after a
+    wait that was given up on. The track goes on in the engine whether or not it is followed
+    here: :meth:`stop` ends it between frames, and what it tracked is kept.
+
+    Attributes:
+        job: What the engine knows the track by.
+        started: What ``track.start`` answered: ``first``, ``last``, ``frame_size``,
+            ``direction`` and, of the patterns of a Tracker, ``trackers``.
+    """
+
+    def __init__(self, engine: "Engine", started: dict[str, Any], heard: "Changes") -> None:
+        self.job = str(started["job"])
+        self.started = started
+        self._engine = engine
+        self._heard = heard
+        self._last: dict[str, Any] | None = None
+        self._end: dict[str, Any] | None = None
+
+    @property
+    def last(self) -> dict[str, Any] | None:
+        """What ``track.progress`` told of the track last, if it told anything."""
+        return self._last
+
+    async def ended(self) -> dict[str, Any]:
+        """Wait for the track to end, and return what ``track.state`` told of it.
+
+        Raises:
+            EngineError: The connection to the engine was lost, or it was closed. The engine
+                ends a track whose connection went.
+        """
+        if self._end is not None:
+            return self._end
+        async for told in self._heard:
+            if told.params.get("job") != self.job:
+                continue
+            if told.method == "track.progress":
+                self._last = told.params
+            elif told.method == "track.state":
+                self._end = told.params
+                await self._heard.aclose()
+                return told.params
+        raise EngineError(
+            f"the connection to the engine was closed before track {self.job} ended",
+            code=UNREACHABLE,
+        )
+
+    async def stop(self) -> None:
+        """Ask the engine to end the track between frames. Its end is told as ``stopped``.
+
+        Raises:
+            EngineError: The engine refused, as for a track that is over (``job``).
+        """
+        await self._engine._call("track.stop", {"job": self.job})  # pyright: ignore[reportPrivateUsage]
+
+    async def aclose(self) -> None:
+        """Hear nothing more of the track. It goes on in the engine."""
         await self._heard.aclose()
 
 
@@ -1880,13 +1946,62 @@ class Engine:
         finally:
             await heard.aclose()
 
+    async def track(self, params: Mapping[str, Any], *, session: int | None = None) -> Tracking:
+        """Have the engine track in the background, and follow what it tells of the track.
+
+        ``track.start`` (PROTOCOL.md, Window tracking): a window of a grade, or with ``fusion``
+        the patterns of a Tracker of a composition, followed through the frames of its clip and
+        written into the project as it goes, one step of its history in all. The engine answers
+        at once, and runs one track at a time; what it tells of the track is followed from
+        before it is asked for, by the :class:`Tracking` that is returned. A caller that gives
+        up before the answer has the track stopped.
+
+        Args:
+            params: The params of ``track.start``, as the protocol says (``fusion``,
+                ``revision``, ``frame``, ``direction``, ...).
+            session: The :attr:`session` that the revision of ``params`` was read in; as with
+                :meth:`apply`, a new engine refuses the request before it is sent.
+
+        Raises:
+            EngineError: The engine refused: another track is going on (``busy``), the revision
+                is not the project's (``stale_revision``), or what is asked cannot be tracked
+                (``target``, ``wrong_node``, ``tracker``, ``no_trackers``, ``untrackable``,
+                ``frame``).
+        """
+        heard = self.changes()
+        try:
+            wire = await self._ensure()
+            if session is not None and session != self._session:
+                raise EngineError(
+                    "the engine was started again since the project was read; read it again",
+                    code=-32001,
+                    data={"reason": "stale_revision", "session": self._session},
+                )
+            number, asked = self._sent(wire, "track.start", dict(params))
+            try:
+                # Shielded as a render's answer is: a caller that gives up once the engine was
+                # asked still learns which track it began, and stops it.
+                said: object = await asyncio.shield(asked.answer)
+            except asyncio.CancelledError:
+                await self._stopped(asked.answer, "track.stop")
+                raise
+            finally:
+                self._asked.pop(number, None)
+            answer: dict[str, Any] = cast("dict[str, Any]", said) if isinstance(said, dict) else {}
+            if not isinstance(answer.get("job"), str):
+                raise EngineError("the engine answered track.start with no job", code=UNEXPECTED)
+        except BaseException:
+            await heard.aclose()
+            raise
+        return Tracking(self, answer, heard)
+
     async def _stopped(
         self, answer: "asyncio.Future[object]", cancel: str = "render.cancel"
     ) -> None:
         """Cancel the job that a request given up on began, if the engine began one.
 
         ``cancel`` is the method that cancels it: ``render.cancel`` for a render,
-        ``audio.cancel`` for an analysis of sound.
+        ``audio.cancel`` for an analysis of sound, ``track.stop`` for a track.
 
         This waits for the answer a while, and fails silently: the caller is cancelled already.
         """

@@ -23,13 +23,19 @@ What is here:
   are sent, so that what is wrong is told in words that a model can act on, with the name that
   the engine would refuse it by.
 - **What the tools do**: :func:`info`, :func:`node` and :func:`keys`, each change one
-  transaction of the engine and one step of its history.
+  transaction of the engine and one step of its history; and :func:`track`, which has the
+  engine follow the patterns of a tracker through the frames of its clip and write their paths,
+  one step of the history too, and waits for the end.
 
 A model thinks in frames of the timeline, and the engine keeps a key at a frame of the clip's
 source (PROTOCOL, Frames of keys): :func:`keys` is given a frame of the timeline and finds the
-frame of the key as ``video_clip_keys`` does (:class:`columbina.video.clip_keys.KeyClock`).
+frame of the key as ``video_clip_keys`` does (:class:`columbina.video.clip_keys.KeyClock`), and
+so is :func:`track` for the frame that a track starts from, and tells the frames of the paths
+at frames of the timeline.
 """
 
+import asyncio
+import contextlib
 import copy
 import difflib
 import math
@@ -40,7 +46,7 @@ from typing import Any, Literal, cast
 from columbina.video import edits
 from columbina.video.clip_keys import KeyClock
 from columbina.video.edits import FusionKind, Rate
-from columbina.video.engine import Applied, Engine, EngineError
+from columbina.video.engine import Applied, Engine, EngineError, Tracking
 from columbina.video.grading import (
     COMPOSITES,
     Build,
@@ -70,6 +76,7 @@ __all__ = [
     "Plain",
     "PointList",
     "Setting",
+    "TrackDirection",
     "hint_of",
     "info",
     "keys",
@@ -78,9 +85,15 @@ __all__ = [
     "node",
     "reference",
     "summary",
+    "track",
+    "track_hint_of",
 ]
 
 NodeAction = Literal["add", "remove", "connect", "disconnect", "set", "reset"]
+
+TrackDirection = Literal["forward", "reverse", "forward_and_back", "one_forward", "one_reverse"]
+"""Which way a track goes on the timeline from its frame: to the end of the clip, back to its
+start, both, or one frame either way."""
 
 _MOST_NODES = 256
 _MOST_POINTS = 128
@@ -469,9 +482,9 @@ KINDS: dict[str, Kind] = {
     ),
     "tracker": Kind(
         told=(
-            "patterns followed through the clip, their paths filled by tracking on the Fusion "
-            "page: with operation match_move, its input held still (merge bg_only) or its "
-            "foreground moved with them; the center of another node may follow it"
+            "patterns followed through the clip, their paths filled by tracking "
+            "(video_fusion_track): with operation match_move, its input held still (merge "
+            "bg_only) or its foreground moved with them; the center of another node may follow it"
         ),
         inputs=("input", "foreground", "mask"),
         output=True,
@@ -539,7 +552,9 @@ _KEYS = (
 )
 _TRACKING = (
     "Each pattern of a tracker has a path, where its middle was found at each frame that was "
-    "tracked, filled by tracking on the Fusion page. Between the reference frame and a frame "
+    "tracked, filled by video_fusion_track (or by tracking on the Fusion page), which follows "
+    "each pattern from where it was put, pattern.x and pattern.y, or from where its path has it "
+    "at the frame that it starts from. Between the reference frame and a frame "
     "the patterns move by a motion: of one pattern a shift, of two or more a turn and a size "
     "too, each corrected where position, rotation or scaling is on. operation match_move draws "
     "it: merge bg_only holds the input still (stabilizing), and fg_only, fg_over_bg and "
@@ -614,7 +629,8 @@ def _spec_told(spec: FusionSpec) -> str:
             '{"name", "enabled", "pattern": {x, y, width, height}, "search": {width, height}, '
             '"offset": {x, y}, "path"} given in part, what is left out as in a new pattern '
             f'(name "", enabled true); {fields}; path, {{"<frame>": [x, y]}} at frames of the '
-            "clip's keys, is filled by tracking on the Fusion page ({} clears it); "
+            "clip's keys, is filled by tracking on the Fusion page or by video_fusion_track ({} "
+            "clears it); "
             f"{_ONE_PATTERN}"
         )
     return (
@@ -852,8 +868,7 @@ def _notes(kind: str, params: Mapping[str, Any]) -> list[str]:
         notes.append("fewer than three points: a mask of nothing")
     if kind == "tracker" and not _tracked(params):
         notes.append(
-            "no pattern has a path yet: tracking on the Fusion page fills them, and until then "
-            "nothing moves"
+            "no pattern has a path yet: video_fusion_track fills them, and until then nothing moves"
         )
     follow = _object(_at(params, "center.follow"))
     if follow:
@@ -1131,7 +1146,7 @@ def _pattern_put(pattern: dict[str, Any], field: str, value: Any, where: str) ->
         if not _is_map(value) or _object(value):
             raise FusionError(
                 f"{path} is filled by tracking on the Fusion page: {{}} clears it, and nothing "
-                "else is taken"
+                "else is taken; video_fusion_track tracks it"
             )
         pattern["path"] = {}
     else:
@@ -2187,6 +2202,364 @@ async def keys(
 
 
 # ---------------------------------------------------------------------------------------------
+# Tracking
+# ---------------------------------------------------------------------------------------------
+
+_TRACK_SECONDS = (30.0, 0.25)
+"""How long a track is waited for: a time of its own, and a time for each frame that it goes
+through. One that takes longer is stopped, and what it tracked is kept."""
+
+_TRACK_STOP_SECONDS = 5.0
+"""How long a track that was stopped may take to tell how it ended."""
+
+_MOST_LOST = 4
+"""How many of the frames at which a pattern was lost are told."""
+
+_BACKWARD: tuple[TrackDirection, ...] = ("reverse", "one_reverse")
+"""The directions that start from the last frame of the clip where no frame is given."""
+
+_ENDED = {
+    "stale_revision": (
+        "the project was changed while it tracked (by another client, an undo or a redo): what "
+        "it wrote before stays, as its own undo step"
+    ),
+    "stale_gesture": "the project was changed while it tracked: what it wrote before stays",
+    "disconnected": "the connection to the engine went",
+    "target": "its clip or its tracker was taken away while it tracked",
+    "tracker": "a pattern that it followed was taken away while it tracked",
+    "cannot_read": "the media of the clip cannot be read",
+    "missing_frame": "a frame of the media could not be decoded: what was found before it is kept",
+}
+"""Why a track ended before its end, in words, by the reason that the engine gives."""
+
+_LOST = (
+    "a pattern lost is followed no further that way: a larger search area "
+    "(trackers.N.search.width, height) or a pattern on a feature with more texture may hold it; "
+    "track again from a frame before"
+)
+_NOTHING = (
+    "no pattern was found beyond the frame that it started from, and nothing was written: put "
+    "the pattern within the picture, on a feature with texture (trackers.N.pattern.x, y)"
+)
+_NEXT = (
+    "video_undo takes the whole track back. To stabilize: settings operation match_move, merge "
+    'bg_only. To have a mask or a merge follow pattern N: its {"center.follow": {"node": the '
+    'tracker, "output": "tracker", "tracker": N}}'
+)
+
+
+def _int_of(value: object) -> int | None:
+    """A whole number as the engine wrote it, or none where it is not one."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _untrackable(project: Mapping[str, Any], clip: Mapping[str, Any]) -> str | None:
+    """What a clip is that has no moving picture of media to track; none where it has one."""
+    source = _object(clip.get("source"))
+    kind = source.get("kind")
+    if kind in ("title", "color"):
+        return "a title" if kind == "title" else "a colour"
+    named = source.get("media")
+    media = next(
+        (one for one in map(_object, _items(project.get("media"))) if one.get("id") == named),
+        None,
+    )
+    if media is None:
+        return "of media that the project does not have"
+    video = _object(_object(media.get("facts")).get("video"))
+    if not video:
+        return "of media without a picture"
+    return "a still" if video.get("still") else None
+
+
+def _followed_checked(
+    node: str, patterns: Sequence[Mapping[str, Any]], named: Sequence[int] | None
+) -> None:
+    """Check that a track of a tracker has patterns to follow, as the engine checks it.
+
+    Those that are named are each to be there and enabled; where none are named, one at least
+    is to be enabled.
+
+    Raises:
+        FusionError: A pattern that is named is not there or is off, or there is none to follow.
+    """
+    if not patterns:
+        raise FusionError(
+            f'node {node} has no pattern to follow: video_fusion_node set {{"trackers.+": '
+            '{"pattern": {"x": 0.4, "y": 0.6}}} adds one, a place from the lower left of the '
+            "picture (the engine refuses it as no_trackers)"
+        )
+    enabled = [at for at, one in enumerate(patterns) if one.get("enabled", True) is not False]
+    on = ", ".join(map(str, enabled)) or "none"
+    if named is None:
+        if not enabled:
+            raise FusionError(
+                f"every pattern of node {node} is off: trackers.N.enabled true turns one on "
+                "(the engine refuses it as no_trackers)"
+            )
+        return
+    for at in named:
+        if at >= len(patterns):
+            raise FusionError(
+                f"node {node} has {len(patterns)} patterns, numbered from 0: there is no pattern "
+                f"{at} (enabled: {on}; the engine refuses it as tracker)"
+            )
+        if at not in enabled:
+            raise FusionError(
+                f"pattern {at} of node {node} is off: trackers.{at}.enabled true turns it on "
+                f"(enabled: {on}; the engine refuses it as tracker)"
+            )
+
+
+def _steps(direction: str, frame: int, first: int, last: int) -> int:
+    """How many frames a track goes through, the way that it goes in the source from ``frame``."""
+    if direction == "forward":
+        return max(last - frame, 0)
+    if direction == "reverse":
+        return max(frame - first, 0)
+    if direction == "forward_and_back":
+        return max(last - first, 0)
+    return 1
+
+
+def _shown_near(clock: KeyClock, key: int) -> int:
+    """The first frame of the timeline that shows the frame ``key`` of the clip's keys.
+
+    Where none does (a frame that a clip faster than its media passes over), the frame of the
+    timeline that shows the frame nearest to it.
+    """
+    shown = clock.shown(key)
+    if shown is not None:
+        return shown
+    frames = range(clock.start, clock.start + max(clock.length, 1))
+    return min(frames, key=lambda at: abs(clock.at(at) - key))
+
+
+def _patterns_told(
+    end: Mapping[str, Any], patterns: Sequence[Mapping[str, Any]], clock: KeyClock
+) -> list[dict[str, Any]]:
+    """Each pattern that a track followed, as ``track.state`` tells it, at frames of the timeline.
+
+    Its place, its name, at how many frames it was found (``frames_found``, the one that it
+    started from not counted), and, where it was lost, the first frames of the timeline that
+    show the frames at which it was (``lost_at``, one each way at most).
+    """
+    told: list[dict[str, Any]] = []
+    for one in map(_object, _items(end.get("trackers"))):
+        at = _int_of(one.get("tracker"))
+        if at is None:
+            continue
+        item: dict[str, Any] = {
+            "index": at,
+            "name": patterns[at].get("name", "") if 0 <= at < len(patterns) else "",
+            "frames_found": _int_of(one.get("frames")),
+        }
+        lost = [frame for frame in map(_int_of, _items(one.get("lost"))) if frame is not None]
+        if lost:
+            item["lost_at"] = [_shown_near(clock, frame) for frame in lost[:_MOST_LOST]]
+        told.append(item)
+    return told
+
+
+def _ended_told(
+    end: Mapping[str, Any],
+    patterns: Sequence[Mapping[str, Any]],
+    clock: KeyClock,
+    late: float | None,
+) -> dict[str, Any]:
+    """How a track ended, as ``track.state`` tells it, at frames of the timeline.
+
+    ``late`` is how long it was waited for, where it was stopped for taking longer.
+    """
+    phase = str(end.get("phase"))
+    reason = "timeout" if late is not None else end.get("reason")
+    told: dict[str, Any] = {"phase": phase}
+    if reason is not None:
+        told["reason"] = reason
+    message = end.get("message")
+    if isinstance(message, str):
+        told["message"] = message
+    span = [one for one in map(_int_of, _items(end.get("tracked"))) if one is not None]
+    told["tracked"] = sorted(_shown_near(clock, one) for one in span) or None
+    told["frames"] = _int_of(end.get("frames"))
+    followed = _patterns_told(end, patterns, clock)
+    told["patterns"] = followed
+    notes: list[str] = []
+    reached = _int_of(end.get("frame"))
+    if late is not None:
+        there = "" if reached is None else f" at frame {_shown_near(clock, reached)}"
+        notes.append(
+            f"it took longer than {late:g} s and was stopped{there}; what it tracked is kept: "
+            "track again from there to go on"
+        )
+    elif phase != "done" and str(reason) in _ENDED:
+        notes.append(_ENDED[str(reason)])
+    if any("lost_at" in item for item in followed):
+        notes.append(_LOST)
+    if any((item["frames_found"] or 0) > 0 for item in followed):
+        notes.append(_NEXT)
+    elif phase == "done":
+        notes.append(_NOTHING)
+    if notes:
+        told["notes"] = notes
+    return told
+
+
+async def _waited(tracking: Tracking, seconds: float) -> tuple[dict[str, Any] | None, bool]:
+    """How a track ended, waited for ``seconds`` at most, and whether it took longer.
+
+    One that takes longer is stopped, and how it ended then is waited for a while more; one
+    whose wait is given up on, as when the call is cancelled, is stopped too.
+
+    Returns:
+        What ``track.state`` told, or ``None`` where a track that was stopped told nothing in
+        time; and whether it was stopped for taking longer than ``seconds``.
+    """
+    try:
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(seconds):
+                return await tracking.ended(), False
+        # It ends between frames, keeping what it tracked. One that ended meanwhile is no
+        # longer the engine's to stop, and its end has been told.
+        with contextlib.suppress(EngineError):
+            await tracking.stop()
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(_TRACK_STOP_SECONDS):
+                return await tracking.ended(), True
+        return None, True
+    except asyncio.CancelledError:
+        with contextlib.suppress(EngineError, TimeoutError):
+            async with asyncio.timeout(_TRACK_STOP_SECONDS):
+                await tracking.stop()
+        raise
+    finally:
+        await tracking.aclose()
+
+
+async def track(
+    engine: Engine,
+    timeline: str | None,
+    clip: str,
+    node: str,
+    *,
+    trackers: Sequence[int] | None = None,
+    frame: int | None = None,
+    direction: TrackDirection = "forward",
+) -> dict[str, Any]:
+    """Track the patterns of a tracker of a clip's composition through the frames of the clip.
+
+    The engine follows each pattern from where it is at ``frame``, a frame of the timeline
+    within the clip (its first by default, its last for a track that goes in reverse), the way
+    that ``direction`` goes on the timeline, and writes the places that it finds into the paths
+    of the patterns as it goes, one step of the history in all (PROTOCOL, The patterns of a
+    Tracker). ``trackers`` names the patterns to follow by their places from 0: every one that
+    is enabled, where it is left out. The frame is sent as the frame of the clip's keys that
+    the clip is at there (:class:`columbina.video.clip_keys.KeyClock`). What can be told from
+    the project is checked before anything is sent.
+
+    The track is waited for as long as :data:`_TRACK_SECONDS` gives for the frames that it goes
+    through; one that takes longer is stopped, and what it tracked is kept.
+
+    Returns:
+        The frame that it started from (``from``), by the frame of the timeline and its own;
+        how it ended (``phase``: ``done``, ``stopped`` or ``failed``, with a ``reason`` but
+        where it is done, ``timeout`` where it took too long); the first and the last frame of
+        the timeline that show a frame written into a path (``tracked``); how many frames it
+        went through (``frames``); each pattern followed with its name, at how many frames it
+        was found and the frames of the timeline at which it was lost; and what may be done
+        next (``notes``).
+
+    Raises:
+        FusionError: What is asked is wrong, said before anything is sent.
+        EngineError: The engine refused the track, or the connection to it was lost.
+    """
+    if trackers is not None and (not trackers or min(trackers) < 0):
+        raise FusionError(
+            "trackers is a list of the places of patterns, from 0: leave it out to follow every "
+            "pattern that is enabled"
+        )
+    revision, project = await engine.project()
+    session = engine.session
+    on = _timeline(project, timeline)
+    found = _picture_clip(on, clip)
+    own = found.get("fusion")
+    if not _is_map(own):
+        raise FusionError(
+            f"clip {clip} has no composition, and so no tracker: video_fusion_node adds one "
+            "(action add, kind tracker, after MediaIn1, with its patterns)"
+        )
+    target = _node_of(_object(own), node)
+    if target.get("kind") != "tracker":
+        raise FusionError(
+            f"node {node} is {_a(target.get('kind'))}: video_fusion_track follows the patterns "
+            "of a tracker (the engine refuses it as wrong_node)"
+        )
+    what = _untrackable(project, found)
+    if what is not None:
+        raise FusionError(
+            f"clip {clip} is {what}: a title, a colour or a still has no frames to track (the "
+            "engine refuses it as untrackable)"
+        )
+    patterns = [_object(one) for one in _items(_object(target.get("params")).get("trackers"))]
+    _followed_checked(node, patterns, trackers)
+    clock = _clock(project, on, found)
+    last = clock.start + clock.length - 1
+    if frame is None:
+        frame = last if direction in _BACKWARD else clock.start
+    if not clock.start <= frame <= last:
+        raise FusionError(
+            f"frame {frame} is not in clip {clip}, which is at frames {clock.start} to {last} "
+            f"of timeline {on['id']}; frame is a frame of the timeline"
+        )
+    key = clock.at(frame)
+    aim: dict[str, Any] = {"timeline": on["id"], "clip": clip, "node": node}
+    if trackers is not None:
+        aim["trackers"] = sorted(set(trackers))
+    asked: dict[str, Any] = {
+        "fusion": aim,
+        "revision": revision,
+        "frame": key,
+        "direction": direction,
+    }
+    try:
+        tracking = await engine.track(asked, session=session)
+    except EngineError as error:
+        if (error.data or {}).get("reason") != "frame":
+            raise
+        # The engine counts the frames of the clip's media: the clip is told as the model
+        # counts it.
+        raise EngineError(
+            f"{error}; clip {clip} is at frames {clock.start} to {last} of the timeline, and "
+            f"frame {frame} of it shows frame {key} of {clock.counts}",
+            code=error.code,
+            data=error.data,
+        ) from None
+    started = tracking.started
+    first, final = _int_of(started.get("first")), _int_of(started.get("last"))
+    way = str(started.get("direction", direction))
+    steps = _steps(way, key, key if first is None else first, key if final is None else final)
+    seconds = _TRACK_SECONDS[0] + _TRACK_SECONDS[1] * steps
+    end, late = await _waited(tracking, seconds)
+    told: dict[str, Any] = {
+        "timeline": on["id"],
+        "clip": clip,
+        "node": node,
+        "from": {"timeline_frame": frame, "frame": key},
+        "direction": direction,
+        "key_frames": f"frames of {clock.counts}, from 0",
+    }
+    if end is None:
+        told.update(phase="stopped", reason="timeout")
+        told["notes"] = [
+            f"it took longer than {seconds:g} s and was stopped, and the engine told nothing "
+            "more: video_fusion_info shows the frames of the paths"
+        ]
+        return told
+    told.update(_ended_told(end, patterns, clock, seconds if late else None))
+    return told
+
+
+# ---------------------------------------------------------------------------------------------
 # What a refusal of the engine means
 # ---------------------------------------------------------------------------------------------
 
@@ -2206,7 +2579,7 @@ _RANGES = {
     "tracker.trackers.pattern": "a pattern's x and y are -15.5 to 16.5, its width, height 0 to 1",
     "tracker.trackers.search": "the search width and height of a pattern are 0 to 1",
     "tracker.trackers.offset": "the offset x and y of a pattern are -16 to 16",
-    "tracker.trackers.path": "a path is filled by tracking on the Fusion page",
+    "tracker.trackers.path": "a path is filled by tracking: video_fusion_track",
     "tracker.pivot_point": "pivot_point.x and pivot_point.y are -15.5 to 16.5",
     "center.follow.tracker": f"a center follows a pattern from 0 to {_MOST_TRACKERS - 1}",
 }
@@ -2245,3 +2618,29 @@ def hint_of(error: EngineError) -> str | None:
     if reason == "missing" and what == "fusion":
         return "the clip has no composition: video_fusion_node gives it one with its first action"
     return _HINTS.get(str(reason))
+
+
+_TRACK_HINTS = {
+    "target": "video_fusion_info shows the clips that have a composition, and their nodes",
+    "wrong_node": (
+        "video_fusion_track follows the patterns of a tracker: video_fusion_info shows the kind "
+        "of each node"
+    ),
+    "tracker": "video_fusion_info lists the patterns of the tracker, from 0, and which are on",
+    "no_trackers": (
+        "add a pattern or enable one (video_fusion_node set trackers.+ / trackers.N.enabled)"
+    ),
+    "untrackable": "a title, a colour or a still has no frames to track",
+    "frame": "frame is a frame of the timeline within the clip, where it shows its media",
+    "stale_revision": "the project changed meanwhile: call again",
+    "busy": (
+        "another track is running (one at a time): wait for it to end, or stop it where it was "
+        "started"
+    ),
+}
+"""What a model can do about a refusal of a track of a tracker, by its reason."""
+
+
+def track_hint_of(error: EngineError) -> str | None:
+    """What a model can do about a refusal of a track of a tracker, if more is to be said."""
+    return _TRACK_HINTS.get(str((error.data or {}).get("reason")))

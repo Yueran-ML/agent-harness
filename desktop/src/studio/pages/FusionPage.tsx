@@ -86,8 +86,8 @@ interface Props {
  * node), which the bar names and whose card has a dot; another clip begins with the output again,
  * and so does a node that is taken away. The page left, the monitor shows the timeline again. Over
  * the picture the node that is chosen has its on-screen controls, where its kind has any: the
- * outline and the handles of a mask, and the centre of a Merge or a Transform, dragged on the
- * picture (`useFusionOnscreen`).
+ * outline and the handles of a mask, the centre of a Merge or a Transform, and the patterns of a
+ * Tracker with their paths, dragged on the picture (`useFusionOnscreen`).
  *
  * The clip is the one at the playhead on the topmost enabled video track, or the one clip of
  * picture chosen on the Edit page (`fusionClip`); the bar names it, and goes to the clip before and
@@ -186,7 +186,7 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
   // The controls of the node that is chosen, over the picture of the composition of this clip, where the monitor shows it.
   const viewerPressed = useCallback(() => setArea('viewer'), []);
   useFusionOnscreen({
-    bridge, session, revision, native, timeline: selected, clip, media, node, frame: frame ?? 0, view: told !== null && told.clip === clipId ? told : null, locked,
+    bridge, session, revision, native, timeline: selected, clip, media, composition, node, frame: frame ?? 0, view: told !== null && told.clip === clipId ? told : null, locked,
     onPress: viewerPressed,
     onFailure: (failure) => { if (!isEmpty(failure)) editing.setProblem(refusalText(failure, now.current.words.hint.studio)); },
   });

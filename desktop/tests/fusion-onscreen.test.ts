@@ -12,12 +12,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Key } from '../src/app/keys';
 import type {
-  FusionEllipse, FusionMerge, FusionNode, FusionPicture, FusionPoint, FusionPolygon, FusionRectangle, FusionTransform, OverlayPoint, Param, ViewPointer,
+  FusionEllipse, FusionMerge, FusionNode, FusionPicture, FusionPoint, FusionPolygon, FusionRectangle, FusionTrackerPattern, FusionTransform, OverlayPoint, Param,
+  ViewPointer,
 } from '../src/studio/engine';
-import { fusionKey, newEllipse, newMerge, newNode, newPolygon, newRectangle, newTransform, startPoints, viewedAfter } from '../src/studio/fusion/edits';
 import {
-  controlsOf, draggedValues, ELLIPSE_STEPS, fromPixels, handleName, hasControls, hitHandle, overlayOf, reachOf, toPixels, turnOf, type Handle,
+  fusionKey, newEllipse, newMerge, newNode, newPattern, newPolygon, newRectangle, newTracker, newTransform, startPoints, viewedAfter,
+} from '../src/studio/fusion/edits';
+import {
+  controlsOf, draggedPattern, draggedValues, ELLIPSE_STEPS, fromPixels, handleName, hasControls, hitHandle, overlayOf, reachOf, toPixels, turnOf, type Handle,
 } from '../src/studio/fusion/onscreen';
+import { MOST_PATH_POINTS, pathSamples, placeOnPath, thinned } from '../src/studio/fusion/tracker';
 
 const PICTURE: FusionPicture = { x: 240, y: 0, width: 1440, height: 1080 };
 const rectangle = (params: Partial<FusionRectangle> = {}): FusionNode => ({ ...newNode('rectangle', null, 'n6'), params: { ...newRectangle(), ...params } } as FusionNode);
@@ -313,5 +317,139 @@ describe('the node that the viewer shows', () => {
       expect(fusionKey(key({ key: '0', code: 'Digit0', ...more })), JSON.stringify(more)).toBeNull();
     }
     expect(fusionKey(key({ key: '2', code: 'Digit2' }))).toBeNull();
+  });
+});
+
+// A Tracker (PROTOCOL.md, "The Tracker"): its patterns on the picture, and the centres that follow it.
+/** A Tracker of these patterns. */
+const trackerOf = (trackers: FusionTrackerPattern[]): FusionNode => ({ ...newNode('tracker', null, 'n9'), params: { ...newTracker(), trackers } } as FusionNode);
+/** A pattern put at a quarter of the width and half the height, with a path from there at frame 0 to 0.75, 0.25 at frame 8. */
+const tracked = (): FusionTrackerPattern => ({ ...newPattern(0.25, 0.5), name: 'Left', path: { 0: [0.25, 0.5], 8: [0.75, 0.25] } });
+
+describe('the path of a pattern of a Tracker', () => {
+  const moving: FusionTrackerPattern['path'] = { 10: [0.25, 0.5], 20: [0.5, 0.25], 22: [0.75, 0.25] };
+
+  it('is where a pattern is on the line between two of its frames, and where its first or its last has it beyond them, as the engine reads it', () => {
+    // Where the path has it.
+    expect([placeOnPath(moving, 10), placeOnPath(moving, 20), placeOnPath(moving, 22)]).toEqual([[0.25, 0.5], [0.5, 0.25], [0.75, 0.25]]);
+    // Between two frames of it, whole and not.
+    expect([placeOnPath(moving, 15), placeOnPath(moving, 21), placeOnPath(moving, 12.5)]).toEqual([[0.375, 0.375], [0.625, 0.25], [0.3125, 0.4375]]);
+    // Before its first frame and after its last.
+    for (const frame of [9, 0, -1000, -Infinity]) expect(placeOnPath(moving, frame), String(frame)).toEqual([0.25, 0.5]);
+    for (const frame of [22.5, 23, 1e9, Infinity]) expect(placeOnPath(moving, frame), String(frame)).toEqual([0.75, 0.25]);
+    // One frame is every frame; no path is no place; and a frame that is no number.
+    for (const frame of [-3, 7, 7.5, 400]) expect(placeOnPath({ 7: [0.125, 0.875] }, frame), String(frame)).toEqual([0.125, 0.875]);
+    expect([placeOnPath({}, 7), placeOnPath(moving, Number.NaN)]).toEqual([null, null]);
+  });
+
+  it('has its frames in their order as numbers, below 0 too, whatever order they are written in', () => {
+    expect(pathSamples({ 10: [0.5, 0.5], '-2': [0.25, 0.5], 9: [0.75, 0.5] }).map(([frame]) => frame)).toEqual([-2, 9, 10]);
+    expect(placeOnPath({ 10: [0.5, 0.5], '-2': [0.25, 0.5], 9: [0.75, 0.5] }, 9.5)).toEqual([0.625, 0.5]);
+  });
+
+  it('is thinned to at most a few hundred places, the first and the last always among them', () => {
+    const many = Array.from({ length: 1000 }, (_, index) => index);
+    const few = thinned(many, MOST_PATH_POINTS);
+    expect([MOST_PATH_POINTS, few.length, few[0], few.at(-1)]).toEqual([256, 256, 0, 999]);
+    expect(few.every((each, index) => index === 0 || each > few[index - 1])).toBe(true);
+    // As few as that, or fewer: all of them, in a list of its own.
+    const short = [1, 2, 3];
+    expect(thinned(short, MOST_PATH_POINTS)).toEqual(short);
+    expect(thinned(short, MOST_PATH_POINTS)).not.toBe(short);
+    expect(thinned(many, 2)).toEqual([0, 999]);
+  });
+});
+
+describe('the controls of a Tracker on the picture', () => {
+  it('are of each pattern its box and the box that it is searched for in, about its middle, and a handle there', () => {
+    expect(hasControls('tracker')).toBe(true);
+    // A new pattern in the middle: 0.05 of the picture wide and high is 72 by 54 pixels, and its search area, an eighth, is 180 by 135.
+    expect(controlsOf(trackerOf([newPattern()]), 0, PICTURE)).toEqual({
+      lines: [
+        [[924, 567], [996, 567], [996, 513], [924, 513], [924, 567]],
+        [[870, 607.5], [1050, 607.5], [1050, 472.5], [870, 472.5], [870, 607.5]],
+      ],
+      handles: [{ kind: 'pattern', index: 0, at: [960, 540] }],
+      marks: [],
+    });
+    expect(handleName({ kind: 'pattern', index: 2 })).toBe('pattern:2');
+    // A Tracker without patterns has nothing to draw.
+    expect(controlsOf(trackerOf([]), 0, PICTURE)).toEqual({ lines: [], handles: [], marks: [] });
+  });
+
+  it('are about where a pattern is on its path at the playhead, with its path as a line through its frames and a mark of the playhead there', () => {
+    // At frame 2, a quarter of the way from 0.25, 0.5 to 0.75, 0.25: at 0.375, 0.4375, which is 780, 607.5.
+    const controls = controlsOf(trackerOf([tracked()]), 2, PICTURE)!;
+    expect(controls.lines).toEqual([
+      [[744, 634.5], [816, 634.5], [816, 580.5], [744, 580.5], [744, 634.5]],
+      [[690, 675], [870, 675], [870, 540], [690, 540], [690, 675]],
+      [[600, 540], [1320, 810]],
+    ]);
+    expect([controls.handles, controls.marks]).toEqual([[{ kind: 'pattern', index: 0, at: [780, 607.5] }], [[780, 607.5]]]);
+    // Drawn, the handle is a point as the handles of a mask are, and the mark of the playhead lies over it.
+    expect(overlayOf(controls, [1920, 1080])).toEqual({
+      canvas: [1920, 1080], lines: controls.lines, dots: [{ kind: 'key', at: [[780, 607.5]] }, { kind: 'current', at: [[780, 607.5]] }],
+    });
+    expect(overlayOf(controls, [1920, 1080], 0).dots).toEqual([{ kind: 'current', at: [[780, 607.5]] }, { kind: 'active', at: [[780, 607.5]] }]);
+    // Before its first frame where the first has it, after its last where the last has it.
+    expect(controlsOf(trackerOf([tracked()]), -4, PICTURE)!.handles[0].at).toEqual([600, 540]);
+    expect(controlsOf(trackerOf([tracked()]), 30, PICTURE)!.handles[0].at).toEqual([1320, 810]);
+  });
+
+  it('leave out a pattern that is off, and draw one that is dragged where the drag has put it', () => {
+    // The first is off: the second alone, by its place in the list.
+    const two = controlsOf(trackerOf([{ ...newPattern(), enabled: false }, tracked()]), 0, PICTURE)!;
+    expect(two.handles).toEqual([{ kind: 'pattern', index: 1, at: [600, 540] }]);
+    expect(two.lines).toHaveLength(3);
+    // Dragged to the middle: its boxes and its handle there, its path and the mark of the playhead where they were.
+    const placed = controlsOf(trackerOf([tracked()]), 2, PICTURE, { placing: { index: 0, place: [0.5, 0.5] } })!;
+    expect(placed.lines[0]).toEqual([[924, 567], [996, 567], [996, 513], [924, 513], [924, 567]]);
+    expect([placed.handles[0].at, placed.lines[2], placed.marks]).toEqual([[960, 540], [[600, 540], [1320, 810]], [[780, 607.5]]]);
+  });
+
+  it('draw a long path through a few hundred of its places, the first and the last among them', () => {
+    // A thousand frames, each a pixel to the right of the one before.
+    const path = Object.fromEntries(Array.from({ length: 1000 }, (_, index) => [String(index), [0.25 + index / 1440, 0.5] as [number, number]]));
+    const [, , line] = controlsOf(trackerOf([{ ...newPattern(0.25, 0.5), path }]), 0, PICTURE)!.lines;
+    expect(line).toHaveLength(MOST_PATH_POINTS);
+    expect([line[0], line.at(-1)]).toEqual([[600, 540], [1599, 540]]);
+    expect(line.every(([x, y], index) => y === 540 && (index === 0 || x > line[index - 1][0]))).toBe(true);
+  });
+
+  it('are dragged by the place where a pattern is put: from where its handle was drawn, as a centre is, and never by its path', () => {
+    const node = trackerOf([newPattern(), tracked()]);
+    // 144 pixels right and 108 up: a tenth of the width and of the height, from where it was put.
+    expect(draggedPattern(node, 0, 0, PICTURE, 144, -108)).toEqual([0.6, 0.6]);
+    // A pattern with a path, from where the path has it at the frame of the press.
+    expect(draggedPattern(node, 1, 2, PICTURE, 144, 0)).toEqual([0.475, 0.4375]);
+    // Within the range of a place.
+    expect(draggedPattern(node, 0, 0, PICTURE, 1440 * 20, 1080 * 20)).toEqual([16.5, -15.5]);
+    // Nothing of a pattern that is not there, of another kind, or on a picture that has no size; and no setting that takes keys.
+    expect([
+      draggedPattern(node, 2, 0, PICTURE, 10, 10), draggedPattern(newNode('blur', null, 'b1'), 0, 0, PICTURE, 10, 10),
+      draggedPattern(node, 0, 0, { x: 0, y: 0, width: 0, height: 0 }, 10, 10),
+    ]).toEqual([null, null, null]);
+    expect(draggedValues(node, { kind: 'pattern', index: 0 }, 0, PICTURE, 144, 0)).toEqual([]);
+    expect(draggedValues(node, { kind: 'center' }, 0, PICTURE, 144, 0)).toEqual([]);
+  });
+});
+
+describe('a centre that follows a Tracker, on the picture', () => {
+  it('is drawn where it follows the Tracker to, and is not taken hold of', () => {
+    // A Merge whose centre follows a pattern that is at a quarter of the width and three quarters of the height.
+    const merged = controlsOf(merge(), 0, PICTURE, { follows: { place: [0.25, 0.75] } })!;
+    expect(merged).toEqual({ lines: [], handles: [{ kind: 'center', at: [600, 270], fixed: true }] });
+    expect(overlayOf(merged, [1920, 1080]).dots).toEqual([{ kind: 'current', at: [[600, 270]] }]);
+    expect(hitHandle(merged, [600, 270], 16)).toBe(-1);
+    // A Rectangle: its outline and its other handles about the place that it follows, and those are taken hold of still.
+    const box = controlsOf(rectangle(), 0, PICTURE, { follows: { place: [0.25, 0.75] } })!;
+    expect(box.lines).toEqual([[[240, 540], [960, 540], [960, 0], [240, 0], [240, 540]]]);
+    expect(box.handles).toEqual([{ kind: 'center', at: [600, 270], fixed: true }, { kind: 'width', at: [960, 270] }, { kind: 'height', at: [600, 0] }]);
+    expect([hitHandle(box, [600, 270], 16), hitHandle(box, [960, 270], 16)]).toEqual([-1, 1]);
+    // Where the page does not work out what it follows (a Steady Position), at its own place; and held within the range of the centre of a mask.
+    expect(controlsOf(rectangle(), 0, PICTURE, { follows: { place: null } })!.handles[0]).toEqual({ kind: 'center', at: [960, 540], fixed: true });
+    expect(controlsOf(rectangle(), 0, PICTURE, { follows: { place: [12, 0.5] } })!.handles[0].at).toEqual([14640, 540]);
+    // A centre that follows nothing is as it was.
+    expect(controlsOf(merge(), 0, PICTURE, { follows: null })).toEqual(controlsOf(merge(), 0, PICTURE));
   });
 });

@@ -294,6 +294,11 @@
   fill: var(--fusion-effect);
 }
 
+/* So is a Tracker, which is added among the effects. */
+.fusion-page .fusion-node[data-kind='tracker'] .fusion-node-stripe {
+  fill: var(--fusion-effect);
+}
+
 .fusion-page .fusion-node-name {
   font-size: calc(11px * var(--type));
   fill: var(--moon-0);
@@ -425,6 +430,75 @@
 .fusion-point-name[aria-pressed='true'] {
   color: var(--accent);
   background: var(--accent-wash);
+}
+
+/*
+ * The patterns of a Tracker: each its switch, its name (which chooses it) and the button that takes it away on one line, and
+ * what its path reaches under them; the one chosen, whose numbers are shown, marked as a point of a Polygon is.
+ */
+.fusion-page .fusion-patterns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0 0 var(--s2);
+  padding: 0;
+  list-style: none;
+}
+
+.fusion-pattern {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: var(--s2);
+  box-shadow: inset 2px 0 0 var(--line);
+}
+
+.fusion-pattern[data-chosen] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.fusion-pattern-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.fusion-pattern-head .fusion-point-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A pattern that is off counts for nothing: its name is said dimmer. */
+.fusion-pattern:not([data-enabled]) .fusion-point-name {
+  color: var(--moon-3);
+}
+
+.fusion-page .fusion-pattern-path {
+  margin: 0;
+  padding-left: var(--s1);
+}
+
+/* Connect To of a centre: the button says what it follows, and the line under it says so while it does. */
+.fusion-connect-button {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.fusion-connect-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fusion-page .fusion-follows {
+  margin: 0;
+  color: var(--accent);
 }
 
 /*

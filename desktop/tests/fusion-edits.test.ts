@@ -9,13 +9,14 @@ import { describe, expect, it } from 'vitest';
 import type { Key } from '../src/app/keys';
 import { COLUMN_GAP, linkHalves, linkPath, MARGIN, NODE_HEIGHT, NODE_WIDTH } from '../src/studio/color/graph';
 import {
-  applyOp, firstComposition, type Composition, type FusionLink, type FusionNode, type FusionPoint, type Keyframe, type Op, type Project,
+  applyOp, firstComposition, type Composition, type FusionFollow, type FusionLink, type FusionNode, type FusionPoint, type FusionRectangle, type FusionTracker,
+  type FusionTrackerPattern, type Keyframe, type Op, type Project,
 } from '../src/studio/engine';
 import {
-  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addedNodes, addNode, connect, copyNodes, cutNodes, disconnect, duplicateNodes, fusionKey, insertOnLink,
-  insertPoint, isFirst, LEAST_POINTS, MOST_NODES, MOST_POINTS, moveNodes, newBackground, newDeltaKeyer, newMerge, newNode, newPolygon, newTransform, PASTE_OFFSET,
-  pastedName, pasteNodes, reconnect, relabel, removeComposition, removeNodes, removePoint, resetComposition, restoreNodes, roomFor, shownComposition, startPoints,
-  togglePass, withFirst,
+  ADDABLE, ADDABLE_EFFECTS, ADDABLE_MASKS, addedNode, addedNodes, addNode, CENTER_KINDS, connect, copyNodes, cutNodes, disconnect, duplicateNodes, followOf,
+  followOps, fusionKey, hasCenter, insertOnLink, insertPoint, isFirst, LEAST_POINTS, MOST_NODES, MOST_POINTS, MOST_TRACKERS, moveNodes, newBackground,
+  newDeltaKeyer, newMerge, newNode, newPattern, newPolygon, newTracker, newTransform, PASTE_OFFSET, pastedName, pasteNodes, reconnect, relabel, removeComposition,
+  removeNodes, removePoint, resetComposition, restoreNodes, roomFor, shownComposition, startPoints, togglePass, withFirst, withFollow,
 } from '../src/studio/fusion/edits';
 import {
   fusionLinkHalves, fusionLinkNear, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, isMatteInput, isPictureInput,
@@ -25,6 +26,10 @@ import {
   addKey, FUSION_SETTINGS, hasKeys, isPointSetting, keyerRefusals, keyOps, keyTimesOf, numbered, paramOf, pathOf, pointPath, putValue, putValues, removeKey,
   settingOf, settingsOf, wholeParam, wholeValue,
 } from '../src/studio/fusion/settings';
+import {
+  addPattern, clearPath, enablePattern, followChoices, followedPlace, followName, patternName, placedPattern, removePattern, renamePattern, restoredPatterns,
+  setPatternValue, setTracker,
+} from '../src/studio/fusion/tracker';
 import { clip, media, timeline } from './timeline-fixture';
 
 const AT = { timeline: 't1', clip: 'c1' };
@@ -213,7 +218,7 @@ describe('the layout of a composition', () => {
   it('names a node by its label, or by its kind and its number among those of its kind', () => {
     const kinds = {
       media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
-      rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer',
+      rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer', tracker: 'Tracker',
     };
     const labelled: Composition = { ...comp(), nodes: [...comp().nodes.map(node => (node.id === 'n4' ? { ...node, label: 'Over the sky' } : node)), transform('n6')] };
     expect([...namesOf(labelled, kinds)]).toEqual([
@@ -598,9 +603,10 @@ describe('a Blur and a Mosaic', () => {
   });
 
   it('are added in a group of their own: loose where no node is chosen, and after the node chosen on their picture, in the one operation', () => {
-    expect(ADDABLE_EFFECTS).toEqual(['blur', 'mosaic', 'delta_keyer']);
-    expect([...ADDABLE, ...ADDABLE_MASKS].some(kind => kind === 'blur' || kind === 'mosaic' || kind === 'delta_keyer')).toBe(false);
-    for (const kind of ADDABLE_EFFECTS) {
+    expect(ADDABLE_EFFECTS).toEqual(['blur', 'mosaic', 'delta_keyer', 'tracker']);
+    expect([...ADDABLE, ...ADDABLE_MASKS].some(kind => kind === 'blur' || kind === 'mosaic' || kind === 'delta_keyer' || kind === 'tracker')).toBe(false);
+    // A Tracker begins with a pattern of its own, which the engine's new one has not: it is held below, with the Tracker.
+    for (const kind of ['blur', 'mosaic', 'delta_keyer'] as const) {
       // None chosen: with no links, at the place given, or where the editor lays it out.
       expect(addNode(AT, comp(), kind, null, { x: 10.4, y: 20.6 }), kind).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode(kind, { x: 10, y: 21 }) }]);
       const loose = addNode(AT, comp(), kind, null, null);
@@ -1089,5 +1095,264 @@ describe('a node dropped onto a link', () => {
     expect(fusionLinkNear(layout, middleOf(mask))).toEqual(mask);
     expect(fusionLinkNear(layout, middleOf(mask), each => each.input !== 'mask')).toBeNull();
     expect(fusionLinkNear(layout, middleOf(picture), each => each.input !== 'background')).toBeNull();
+  });
+});
+
+// A Tracker (PROTOCOL.md, "The Tracker" and "Following a Tracker"): its patterns, each with its path, and the centres that follow it.
+interface OpsExample { name: string; done: Op }
+/** A pattern put at a quarter of the width and half the height, named, with a path of two frames: from where it was put at frame 0 to 0.75, 0.25 at frame 8. */
+const left = (): FusionTrackerPattern => ({ ...newPattern(0.25, 0.5), name: 'Left', path: { 0: [0.25, 0.5], 8: [0.75, 0.25] } });
+/** A Tracker of these patterns, the node `id`, with what else of it is given. */
+const trackerNode = (trackers: FusionTrackerPattern[], id = 'n6', more: Partial<FusionTracker> = {}): FusionNode => (
+  { ...newNode('tracker', null, id), params: { ...newTracker(), ...more, trackers } } as FusionNode);
+/** The place of the pattern `tracker` of the node `node`, as a centre follows it. */
+const ofPattern = (tracker: number, node = 'n6'): FusionFollow => ({ node, output: 'tracker', tracker });
+/** The patterns that an operation sets a Tracker to, whole. */
+const listOf = (ops: Op[], at = 0): FusionTrackerPattern[] => ((ops[at] as Extract<Op, { op: 'set_fusion_node' }>).params as unknown as { trackers: FusionTrackerPattern[] }).trackers;
+/** The nodes that operations add. */
+const nodesOf = (ops: Op[]): FusionNode[] => ops.filter((op): op is Added => op.op === 'add_fusion_node').map(op => op.node);
+
+describe('a Tracker', () => {
+  it('is made with every setting as the engine writes a new one, has no setting that takes keys, and has its picture, its foreground and its mask', () => {
+    // By its path from the folder that the tests run in, as the catalog is read above.
+    const examples: OpsExample[] = JSON.parse(readFileSync('../engine/crates/model/tests/data/ops-examples.json', 'utf8'));
+    const added = examples.find(each => each.name === 'add_fusion_node of a tracker with two patterns and their paths')!.done as Added;
+    expect(added.node.kind).toBe('tracker');
+    const written = added.node.params as FusionTracker;
+    // The example match moves two patterns, named and tracked: every other setting is as the engine makes a new Tracker.
+    expect({ ...written, operation: 'none', trackers: [] }).toStrictEqual(newTracker());
+    expect(Object.keys(newTracker())).toEqual(['operation', 'merge', 'position', 'rotation', 'scaling', 'pivot', 'pivot_tracker', 'pivot_point', 'reference', 'trackers']);
+    expect(Object.keys(newTracker()).sort()).toEqual(Object.keys(written).sort());
+    // A pattern as the engine makes one, but for where it was put, its name and its path.
+    const [first, second] = written.trackers;
+    expect(first).toStrictEqual({ ...newPattern(0.25, 0.5), name: 'Left', path: first.path });
+    expect(Object.keys(newPattern()).sort()).toEqual(Object.keys(second).sort());
+    expect(newPattern()).toStrictEqual({
+      name: '', enabled: true, pattern: { x: 0.5, y: 0.5, width: 0.05, height: 0.05 }, search: { width: 0.125, height: 0.125 }, offset: { x: 0, y: 0 }, path: {},
+    });
+    expect(newNode('tracker', null, 't1')).toStrictEqual({ id: 't1', label: '', pass_through: false, pos: null, kind: 'tracker', params: newTracker() });
+    expect(newTracker().trackers).not.toBe(newTracker().trackers);
+    // None of its settings takes keys: the catalog of the engine has no entry for it.
+    const catalog: Record<string, Entry[]> = JSON.parse(readFileSync('../engine/crates/model/tests/data/catalog.json', 'utf8'));
+    expect(catalog.fusion_tracker).toBeUndefined();
+    expect([FUSION_SETTINGS.tracker, settingsOf(newNode('tracker', null, 't1'))]).toEqual([[], []]);
+    expect(hasKeys(trackerNode([left()]))).toBe(false);
+    // Its picture first, which it hands on, then the foreground that it makes follow its patterns, then its effect mask.
+    expect(INPUTS.tracker).toEqual(['input', 'foreground', 'mask']);
+    expect(pictureInputs('tracker')).toEqual(['input', 'foreground']);
+    expect([hasOutput('tracker'), hasMaskInput('tracker'), isMaskKind('tracker'), handedOn('tracker'), matteInputs('tracker')]).toEqual([true, true, false, 'input', []]);
+  });
+
+  it('is added in the group of the effects with one pattern in the middle of the picture, after the node chosen on its picture', () => {
+    const start = { ...newNode('tracker'), params: { ...newTracker(), trackers: [newPattern()] } };
+    expect(ADDABLE_EFFECTS).toContain('tracker');
+    expect(addNode(AT, comp(), 'tracker', null, { x: 10.4, y: 20.6 })).toEqual([{ op: 'add_fusion_node', ...AT, node: { ...start, pos: { x: 10, y: 21 } } }]);
+    expect(addNode(AT, comp(), 'tracker', 'n3', null)).toEqual([{
+      op: 'add_fusion_node', ...AT, node: start, links: [link('n3', '', 'input'), link('', 'n4', 'background')],
+    }]);
+    // The engine's new one has none, and each new one has a list of its own.
+    expect(newTracker().trackers).toEqual([]);
+    // A mask added with it chosen goes into its effect mask; its foreground is linked by hand.
+    const withTracker: Composition = { nodes: [...comp().nodes, trackerNode([])], links: comp().links };
+    expect(addNode(AT, withTracker, 'ellipse', 'n6', null)).toEqual([{ op: 'add_fusion_node', ...AT, node: newNode('ellipse'), links: [link('', 'n6', 'mask')] }]);
+  });
+
+  it('has its patterns set whole, the others and every path the objects that they are', () => {
+    const one = left();
+    const two: FusionTrackerPattern = { ...newPattern(0.75, 0.5), name: 'Right', path: { 4: [0.75, 0.5] } };
+    const node = trackerNode([one, two]);
+    const moved = setPatternValue(AT, node, 0, 'pattern.x', 0.3);
+    expect(moved).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n6', params: { trackers: [{ ...one, pattern: { ...one.pattern, x: 0.3 } }, two] } }]);
+    expect(listOf(moved)[1]).toBe(two);
+    expect(listOf(moved)[0].path).toBe(one.path);
+    // Each number within its range; a number that is what it is already sends nothing; nor does a pattern or a node that is not there.
+    expect(listOf(setPatternValue(AT, node, 1, 'search.width', 2))[1].search).toEqual({ width: 1, height: 0.125 });
+    expect(listOf(setPatternValue(AT, node, 0, 'offset.y', -20))[0].offset).toEqual({ x: 0, y: -16 });
+    expect(listOf(setPatternValue(AT, node, 0, 'pattern.y', 99))[0].pattern).toEqual({ x: 0.25, y: 16.5, width: 0.05, height: 0.05 });
+    expect([
+      setPatternValue(AT, node, 0, 'pattern.width', 0.05), setPatternValue(AT, node, 2, 'pattern.x', 0.3), setPatternValue(AT, newNode('blur', null, 'b1'), 0, 'pattern.x', 0.3),
+    ]).toEqual([[], [], []]);
+    // Renamed, turned off, and its path cleared: the other pattern is the object that it was.
+    const renamed = renamePattern(AT, node, 1, 'Eye');
+    expect(listOf(renamed)).toEqual([one, { ...two, name: 'Eye' }]);
+    expect(listOf(renamed)[0]).toBe(one);
+    expect(renamePattern(AT, node, 1, 'Right')).toEqual([]);
+    expect(listOf(enablePattern(AT, node, 0, false))).toEqual([{ ...one, enabled: false }, two]);
+    expect(enablePattern(AT, node, 0, true)).toEqual([]);
+    const cleared = clearPath(AT, node, 0);
+    expect(listOf(cleared)).toEqual([{ ...one, path: {} }, two]);
+    expect(listOf(cleared)[1]).toBe(two);
+    expect(clearPath(AT, trackerNode([newPattern()]), 0)).toEqual([]);
+    // Add Tracker: a pattern in the middle of the picture after the others, up to 16.
+    const more = addPattern(AT, node);
+    expect(listOf(more)).toEqual([one, two, newPattern()]);
+    expect([listOf(more)[0], listOf(more)[1]]).toEqual([one, two]);
+    expect(listOf(more)[0]).toBe(one);
+    expect(MOST_TRACKERS).toBe(16);
+    expect(addPattern(AT, trackerNode(Array.from({ length: MOST_TRACKERS }, () => newPattern())))).toEqual([]);
+    expect(listOf(addPattern(AT, trackerNode(Array.from({ length: MOST_TRACKERS - 1 }, () => newPattern()))))).toHaveLength(MOST_TRACKERS);
+    // A pattern dragged on the picture: where it was put, whatever it was before, and the list put back whole where the drag is taken back.
+    expect(placedPattern(AT, node, 0, 0.25, 0.5)).toEqual({ op: 'set_fusion_node', ...AT, id: 'n6', params: { trackers: [one, two] } });
+    const dragged = placedPattern(AT, node, 1, 0.5, 0.625)!;
+    expect(listOf([dragged])).toEqual([one, { ...two, pattern: { ...two.pattern, x: 0.5, y: 0.625 } }]);
+    expect(listOf([dragged])[1].path).toBe(two.path);
+    expect([placedPattern(AT, node, 3, 0.5, 0.5), restoredPatterns(AT, newNode('blur', null, 'b1'))]).toEqual([null, null]);
+    expect(restoredPatterns(AT, node)).toEqual({ op: 'set_fusion_node', ...AT, id: 'n6', params: { trackers: [one, two] } });
+    // In the copy, as the engine does it: the list in the place of the list, whole.
+    const after = applied(withNode(node), moved).nodes[2];
+    expect(after.params).toEqual({ ...newTracker(), trackers: listOf(moved) });
+  });
+
+  it('takes a pattern away: the pivot and the centres that name a later pattern name it by its new place, in the same transaction', () => {
+    const [one, two, three] = [left(), newPattern(0.75, 0.5), newPattern(0.5, 0.75)];
+    const node = trackerNode([one, two, three], 'n6', { pivot: 'selected_tracker', pivot_tracker: 2 });
+    const composition: Composition = {
+      nodes: [
+        mediaIn(), mediaOut(), node, withFollow(merge('n7'), ofPattern(0)), withFollow(rectangle('n8'), ofPattern(2)),
+        withFollow(transform('n9'), { node: 'n6', output: 'steady_position', tracker: 0 }), withFollow(ellipse('n10'), ofPattern(1, 'n11')),
+      ],
+      links: [link('MediaIn1', 'MediaOut1')],
+    };
+    // The first: the pivot comes to the second place, the centre that followed it lets go, and the one that followed the third follows the second.
+    const removed = removePattern(AT, composition, node, 0);
+    expect(removed).toEqual([
+      { op: 'set_fusion_node', ...AT, id: 'n6', params: { pivot_tracker: 1, trackers: [two, three] } },
+      { op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: null } } },
+      { op: 'set_fusion_node', ...AT, id: 'n8', params: { center: { follow: ofPattern(1) } } },
+    ]);
+    expect(listOf(removed)[0]).toBe(two);
+    // The last: nothing comes after it, and the pivot, which named it, names it still.
+    expect(removePattern(AT, composition, node, 2)).toEqual([
+      { op: 'set_fusion_node', ...AT, id: 'n6', params: { trackers: [one, two] } },
+      { op: 'set_fusion_node', ...AT, id: 'n8', params: { center: { follow: null } } },
+    ]);
+    expect([removePattern(AT, composition, node, 3), removePattern(AT, composition, merge('n7'), 0)]).toEqual([[], []]);
+    // In the copy, as the engine does them.
+    const after = applied(composition, removed);
+    expect(after.nodes.map(followOf)).toEqual([null, null, null, null, ofPattern(1), { node: 'n6', output: 'steady_position', tracker: 0 }, ofPattern(1, 'n11')]);
+    expect((after.nodes[2].params as FusionTracker).pivot_tracker).toBe(1);
+  });
+
+  it('has the settings of its Operation tab set by one patch of those that change', () => {
+    const node = trackerNode([left()]);
+    expect(setTracker(AT, node, { operation: 'match_move', merge: 'bg_only', reference: 12 })).toEqual([
+      { op: 'set_fusion_node', ...AT, id: 'n6', params: { operation: 'match_move', reference: 12 } },
+    ]);
+    expect(setTracker(AT, node, { pivot_point: { x: 0.25, y: 0.5 }, rotation: false })).toEqual([
+      { op: 'set_fusion_node', ...AT, id: 'n6', params: { pivot_point: { x: 0.25, y: 0.5 }, rotation: false } },
+    ]);
+    expect([setTracker(AT, node, { pivot_point: { x: 0.5, y: 0.5 }, pivot: 'tracker_average' }), setTracker(AT, newNode('blur', null, 'b1'), { operation: 'match_move' })])
+      .toEqual([[], []]);
+    const after = applied(withNode(node), setTracker(AT, node, { merge: 'fg_over_bg', pivot: 'manual', pivot_point: { x: 0.25, y: 0.75 } })).nodes[2];
+    expect(after.params).toEqual({ ...newTracker(), merge: 'fg_over_bg', pivot: 'manual', pivot_point: { x: 0.25, y: 0.75 }, trackers: [left()] });
+  });
+
+  it('is followed by the centre of a Merge, a Transform or a mask, set and let go of by a patch of the centre that keeps its own place', () => {
+    const box = rectangle('n7');
+    const composition: Composition = { nodes: [mediaIn(), mediaOut(), trackerNode([left(), newPattern()]), box], links: [link('MediaIn1', 'MediaOut1')] };
+    const follow = ofPattern(1);
+    const set = followOps(AT, box, follow);
+    expect(set).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: { node: 'n6', output: 'tracker', tracker: 1 } } } }]);
+    const followed = applied(composition, set);
+    const following = followed.nodes[3];
+    expect((following.params as FusionRectangle).center).toEqual({ x: 0.5, y: 0.5, follow });
+    expect(followOf(following)).toEqual(follow);
+    // What it follows already sends nothing; another output of the same Tracker is sent whole, its pattern written.
+    expect(followOps(AT, following, follow)).toEqual([]);
+    const steady: FusionFollow = { node: 'n6', output: 'steady_position', tracker: 0 };
+    expect(followOps(AT, following, steady)).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: steady } } }]);
+    // Disconnect: `follow: null`, and the centre is its own place again, with no `follow` written.
+    const letGo = followOps(AT, following, null);
+    expect(letGo).toEqual([{ op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: null } } }]);
+    const free = applied(followed, letGo).nodes[3];
+    expect((free.params as FusionRectangle).center).toStrictEqual({ x: 0.5, y: 0.5 });
+    expect([followOf(free), followOps(AT, free, null)]).toEqual([null, []]);
+    // Five kinds have a centre; a Tracker has none, and so follows nothing.
+    expect(CENTER_KINDS).toEqual(['merge', 'transform', 'rectangle', 'ellipse', 'polygon']);
+    expect((['blur', 'tracker', 'background', 'media_in', 'delta_keyer'] as const).map(hasCenter)).toEqual([false, false, false, false, false]);
+    expect([followOps(AT, trackerNode([]), follow), followOf(trackerNode([]))]).toEqual([[], null]);
+    expect(withFollow(trackerNode([]), follow)).toEqual(trackerNode([]));
+    // What a centre may follow: of each Tracker, where each of its patterns is, then its Steady and its Unsteady Position.
+    const choices = followChoices(composition);
+    expect(choices).toEqual([ofPattern(0), ofPattern(1), steady, { node: 'n6', output: 'unsteady_position', tracker: 0 }]);
+    expect(followChoices(comp())).toEqual([]);
+    const words = { unnamed: 'Tracker {n}', steady: 'Steady Position', unsteady: 'Unsteady Position' };
+    expect(choices.map(each => followName(composition, new Map([['n6', 'Tracker 1']]), each, words)))
+      .toEqual(['Tracker 1 › Left', 'Tracker 1 › Tracker 2', 'Tracker 1 › Steady Position', 'Tracker 1 › Unsteady Position']);
+    expect([patternName({ name: '' }, 2, 'Tracker {n}'), patternName({ name: 'Eye' }, 2, 'Tracker {n}'), patternName(undefined, 0, 'Tracker {n}')])
+      .toEqual(['Tracker 3', 'Eye', 'Tracker 1']);
+  });
+
+  it('publishes where a pattern is on its path at a frame, and its offset, for a centre that follows it', () => {
+    // On the line between frames 0 and 8: at frame 2 a quarter of the way, at 0.375, 0.4375; and with its offset, right and up.
+    const placed = trackerNode([{ ...left(), offset: { x: 0.125, y: -0.25 } }]);
+    const where: Composition = { nodes: [mediaIn(), mediaOut(), placed], links: [link('MediaIn1', 'MediaOut1')] };
+    expect(followedPlace(where, ofPattern(0), 2)).toEqual([0.5, 0.1875]);
+    // Before the first frame where the first has it, and after the last where the last has it.
+    expect(followedPlace(where, ofPattern(0), -5)).toEqual([0.375, 0.25]);
+    expect(followedPlace(where, ofPattern(0), 40)).toEqual([0.875, 0]);
+    // Nothing of a pattern that is not there or has no path, of a Tracker that is not there or is passed through, and of the two positions.
+    const pathless = { ...where, nodes: [mediaIn(), mediaOut(), trackerNode([newPattern()])] };
+    const passed = { ...where, nodes: [mediaIn(), mediaOut(), { ...placed, pass_through: true }] };
+    expect([
+      followedPlace(where, ofPattern(1), 2), followedPlace(pathless, ofPattern(0), 2), followedPlace(where, ofPattern(0, 'n9'), 2), followedPlace(passed, ofPattern(0), 2),
+      followedPlace(where, { node: 'n6', output: 'steady_position', tracker: 0 }, 2), followedPlace(where, { node: 'n6', output: 'unsteady_position', tracker: 0 }, 2),
+    ]).toEqual([null, null, null, null, null, null]);
+  });
+
+  it('lets go of every centre that follows it before it is deleted or cut, in the same transaction, and is joined across by its picture alone', () => {
+    // MediaIn1 into the Tracker n6, the Background n5 its foreground, and the Tracker into the background of the Merge n4; the
+    // Rectangle n7 follows the first pattern of the Tracker, and the Transform n8 its Steady Position.
+    const tracked = (): Composition => ({
+      nodes: [
+        mediaIn(), mediaOut(), merge('n4'), background('n5'), trackerNode([left()]), withFollow(rectangle('n7'), ofPattern(0)),
+        withFollow(transform('n8'), { node: 'n6', output: 'steady_position', tracker: 0 }),
+      ],
+      links: [link('MediaIn1', 'n6'), link('n5', 'n6', 'foreground'), link('n6', 'n4', 'background'), link('n4', 'MediaOut1')],
+    });
+    const ops = removeNodes(AT, tracked(), ['n6']);
+    expect(ops).toEqual([
+      { op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: null } } },
+      { op: 'set_fusion_node', ...AT, id: 'n8', params: { center: { follow: null } } },
+      { op: 'remove_fusion_node', ...AT, id: 'n6', links: [link('MediaIn1', 'n4', 'background')] },
+    ]);
+    // In the copy: the Tracker is gone, its foreground is joined to nothing, and no centre follows anything.
+    const after = applied(tracked(), ops);
+    expect(after.nodes.map(node => node.id)).toEqual(['MediaIn1', 'MediaOut1', 'n4', 'n5', 'n7', 'n8']);
+    expect(after.nodes.map(followOf)).toEqual([null, null, null, null, null, null]);
+    expect(after.links.map(linkName).sort()).toEqual(['MediaIn1>n4:background', 'n4>MediaOut1:input'].sort());
+    // Cut takes it away as Delete does, and keeps it whole.
+    const cut = cutNodes(AT, tracked(), ['n6']);
+    expect(cut.ops).toEqual(ops);
+    expect(cut.copied!.nodes.map(node => [node.id, node.kind])).toEqual([['n6', 'tracker']]);
+    // A centre that follows it, deleted alone, lets go of nothing; deleted with it, it lets go first all the same.
+    expect(removeNodes(AT, tracked(), ['n7'])).toEqual([{ op: 'remove_fusion_node', ...AT, id: 'n7' }]);
+    expect(removeNodes(AT, tracked(), ['n7', 'n6']).slice(0, 2)).toEqual(ops.slice(0, 2));
+  });
+
+  it('is followed by the copy of a centre that is pasted with it, by its name in the transaction, and by none that is pasted where it is not', () => {
+    const tracked = (): Composition => ({
+      nodes: [mediaIn(), mediaOut(), trackerNode([left()]), withFollow(rectangle('n7'), ofPattern(0))], links: [link('MediaIn1', 'MediaOut1')],
+    });
+    // The Tracker pasted before the centre: the centre follows its name as it is added.
+    const both = pasteNodes(AT, comp(), copyNodes(tracked(), ['n6', 'n7']));
+    expect(both).toHaveLength(2);
+    expect(nodesOf(both).map(node => [node.id, node.kind, followOf(node)])).toEqual([['$p0', 'tracker', null], ['$p1', 'rectangle', ofPattern(0, '$p0')]]);
+    // The centre pasted before the Tracker: it is added following nothing, and follows the Tracker once that is added.
+    const backwards: Composition = {
+      nodes: [mediaIn(), mediaOut(), withFollow(rectangle('n7'), ofPattern(0, 'n9')), trackerNode([left()], 'n9')], links: [link('MediaIn1', 'MediaOut1')],
+    };
+    const later = pasteNodes(AT, comp(), copyNodes(backwards, ['n9', 'n7']));
+    expect(nodesOf(later).map(node => [node.id, node.kind, followOf(node)])).toEqual([['$p0', 'rectangle', null], ['$p1', 'tracker', null]]);
+    expect(later.slice(2)).toEqual([{ op: 'set_fusion_node', ...AT, id: '$p0', params: { center: { follow: ofPattern(0, '$p1') } } }]);
+    expect((nodesOf(later)[0].params as FusionRectangle).center).toStrictEqual({ x: 0.5, y: 0.5 });
+    // The centre alone: into a composition that has the Tracker it follows it still, and into one that has not it follows nothing.
+    const alone = copyNodes(tracked(), ['n7']);
+    expect(followOf(nodesOf(pasteNodes(AT, tracked(), alone))[0])).toEqual(ofPattern(0));
+    expect(followOf(nodesOf(pasteNodes(AT, comp(), alone))[0])).toBeNull();
+    const notTracker: Composition = { ...comp(), nodes: [...comp().nodes, merge('n6')] };
+    expect(followOf(nodesOf(pasteNodes(AT, notTracker, alone))[0])).toBeNull();
+    // What was copied is as it was, to be pasted again.
+    expect(followOf(alone!.nodes[0])).toEqual(ofPattern(0));
   });
 });

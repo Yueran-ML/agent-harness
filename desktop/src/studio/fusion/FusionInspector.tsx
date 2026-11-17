@@ -1,26 +1,35 @@
-import { Fragment, useId, useRef, useState, type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, Minus, Plus, X } from 'lucide-react';
+import { Fragment, useCallback, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { ChevronLeft, ChevronRight, Eraser, Minus, Plus, Target, X } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
+import type { Menu, MenuItem } from '../color/ColorMenu';
+import { CoveringMenu } from '../color/CoveringMenu';
 import { COMPOSITES } from '../color/nodeEdits';
 import {
-  EngineError, type Clip, type Composite, type FusionBlurFilter, type FusionFillMethod, type FusionKeyerReplace, type FusionKeyerSpill, type FusionKeyerView,
-  type FusionMaskCommon, type FusionNode, type FusionPaintMode, type Media, type Op, type Param, type Timeline,
+  EngineError, type Clip, type Composite, type Composition, type FusionBlurFilter, type FusionFillMethod, type FusionFollow, type FusionKeyerReplace,
+  type FusionKeyerSpill, type FusionKeyerView, type FusionMaskCommon, type FusionNode, type FusionPaintMode, type FusionTrackerMerge, type FusionTrackerOperation,
+  type FusionTrackerPattern, type FusionTrackerPivot, type Media, type Op, type Param, type Timeline,
 } from '../engine';
 import { useFairlightText } from '../fairlight/words';
-import { keyAt, keyFrameOf } from '../inspector/clipKeys';
+import { frameOfKey, keyAt, keyFrameOf } from '../inspector/clipKeys';
 import { ChoiceField, ColorField, FieldsLocked, KeyDiamond, NumberField, TextField } from '../inspector/fields';
 import { refusalOf } from '../inspector/refusal';
 import { useCommit, type Build } from '../inspector/useCommit';
 import { valueAt } from '../keyframes/value';
 import { clipLocations } from '../timeline/selection';
 import { useAudioGesture } from '../timeline/useAudioGesture';
-import { insertPoint, LEAST_POINTS, MOST_POINTS, relabel, removePoint, shownComposition, withFirst, type FusionAt } from './edits';
-import { isMaskKind } from './graph';
+import {
+  followOf, followOps, insertPoint, LEAST_POINTS, MOST_POINTS, MOST_TRACKERS, relabel, removePoint, shownComposition, withFirst, type FusionAt,
+} from './edits';
+import { isMaskKind, namesOf } from './graph';
 import {
   addKey, isPointSetting, keyerRefusals, keyTimesOf, numbered, paramOf, pointPath, putValue, putValues, removeKey, settingOf, wholeParam, wholeValue,
   type FusionSetting,
 } from './settings';
+import {
+  addPattern, clearPath, enablePattern, followChoices, followName, pathSamples, PATTERN_FIELDS, patternName, patternValue, removePattern, renamePattern,
+  setPatternValue, setTracker, TRACKER_PLACE, type PatternField,
+} from './tracker';
 
 /** How a setting is written and dragged: its decimals, how much a pixel of dragging changes it, its unit, and the range of its slider, where it has one. */
 interface Shape { digits: number; scrub: number; unit?: string; slider?: { min: number; max: number; step: number } }
@@ -34,8 +43,15 @@ const FILTERS: readonly FusionBlurFilter[] = ['gaussian', 'box'];
 const VIEWS: readonly FusionKeyerView[] = ['pre_matte', 'matte', 'status', 'final_result'];
 const REPLACES: readonly FusionKeyerReplace[] = ['none', 'source', 'hard_color', 'soft_color'];
 const SPILLS: readonly FusionKeyerSpill[] = ['none', 'rare', 'medium', 'well_done', 'burnt'];
+/** What a Tracker does with its pictures, which pictures it draws, and what its turn and its size are about, as the engine names them and in the order of Fusion's menus. */
+const OPERATIONS: readonly FusionTrackerOperation[] = ['none', 'match_move'];
+const TRACKER_MERGES: readonly FusionTrackerMerge[] = ['bg_only', 'fg_only', 'fg_over_bg', 'bg_over_fg'];
+const PIVOTS: readonly FusionTrackerPivot[] = ['tracker_average', 'selected_tracker', 'manual'];
 /** The switches of the nodes, which take no keys: each a field of the `params` of its node. */
-type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy' | 'whole_cells_only' | 'garbage_invert';
+type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy' | 'whole_cells_only' | 'garbage_invert' | 'position' | 'rotation' | 'scaling';
+
+/** Whether two follows are the same: of the same node, the same output, and the same pattern. */
+const sameFollow = (a: FusionFollow, b: FusionFollow): boolean => a.node === b.node && a.output === b.output && a.tracker === b.tracker;
 /** The modes of a Delta Keyer, which take no keys: each a field of its `params` that is one of a few names. */
 type KeyerMode = 'view' | 'replace' | 'spill_method';
 /** The two colours of a Delta Keyer, each three settings: its `r`, its `g` and its `b`. */
@@ -125,7 +141,23 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  *   (`putValues`), so that the engine never checks a screen colour half way between two. The screen
  *   colour is not picked in the viewer yet, though the viewer can show the picture that comes into
  *   the keyer (the node before it, viewed);
+ * - a Tracker (Reference Manual 20, pp. 2773–2784; PROTOCOL.md, "The Tracker"), in two sections,
+ *   which are the tabs of Fusion's: Trackers, the list of its patterns, each with its switch, its
+ *   name, how many frames its path has and which frames of the timeline it reaches from and to, and
+ *   a button that takes it away; Add Tracker (a pattern in the middle of the picture, at most 16);
+ *   and of the pattern chosen in the list its name, where it was put, how large it and its search
+ *   area are, its offset, and Clear Path. Each sets the list whole, the other patterns and every path
+ *   as they are (`tracker.ts`). Operation: Operation, Merge (read with Match Move alone, and off
+ *   otherwise), the three boxes of the motion, Pivot Type with the pattern or the place that it
+ *   reads, and the Reference frame, shown and typed at a frame of the timeline and kept at the frame
+ *   of the keys of the clip that the clip shows there, with Set to Playhead. None of it takes keys;
  * - a MediaIn and a MediaOut: nothing but the name.
+ *
+ * The centre of a Merge, a Transform and a mask has Connect To beside it (PROTOCOL.md, "Following a
+ * Tracker"): a menu of what the Trackers of the composition publish, the place of each of their
+ * patterns and their Steady and Unsteady Positions, and Disconnect. While the centre follows one,
+ * its X and Y are kept and not read: they are shown, off, with their buttons of keys, and the
+ * Inspector says what the centre follows.
  *
  * Every number has the three buttons of keys beside it (to the key before, a key put or taken away
  * at the playhead, to the key after), as the Inspector of the Edit page has them. A setting that has
@@ -179,6 +211,11 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   now.current = { has };
   /** The point of a Polygon that is chosen in the list of its points, from 0, or null: where Add Point puts one after, and what Remove Point takes away. */
   const [chosenPoint, setChosenPoint] = useState<number | null>(null);
+  /** The pattern of a Tracker that is chosen in its list, from 0, or null for the first: the one whose numbers are shown. */
+  const [chosenPattern, setChosenPattern] = useState<number | null>(null);
+  /** The menu of Connect To, while it is open. */
+  const [menu, setMenu] = useState<Menu | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   const problem = refusal && refusal.reason !== 'empty' && <div className="inspector-problem" role="alert" data-test="fusion-inspector-problem">
     <p>{refusal.text}</p>
@@ -190,17 +227,21 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   const shown: FusionNode = node;
   const keyFrame = keyFrameOf(clip, timeline, media, frame);
   const id = shown.id;
-  /** One transaction about the node, worked out from the clip and the node as they are when it is sent. */
-  const build = (ops: (found: FusionNode, keyFrameNow: number, where: FusionAt) => Op[]): Build => (current) => {
+  /**
+   * One transaction about the node, worked out from the clip and the node as they are when it is sent: the node, the frame of the
+   * keys of the clip at the playhead, the clip as the operations name it, and the composition that the node is of.
+   */
+  const build = (ops: (found: FusionNode, keyFrameNow: number, where: FusionAt, composition: Composition) => Op[]): Build => (current) => {
     const located = clipLocations(current).get(clip.id);
-    const found = located ? shownComposition(located.clip).nodes.find(each => each.id === id) : undefined;
+    const composition = located ? shownComposition(located.clip) : undefined;
+    const found = composition?.nodes.find(each => each.id === id);
     // A track that is locked when the change goes keeps its clips as they are, whatever asked for the change.
-    if (!located || !found || located.track.locked) return [];
+    if (!located || !composition || !found || located.track.locked) return [];
     const where = { timeline: current.id, clip: clip.id };
-    return withFirst(where, located.clip.fusion !== undefined, ops(found, keyFrameOf(located.clip, current, media, frame), where));
+    return withFirst(where, located.clip.fusion !== undefined, ops(found, keyFrameOf(located.clip, current, media, frame), where, composition));
   };
-  /** The three buttons of a setting: to the key before, a key put or taken away at the playhead, to the key after. */
-  const keys = (setting: FusionSetting, label: string) => {
+  /** The three buttons of a setting: to the key before, a key put or taken away at the playhead, to the key after; all three off with `off`. */
+  const keys = (setting: FusionSetting, label: string, off = false) => {
     const param = paramOf(shown, setting);
     const hit = keyAt(param, keyFrame) !== null;
     const times = keyTimesOf(clip, timeline, media, param);
@@ -210,28 +251,28 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     };
     return <div className="audio-param-keys" role="group" aria-label={label} data-keys={setting.path}>
       <button type="button" className="icon-btn" aria-label={`${label}: ${t('Previous keyframe')}`} title={t('Previous keyframe')}
-        disabled={!times.some(time => time < frame)} onClick={() => go(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
+        disabled={off || !times.some(time => time < frame)} onClick={() => go(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
       <button type="button" className="icon-btn" aria-label={`${label}: ${t(hit ? 'Remove keyframe' : 'Add keyframe')}`} title={t(hit ? 'Remove keyframe' : 'Add keyframe')}
-        aria-pressed={hit} data-keyed={typeof param === 'object' || undefined} data-hit={hit || undefined} disabled={locked}
+        aria-pressed={hit} data-keyed={typeof param === 'object' || undefined} data-hit={hit || undefined} disabled={locked || off}
         onClick={() => void commit(build((found, keyFrameNow, where) => {
           const there = settingOf(found, setting.path);
           if (!there) return [];
           return keyAt(paramOf(found, there), keyFrameNow) ? removeKey(where, found, there, keyFrameNow) : addKey(where, found, there, keyFrameNow);
         }))}><KeyDiamond /></button>
       <button type="button" className="icon-btn" aria-label={`${label}: ${t('Next keyframe')}`} title={t('Next keyframe')}
-        disabled={!times.some(time => time > frame)} onClick={() => go(1)}><ChevronRight size={14} aria-hidden="true" /></button>
+        disabled={off || !times.some(time => time > frame)} onClick={() => go(1)}><ChevronRight size={14} aria-hidden="true" /></button>
     </div>;
   };
 
-  /** A number of the node with its slider and its buttons of keys. */
-  const number = (path: string, label: string): ReactNode => {
+  /** A number of the node with its slider and its buttons of keys; with `off`, shown and not changed (a centre that follows a Tracker). */
+  const number = (path: string, label: string, off = false): ReactNode => {
     const setting = settingOf(shown, path);
     if (!setting) return null;
     const shape = shapeOf(setting);
     const param = paramOf(shown, setting);
     return <Fragment key={path}>
       <NumberField name={path} label={label} value={valueAt(param, keyFrame)} fallback={setting.bounds.neutral} min={setting.bounds.low} max={setting.bounds.high}
-        digits={shape.digits} scrub={shape.scrub} unit={shape.unit} slider={shape.slider}
+        digits={shape.digits} scrub={shape.scrub} unit={shape.unit} slider={shape.slider} disabled={off}
         gesture={{
           start: () => {
             // What the drag puts back where it is taken back: the setting as it is now, or no composition where the clip has none.
@@ -251,14 +292,14 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
           const there = settingOf(found, path);
           return there ? putValue(where, found, there, value, keyFrameNow) : [];
         }))} />
-      {keys(setting, label)}
+      {keys(setting, label, off)}
     </Fragment>;
   };
 
   /**
    * A switch of the node that takes no keys: a flip of a Transform, the Invert and the Solid of a mask, the Lock X/Y of a Blur,
-   * the Whole Cells Only of a Mosaic and the Invert of the garbage matte of a Delta Keyer. `title` says more of it where the
-   * pointer rests on it.
+   * the Whole Cells Only of a Mosaic, the Invert of the garbage matte of a Delta Keyer and the three boxes of the motion of a
+   * Tracker. `title` says more of it where the pointer rests on it.
    */
   const flag = (field: Flag, label: string, checked: boolean, title?: string) => <div className="inspector-row" data-field={field} title={title}>
     <label htmlFor={`${flipId}-${field}`} className="inspector-label fusion-flag-label">{label}</label>
@@ -304,6 +345,162 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     }} />;
   };
 
+  // What the centre of the node follows of a Tracker, and the words that name it (Connect To).
+  const composition = shownComposition(clip);
+  const following = followOf(shown);
+  const followWords = { unnamed: settings.tracker, steady: settings.steadyPosition, unsteady: settings.unsteadyPosition };
+  const followed = following !== null ? followName(composition, namesOf(composition, labels.kinds), following, followWords) : null;
+  /** The centre of a Merge, a Transform or a mask, its X and its Y off while it follows a Tracker, and Connect To beside it. */
+  const centre = (): ReactNode => <>
+    {number('center.x', settings.centerX, following !== null)}
+    {number('center.y', settings.centerY, following !== null)}
+    {connect()}
+  </>;
+  /**
+   * Connect To: a button that says what the centre follows, which opens the menu of what the Trackers of the composition publish
+   * (`followChoices`), the one followed checked, and Disconnect; and, while it follows one, what it follows.
+   */
+  const connect = (): ReactNode => {
+    const open = (event: ReactMouseEvent<HTMLButtonElement>) => {
+      const box = event.currentTarget.getBoundingClientRect();
+      const names = namesOf(composition, labels.kinds);
+      const items: MenuItem[] = followChoices(composition).map((each, place): MenuItem => ({
+        id: `follow-${place}`, label: followName(composition, names, each, followWords), checked: following !== null && sameFollow(following, each),
+        run: () => void commit(build((found, _keyFrame, where) => followOps(where, found, each))),
+      }));
+      if (items.length === 0) items.push({ id: 'follow-none', label: settings.noTrackers, disabled: true });
+      items.push({ id: 'disconnect', label: settings.disconnect, disabled: following === null, run: () => void commit(build((found, _keyFrame, where) => followOps(where, found, null))) });
+      setMenu({ x: box.left, y: box.bottom, label: settings.connectTo, items });
+    };
+    return <Fragment key="connect">
+      <div className="inspector-row fusion-connect" data-test="fusion-connect">
+        <span className="inspector-label">{settings.connectTo}</span>
+        <span className="inspector-value">
+          <button type="button" className="color-tool fusion-connect-button" aria-haspopup="menu" aria-label={`${settings.connectTo}: ${followed ?? settings.notConnected}`}
+            title={followed ?? settings.notConnected} disabled={locked} onClick={open} data-follows={following?.node} data-test="connect-to">
+            <Target size={13} aria-hidden="true" /><span className="fusion-connect-name">{followed ?? settings.notConnected}</span></button>
+        </span>
+      </div>
+      {followed !== null && <p className="caption fusion-follows" data-test="fusion-follows">{settings.follows.replace('{name}', () => followed ?? '')}</p>}
+    </Fragment>;
+  };
+
+  /**
+   * The settings of a Tracker, none of which takes keys: its patterns (Trackers), and what it does with them (Operation). A change
+   * of a pattern sends the list whole, worked out from the node as it is when it goes (`tracker.ts`).
+   */
+  const trackerBody = (params: Extract<FusionNode, { kind: 'tracker' }>['params']): ReactNode => {
+    const patterns = Array.isArray(params.trackers) ? params.trackers : [];
+    const count = patterns.length;
+    // The pattern chosen, where the Tracker still has it; else the first.
+    const chosen = count === 0 ? null : chosenPattern !== null && chosenPattern < count ? chosenPattern : 0;
+    const pattern = chosen === null ? null : patterns[chosen];
+    const nameOf = (index: number) => patternName(patterns[index], index, settings.tracker);
+    /** How many frames the path of a pattern has, and the frames of the timeline at which the clip shows the first and the last of them. */
+    const pathLine = (each: FusionTrackerPattern): string => {
+      const samples = pathSamples(each.path);
+      if (samples.length === 0) return settings.noPath;
+      const first = String(frameOfKey(clip, timeline, media, samples[0][0]));
+      if (samples.length === 1) return settings.pathOne.replace('{first}', () => first);
+      const last = String(frameOfKey(clip, timeline, media, samples[samples.length - 1][0]));
+      return settings.pathFrames.replace('{count}', () => String(samples.length)).replace('{first}', () => first).replace('{last}', () => last);
+    };
+    /** A number of the pattern chosen: where it was put, how large it or its search area is, or its offset. */
+    const patternNumber = (index: number, field: PatternField, label: string): ReactNode => {
+      const { neutral, low, high } = PATTERN_FIELDS[field];
+      return <NumberField key={field} name={field} label={label} value={patternValue(patterns[index], field)} fallback={neutral} min={low} max={high}
+        digits={3} scrub={0.002} slider={{ min: field.startsWith('offset.') ? -1 : 0, max: 1, step: 0.001 }}
+        onCommit={value => void commit(build((found, _keyFrame, where) => setPatternValue(where, found, index, field, value)))} />;
+    };
+    /** A place of the pivot given by hand: its X or its Y. */
+    const pivotNumber = (axis: 'x' | 'y', label: string): ReactNode => <NumberField key={`pivot_point.${axis}`} name={`pivot_point.${axis}`} label={label}
+      value={params.pivot_point[axis]} fallback={TRACKER_PLACE.neutral} min={TRACKER_PLACE.low} max={TRACKER_PLACE.high} digits={3} scrub={0.002}
+      slider={{ min: 0, max: 1, step: 0.001 }}
+      onCommit={value => void commit(build((found, _keyFrame, where) => (found.kind === 'tracker'
+        ? setTracker(where, found, { pivot_point: { ...found.params.pivot_point, [axis]: value } }) : [])))} />;
+    // The patterns that the pivot may name: those that the Tracker has, and the one that it names, where that is not among them.
+    const pivotPlaces = [...new Set([...patterns.map((_, index) => index), params.pivot_tracker])].sort((a, b) => a - b);
+    const lastFrame = clip.start + Math.max(clip.length, 1) - 1;
+    return <>
+      <h3 className="inspector-section">{labels.trackerTabs.trackers}</h3>
+      <div className="fusion-points-tools" role="group" aria-label={labels.trackerTabs.trackers}>
+        {/* A pattern in the middle of the picture, after the others: it is the one chosen then. */}
+        <button type="button" className="color-tool" disabled={locked || count >= MOST_TRACKERS} data-test="add-pattern"
+          onClick={() => {
+            void commit(build((found, _keyFrame, where) => addPattern(where, found))).then((sent) => { if (sent) setChosenPattern(count); });
+          }}><Plus size={14} aria-hidden="true" />{settings.addTracker}</button>
+      </div>
+      {count === 0 && <p className="caption" data-test="fusion-no-patterns">{said.noTrackers}</p>}
+      <ol className="fusion-patterns" data-test="fusion-patterns">
+        {patterns.map((each, index) => {
+          const named = nameOf(index);
+          return <li key={index} className="fusion-pattern" data-pattern={index} data-chosen={chosen === index || undefined} data-enabled={each.enabled || undefined}>
+            <span className="fusion-pattern-head">
+              <input type="checkbox" checked={each.enabled} disabled={locked} aria-label={`${settings.enabled}: ${named}`} title={settings.enabled} data-test="pattern-enabled"
+                onChange={(event) => { const on = event.target.checked; void commit(build((found, _keyFrame, where) => enablePattern(where, found, index, on))); }} />
+              <button type="button" className="fusion-point-name" aria-pressed={chosen === index} onClick={() => setChosenPattern(index)} data-test="pattern-name">{named}</button>
+              <button type="button" className="icon-btn" aria-label={`${settings.removeTracker}: ${named}`} title={settings.removeTracker} disabled={locked} data-test="remove-pattern"
+                onClick={() => {
+                  setChosenPattern(null);
+                  void commit(build((found, _keyFrame, where, current) => removePattern(where, current, found, index)));
+                }}><X size={13} aria-hidden="true" /></button>
+            </span>
+            <span className="caption fusion-pattern-path" data-test="pattern-path">{pathLine(each)}</span>
+          </li>;
+        })}
+      </ol>
+      {pattern !== null && chosen !== null && <Fragment key={`pattern-${chosen}`}>
+        <TextField name="tracker.name" label={settings.trackerName} value={pattern.name} allowEmpty
+          onCommit={text => void commit(build((found, _keyFrame, where) => renamePattern(where, found, chosen, text.trim())))} />
+        {patternNumber(chosen, 'pattern.x', settings.patternX)}
+        {patternNumber(chosen, 'pattern.y', settings.patternY)}
+        {patternNumber(chosen, 'pattern.width', settings.patternWidth)}
+        {patternNumber(chosen, 'pattern.height', settings.patternHeight)}
+        {patternNumber(chosen, 'search.width', settings.searchWidth)}
+        {patternNumber(chosen, 'search.height', settings.searchHeight)}
+        {patternNumber(chosen, 'offset.x', settings.offsetX)}
+        {patternNumber(chosen, 'offset.y', settings.offsetY)}
+        <div className="fusion-points-tools">
+          {/* The path is what the tracking wrote: it is taken away whole, and the pattern is tracked again from where it was put. */}
+          <button type="button" className="color-tool" disabled={locked || pathSamples(pattern.path).length === 0} data-test="clear-path"
+            onClick={() => void commit(build((found, _keyFrame, where) => clearPath(where, found, chosen)))}>
+            <Eraser size={14} aria-hidden="true" />{settings.clearPath}</button>
+        </div>
+      </Fragment>}
+      <h3 className="inspector-section">{labels.trackerTabs.operation}</h3>
+      <ChoiceField<FusionTrackerOperation> name="operation" label={settings.operation} value={params.operation}
+        options={OPERATIONS.map(each => ({ value: each, label: labels.operations[each] }))}
+        onCommit={operation => void commit(build((found, _keyFrame, where) => setTracker(where, found, { operation })))} />
+      {/* The Merge is read by Match Move alone. */}
+      <ChoiceField<FusionTrackerMerge> name="merge" label={settings.trackerMerge} value={params.merge} disabled={params.operation !== 'match_move'}
+        options={TRACKER_MERGES.map(each => ({ value: each, label: labels.trackerMerges[each] }))}
+        onCommit={merge => void commit(build((found, _keyFrame, where) => setTracker(where, found, { merge })))} />
+      {flag('position', settings.position, params.position)}
+      {flag('rotation', settings.rotation, params.rotation)}
+      {flag('scaling', settings.scaling, params.scaling)}
+      <ChoiceField<FusionTrackerPivot> name="pivot" label={settings.pivotType} value={params.pivot}
+        options={PIVOTS.map(each => ({ value: each, label: labels.pivots[each] }))}
+        onCommit={pivot => void commit(build((found, _keyFrame, where) => setTracker(where, found, { pivot })))} />
+      {params.pivot === 'selected_tracker' && <ChoiceField<string> name="pivot_tracker" label={settings.pivotTracker} value={String(params.pivot_tracker)}
+        options={pivotPlaces.map(index => ({ value: String(index), label: nameOf(index) }))}
+        onCommit={value => void commit(build((found, _keyFrame, where) => setTracker(where, found, { pivot_tracker: Number(value) })))} />}
+      {params.pivot === 'manual' && pivotNumber('x', settings.pivotX)}
+      {params.pivot === 'manual' && pivotNumber('y', settings.pivotY)}
+      {/* The reference frame is kept at a frame of the keys of the clip, and shown and typed at the frame of the timeline that shows it. */}
+      <NumberField name="reference" label={settings.reference} value={frameOfKey(clip, timeline, media, params.reference)} fallback={clip.start}
+        min={clip.start} max={lastFrame} digits={0} scrub={0.25}
+        onCommit={value => {
+          const reference = keyFrameOf(clip, timeline, media, value);
+          void commit(build((found, _keyFrame, where) => setTracker(where, found, { reference })));
+        }} />
+      <div className="fusion-points-tools">
+        <button type="button" className="color-tool" disabled={locked} data-test="set-reference"
+          onClick={() => void commit(build((found, keyFrameNow, where) => setTracker(where, found, { reference: keyFrameNow })))}>
+          {settings.setToPlayhead}</button>
+      </div>
+    </>;
+  };
+
   let body: ReactNode;
   if (node.kind === 'merge') {
     const apply = node.params.apply;
@@ -319,15 +516,13 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       {number('burn_in', settings.burnIn)}
       {number('blend', settings.blend)}
       <h3 className="inspector-section">{labels.inputs.foreground}</h3>
-      {number('center.x', settings.centerX)}
-      {number('center.y', settings.centerY)}
+      {centre()}
       {number('size', settings.size)}
       {number('angle', settings.angle)}
     </>;
   } else if (node.kind === 'transform') {
     body = <>
-      {number('center.x', settings.centerX)}
-      {number('center.y', settings.centerY)}
+      {centre()}
       {number('size', settings.size)}
       {number('angle', settings.angle)}
       {flag('flip_horizontal', settings.flipHorizontal, node.params.flip_horizontal)}
@@ -352,8 +547,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   } else if (node.kind === 'rectangle') {
     body = <>
       {maskControls(node.params)}
-      {number('center.x', settings.centerX)}
-      {number('center.y', settings.centerY)}
+      {centre()}
       {number('width', settings.width)}
       {number('height', settings.height)}
       {number('corner_radius', settings.cornerRadius)}
@@ -362,8 +556,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   } else if (node.kind === 'ellipse') {
     body = <>
       {maskControls(node.params)}
-      {number('center.x', settings.centerX)}
-      {number('center.y', settings.centerY)}
+      {centre()}
       {number('width', settings.width)}
       {number('height', settings.height)}
       {number('angle', settings.angle)}
@@ -375,8 +568,7 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     const chosen = chosenPoint !== null && chosenPoint < count ? chosenPoint : null;
     body = <>
       {maskControls(node.params)}
-      {number('center.x', settings.centerX)}
-      {number('center.y', settings.centerY)}
+      {centre()}
       {number('size', settings.size)}
       {number('angle', settings.angle)}
       <ChoiceField<FusionFillMethod> name="fill" label={settings.fill} value={node.params.fill}
@@ -464,6 +656,8 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
       {keyerMode('spill_method', settings.spillMethod, params.spill_method, SPILLS, labels.spillMethods)}
       {number('spill_suppression', settings.spillSuppression)}
     </>;
+  } else if (node.kind === 'tracker') {
+    body = trackerBody(node.params);
   } else {
     body = <p className="caption" data-test="fusion-no-settings">{said.noSettings}</p>;
   }
@@ -483,5 +677,6 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
         {body}
       </div>
     </FieldsLocked.Provider>
+    {menu && <CoveringMenu menu={menu} onClose={closeMenu} />}
   </div>;
 }

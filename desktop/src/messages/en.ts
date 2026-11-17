@@ -871,7 +871,7 @@ export const en = {
         spline: 'Spline', splineEditor: 'Spline Editor', closeSpline: 'Close Spline Editor',
         kinds: {
           media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
-          rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer',
+          rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer', tracker: 'Tracker',
         },
         inputs: {
           input: 'Input', background: 'Background', foreground: 'Foreground', mask: 'Effect Mask',
@@ -882,7 +882,7 @@ export const en = {
         resetComposition: 'Reset Fusion Composition', removeComposition: 'Remove Composition', nodeName: 'Name',
         /** The group of the masks in the tool bar of the node editor. */
         masks: 'Masks',
-        /** The group of the effects on a picture in the tool bar of the node editor: a Blur, a Mosaic and a Delta Keyer. */
+        /** The group of the effects on a picture in the tool bar of the node editor: a Blur, a Mosaic, a Delta Keyer and a Tracker. */
         effects: 'Effects',
         /** The commands of the menus of the node editor on the nodes that are chosen. */
         copy: 'Copy', cut: 'Cut', paste: 'Paste', duplicate: 'Duplicate',
@@ -917,7 +917,32 @@ export const en = {
           cleanBackground: 'Clean Background', replaceMode: 'Replace Mode', replaceColor: 'Replace Color', replaceRed: 'Replace Red',
           replaceGreen: 'Replace Green', replaceBlue: 'Replace Blue', garbageInvert: 'Invert Garbage Matte', spillMethod: 'Spill Method',
           spillSuppression: 'Spill Suppression',
+          /**
+           * The controls of a Tracker (Reference Manual 20, pp. 2773–2784): `{n}` names a tracker of the node that has no name, by its
+           * place in the list from 1. Its path is said at frames of the timeline: how many frames it has (`{count}`), its first
+           * (`{first}`) and its last (`{last}`).
+           */
+          tracker: 'Tracker {n}', trackerName: 'Tracker Name', enabled: 'Enabled', addTracker: 'Add Tracker', removeTracker: 'Remove Tracker',
+          clearPath: 'Clear Path', patternX: 'Pattern Center X', patternY: 'Pattern Center Y', patternWidth: 'Pattern Width', patternHeight: 'Pattern Height',
+          searchWidth: 'Search Width', searchHeight: 'Search Height',
+          noPath: 'No path', pathOne: 'Path: 1 frame, {first}', pathFrames: 'Path: {count} frames, {first}–{last}',
+          operation: 'Operation', trackerMerge: 'Merge', position: 'Position', rotation: 'Rotation', scaling: 'Scaling', pivotType: 'Pivot Type',
+          pivotTracker: 'Pivot Tracker', pivotX: 'Pivot X', pivotY: 'Pivot Y', reference: 'Reference Frame', setToPlayhead: 'Set to Playhead',
+          /**
+           * Connect To of the centre of a Merge, a Transform and a mask: what it follows of a Tracker, `{name}` that Tracker and the
+           * pattern or the position (`Tracker 1 › Eye`).
+           */
+          connectTo: 'Connect To', notConnected: 'Not connected', disconnect: 'Disconnect', steadyPosition: 'Steady Position',
+          unsteadyPosition: 'Unsteady Position', follows: 'Follows {name}', noTrackers: 'No tracker in this composition',
         },
+        /** The tabs of a Tracker, which are the sections of its settings in the Inspector. */
+        trackerTabs: { trackers: 'Trackers', operation: 'Operation' },
+        /** What a Tracker does with its pictures. */
+        operations: { none: 'None', match_move: 'Match Move' },
+        /** Which pictures a Tracker that match moves draws, and which way the motion goes. */
+        trackerMerges: { bg_only: 'BG Only', fg_only: 'FG Only', fg_over_bg: 'FG Over BG', bg_over_fg: 'BG Over FG' },
+        /** The point that the turn and the size of a Tracker are about. */
+        pivots: { tracker_average: 'Tracker Average', selected_tracker: 'Selected Tracker', manual: 'Manual' },
         /** How a mask is combined with the mask that comes into it. */
         paintModes: { merge: 'Merge', add: 'Add', subtract: 'Subtract' },
         /** Which regions of a Polygon are inside it. */
@@ -1854,6 +1879,8 @@ export const en = {
         keyerScreen: 'The background color needs one channel above the other two, as a green or a blue has. A gray cannot be keyed.',
         /** Thresholds of a Delta Keyer that the engine refused: the lower one is above the upper one. */
         keyerThreshold: 'The low threshold cannot be above the high threshold.',
+        /** A Tracker that has no patterns to place on the picture. */
+        noTrackers: 'There are no trackers in this node yet. Add Tracker puts one in the middle of the picture.',
       },
       colorPage: {
         noClip: 'There is no clip at the playhead.',

@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, viewPointerOf, type Clip, type FusionNode, type FusionPicture, type FusionView, type Media, type Op, type OverlayPoint, type Timeline, type ViewPointer } from '../engine';
+import {
+  callEngine, viewPointerOf, type Clip, type Composition, type FusionNode, type FusionPicture, type FusionView, type Media, type Op, type OverlayPoint, type Timeline,
+  type ViewPointer,
+} from '../engine';
 import { keyFrameOf } from '../inspector/clipKeys';
 import { useAudioGesture } from '../timeline/useAudioGesture';
-import { withFirst, type FusionAt } from './edits';
-import { controlsOf, draggedValues, handleName, hitHandle, overlayOf, reachOf, type Controls, type Handle } from './onscreen';
+import { followOf, withFirst, type FusionAt } from './edits';
+import { controlsOf, draggedPattern, draggedValues, handleName, hitHandle, overlayOf, reachOf, type Controls, type Handle } from './onscreen';
 import { paramOf, wholeParam, wholeValue } from './settings';
+import { followedPlace, placedPattern, restoredPatterns } from './tracker';
 
 /** A handle that is being dragged: what was pressed, and the node as it was then, from which every move is worked out. */
 interface Drag {
@@ -27,8 +31,11 @@ interface Drag {
 
 /**
  * The on-screen controls of the node that is chosen, in the viewer of the Fusion page: the outline
- * of a mask and the handles of its centre, its width and its height or its points, and the handle
- * of the centre of a Merge or a Transform (`onscreen.ts`).
+ * of a mask and the handles of its centre, its width and its height or its points, the handle of
+ * the centre of a Merge or a Transform, and the boxes, the paths and the handles of the patterns of
+ * a Tracker (`onscreen.ts`). A centre that follows a Tracker is drawn where it follows it to, where
+ * the page works that out (`followedPlace`: the place of a pattern, not the Steady or the Unsteady
+ * Position), and its handle is not taken hold of.
  *
  * The viewer is a window of the engine's, over which the page can draw nothing. So the page works
  * the controls out, in the pixels of the frame drawn, and has the engine draw them
@@ -47,14 +54,18 @@ interface Drag {
  *   number of a point of a Polygon by `set_fusion_keys`, a setting with keys as its keys with the
  *   one at the playhead changed or put there); the release ends it, and the whole is one step to
  *   undo. Escape takes it back, and the moves until the button is let go do nothing. Shift keeps the
- *   centre or a point on the axis of the frame that the pointer has gone further along.
+ *   centre, a point or a pattern on the axis of the frame that the pointer has gone further along.
+ * - The handle of a pattern of a Tracker sets where the pattern is put (`draggedPattern`), from
+ *   where it was drawn at the press, by the list of patterns set whole at each move (`placedPattern`),
+ *   in one gesture as a centre is; while it is dragged the pattern is drawn where the drag puts it. A
+ *   pattern that has a path keeps its path: let go, it is drawn on its path again.
  * - A clip on a locked track shows its controls, and a press on a handle does nothing: the node
  *   editor and the Inspector say why.
  * - A press on the picture is told to `onPress`: the page beneath the view does not hear it.
  * - What the engine refuses of a drag is told to `onFailure`; but not a change that changes nothing
  *   (`empty`), which is no failure.
  */
-export function useFusionOnscreen({ bridge, session, revision, native, timeline, clip, media, node, frame, view, locked, onPress, onFailure }: {
+export function useFusionOnscreen({ bridge, session, revision, native, timeline, clip, media, composition = null, node, frame, view, locked, onPress, onFailure }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; revision: number;
   /** Whether the shell lays the engine's view over the viewer: in a browser nothing is drawn. */
   native: boolean;
@@ -62,6 +73,8 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
   /** The clip whose composition the page shows. */
   clip: Clip | null;
   media: readonly Media[];
+  /** The composition as the page shows it: where a centre that follows a Tracker is, is read from it. */
+  composition?: Composition | null;
   /** The one node that is chosen, or null where none or several are. */
   node: FusionNode | null;
   /** The playhead, in frames of the timeline. */
@@ -79,9 +92,16 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
   const placed = native && lies !== null && width > 0 && height > 0 && canvasWidth > 0 && canvasHeight > 0;
   const keyFrame = clip !== null && timeline !== null ? keyFrameOf(clip, timeline, media, frame) : 0;
   const picture = useMemo<FusionPicture | null>(() => (placed ? { x: left, y: top, width, height } : null), [placed, left, top, width, height]);
-  // Worked out again only when the node, the frame of its keys or the place of the picture changes: not at each frame told.
-  const controls = useMemo<Controls | null>(() => (picture !== null && node !== null && clip !== null && timeline !== null ? controlsOf(node, keyFrame, picture) : null),
-    [picture, node, clip?.id, timeline?.id, keyFrame]);
+  /** The pattern of a Tracker that a drag has taken, and where it has put it: it is drawn there until the drag ends. */
+  const [placing, setPlacing] = useState<{ index: number; place: [number, number] } | null>(null);
+  // Worked out again only when the node, the frame of its keys, the place of the picture, the composition (which a centre that follows
+  // a Tracker reads) or a pattern dragged changes: not at each frame told.
+  const controls = useMemo<Controls | null>(() => {
+    if (picture === null || node === null || clip === null || timeline === null) return null;
+    const follow = followOf(node);
+    const follows = follow === null ? null : { place: composition === null ? null : followedPlace(composition, follow, keyFrame) };
+    return controlsOf(node, keyFrame, picture, { follows, placing });
+  }, [picture, node, clip?.id, timeline?.id, keyFrame, composition, placing]);
   const showing = controls !== null;
 
   /** The handle that is being dragged, by its name among those of its node. */
@@ -141,6 +161,7 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
     drag.current = null;
     if (held?.began && !held.cancelled) now.current.gesture.end();
     setActive(null);
+    setPlacing(null);
   }, [session, timeline?.id, clip?.id, node?.id, showing]);
 
   const press = useCallback((pointer: ViewPointer) => {
@@ -164,9 +185,30 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
     if (held.cancelled || pointer.x === null || pointer.y === null) return;
     let dx = pointer.x - held.from[0];
     let dy = pointer.y - held.from[1];
-    // Shift keeps the centre or a point on the axis that the pointer has gone further along.
-    if (pointer.shift && (held.handle.kind === 'center' || held.handle.kind === 'point')) {
+    // Shift keeps the centre, a point or a pattern on the axis that the pointer has gone further along.
+    if (pointer.shift && (held.handle.kind === 'center' || held.handle.kind === 'point' || held.handle.kind === 'pattern')) {
       if (Math.abs(dx) < Math.abs(dy)) dx = 0; else dy = 0;
+    }
+    if (held.handle.kind === 'pattern') {
+      // The place where a pattern of a Tracker is put: the list of patterns set whole at each move, the others as they are.
+      const index = held.handle.index ?? -1;
+      const place = draggedPattern(held.node, index, held.keyFrame, held.picture, dx, dy);
+      const placed = place === null ? null : placedPattern(held.at, held.node, index, place[0], place[1]);
+      if (place === null || placed === null) return;
+      const { gesture: sending } = now.current;
+      if (!held.began) {
+        if (dx === 0 && dy === 0) return;
+        const restore = restoredPatterns(held.at, held.node);
+        if (restore === null || !sending.start([restore])) {
+          drag.current = null;
+          setActive(null);
+          return;
+        }
+        held.began = true;
+      }
+      setPlacing({ index, place });
+      sending.preview([placed]);
+      return;
     }
     const moved = draggedValues(held.node, held.handle, held.keyFrame, held.picture, dx, dy);
     if (moved.length === 0) return;
@@ -192,6 +234,7 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
     if (!held) return;
     drag.current = null;
     setActive(null);
+    setPlacing(null);
     // Its last move is what stays; one that Escape took back has ended already.
     if (held.began && !held.cancelled) now.current.gesture.end();
   }, []);
@@ -232,6 +275,7 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
       event.stopPropagation();
       held.cancelled = true;
       setActive(null);
+      setPlacing(null);
       if (held.began) now.current.gesture.cancel();
     };
     window.addEventListener('keydown', escape, true);

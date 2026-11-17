@@ -55,8 +55,8 @@ const keyerColor = (name: string, r: number, g: number, b: number): FusionSettin
 ];
 
 /**
- * The settings of each kind of node that take keys, in the order of the catalog. A MediaIn and a
- * MediaOut have none. Those of a Polygon end with the two numbers of a point, written once for
+ * The settings of each kind of node that take keys, in the order of the catalog. A MediaIn, a
+ * MediaOut and a Tracker have none. Those of a Polygon end with the two numbers of a point, written once for
  * every point as the catalog writes them; `settingsOf` gives them for each point of a node.
  */
 export const FUSION_SETTINGS: Record<Exclude<FusionKind, 'media_in' | 'media_out'>, readonly FusionSetting[]> = {
@@ -76,6 +76,8 @@ export const FUSION_SETTINGS: Record<Exclude<FusionKind, 'media_in' | 'media_out
     s('low', 0, 0, 1), s('high', 1, 0, 1), s('erode_dilate', 0, -100, 100, 'pixels1080'), s('matte_blur', 0, 0, 100, 'pixels1080'),
     s('clean_foreground', 0, 0, 1), s('clean_background', 0, 0, 1), ...keyerColor('replace_color', 0.5, 0.5, 0.5), s('spill_suppression', 1, 0, 1),
   ],
+  // A Tracker has no entry in the catalog: none of its settings takes keys, and the paths of its patterns are what moves it.
+  tracker: [],
 };
 
 /**

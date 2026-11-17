@@ -686,10 +686,23 @@ export function sortLinks(links: readonly Link[]): Link[] {
 // of DaVinci Resolve builds one for a clip (Reference Manual 20, pp. 1211–1274).
 
 /**
- * A place in a picture as Fusion counts it: `x` the share of its width from its left edge and `y` the
- * share of its height from its lower edge, so that the middle is 0.5 and 0.5.
+ * What a centre follows of a Tracker (PROTOCOL.md, "Following a Tracker"): where one of its patterns
+ * is at the frame, with its offset (`tracker`), or the Steady or the Unsteady Position of its motion.
  */
-export interface FusionCenter { x: Param; y: Param }
+export type FusionFollowOutput = 'tracker' | 'steady_position' | 'unsteady_position';
+/**
+ * That a centre follows what a Tracker of the same composition publishes (Fusion's Connect To):
+ * the id of the node, which of its places, and, of the place of a pattern, which pattern, by its
+ * place in the list of the node from 0 (always written; read with the output `tracker` alone).
+ */
+export interface FusionFollow { node: string; output: FusionFollowOutput; tracker: number }
+/**
+ * A place in a picture as Fusion counts it: `x` the share of its width from its left edge and `y` the
+ * share of its height from its lower edge, so that the middle is 0.5 and 0.5. The centre of a Merge,
+ * a Transform and a mask may follow a Tracker (`follow`, written only where it does): its own `x`
+ * and `y` are kept then, and not read.
+ */
+export interface FusionCenter { x: Param; y: Param; follow?: FusionFollow }
 /** How a Merge combines its foreground and its background: Over alone. */
 export type FusionOperator = 'over';
 /**
@@ -767,15 +780,50 @@ export interface FusionDeltaKeyer {
   clean_foreground: Param; clean_background: Param; replace: FusionKeyerReplace; replace_color: FusionKeyerColor; garbage_invert: boolean;
   spill_method: FusionKeyerSpill; spill_suppression: Param; view: FusionKeyerView;
 }
+/** What a Tracker does with its pictures (Operation, p. 2778): nothing, or Match Move. */
+export type FusionTrackerOperation = 'none' | 'match_move';
+/** Which pictures a Tracker that match moves draws, and which way the motion goes (Merge, p. 2779). */
+export type FusionTrackerMerge = 'bg_only' | 'fg_only' | 'fg_over_bg' | 'bg_over_fg';
+/** The point that the turn and the size of a Tracker are about (Pivot Type, p. 2783). */
+export type FusionTrackerPivot = 'tracker_average' | 'selected_tracker' | 'manual';
+/** A place of a Tracker, which takes no keys: shares of the width and of the height of the picture, from its lower left corner, `y` up. */
+export interface FusionTrackerPlace { x: number; y: number }
+/**
+ * One pattern of a Tracker (PROTOCOL.md, "The Tracker"), every field written: its name (at most 100
+ * characters, or empty); whether it counts; where it was put (`pattern.x`, `pattern.y`, −15.5…16.5,
+ * as a centre) and how large it is (`width` in widths and `height` in heights of the picture, 0…1);
+ * how large the area is that it is searched for in (0…1 each); its offset, right and up (−16…16 each);
+ * and its path, where its middle was found, by frame of the keys of the clip, written as an object
+ * of the frames: `{"12": [0.5, 0.25]}`. None of its numbers takes keys.
+ */
+export interface FusionTrackerPattern {
+  name: string; enabled: boolean;
+  pattern: { x: number; y: number; width: number; height: number };
+  search: { width: number; height: number };
+  offset: FusionTrackerPlace;
+  path: Record<string, [x: number, y: number]>;
+}
+/**
+ * The settings of a Tracker node (Reference Manual 20, Chapter 82, pp. 1724–1759 and 2773–2784;
+ * PROTOCOL.md, "The Tracker"), every field written and none taking keys: its Operation, its Merge,
+ * the three boxes of the motion that is corrected, its Pivot Type with the pattern (0…15) and the
+ * place that it reads, its Reference (a frame of the keys of the clip) and its patterns, at most 16,
+ * which are set whole.
+ */
+export interface FusionTracker {
+  operation: FusionTrackerOperation; merge: FusionTrackerMerge; position: boolean; rotation: boolean; scaling: boolean;
+  pivot: FusionTrackerPivot; pivot_tracker: number; pivot_point: FusionTrackerPlace; reference: number; trackers: FusionTrackerPattern[];
+}
 /**
  * An input of a node of a composition, by its name: `input` of a `media_out`, a `transform`, a `blur`,
- * a `mosaic` and a `delta_keyer`, the two pictures of a `merge`, and `mask`, the effect mask of a
- * `merge`, a `transform`, a `background`, a `blur`, a `mosaic` and a `delta_keyer` and the mask that
- * comes into a mask node. A `mask` reads the alpha of the picture linked to it (a mask node gives
- * white premultiplied by its mask); not linked, it is no mask. `garbage_matte` and `solid_matte` are
- * the two mattes of a `delta_keyer`, read as a `mask` is: where the garbage matte is 1 the matte of
- * the keyer is made transparent, where the solid matte is 1 it is made solid, and the garbage matte
- * wins; not linked, each is no matte.
+ * a `mosaic`, a `delta_keyer` and a `tracker`, the two pictures of a `merge`, the `foreground` of a
+ * `tracker` too (the picture that it makes follow its patterns), and `mask`, the effect mask of a
+ * `merge`, a `transform`, a `background`, a `blur`, a `mosaic`, a `delta_keyer` and a `tracker` and
+ * the mask that comes into a mask node. A `mask` reads the alpha of the picture linked to it (a mask
+ * node gives white premultiplied by its mask); not linked, it is no mask. `garbage_matte` and
+ * `solid_matte` are the two mattes of a `delta_keyer`, read as a `mask` is: where the garbage matte is
+ * 1 the matte of the keyer is made transparent, where the solid matte is 1 it is made solid, and the
+ * garbage matte wins; not linked, each is no matte.
  */
 export type FusionInput = 'input' | 'background' | 'foreground' | 'mask' | 'garbage_matte' | 'solid_matte';
 /**
@@ -795,7 +843,8 @@ export type FusionNode = { id: string; label: string; pass_through?: boolean; po
   | { kind: 'polygon'; params: FusionPolygon }
   | { kind: 'blur'; params: FusionBlur }
   | { kind: 'mosaic'; params: FusionMosaic }
-  | { kind: 'delta_keyer'; params: FusionDeltaKeyer });
+  | { kind: 'delta_keyer'; params: FusionDeltaKeyer }
+  | { kind: 'tracker'; params: FusionTracker });
 export type FusionKind = FusionNode['kind'];
 /** A link from the output of node `from` into the input `input` of node `to`. */
 export interface FusionLink { from: string; to: string; input: FusionInput }

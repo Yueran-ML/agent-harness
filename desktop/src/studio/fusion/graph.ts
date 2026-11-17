@@ -19,14 +19,17 @@ import {
 /**
  * The inputs of each kind of node, the first first, as the engine names them (PROTOCOL.md,
  * "Compositions"): the pictures of a node, and after them its `mask`, the effect mask of a Merge, a
- * Transform, a Background, a Blur, a Mosaic and a Delta Keyer and the mask that comes into a mask
- * node. A Delta Keyer has its two mattes between its picture and its mask.
+ * Transform, a Background, a Blur, a Mosaic, a Delta Keyer and a Tracker and the mask that comes
+ * into a mask node. A Delta Keyer has its two mattes between its picture and its mask; a Tracker
+ * has two pictures, the one that it tracks (`input`), which is the one that it hands on, and the
+ * `foreground` that it makes follow its patterns.
  */
 export const INPUTS: Record<FusionKind, readonly FusionInput[]> = {
   media_in: [], media_out: ['input'], merge: ['background', 'foreground', 'mask'], transform: ['input', 'mask'], background: ['mask'],
   rectangle: ['mask'], ellipse: ['mask'], polygon: ['mask'],
   blur: ['input', 'mask'], mosaic: ['input', 'mask'],
   delta_keyer: ['input', 'garbage_matte', 'solid_matte', 'mask'],
+  tracker: ['input', 'foreground', 'mask'],
 };
 
 /** The kinds of node that make a mask (PROTOCOL.md, "Masks"). */
@@ -56,9 +59,9 @@ export const matteInputs = (kind: FusionKind): readonly MatteInput[] => INPUTS[k
 
 /**
  * The input whose picture a node hands on where it is passed through or taken away: the first of its
- * pictures (the `background` of a Merge, the `input` of a Transform and of a Delta Keyer), of a mask
- * node the mask that comes into it, and none of a Background or a MediaIn, whose effect mask is no
- * picture to hand on.
+ * pictures (the `background` of a Merge, the `input` of a Transform, of a Delta Keyer and of a
+ * Tracker), of a mask node the mask that comes into it, and none of a Background or a MediaIn, whose
+ * effect mask is no picture to hand on.
  */
 export const handedOn = (kind: FusionKind): FusionInput | undefined => pictureInputs(kind)[0] ?? (isMaskKind(kind) ? 'mask' : undefined);
 

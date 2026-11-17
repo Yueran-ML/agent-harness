@@ -11,9 +11,9 @@
  */
 import type { Key } from '../../app/keys';
 import {
-  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionBlur, type FusionDeltaKeyer, type FusionEllipse, type FusionKind,
-  type FusionLink, type FusionMaskCommon, type FusionMerge, type FusionMosaic, type FusionNode, type FusionPoint, type FusionPolygon, type FusionRectangle,
-  type FusionTransform, type NodePos, type Op,
+  firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionBlur, type FusionDeltaKeyer, type FusionEllipse, type FusionFollow,
+  type FusionKind, type FusionLink, type FusionMaskCommon, type FusionMerge, type FusionMosaic, type FusionNode, type FusionPoint, type FusionPolygon,
+  type FusionRectangle, type FusionTracker, type FusionTrackerPattern, type FusionTransform, type NodePos, type Op,
 } from '../engine';
 import { valueAt } from '../keyframes/value';
 import {
@@ -44,10 +44,10 @@ export function withFirst(at: FusionAt, has: boolean, ops: Op[]): Op[] {
 /** The kinds of node of a picture that the editor adds: a composition has exactly one MediaOut, so none is added. */
 export const ADDABLE: readonly Exclude<FusionKind, 'media_out'>[] = ['merge', 'transform', 'background', 'media_in'];
 /**
- * The effects on a picture that the editor adds, in a group of their own: a Blur, a Mosaic and a Delta Keyer. Each has a picture,
- * `input`, so it goes in after the node chosen as a Transform does (`addNode`).
+ * The effects on a picture that the editor adds, in a group of their own: a Blur, a Mosaic, a Delta Keyer and a Tracker. Each has
+ * a picture, `input`, so it goes in after the node chosen as a Transform does (`addNode`).
  */
-export const ADDABLE_EFFECTS: readonly Extract<FusionKind, 'blur' | 'mosaic' | 'delta_keyer'>[] = ['blur', 'mosaic', 'delta_keyer'];
+export const ADDABLE_EFFECTS: readonly Extract<FusionKind, 'blur' | 'mosaic' | 'delta_keyer' | 'tracker'>[] = ['blur', 'mosaic', 'delta_keyer', 'tracker'];
 /** The masks that the editor adds, in a group of their own. */
 export const ADDABLE_MASKS: readonly MaskKind[] = MASK_KINDS;
 
@@ -82,6 +82,24 @@ export const newDeltaKeyer = (): FusionDeltaKeyer => ({
   replace: 'soft_color', replace_color: { r: 0.5, g: 0.5, b: 0.5 }, garbage_invert: false, spill_method: 'medium', spill_suppression: 1, view: 'final_result',
 });
 
+/** The most patterns that a Tracker may have (PROTOCOL.md, "The Tracker"). */
+export const MOST_TRACKERS = 16;
+/**
+ * A pattern of a Tracker as the engine makes one (`Pattern::new` of `crates/model/src/fusion/tracker.rs`), put at `x` and `y`:
+ * on, with no name, a twentieth of the picture wide and high, searched for in an eighth of it, with no offset and no path.
+ */
+export const newPattern = (x = 0.5, y = 0.5): FusionTrackerPattern => ({
+  name: '', enabled: true, pattern: { x, y, width: 0.05, height: 0.05 }, search: { width: 0.125, height: 0.125 }, offset: { x: 0, y: 0 }, path: {},
+});
+/**
+ * The settings of a Tracker as the engine makes a new one (PROTOCOL.md, "The Tracker"): an Operation of None, BG Only, the three
+ * boxes of the motion on, the pivot at the tracker average, frame 0 of the keys as the reference, and no patterns.
+ */
+export const newTracker = (): FusionTracker => ({
+  operation: 'none', merge: 'bg_only', position: true, rotation: true, scaling: true, pivot: 'tracker_average', pivot_tracker: 0,
+  pivot_point: { x: 0.5, y: 0.5 }, reference: 0, trackers: [],
+});
+
 /** The most points that a Polygon may have (PROTOCOL.md, "Masks"). */
 export const MOST_POINTS = 128;
 /** The fewest points that make a shape: with fewer a Polygon is a mask of nothing, so the page takes none away below them. */
@@ -110,16 +128,63 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
     case 'blur': return { ...base, kind, params: newBlur() };
     case 'mosaic': return { ...base, kind, params: newMosaic() };
     case 'delta_keyer': return { ...base, kind, params: newDeltaKeyer() };
+    case 'tracker': return { ...base, kind, params: newTracker() };
     default: return { ...base, kind, params: {} };
   }
 }
 
+/** The kinds of node that have a centre, which may follow a Tracker (PROTOCOL.md, "Following a Tracker"). */
+export const CENTER_KINDS = ['merge', 'transform', 'rectangle', 'ellipse', 'polygon'] as const;
+export type CenterKind = (typeof CENTER_KINDS)[number];
+/** Whether a kind of node has a centre. */
+export const hasCenter = (kind: FusionKind): kind is CenterKind => (CENTER_KINDS as readonly FusionKind[]).includes(kind);
+
+/** What the centre of a node follows, or null: a node of a kind that has no centre follows nothing. */
+export function followOf(node: FusionNode): FusionFollow | null {
+  switch (node.kind) {
+    case 'merge': case 'transform': case 'rectangle': case 'ellipse': case 'polygon': return node.params.center?.follow ?? null;
+    default: return null;
+  }
+}
+
+/** A node with its centre following `follow`, or following nothing where it is null: of a kind that has no centre, the node as it is. */
+export function withFollow(node: FusionNode, follow: FusionFollow | null): FusionNode {
+  if (!hasCenter(node.kind)) return node;
+  const params = node.params as { center: { x: unknown; y: unknown; follow?: FusionFollow } };
+  const { follow: _was, ...center } = params.center;
+  return { ...node, params: { ...params, center: follow === null ? center : { ...center, follow } } } as FusionNode;
+}
+
+/** Whether two follows are the same: of the same node, the same output, and of the output `tracker` the same pattern. */
+const sameFollow = (a: FusionFollow, b: FusionFollow): boolean => a.node === b.node && a.output === b.output && a.tracker === b.tracker;
+
+/**
+ * Have the centre of a node follow a Tracker (Connect To), or follow nothing (`null`, Disconnect): `set_fusion_node` with
+ * `{"center": {"follow": ...}}`, a patch that leaves the centre's own `x` and `y` as they are, the pattern always written.
+ * Nothing where it follows that already, or a node of a kind that has no centre.
+ */
+export function followOps(at: FusionAt, node: FusionNode, follow: FusionFollow | null): Op[] {
+  if (!hasCenter(node.kind)) return [];
+  const now = followOf(node);
+  if (follow === null) return now === null ? [] : [{ op: 'set_fusion_node', ...at, id: node.id, params: { center: { follow: null } } }];
+  if (now !== null && sameFollow(now, follow)) return [];
+  return [{ op: 'set_fusion_node', ...at, id: node.id, params: { center: { follow: { node: follow.node, output: follow.output, tracker: follow.tracker } } } }];
+}
+
+/** The nodes whose centres follow one of the nodes `ids`, in the order of the composition. */
+export const followersOf = (composition: Composition, ids: readonly string[]): FusionNode[] => composition.nodes.filter((node) => {
+  const follow = followOf(node);
+  return follow !== null && ids.includes(follow.node);
+});
+
 /**
  * Add a node. With `after`, a node that has an output, a node that has an input of a picture is
  * inserted after it: the links of the operation put the output of `after` into the first input of
- * the new node (`input` of a Transform, a Blur, a Mosaic and a Delta Keyer, `background` of a Merge), and the output
- * of the new node into every input that `after` fed, each in the place of the link that was there. A node without
- * such an input (a Background, a MediaIn), or one added with no node chosen, is added with no links.
+ * the new node (`input` of a Transform, a Blur, a Mosaic, a Delta Keyer and a Tracker, `background` of a Merge), and the
+ * output of the new node into every input that `after` fed, each in the place of the link that was there. A node without
+ * such an input (a Background, a MediaIn), or one added with no node chosen, is added with no links. A Tracker begins
+ * with one pattern in the middle of the picture (`newPattern`), as a Polygon begins with a square: the engine makes one
+ * with none, and a Tracker without a pattern has nothing to place on the picture.
  *
  * A mask (a Rectangle, an Ellipse, a Polygon) is not put into the chain of the picture: as in
  * Fusion, where the node chosen has a `mask` input that nothing is linked into, the mask is linked
@@ -131,9 +196,10 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
  * The new node is named by the empty id in its links, as `add_fusion_node` takes them.
  */
 export function addNode(at: FusionAt, composition: Composition, kind: FusionKind, after: string | null, pos: NodePos | null): Op[] {
-  const node: FusionNode = kind === 'polygon'
-    ? { id: '', label: '', pass_through: false, pos: pos ? placeAt(pos) : null, kind, params: { ...newPolygon(), points: startPoints() } }
-    : newNode(kind, pos);
+  const base = { id: '', label: '', pass_through: false, pos: pos ? placeAt(pos) : null };
+  const node: FusionNode = kind === 'polygon' ? { ...base, kind, params: { ...newPolygon(), points: startPoints() } }
+    : kind === 'tracker' ? { ...base, kind, params: { ...newTracker(), trackers: [newPattern()] } }
+      : newNode(kind, pos);
   const before = after === null ? undefined : composition.nodes.find(each => each.id === after);
   if (isMaskKind(kind)) {
     const into = before === undefined ? null : before.id;
@@ -220,13 +286,23 @@ function pasteOffset(composition: Composition, places: readonly NodePos[], to: N
  *
  * The keys are kept as they are: they count the frames of the clip that they were copied from.
  * Nothing where nothing was copied, and where the composition has no room (`roomFor`).
+ *
+ * A centre that follows a Tracker (PROTOCOL.md, "Following a Tracker") follows the copy of that
+ * Tracker where it is pasted with it, named by its name of the transaction, which the engine takes
+ * for the `node` that a centre follows: in the node as it is added where the Tracker was added
+ * before it, and else by a `set_fusion_node` of the centre after the last node is added. Where the
+ * Tracker is not pasted with it, the centre follows it still where the composition has it (a node
+ * of that id that is a Tracker), and follows nothing else, which the engine would refuse as
+ * `missing`.
  */
 export function pasteNodes(at: FusionAt, composition: Composition, copied: CopiedNodes | null, to: NodePos | null = null): Op[] {
   if (copied === null || copied.nodes.length === 0 || !roomFor(composition, copied.nodes.length)) return [];
   const places: NodePos[] = copied.nodes.map(node => node.pos ?? { x: 0, y: 0 });
   const by = pasteOffset(composition, places, to);
   const placeOf = new Map<string, number>(copied.nodes.map((node, index) => [node.id, index]));
-  return copied.nodes.map((node, index): Op => {
+  // The centres that follow a Tracker that is added after them, set once it is there.
+  const later: Op[] = [];
+  const added = copied.nodes.map((node, index): Op => {
     const links = copied.links.flatMap((link): FusionLink[] => {
       const from = placeOf.get(link.from);
       const into = placeOf.get(link.to);
@@ -234,9 +310,24 @@ export function pasteNodes(at: FusionAt, composition: Composition, copied: Copie
         ? [{ from: pastedName(from), to: pastedName(into), input: link.input }] : [];
     });
     const pos = placeAt({ x: Math.max(0, places[index].x + by.x), y: Math.max(0, places[index].y + by.y) });
-    const made: FusionNode = { ...structuredClone(node), id: pastedName(index), pos };
+    let made: FusionNode = { ...structuredClone(node), id: pastedName(index), pos };
+    const follow = followOf(made);
+    if (follow !== null) {
+      const tracker = placeOf.get(follow.node);
+      if (tracker !== undefined && copied.nodes[tracker].kind === 'tracker') {
+        const named: FusionFollow = { ...follow, node: pastedName(tracker) };
+        if (tracker < index) made = withFollow(made, named);
+        else {
+          made = withFollow(made, null);
+          later.push({ op: 'set_fusion_node', ...at, id: pastedName(index), params: { center: { follow: named } } });
+        }
+      } else if (tracker !== undefined || !composition.nodes.some(each => each.id === follow.node && each.kind === 'tracker')) {
+        made = withFollow(made, null);
+      }
+    }
     return links.length > 0 ? { op: 'add_fusion_node', ...at, node: made, links } : { op: 'add_fusion_node', ...at, node: made };
   });
+  return [...added, ...later];
 }
 
 /**
@@ -284,8 +375,14 @@ export function insertOnLink(at: FusionAt, composition: Composition, id: string,
  * Transform with a mask is joined across as one without, and a Background with a mask leaves what
  * it fed without a picture; the mask that comes into a mask node is the picture that it hands on,
  * and is counted. The mattes of a Delta Keyer are not counted either: it is joined across by its
- * `input` alone, and what fed its mattes is joined to nothing. Each node is taken away from the
+ * `input` alone, and what fed its mattes is joined to nothing; nor is the `foreground` of a Tracker,
+ * which it makes follow its patterns and does not hand on. Each node is taken away from the
  * composition as the ones before it left it, as the engine applies them.
+ *
+ * A Tracker that the centre of a node follows is not taken away by the engine (`in_use`, PROTOCOL.md,
+ * "Following a Tracker"): every centre that follows one of the Trackers deleted lets go of it first,
+ * in the same transaction (`{"center": {"follow": null}}`), so that the whole is one step to undo and
+ * the undo puts each centre back on the Tracker that it followed.
  */
 export function removeNodes(at: FusionAt, composition: Composition, ids: readonly string[]): Op[] {
   let now = composition;
@@ -294,13 +391,16 @@ export function removeNodes(at: FusionAt, composition: Composition, ids: readonl
     const node = now.nodes.find(each => each.id === id);
     if (!node || node.kind === 'media_out') continue;
     const passed = handedOn(node.kind);
-    const into = now.links.filter(link => link.to === id && !isMatteInput(link.input) && (link.input !== 'mask' || passed === 'mask'));
+    const into = now.links.filter(link => link.to === id && !isMatteInput(link.input) && (link.input !== 'mask' || passed === 'mask')
+      && !(node.kind === 'tracker' && link.input === 'foreground'));
     const fed = now.links.filter(link => link.from === id);
     const links: FusionLink[] = into.length === 1 ? fed.map(link => ({ from: into[0].from, to: link.to, input: link.input })) : [];
     ops.push(links.length > 0 ? { op: 'remove_fusion_node', ...at, id, links } : { op: 'remove_fusion_node', ...at, id });
     now = { nodes: now.nodes.filter(each => each.id !== id), links: sortFusionLinks([...now.links.filter(link => link.from !== id && link.to !== id), ...links]) };
   }
-  return ops;
+  const trackers = composition.nodes.filter(node => node.kind === 'tracker' && ids.includes(node.id)).map(node => node.id);
+  const letGo = followersOf(composition, trackers).flatMap(node => followOps(at, node, null));
+  return ops.length === 0 ? [] : [...letGo, ...ops];
 }
 
 /**

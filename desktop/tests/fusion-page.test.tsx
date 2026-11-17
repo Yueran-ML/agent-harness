@@ -15,11 +15,11 @@ import { zhCN } from '../src/messages/zh-CN';
 import { numberedClips, shownClips } from '../src/studio/color/clips';
 import { Studio } from '../src/studio/Studio';
 import {
-  applyOp, emptyGrade, firstComposition, ProjectCopy, type Composition, type EngineEvent, type FusionLink, type FusionNode, type FusionPoint, type Media, type Op,
-  type Project, type Timeline, type TransportState,
+  applyOp, emptyGrade, firstComposition, ProjectCopy, type Composition, type EngineEvent, type FusionFollow, type FusionLink, type FusionNode, type FusionPoint,
+  type FusionRectangle, type FusionTracker, type FusionTrackerPattern, type Media, type Op, type Project, type Timeline, type TransportState,
 } from '../src/studio/engine';
 import { copiedNodes, keepCopied } from '../src/studio/fusion/copied';
-import { newMerge, newNode, newPolygon, startPoints } from '../src/studio/fusion/edits';
+import { newMerge, newNode, newPattern, newPolygon, newTracker, startPoints, withFollow } from '../src/studio/fusion/edits';
 import { matchingTools, TOOLS } from '../src/studio/fusion/SelectTool';
 import { chosenPicture, fusionClip } from '../src/studio/pages/FusionPage';
 import { likeABrowser } from './mounted';
@@ -716,7 +716,7 @@ describe('the masks in the node editor of the Fusion page', () => {
     const groups = [...document.querySelectorAll<HTMLElement>('.fusion-add')];
     expect(groups.map(each => each.getAttribute('aria-label'))).toEqual(['Add Node', 'Effects', 'Masks']);
     expect(groups.map(each => [...each.querySelectorAll('button')].map(button => button.textContent))).toEqual([
-      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Blur', 'Mosaic', 'Delta Keyer'], ['Rectangle', 'Ellipse', 'Polygon'],
+      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Blur', 'Mosaic', 'Delta Keyer', 'Tracker'], ['Rectangle', 'Ellipse', 'Polygon'],
     ]);
     // No node chosen: the mask is added with no links, and is the node chosen.
     bridge.call.mockClear();
@@ -1177,7 +1177,7 @@ describe('a Blur and a Mosaic in the node editor of the Fusion page', () => {
   it('adds each from their group of the tool bar: loose where no node is chosen, and after the node chosen on its picture', async () => {
     const { bridge } = await mount();
     const group = one('.fusion-add-effects');
-    expect([group.getAttribute('aria-label'), [...group.querySelectorAll('button')].map(button => button.textContent)]).toEqual(['Effects', ['Blur', 'Mosaic', 'Delta Keyer']]);
+    expect([group.getAttribute('aria-label'), [...group.querySelectorAll('button')].map(button => button.textContent)]).toEqual(['Effects', ['Blur', 'Mosaic', 'Delta Keyer', 'Tracker']]);
     expect([marked('add-blur')!.title, marked('add-mosaic')!.title]).toEqual(['Add Node: Blur', 'Add Node: Mosaic']);
     // No node chosen: the Blur is added with no links, and is the node chosen.
     bridge.call.mockClear();
@@ -1822,6 +1822,206 @@ describe('a Delta Keyer in the Spline Editor of the Fusion page', () => {
   });
 });
 
+// A Tracker (PROTOCOL.md, "The Tracker" and "Following a Tracker").
+/** A pattern named Left, put at a quarter of the width and half the height, with a path at frames 30, 32 and 50 of the keys of the clip. */
+const LEFT = (): FusionTrackerPattern => ({ ...newPattern(0.25, 0.5), name: 'Left', path: { 30: [0.25, 0.5], 32: [0.3, 0.5], 50: [0.5, 0.5] } });
+/**
+ * `comp` and two nodes that nothing is linked to or from, each where the project puts it: the Tracker n6 at 200,200, of the pattern
+ * Left and an unnamed one at 0.75, 0.5 that has no path, its reference at frame 40 of the keys; and the Rectangle n7 at 40,300, whose
+ * centre follows what `follow` says, where it is given.
+ */
+const trackerComp = (follow: FusionFollow | null = null): Composition => {
+  const made = comp();
+  const tracker = { ...newNode('tracker', { x: 200, y: 200 }, 'n6'), params: { ...newTracker(), reference: 40, trackers: [LEFT(), newPattern(0.75, 0.5)] } } as FusionNode;
+  const box = newNode('rectangle', { x: 40, y: 300 }, 'n7');
+  return { ...made, nodes: [...made.nodes, tracker, follow === null ? box : withFollow(box, follow)] };
+};
+/** The middles of the cards of the Tracker and of the Rectangle of `trackerComp`. */
+const T = { n6: { x: 246, y: 229 }, n7: { x: 86, y: 329 } };
+/** The timeline of `timelineOf`, its clip c1 cut from picture 20 of its media: at a frame of the timeline its keys count 20 more. */
+const trackerTimeline = (composition: Composition): Timeline => ({
+  ...timelineOf(),
+  tracks: [{
+    id: 'v1', kind: 'video', name: 'V1', enabled: true, locked: false, transitions: [],
+    clips: [clip('c1', 0, 100, { fusion: composition, source: { kind: 'media', media: 'm1', in: { ticks: 20, scale: 25 } } }), clip('c2', 100, 100)],
+  }],
+});
+
+describe('a Tracker on the Fusion page', () => {
+  const sections = () => [...inspector().querySelectorAll('h3.inspector-section')].map(each => each.textContent);
+  const patternNames = () => [...inspector().querySelectorAll<HTMLButtonElement>('[data-test="pattern-name"]')];
+  const pathLines = () => [...inspector().querySelectorAll<HTMLElement>('[data-test="pattern-path"]')].map(each => each.textContent);
+  const switches = () => [...inspector().querySelectorAll<HTMLInputElement>('[data-test="pattern-enabled"]')];
+  const select = (name: string) => row(name).querySelector('select')!;
+  const checked = (name: string) => (row(name).querySelector('input') as HTMLInputElement).checked;
+  const items = () => [...document.querySelectorAll<HTMLButtonElement>('[data-test="color-menu"] [role="menuitem"]')];
+  /** The patterns of the Tracker set whole, and other settings of it set by a patch. */
+  const list = (trackers: unknown[]) => [{ op: 'set_fusion_node', ...AT, id: 'n6', params: { trackers } }];
+  const tracker = (params: Record<string, unknown>) => [{ op: 'set_fusion_node', ...AT, id: 'n6', params }];
+  /** The settings of a node of the composition of the first clip, as the engine has them. */
+  const paramsIn = (project: Project, id: string) => (project.timelines[0].tracks[0] as { clips: { fusion?: Composition }[] }).clips[0].fusion!.nodes
+    .find(node => node.id === id)!.params;
+  /** The studio on the composition of `trackerComp`, the Tracker chosen. */
+  const shown = async (follow: FusionFollow | null = null) => {
+    const engine = await mount(projectOf([trackerTimeline(trackerComp(follow))]));
+    press(card('n6'), T.n6);
+    return engine;
+  };
+
+  it('is added from the group of the effects with one pattern in the middle of the picture, and has its picture, its foreground and its mask', async () => {
+    const { bridge } = await mount();
+    const made = { ...newNode('tracker'), params: { ...newTracker(), trackers: [newPattern()] } };
+    expect(marked('add-tracker')!.title).toBe('Add Node: Tracker');
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-tracker')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: made }]]);
+    const ports = [...nodeOf('n10').querySelectorAll<SVGElement>('[data-port]')].map(each => each.dataset.port);
+    expect([currentNode(), nodeOf('n10').dataset.kind, ports]).toEqual(['n10', 'tracker', ['in:input', 'in:foreground', 'in:mask', 'out']]);
+    // After the node chosen, on its picture, as a Blur goes.
+    choose('n3');
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-tracker')!); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: made, links: [link('n3', '', 'input'), link('', 'n4', 'background')] }]]);
+    // Its card is in the colour of the effects.
+    const css = readFileSync('src/studio/fusion/fusion.css', 'utf8');
+    expect(blockOf(css, ".fusion-page .fusion-node[data-kind='tracker'] .fusion-node-stripe")).toContain('fill: var(--fusion-effect);');
+  });
+
+  it('shows its trackers and its Operation in the sections of Fusion\'s tabs, with the defaults of the engine and no buttons of keys', async () => {
+    await shown();
+    expect([inspector().dataset.node, inspector().dataset.kind, marked('fusion-node-name')!.textContent]).toEqual(['n6', 'tracker', 'Tracker 1']);
+    expect(sections()).toEqual(['Trackers', 'Operation']);
+    // The list: each pattern by its name or by its place, and what its path reaches, at the frames of the timeline (the keys count 20 more).
+    expect(patternNames().map(each => [each.textContent, each.getAttribute('aria-pressed')])).toEqual([['Left', 'true'], ['Tracker 2', 'false']]);
+    expect(pathLines()).toEqual(['Path: 3 frames, 10–30', 'No path']);
+    expect(switches().map(each => [each.checked, each.getAttribute('aria-label')])).toEqual([[true, 'Enabled: Left'], [true, 'Enabled: Tracker 2']]);
+    // The first is the one chosen: its name and its numbers; then the controls of the Operation tab.
+    expect(fieldsShown()).toEqual([
+      'label', 'tracker.name', 'pattern.x', 'pattern.y', 'pattern.width', 'pattern.height', 'search.width', 'search.height', 'offset.x', 'offset.y',
+      'operation', 'merge', 'position', 'rotation', 'scaling', 'pivot', 'reference',
+    ]);
+    expect(['pattern.x', 'pattern.y', 'pattern.width', 'pattern.height', 'search.width', 'search.height', 'offset.x', 'offset.y'].map(name => box(name).value))
+      .toEqual(['0.250', '0.500', '0.050', '0.050', '0.125', '0.125', '0.000', '0.000']);
+    expect(row('tracker.name').querySelector('input')!.value).toBe('Left');
+    // Nothing of it takes keys.
+    expect(inspector().querySelectorAll('[data-keys]')).toHaveLength(0);
+    // An Operation of None, so that the Merge is off; the boxes on; the pivot at the tracker average; the reference at frame 40 of the keys,
+    // which is frame 20 of the timeline.
+    expect([select('operation').value, [...select('operation').options].map(each => each.textContent)]).toEqual(['none', ['None', 'Match Move']]);
+    expect([select('merge').value, select('merge').disabled, [...select('merge').options].map(each => each.textContent)])
+      .toEqual(['bg_only', true, ['BG Only', 'FG Only', 'FG Over BG', 'BG Over FG']]);
+    expect([checked('position'), checked('rotation'), checked('scaling')]).toEqual([true, true, true]);
+    expect([select('pivot').value, [...select('pivot').options].map(each => each.textContent)]).toEqual(['tracker_average', ['Tracker Average', 'Selected Tracker', 'Manual']]);
+    expect(box('reference').value).toBe('20');
+    // The second chosen: its numbers and its name, and no path to clear.
+    fireEvent.click(patternNames()[1]);
+    expect([box('pattern.x').value, row('tracker.name').querySelector('input')!.value, (marked('clear-path') as HTMLButtonElement).disabled]).toEqual(['0.750', '', true]);
+    // The Spline Editor has nothing of it.
+    fireEvent.click(marked('toggle-spline')!);
+    expect(marked('fusion-curves-empty')!.textContent).toBe(en.hint.studio.fusionPage.noCurves);
+  });
+
+  it('sets its patterns whole, each change of one with the others and every path as they are', async () => {
+    const { bridge, project } = await shown();
+    const moved = { ...LEFT(), pattern: { ...LEFT().pattern, x: 0.3 } };
+    bridge.call.mockClear();
+    type('pattern.x', '0.3'); await settle();
+    expect(sent(bridge)).toEqual([list([moved, newPattern(0.75, 0.5)])]);
+    // Add Tracker: a pattern in the middle of the picture, after the others, which is the one chosen then.
+    bridge.call.mockClear();
+    fireEvent.click(marked('add-pattern')!); await settle(); await settle();
+    expect(sent(bridge)).toEqual([list([moved, newPattern(0.75, 0.5), newPattern()])]);
+    expect(patternNames().map(each => each.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true']);
+    expect(pathLines()).toEqual(['Path: 3 frames, 10–30', 'No path', 'No path']);
+    // The second taken away: the first, its path with it, and the third are left.
+    bridge.call.mockClear();
+    fireEvent.click(inspector().querySelectorAll<HTMLButtonElement>('[data-test="remove-pattern"]')[1]); await settle();
+    expect(sent(bridge)).toEqual([list([moved, newPattern()])]);
+    // The first is chosen again: its path cleared, the other turned off, and the first renamed.
+    expect(patternNames()[0].getAttribute('aria-pressed')).toBe('true');
+    bridge.call.mockClear();
+    fireEvent.click(marked('clear-path')!); await settle();
+    fireEvent.click(switches()[1]); await settle();
+    const name = row('tracker.name').querySelector('input')!;
+    fireEvent.change(name, { target: { value: 'Eye' } }); fireEvent.keyDown(name, { key: 'Enter' }); await settle();
+    expect(sent(bridge)).toEqual([
+      list([{ ...moved, path: {} }, newPattern()]),
+      list([{ ...moved, path: {} }, { ...newPattern(), enabled: false }]),
+      list([{ ...moved, path: {}, name: 'Eye' }, { ...newPattern(), enabled: false }]),
+    ]);
+    expect([patternNames().map(each => each.textContent), pathLines()]).toEqual([['Eye', 'Tracker 2'], ['No path', 'No path']]);
+    expect((paramsIn(project(), 'n6') as FusionTracker).trackers).toEqual([{ ...moved, path: {}, name: 'Eye' }, { ...newPattern(), enabled: false }]);
+    expect(marked('fusion-inspector-problem')).toBeNull();
+  });
+
+  it('sets the controls of its Operation tab by a patch, and keeps its reference at the frame of the keys that the clip shows at the frame given', async () => {
+    const { bridge } = await shown();
+    bridge.call.mockClear();
+    fireEvent.change(select('operation'), { target: { value: 'match_move' } }); await settle();
+    // With Match Move the Merge is read, and set.
+    expect(select('merge').disabled).toBe(false);
+    fireEvent.change(select('merge'), { target: { value: 'fg_over_bg' } }); await settle();
+    fireEvent.click(row('rotation').querySelector('input')!); await settle();
+    fireEvent.change(select('pivot'), { target: { value: 'selected_tracker' } }); await settle();
+    // The pattern that the pivot is at, by its name.
+    expect([...select('pivot_tracker').options].map(each => [each.value, each.textContent])).toEqual([['0', 'Left'], ['1', 'Tracker 2']]);
+    fireEvent.change(select('pivot_tracker'), { target: { value: '1' } }); await settle();
+    fireEvent.change(select('pivot'), { target: { value: 'manual' } }); await settle();
+    expect(fieldsShown().slice(-4)).toEqual(['pivot', 'pivot_point.x', 'pivot_point.y', 'reference']);
+    type('pivot_point.x', '0.25'); await settle();
+    // Frame 25 of the timeline shows frame 45 of the keys; and the playhead, at frame 0, frame 20.
+    type('reference', '25'); await settle();
+    expect(box('reference').value).toBe('25');
+    fireEvent.click(marked('set-reference')!); await settle();
+    expect(sent(bridge)).toEqual([
+      tracker({ operation: 'match_move' }), tracker({ merge: 'fg_over_bg' }), tracker({ rotation: false }), tracker({ pivot: 'selected_tracker' }),
+      tracker({ pivot_tracker: 1 }), tracker({ pivot: 'manual' }), tracker({ pivot_point: { x: 0.25, y: 0.5 } }), tracker({ reference: 45 }), tracker({ reference: 20 }),
+    ]);
+    expect([box('reference').value, checked('rotation'), select('merge').value]).toEqual(['0', false, 'fg_over_bg']);
+  });
+
+  it('is followed by the centre of a mask by Connect To, which shows its X and Y off while it follows, and lets go of it by Disconnect', async () => {
+    const { bridge, project } = await mount(projectOf([trackerTimeline(trackerComp())]));
+    press(card('n7'), T.n7);
+    expect([inspector().dataset.kind, marked('connect-to')!.textContent, marked('fusion-follows')]).toEqual(['rectangle', 'Not connected', null]);
+    // Connect To is no setting of the node: the fields are those that a mask has.
+    expect(fieldsShown()).toEqual(['label', 'level', 'soft_edge', 'border_width', 'paint_mode', 'invert', 'solid', 'center.x', 'center.y', 'width', 'height',
+      'corner_radius', 'angle']);
+    // The menu: where each pattern of the Tracker is, its two positions, and Disconnect, off while the centre follows nothing.
+    fireEvent.click(marked('connect-to')!);
+    expect(items().map(each => [each.getAttribute('aria-label'), each.disabled])).toEqual([
+      ['Tracker 1 › Left', false], ['Tracker 1 › Tracker 2', false], ['Tracker 1 › Steady Position', false], ['Tracker 1 › Unsteady Position', false],
+      ['Disconnect', true],
+    ]);
+    bridge.call.mockClear();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Tracker 1 › Left' })); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: { node: 'n6', output: 'tracker', tracker: 0 } } } }]]);
+    // While it follows, its X and Y are kept and not read: shown, off, with their buttons of keys; and the Inspector says what it follows.
+    expect([box('center.x').disabled, box('center.y').disabled, slider('center.x').disabled, box('width').disabled]).toEqual([true, true, true, false]);
+    expect([...keysOf('center.x'), ...keysOf('center.y')].map(each => each.disabled)).toEqual([true, true, true, true, true, true]);
+    expect(keysOf('width')[1].disabled).toBe(false);
+    expect([marked('connect-to')!.textContent, marked('fusion-follows')!.textContent]).toEqual(['Tracker 1 › Left', 'Follows Tracker 1 › Left']);
+    // The menu checks what it follows; Disconnect lets go of it, and the centre is its own again.
+    fireEvent.click(marked('connect-to')!);
+    expect(items().filter(each => each.dataset.checked).map(each => each.getAttribute('aria-label'))).toEqual(['Tracker 1 › Left']);
+    bridge.call.mockClear();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Disconnect' })); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: null } } }]]);
+    expect([box('center.x').disabled, marked('fusion-follows'), marked('connect-to')!.textContent]).toEqual([false, null, 'Not connected']);
+    expect((paramsIn(project(), 'n7') as FusionRectangle).center).toStrictEqual({ x: 0.5, y: 0.5 });
+  });
+
+  it('is deleted with the centres that follow it letting go of it first, in the same transaction', async () => {
+    const { bridge, project } = await shown({ node: 'n6', output: 'steady_position', tracker: 0 });
+    bridge.call.mockClear();
+    key('Delete'); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_fusion_node', ...AT, id: 'n7', params: { center: { follow: null } } }, { op: 'remove_fusion_node', ...AT, id: 'n6' }]]);
+    expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n7']);
+    expect((paramsIn(project(), 'n7') as FusionRectangle).center).toStrictEqual({ x: 0.5, y: 0.5 });
+    expect(problem()).toBeNull();
+  });
+});
+
 describe('copying, cutting, pasting and duplicating nodes on the Fusion page', () => {
   /** A letter with Ctrl, or with what is given in its place. */
   const chord = (letter: string, fields: Record<string, unknown> = { ctrlKey: true }) => key(letter, { code: `Key${letter.toUpperCase()}`, ...fields });
@@ -2079,9 +2279,9 @@ describe('Select Tool on the Fusion page', () => {
     expect(dialog()).not.toBeNull();
     expect(document.activeElement).toBe(field());
     expect(screen.getByRole('listbox', { name: 'Select Tool' }).id).toBe(field().getAttribute('aria-controls'));
-    expect(kinds()).toEqual(['merge', 'transform', 'background', 'media_in', 'blur', 'mosaic', 'delta_keyer', 'rectangle', 'ellipse', 'polygon']);
+    expect(kinds()).toEqual(['merge', 'transform', 'background', 'media_in', 'blur', 'mosaic', 'delta_keyer', 'tracker', 'rectangle', 'ellipse', 'polygon']);
     expect(options().map(each => each.querySelector('.fusion-select-tool-name')!.textContent))
-      .toEqual(['Merge', 'Transform', 'Background', 'MediaIn', 'Blur', 'Mosaic', 'Delta Keyer', 'Rectangle', 'Ellipse', 'Polygon']);
+      .toEqual(['Merge', 'Transform', 'Background', 'MediaIn', 'Blur', 'Mosaic', 'Delta Keyer', 'Tracker', 'Rectangle', 'Ellipse', 'Polygon']);
     expect(options().every(each => each.getAttribute('role') === 'option')).toBe(true);
     expect([markedKind(), field().getAttribute('aria-activedescendant')]).toEqual(['merge', options()[0].id]);
     // Shift+Space was the editor's: the transport, which plays on Space, was not asked to.
@@ -2106,7 +2306,7 @@ describe('Select Tool on the Fusion page', () => {
     bridge.call.mockClear();
     shiftSpace();
     fireEvent.change(field(), { target: { value: 'e' } });
-    expect(kinds()).toEqual(['ellipse', 'merge', 'media_in', 'delta_keyer', 'rectangle']);
+    expect(kinds()).toEqual(['ellipse', 'merge', 'media_in', 'delta_keyer', 'tracker', 'rectangle']);
     fireEvent.keyDown(field(), { key: 'ArrowUp' });
     expect(markedKind()).toBe('rectangle');
     fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
@@ -2194,7 +2394,7 @@ describe('a clip on a locked track on the Fusion page', () => {
     expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5']);
     expect([inspector().dataset.node, box('blend').value]).toEqual(['n4', '1.000']);
     // The buttons of the tool bar are off, and so is every field, switch and button of the Inspector that changes something.
-    expect([...document.querySelectorAll<HTMLButtonElement>('.fusion-add button')].map(each => each.disabled)).toEqual(Array.from({ length: 10 }, () => true));
+    expect([...document.querySelectorAll<HTMLButtonElement>('.fusion-add button')].map(each => each.disabled)).toEqual(Array.from({ length: 11 }, () => true));
     expect([box('blend').disabled, slider('blend').disabled, row('apply').querySelector('select')!.disabled, row('label').querySelector('input')!.disabled])
       .toEqual([true, true, true, true]);
     expect(keysOf('blend')[1].disabled).toBe(true);

@@ -130,9 +130,11 @@ def test_the_settings_and_their_bounds_are_those_of_the_engines_catalog() -> Non
             assert found == (one["default"], one["low"], one["high"], one["unit"]), one["path"]
             assert (one["clock"], one["page"]) == ("source_frame", "fusion")
     assert {name for name in catalog if name.startswith("fusion_")} == with_numbers
+    # A tracker has numbers, but none of them takes keys: the catalog has no fusion_tracker.
     assert set(fusion.KINDS) - {name.removeprefix("fusion_") for name in with_numbers} == {
         "media_in",
         "media_out",
+        "tracker",
     }
 
 
@@ -164,21 +166,29 @@ def shape(value: object) -> object:
 def test_a_new_node_has_every_setting_that_the_engine_writes_and_its_defaults() -> None:
     examples = json.loads((ENGINE_DATA / "ops-examples.json").read_text(encoding="utf-8"))
     written: dict[str, list[dict[str, Any]]] = {}
+    followed = 0
     for one in nodes_in(examples):
-        # The Tracker, and a centre that follows one, are the engine's and not yet these tools':
-        # until they are, the nodes that have them are passed over here.
+        # A centre is written with what it follows only where it follows a tracker: what it
+        # follows is checked here, and the rest of the node as any other is.
         centre = one["params"].get("center")
-        if one["kind"] == "tracker" or (isinstance(centre, dict) and "follow" in centre):
-            continue
+        if isinstance(centre, dict) and "follow" in centre:
+            follow = cast("dict[str, Any]", centre).pop("follow")
+            assert set(follow) == {"node", "output", "tracker"}
+            assert follow["output"] in fusion.FOLLOWS
+            followed += 1
         written.setdefault(one["kind"], []).append(one["params"])
+    assert followed > 0
     assert set(written) <= set(fusion.KINDS)
     assert set(fusion.KINDS) - set(written) <= {"rectangle"}
+    blank = fusion.new_pattern()
     for kind, each in written.items():
         new = fusion.new_params(kind)
         for found in each:
             # The same fields, each of the same sort: none left out, none that the engine has not.
             assert shape(found) == shape(new), kind
             for path, spec in fusion.KINDS[kind].settings.items():
+                if isinstance(spec, fusion.Follows):
+                    continue
                 value: Any = found
                 for part in path.split("."):
                     value = value[part]
@@ -186,6 +196,11 @@ def test_a_new_node_has_every_setting_that_the_engine_writes_and_its_defaults() 
                     assert value in spec.choices, (kind, path)
                 elif isinstance(spec, Flag):
                     assert isinstance(value, bool), (kind, path)
+                elif isinstance(spec, fusion.PatternList):
+                    # Each pattern has every field of a new one; its path, frames and places.
+                    for pattern in value:
+                        assert isinstance(pattern["path"], dict), (kind, path)
+                        assert shape({**pattern, "path": blank["path"]}) == shape(blank), kind
     # The examples add these kinds as the engine makes them, every setting at its default.
     as_new = {kind for kind, each in written.items() if fusion.new_params(kind) in each}
     assert as_new >= {"media_in", "media_out", "merge", "transform", "background"}
@@ -194,6 +209,9 @@ def test_a_new_node_has_every_setting_that_the_engine_writes_and_its_defaults() 
     rectangle, ellipse = fusion.new_params("rectangle"), fusion.new_params("ellipse")
     assert rectangle == {**ellipse, "corner_radius": 0}
     assert fusion.new_params("polygon")["points"] == []
+    # A new tracker has no patterns, and a new centre follows nothing.
+    assert fusion.new_params("tracker")["trackers"] == []
+    assert ellipse["center"] == {"x": 0.5, "y": 0.5}
     assert edits.first_composition() == {
         "nodes": [
             {"id": id, "kind": kind, "label": "", "pass_through": False, "pos": None, "params": {}}
@@ -280,11 +298,14 @@ def test_the_tools_of_the_fusion_page_are_given_and_tell_what_a_composition_is()
     for word in (
         "LOWER LEFT", "counter-clockwise", "MediaIn1 -> MediaOut1.input", "mask_of",
         "Blur or pixelate a face", "Green screen", "picture-in-picture", "video_fusion_keys",
-        "video_fusion_info", "video_grade_scopes",
+        "video_fusion_info", "video_grade_scopes", "Stabilize", "match_move", "center.follow",
     ):  # fmt: skip
         assert word in told, word
     schema = tools["video_fusion_node"].schema.parameters
     properties = cast("dict[str, Any]", schema["properties"])
+    # One pattern of a tracker is changed, added or taken away without its paths being sent.
+    for word in ("trackers.N.<field>", "trackers.+", "trackers.-"):
+        assert word in properties["settings"]["description"], word
     taken = {"clip", "action", "node", "kind", "settings", "label", "pass_through", "after"}
     assert taken | {"mask_of", "links", "from", "input", "bridge"} <= set(properties)
     assert properties["kind"]["enum"] == list(fusion.KINDS)
@@ -314,6 +335,14 @@ async def test_the_reference_tells_every_kind_with_its_inputs_and_settings(
     assert "one of pre_matte, matte, status, final_result; final_result at first" in view
     assert "LOWER LEFT" in told["coordinates"]
     assert "video_fusion_keys" in told["keys"]
+    tracker = told["kinds"]["tracker"]
+    assert tracker["inputs"] == ["input", "foreground", "mask"]
+    assert tracker["settings"]["pivot_point.x"] == (
+        "Pivot X, read with manual: -15.5 to 16.5, 0.5 at first, in widths of the picture; no keys"
+    )
+    assert "trackers.+ adds one" in tracker["settings"]["trackers"]
+    assert "center.follow" in told["kinds"]["ellipse"]["settings"]
+    assert "center.follow" in told["tracking"]
     alone = await refused(desk, fake, "video_fusion_info", reference=True)
     assert "reference is told alone" in alone
 
@@ -932,6 +961,293 @@ async def test_the_points_of_a_polygon_are_set_whole_and_one_number_by_its_place
 
 
 # ---------------------------------------------------------------------------------------------
+# The Tracker, and a center that follows it
+# ---------------------------------------------------------------------------------------------
+
+EYE = {"19": [0.4, 0.6], "44": [0.45, 0.62], "68": [0.5, 0.65]}
+"""A path as tracking writes it, at frames of c1's media: frames 100, 125 and 149 of t1."""
+
+
+async def tracked(desk: Desk, **asked: Any) -> str:
+    """Give c1 a tracker after its MediaIn1, and tell the id of the tracker."""
+    return (await node(desk, "add", kind="tracker", after="MediaIn1", **asked))["added"]
+
+
+async def test_a_tracker_is_added_with_its_patterns_given_in_part(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    patterns = [
+        {"name": "eye", "pattern": {"x": 0.4, "y": 0.6}},
+        {"pattern.x": 0.7, "enabled": False},
+    ]
+    settings = {"trackers": patterns, "operation": "match_move", "reference": 110}
+    told = await node(desk, "add", kind="tracker", after="MediaIn1", settings=settings)
+    tracker = told["added"]
+
+    # Every setting is written, and each pattern as a new one is but for what is given, without
+    # a path. The reference, given at frame 110 of the timeline, is frame 29 of the media.
+    blank = fusion.new_pattern()
+    assert blank == {
+        "name": "",
+        "enabled": True,
+        "pattern": {"x": 0.5, "y": 0.5, "width": 0.05, "height": 0.05},
+        "search": {"width": 0.125, "height": 0.125},
+        "offset": {"x": 0, "y": 0},
+        "path": {},
+    }
+    eye = {**blank, "name": "eye", "pattern": {**blank["pattern"], "x": 0.4, "y": 0.6}}
+    off = {**blank, "enabled": False, "pattern": {**blank["pattern"], "x": 0.7}}
+    added = fake.transactions[-1][-1]
+    assert added["node"]["params"] == {
+        **fusion.new_params("tracker"),
+        "operation": "match_move",
+        "reference": 29,
+        "trackers": [eye, off],
+    }
+    # It is laid into the chain by its input, as a blur is.
+    assert added["links"] == [
+        {"from": "MediaIn1", "to": "", "input": "input"},
+        {"from": "", "to": "MediaOut1", "input": "input"},
+    ]
+    shown = told_node(told, tracker)
+    assert shown["free"] == ["foreground", "mask"]
+    assert shown["settings"]["reference"] == {"timeline_frame": 110, "frame": 29}
+    assert [one["name"] for one in shown["settings"]["trackers"]] == ["eye", ""]
+    assert shown["settings"]["trackers"][1]["path"] == "none: not tracked"
+    assert shown["note"].startswith("no pattern has a path yet")
+    assert "tracking on the Fusion page" in told["settings_of"]["tracker"]["trackers"]
+    # Its foreground is an input as any other.
+    back = (await node(desk, "add", kind="background"))["added"]
+    await node(desk, "connect", **{"from": back}, node=tracker, input="foreground")
+    assert f"{back} -> {tracker}.foreground" in linked(fake)
+
+    async def wrong(**settings: Any) -> str:
+        asked = {"action": "add", "kind": "tracker", "settings": settings}
+        return await refused(desk, fake, "video_fusion_node", **asked)
+
+    said = await wrong(trackers=[{"pattern": {"x": 0.4, "z": 1}}])
+    assert "'trackers.0.pattern.z' names nothing of a pattern" in said
+    said = await wrong(trackers=[{"path": {"30": [0.5, 0.5]}}])
+    assert "trackers.0.path is filled by tracking on the Fusion page" in said
+    said = await wrong(trackers=[{"search": {"width": 2}}])
+    assert "trackers.0.search.width is 2, out of range" in said
+    assert "out_of_range tracker.trackers.search" in said
+    said = await wrong(trackers=[{}] * 17)
+    assert "out_of_range tracker.trackers" in said
+    said = await wrong(pivot_tracker=1.5)
+    assert "pivot_tracker is a whole number" in said
+    said = await wrong(reference=99)
+    assert "reference is 99, not a frame of the clip, which is at frames 100 to 149" in said
+    said = await wrong(merge="stabilize")
+    assert "merge (Merge, what match_move draws" in said
+
+
+async def test_a_tracker_is_told_by_the_frames_of_its_paths_and_not_by_the_paths(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    tracker = await tracked(desk, settings={"trackers": [{"name": "eye"}, {"name": "ear"}]})
+    # Tracking writes the path of a pattern at frames of the clip's media: c1 shows the frame
+    # f - 81 of its media at frame f of the timeline.
+    params(fake, tracker)["trackers"][0]["path"] = copy.deepcopy(EYE)
+    told = result(await desk.call("video_fusion_info", clip="c1"))
+    shown = told_node(told, tracker)
+    eye, ear = shown["settings"]["trackers"]
+    assert eye == {
+        "index": 0,
+        "name": "eye",
+        "enabled": True,
+        "pattern": {"x": 0.5, "y": 0.5, "width": 0.05, "height": 0.05},
+        "search": {"width": 0.125, "height": 0.125},
+        "offset": {"x": 0, "y": 0},
+        "path": {
+            "frames": 3,
+            "first": {"timeline_frame": 100, "frame": 19},
+            "last": {"timeline_frame": 149, "frame": 68},
+            "at_middle": {"timeline_frame": 125, "x": 0.45, "y": 0.62},
+        },
+    }
+    assert (ear["index"], ear["path"]) == (1, "none: not tracked")
+    assert "note" not in shown
+    # The reference of a new tracker, frame 0 of the media, is shown at no frame of the clip.
+    assert shown["settings"]["reference"] == {"timeline_frame": None, "frame": 0}
+
+
+async def test_one_pattern_of_a_tracker_is_changed_and_every_path_is_kept(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    tracker = await tracked(desk, settings={"trackers": [{"name": "eye"}, {"name": "ear"}]})
+    params(fake, tracker)["trackers"][0]["path"] = copy.deepcopy(EYE)
+
+    async def wrong(**settings: Any) -> str:
+        asked = {"action": "set", "node": tracker, "settings": settings}
+        return await refused(desk, fake, "video_fusion_node", **asked)
+
+    # The list is sent whole with the changes put in: the other pattern and the path stay.
+    changes = {"trackers.1.pattern.x": 0.3, "trackers.0.name": "left eye"}
+    await node(desk, "set", node=tracker, settings=changes)
+    (sent,) = fake.transactions[-1]
+    assert (sent["op"], set(sent["params"])) == ("set_fusion_node", {"trackers"})
+    left, ear = sent["params"]["trackers"]
+    assert (left["name"], left["path"]) == ("left eye", EYE)
+    assert (ear["name"], ear["pattern"]["x"], ear["path"]) == ("ear", 0.3, {})
+    # A pattern is added at the end, given in part, and one is taken away by its place.
+    nose = {"name": "nose", "offset.y": -0.05}
+    await node(desk, "set", node=tracker, settings={"trackers.+": nose})
+    trackers = params(fake, tracker)["trackers"]
+    assert [one["name"] for one in trackers] == ["left eye", "ear", "nose"]
+    assert trackers[2]["offset"] == {"x": 0, "y": -0.05}
+    await node(desk, "set", node=tracker, settings={"trackers.-": 1})
+    trackers = params(fake, tracker)["trackers"]
+    assert [one["name"] for one in trackers] == ["left eye", "nose"]
+    assert trackers[0]["path"] == EYE
+
+    # A whole list would take the paths away; a path is tracking's, and is only cleared.
+    said = await wrong(trackers=[{"name": "eye"}])
+    assert f"patterns of node {tracker} have paths, which a whole list" in said
+    assert "trackers.N.<field> changes the pattern at N" in said
+    said = await wrong(**{"trackers.0.path": {"120": [0.5, 0.5]}})
+    assert "trackers.0.path is filled by tracking on the Fusion page: {} clears it" in said
+    said = await wrong(**{"trackers.2.name": "chin"})
+    assert f"node {tracker} has 2 patterns, numbered from 0: there is no trackers.2.name" in said
+    said = await wrong(**{"trackers.-": 2})
+    assert f"the pattern of node {tracker} to take away, from 0: 0 to 1" in said
+    said = await wrong(**{"trackers.0.size": 2})
+    assert "'trackers.0.size' names nothing of a pattern" in said
+    said = await wrong(**{"trackers.0.enabled": "no"})
+    assert "trackers.0.enabled is true or false" in said
+    await node(desk, "set", node=tracker, settings={"trackers.0.path": {}})
+    assert params(fake, tracker)["trackers"][0]["path"] == {}
+    # With no path left, the list may be put whole.
+    await node(desk, "set", node=tracker, settings={"trackers": [{"name": "one"}]})
+    assert [one["name"] for one in params(fake, tracker)["trackers"]] == ["one"]
+
+
+async def test_a_center_follows_a_pattern_of_a_tracker_and_lets_go_of_it(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    blur = await blurred(desk)
+    face = {"trackers": [{"name": "face"}]}
+    tracker = (await node(desk, "add", kind="tracker", settings=face))["added"]
+    mask = (await node(desk, "add", kind="ellipse", mask_of=blur))["added"]
+
+    # The follow is sent whole in the patch of the center, its pattern 0 where none is given.
+    follow = {"node": tracker, "output": "tracker", "tracker": 0}
+    given = {"center.follow": {"node": tracker, "output": "tracker"}}
+    told = await node(desk, "set", node=mask, settings=given)
+    assert fake.transactions[-1] == [
+        {"op": "set_fusion_node", **AT, "id": mask, "params": {"center": {"follow": follow}}}
+    ]
+    shown = told_node(told, mask)
+    assert shown["settings"]["center.follow"] == follow
+    assert f"its center follows {tracker}: center.x and center.y are read only" in shown["note"]
+    assert "notes" not in told
+    # The output alone may change, as a patch of the object: the node and the pattern stay.
+    output = {"center": {"follow": {"output": "unsteady_position"}}}
+    await node(desk, "set", node=mask, settings=output)
+    unsteady = {**follow, "output": "unsteady_position"}
+    assert fake.transactions[-1][0]["params"] == {"center": {"follow": unsteady}}
+    # Its own place is kept while it follows, and the result says that it is not read.
+    told = await node(desk, "set", node=mask, settings={"center.x": 0.3})
+    assert told["notes"] == [
+        f"the center of node {mask} follows {tracker}: its x and y are kept, and read only "
+        "where nothing is published"
+    ]
+    # A pattern that the tracker has not yet is followed, as the engine allows, and said so.
+    again = {"center.follow": {"output": "tracker", "tracker": 3}}
+    told = await node(desk, "set", node=mask, settings=again)
+    assert f"node {mask} follows pattern 3 of {tracker}, which has 1" in told["notes"][0]
+    # null lets go: the center is its own x and y again.
+    told = await node(desk, "set", node=mask, settings={"center.follow": None})
+    assert fake.transactions[-1] == [
+        {"op": "set_fusion_node", **AT, "id": mask, "params": {"center": {"follow": None}}}
+    ]
+    assert "center.follow" not in told_node(told, mask)["settings"]
+    assert "note" not in told_node(told, mask)
+
+    async def wrong(settings: dict[str, Any], of: str = mask) -> str:
+        asked = {"action": "set", "node": of, "settings": settings}
+        return await refused(desk, fake, "video_fusion_node", **asked)
+
+    said = await wrong({"center.follow": None})
+    assert "nothing changes" in said
+    said = await wrong({"center.follow": {"node": blur, "output": "tracker"}})
+    assert f"node {blur} is a blur: a center follows a tracker" in said
+    assert "wrong_node" in said
+    said = await wrong({"center.follow": {"node": "n99", "output": "tracker"}})
+    assert "the composition has no node n99" in said
+    said = await wrong({"center.follow": {"node": tracker, "output": "position"}})
+    assert "is one of tracker, steady_position, unsteady_position" in said
+    said = await wrong({"center.follow": {"node": tracker, "output": "tracker", "tracker": 16}})
+    assert "out_of_range center.follow.tracker" in said
+    said = await wrong({"center.follow": {"output": "tracker"}})
+    assert 'center.follow is {"node": the id of a tracker' in said
+    said = await wrong({"center.follow": follow}, blur)
+    assert "a blur has no setting 'center.follow'" in said
+
+
+async def test_a_tracker_that_a_center_follows_is_not_taken_away(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    blur = await blurred(desk)
+    two = {
+        "trackers": [{"name": "face"}, {"name": "hand"}],
+        "pivot": "selected_tracker",
+        "pivot_tracker": 1,
+    }
+    tracker = (await node(desk, "add", kind="tracker", settings=two))["added"]
+    face = {"center.follow": {"node": tracker, "output": "tracker"}}
+    mask = (await node(desk, "add", kind="ellipse", mask_of=blur, settings=face))["added"]
+    hand = {"node": tracker, "output": "tracker", "tracker": 1}
+    told = await node(desk, "add", kind="transform", after=blur, settings={"center.follow": hand})
+    moved = told["added"]
+    assert params(fake, moved)["center"] == {"x": 0.5, "y": 0.5, "follow": hand}
+
+    # Neither the tracker nor a pattern that a center follows is taken away.
+    said = await refused(desk, fake, "video_fusion_node", action="remove", node=tracker)
+    assert f"the center of {mask}, {moved} follows {tracker}" in said
+    assert "in_use" in said
+    assert '{"center.follow": null}' in said
+    asked = {"action": "set", "node": tracker, "settings": {"trackers.-": 0}}
+    said = await refused(desk, fake, "video_fusion_node", **asked)
+    assert f"the center of {mask} follows pattern 0 of {tracker}" in said
+    # Let go of, the pattern goes; the center that follows the next one is kept on it in the
+    # same transaction, and so is the pivot.
+    await node(desk, "set", node=mask, settings={"center.follow": None})
+    await node(desk, "set", node=tracker, settings={"trackers.-": 0})
+    patterns, kept = fake.transactions[-1]
+    assert patterns["params"]["pivot_tracker"] == 0
+    assert [one["name"] for one in patterns["params"]["trackers"]] == ["hand"]
+    repointed = {"center": {"follow": {"tracker": 0}}}
+    assert kept == {"op": "set_fusion_node", **AT, "id": moved, "params": repointed}
+    assert params(fake, moved)["center"]["follow"] == {**hand, "tracker": 0}
+    # A tracker that nothing follows is taken away.
+    await node(desk, "set", node=moved, settings={"center.follow": None})
+    await node(desk, "remove", node=tracker)
+    assert tracker not in {one["id"] for one in clip(fake)["fusion"]["nodes"]}
+
+
+async def test_nothing_of_a_tracker_takes_keys(studio: tuple[Desk, Fake]) -> None:
+    desk, fake = studio
+    tracker = await tracked(desk, settings={"trackers": [{"name": "eye"}]})
+    for setting in ("reference", "pivot_point.x", "trackers.0.pattern.x", "operation"):
+        asked = {"path": f"{tracker}.{setting}", "action": "put", "frame": 110, "value": 0.5}
+        said = await refused(desk, fake, "video_fusion_keys", **asked)
+        assert f"{setting} of a tracker takes no keys" in said
+        assert "tracking on the Fusion page" in said
+    steady = {"center.follow": {"node": tracker, "output": "steady_position"}}
+    mask = (await node(desk, "add", kind="ellipse", settings=steady))["added"]
+    asked = {"path": f"{mask}.center.follow", "action": "put", "frame": 110, "value": 0.5}
+    said = await refused(desk, fake, "video_fusion_keys", **asked)
+    assert "center.follow (Center follows a tracker" in said
+    assert "takes no keys" in said
+
+
+# ---------------------------------------------------------------------------------------------
 # Keys
 # ---------------------------------------------------------------------------------------------
 
@@ -1138,6 +1454,16 @@ async def test_a_refusal_of_the_engine_is_told_with_what_can_be_done_about_it(
     assert "video_fusion_node gives it one" in outcome.text
     outcome = await answered(reason="input_linked", node=blur, input="mask", index=0)
     assert "an input takes one link" in outcome.text
+    # Of a tracker, and of a center that follows one.
+    outcome = await answered(reason="in_use", what="node", id="n30", by="n31", index=0)
+    assert '{"center.follow": null} on its followers' in outcome.text
+    outcome = await answered(reason="wrong_node", node="n30", kind="blur", index=0)
+    assert "a center follows a tracker alone" in outcome.text
+    outcome = await answered(reason="out_of_range", what="tracker.trackers.search", index=0)
+    assert "the search width and height of a pattern are 0 to 1" in outcome.text
+    outcome = await answered(reason="out_of_range", what="tracker.pivot_tracker", index=0)
+    assert "pivot_tracker of a tracker is Pivot Tracker" in outcome.text
+    assert "a whole number 0 to 15" in outcome.text
     # A reason that there is no more to say of is told as the engine told it.
     outcome = await answered(reason="locked", index=0)
     assert outcome.error.code == "VIDEO_LOCKED"

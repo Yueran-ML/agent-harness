@@ -497,7 +497,7 @@ class _FusionInfo(_Graded):
         default=False,
         description=(
             "true: the full reference instead: every kind of node with its inputs and each "
-            "setting's range, unit and first value; coordinates, links and keys."
+            "setting's range, unit and first value; coordinates, links, keys and tracking."
         ),
     )
 
@@ -524,8 +524,10 @@ class _FusionNode(_Graded):
         description=(
             'By paths with dots: {"center.x": 0.3, "size.x": 20, "filter": "box"}; objects '
             'merge. Numbers only (keys: video_fusion_keys). A polygon\'s "points" is set whole: '
-            '[{"x": -0.2, "y": -0.1}, ...] from its center, in widths, y up. Left out of add: '
-            "as a new node has it."
+            '[{"x": -0.2, "y": -0.1}, ...] from its center, in widths, y up. A tracker\'s '
+            '"trackers" too, each pattern in part; "trackers.N.<field>" changes pattern N, '
+            '"trackers.+": {...} adds one, "trackers.-": N removes one (paths: tracking). Left '
+            "out of add: as a new node has it."
         ),
     )
     label: str | None = None
@@ -1472,7 +1474,8 @@ _FUSION_INFO = (
     "The composition of a clip (the Fusion page): the graph of nodes that makes its picture in "
     "place of its source, before its grade and transform. Tells its nodes (id, kind, label, "
     "pass_through, what each input is linked from, free inputs, every setting; a keyed one with "
-    "its keys at timeline frames), links (from -> to.input), output (the node MediaOut reads; "
+    "its keys at timeline frames; a tracker's patterns with the frames tracked, not the paths), "
+    "links (from -> to.input), output (the node MediaOut reads; "
     "none: the clip is transparent), unread and unused nodes, and each setting's range and unit. "
     "A clip without one shows its source. Without clip: the clips that have one."
 )
@@ -1484,10 +1487,11 @@ _FUSION_NODE = (
     "action here gives it MediaIn1 -> MediaOut1.input. Kinds: media_in; merge (foreground over "
     "background; center, size, angle place the foreground); transform (move, size, turn, flip); "
     "background (one colour); rectangle, ellipse, polygon (masks); blur; mosaic (pixelate); "
-    "delta_keyer (a green or blue screen made transparent). Inputs: merge background, "
-    "foreground; transform, blur, mosaic, delta_keyer input; delta_keyer also garbage_matte, "
-    "solid_matte; all but media_in and media_out mask, which limits a node's work to where the "
-    "mask linked into it is. Coordinates: center {x, y} are shares of the picture from its "
+    "delta_keyer (a green or blue screen made transparent); tracker (patterns tracked through "
+    "the clip). Inputs: merge background, foreground; transform, blur, mosaic, delta_keyer, "
+    "tracker input; delta_keyer also garbage_matte, solid_matte; tracker also foreground; all "
+    "but media_in and media_out mask, which limits a node's work to where the mask linked into "
+    "it is. Coordinates: center {x, y} are shares of the picture from its "
     "LOWER LEFT, y up, the middle 0.5, 0.5; widths, soft edges and points are in widths of the "
     "picture; angles in degrees counter-clockwise; size is a factor. Recipes. Blur or pixelate "
     "a face: add blur (or mosaic) after MediaIn1; add ellipse with mask_of that node and "
@@ -1496,16 +1500,20 @@ _FUSION_NODE = (
     "screen.r, g, b: the screen's colour); add background; add merge with links from the "
     "background into its background, "
     'from the keyer into its foreground, and from it ("") into MediaOut1.input. Reframe or '
-    "picture-in-picture: add transform after MediaIn1 (size, center). The result tells the "
-    "composition after the change; video_fusion_info with reference true tells every kind and "
-    "setting. To check the picture, video_grade_scopes measures a frame as exported, or one node "
-    "alone with fusion."
+    "picture-in-picture: add transform after MediaIn1 (size, center). Stabilize: add tracker "
+    'after MediaIn1, settings {"trackers": [{"pattern": {"x": 0.4, "y": 0.6}}], "operation": '
+    '"match_move"}, the pattern on a fixed feature (merge bg_only holds the picture still); '
+    "tracking on the Fusion page fills its paths. A mask follows what a tracker tracks by "
+    'settings {"center.follow": {"node": its id, "output": "tracker", "tracker": N}}; null lets '
+    "go. The result tells the composition after the change; video_fusion_info with reference "
+    "true tells every kind and setting. To check the picture, video_grade_scopes measures a "
+    "frame as exported, or one node alone with fusion."
 )
 
 _FUSION_KEYS = (
     "Put, remove or clear one keyframe of a number of a node of a clip's composition; one undo "
     "step. frame: a timeline frame within the clip; the key is kept on the picture shown there "
-    "(the result gives both frames). Words and true/false settings take no keys."
+    "(the result gives both frames). Words, true/false settings and a tracker's take no keys."
 )
 
 VIDEOS = ServiceKey[Videos]("videos")

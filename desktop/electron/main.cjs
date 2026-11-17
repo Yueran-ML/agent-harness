@@ -186,6 +186,9 @@ const PAGE_METHODS = new Set([
   // Window tracking (RM20 pp. 3231–3238): a track of the selected window, its stop, and the edits
   // of its track data, which name the window by its grade, node and id alone.
   'track.start', 'track.stop', 'track.edit',
+  // The analysis of the stabilizer of a clip (RM20 pp. 633–634, 1064–1065), which names the
+  // timeline and the clip by their ids alone, and is stopped by `track.stop`.
+  'track.stabilize',
   // The meters, the loudness meter and the analyses of sound (phase 3, T9b), which name timelines,
   // clips, tracks and buses by their ids alone.
   'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.level_profile', 'audio.cancel', 'audio.audition',

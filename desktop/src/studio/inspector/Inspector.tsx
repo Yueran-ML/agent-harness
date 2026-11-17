@@ -30,6 +30,9 @@ type Tab = 'source' | 'video' | 'audio' | 'file' | 'effects';
  * with its revision; what the engine refuses is said in a sentence at the top.
  *
  * Where the page has a Curve Editor (`onCurves`), the Video tab has a button that opens it.
+ *
+ * The Edit and the Cut page both show it, so both have Stabilization in the Video tab (Reference Manual 20, pp. 633–634 and
+ * 1064–1065), whose Stabilize button asks the engine with `bridge`.
  */
 export function Inspector({ bridge, session, revision, timeline, media, clips: ids, transition: transitionId, cue: cueId = null, onSpeed, frame = 0, onSeek = () => {}, onCurves }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; revision: number; timeline: Timeline | null; media: readonly Media[];
@@ -117,7 +120,8 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
           clips={chosen.audio.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} bridge={bridge} session={session} />}
         {shown === 'source' && titles.length > 0 && <ClipTitle clips={titles} timeline={timeline} commit={commit} media={media} frame={frame} onSeek={onSeek} />}
         {shown === 'source' && colors.length > 0 && <ClipColor clips={colors} commit={commit} />}
-        {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} media={media} frame={frame} onSeek={onSeek} onCurves={onCurves} />}
+        {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} media={media} frame={frame} onSeek={onSeek} onCurves={onCurves}
+          engine={{ bridge, session, revision }} />}
         {shown === 'audio' && <ClipAudio key={JSON.stringify([session, timeline.id, chosen.audio.map(clip => clip.id)])} clips={chosen.audio} timeline={timeline} commit={commit}
           bridge={bridge} session={session} revision={revision} media={media} frame={frame} onSeek={onSeek} onFailure={error => setRefusal(refusalOf(error, words.hint.studio))} />}
       </FieldsLocked.Provider>

@@ -1159,6 +1159,11 @@ export const en = {
         transform: 'Transform', composite: 'Composite', fades: 'Fades', compositeMode: 'Composite mode',
         cropping: 'Cropping', cropLeft: 'Crop left', cropRight: 'Crop right', cropTop: 'Crop top', cropBottom: 'Crop bottom', softness: 'Softness',
         retimeAndScaling: 'Retime and Scaling', retimeProcess: 'Retime process', retimeProcesses: { nearest: 'Nearest', frame_blend: 'Frame Blend' },
+        /** Stabilization of the Video tab (Reference Manual 20, pp. 633–634 and 1064–1065). Its Zoom is `zoom`. */
+        stabilization: 'Stabilization', stabilizeMethod: 'Method',
+        stabilizeMethods: { perspective: 'Perspective', similarity: 'Similarity', translation: 'Translation' },
+        cameraLock: 'Camera Lock', croppingRatio: 'Cropping Ratio', smooth: 'Smooth', strength: 'Strength',
+        stabilize: 'Stabilize', stopStabilizing: 'Stop', resetStabilization: 'Reset Stabilization',
         zoom: 'Zoom', positionX: 'Position X', positionY: 'Position Y', rotation: 'Rotation angle', opacity: 'Opacity',
         fadeIn: 'Fade in (frames)', fadeOut: 'Fade out (frames)', volume: 'Volume', pan: 'Pan',
         text: 'Text', size: 'Size', color: 'Color', align: 'Alignment', alignLeft: 'Align left', alignCenter: 'Align center', alignRight: 'Align right',
@@ -1812,6 +1817,28 @@ export const en = {
         speedRange: 'The speed is from 1% to 10000%.',
         library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
         addCue: 'Double-click empty space on a subtitle track to add a subtitle at the playhead, or right-click it and choose Add subtitle to add one where you clicked.',
+        /**
+         * The analysis of the stabilizer of a clip: how far it went (`{done}` frames of `{total}`), how it ended, where the picture
+         * was lost (`{lost}` frames), a Method that needs a new analysis (`{method}`), and why the engine would not measure.
+         */
+        stabilize: {
+          analysing: 'Analyzing: {done} of {total} frames.',
+          done: 'Stabilized. Frames analyzed: {frames}.',
+          lost: 'The picture was lost at {lost} of them, which keep the motion of the frame before.',
+          stopped: 'Stabilizing stopped. Nothing was kept.',
+          changed: 'Stabilizing stopped because the project changed. Nothing was kept.',
+          again: 'Stabilize again to use {method}.',
+          one: 'Select one clip to stabilize it.',
+          failed: {
+            untrackable: 'A title, a color, a still or a clip whose media is missing cannot be stabilized.',
+            busy: 'Another track or analysis is running. Try again when it has ended.',
+            stale_revision: 'The project changed. Try again.',
+            target: 'This clip is no longer on the timeline.',
+            missing_frame: 'A frame could not be read, so nothing was kept.',
+            cannot_read: 'The media of this clip could not be read.',
+            other: 'Stabilizing failed.',
+          },
+        },
       },
       render: {
         marks: 'Mark an In and an Out point on the timeline to export only the part between them.',

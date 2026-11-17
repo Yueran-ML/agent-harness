@@ -117,6 +117,43 @@ export type RetimeProcess = 'nearest' | 'frame_blend';
 /** The Retime Processes, in the order of DaVinci's menu. */
 export const RETIME_PROCESSES: readonly RetimeProcess[] = ['nearest', 'frame_blend'];
 /**
+ * The Method of the stabilizer of a clip (Stabilization of the Inspector, Reference Manual 20, pp. 633–634 and 1064–1065):
+ * how much of the motion of the picture is taken to be the camera's, all of a homography (`perspective`), a shift with a turn
+ * and a zoom (`similarity`), or a shift alone (`translation`).
+ */
+export type StabilizeMethod = 'perspective' | 'similarity' | 'translation';
+/** The Methods of the stabilizer, in the order of DaVinci's menu. */
+export const STABILIZE_METHODS: readonly StabilizeMethod[] = ['perspective', 'similarity', 'translation'];
+/**
+ * The motion of the whole picture at a frame of the source since the first frame measured, about the middle of the frame:
+ * the eight numbers of a tracked motion, its shifts in pixels of the frames measured and its turn in radians.
+ */
+export type StabilizeMotion = [pan: number, tilt: number, zoom: number, rotate: number, aspect: number, shear: number, yaw: number, pitch: number];
+/**
+ * What the engine measured of a clip for its stabilizer (`track.stabilize`): the Method that the motion was measured for, the
+ * `[width, height]` of the frames measured, and the motion at each frame of the source, by the frame as a JSON key.
+ */
+export interface StabilizeAnalysis { method: StabilizeMethod; size: [number, number]; path: Record<string, StabilizeMotion> }
+/**
+ * The stabilizer of a clip of a track of picture (schema 5, PROTOCOL.md "The stabilizer"): its Method and its controls, fixed
+ * numbers that take no keys, and what was measured, left out before the clip is measured. Camera Lock leaves Smooth and the
+ * Cropping Ratio no say; the Cropping Ratio and Smooth go from 0 to 1, the Strength from -1 to 1.
+ */
+export interface Stabilize {
+  method: StabilizeMethod; camera_lock: boolean; zoom: boolean; cropping_ratio: number; smooth: number; strength: number;
+  analysis?: StabilizeAnalysis;
+}
+/** The stabilizer as a clip is given it at first, and as the Inspector shows a clip that has none: measured for nothing yet. */
+export const DEFAULT_STABILIZE: Readonly<Stabilize> = { method: 'perspective', camera_lock: false, zoom: true, cropping_ratio: 0.5, smooth: 0.25, strength: 1 };
+/**
+ * Whether a stabilizer is to be measured again to stabilize as its Method says: it has an analysis that was measured for
+ * another Method, which is kept and still drawn meanwhile. One that was never measured says nothing of it.
+ */
+export function analysedForAnother(stabilize: Stabilize | undefined): boolean {
+  if (stabilize === undefined || stabilize.analysis === undefined) return false;
+  return stabilize.analysis.method !== stabilize.method;
+}
+/**
  * Where the picture of a clip is put. Each setting is a number or keys, at the frames that the keys
  * of the clip's grade count (`keyClockOf`); the engine writes a setting with no keys as a number.
  */
@@ -188,6 +225,12 @@ export interface Clip {
    * track of picture has one, and the engine writes it only on a clip that has: left out, the clip shows its source.
    */
   fusion?: Composition;
+  /**
+   * Its stabilizer (schema 5, PROTOCOL.md "The stabilizer"), which moves each picture of its source before its composition, its
+   * grade, its transform and its crop. Only a clip of a track of picture has one, and the engine writes it only on a clip that
+   * has: left out, the clip shows its source as it is. Edits that copy the clip keep it, as the engine does.
+   */
+  stabilize?: Stabilize;
 }
 export type TransitionKind = 'dissolve' | 'dip_black' | 'dip_white' | 'crossfade';
 export type Alignment = 'start' | 'center' | 'end';
@@ -591,11 +634,21 @@ export interface TrackProgress {
 }
 /** How one pattern of a Tracker was tracked: its place, at how many frames it was found, and the frames of the keys where it was lost. */
 export interface TrackedPattern { tracker: number; frames: number; lost: number[] }
-/** `track.state`: how a track ended; that of the patterns of a Tracker says how each pattern was tracked (`trackers`). */
+/**
+ * `track.state`: how a track ended; that of the patterns of a Tracker says how each pattern was tracked (`trackers`). A track
+ * of a window or of a Tracker tells the frames it wrote (`tracked`); a measure of `track.stabilize` tells instead the frames of
+ * the source whose analysis it wrote (`analysed`, null where it wrote none) and the Method that it measured for.
+ */
 export interface TrackEnded {
   job: string; phase: 'done' | 'stopped' | 'failed'; reason: string | null; frames: number; lost: number; frame: number;
-  revision: number; tracked: [number, number] | null; message?: string; trackers?: TrackedPattern[];
+  revision: number; tracked?: [number, number] | null; message?: string; trackers?: TrackedPattern[];
+  analysed?: [number, number] | null; method?: StabilizeMethod;
 }
+/**
+ * The answer of `track.stabilize`, at once: the job, the first and the last frame of the source that it measures (as the keys of
+ * the clip count frames), the size of the frames that it reads, and the Method that it measures for.
+ */
+export interface StabilizeStarted { job: string; first: number; last: number; frame_size: [number, number]; method: StabilizeMethod }
 export interface Corrector {
   primaries: Primaries; log: LogWheels; curves: Curves; hsl: HslCurves; lut: string | null; soft_clip: SoftClip;
   key: CorrectorKey;
@@ -940,6 +993,8 @@ export type Op =
   /** A setting of a node that takes keys, by the id of the node, a dot, and its path in the node's `params`: `n4.center.x`. */
   | { op: 'set_fusion_keys'; timeline: string; clip: string; path: string; param: Param }
   | { op: 'splice_fusion_keys'; timeline: string; clip: string; path: string; at: number; remove: number; keys: Keyframe[] }
+  /** The stabilizer of the clip `clip` of `timeline` set whole, its analysis with it; `value: null` (always written) takes it away. */
+  | { op: 'set_stabilize'; timeline: string; clip: string; value: Stabilize | null }
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
   | { op: 'set_group'; id: string; name?: string | null }
@@ -1399,6 +1454,8 @@ export interface PageMethods {
   'track.start': TrackStarted;
   'track.stop': Record<string, never>;
   'track.edit': { revision: number };
+  // The analysis of the stabilizer of a clip of the Edit and Cut pages (PROTOCOL.md, "The stabilizer").
+  'track.stabilize': StabilizeStarted;
   // The meters, the loudness and the analyses of sound (PROTOCOL.md, "Meters, loudness and the analysis of sound").
   'audio.standards': { standards: AudioStandard[] };
   'audio.meters': Meters;
@@ -2498,6 +2555,11 @@ export function applyOp(project: Project, op: Op): Project {
     });
     case 'set_fusion_keys': return inFusion(project, op, composition => withFusionSetting(composition, op.path, () => op.param));
     case 'splice_fusion_keys': return inFusion(project, op, composition => withFusionSetting(composition, op.path, before => splicedKeys(before, op)));
+    case 'set_stabilize': return inTimeline(project, op.timeline, timeline => inClip(timeline, op.clip, clip => {
+      // Set whole, as the engine sets it; a clip that has none is written without the field.
+      const { stabilize: _before, ...rest } = clip;
+      return op.value === null ? rest : { ...rest, stabilize: op.value };
+    }));
     case 'add_group': return { ...project, groups: inserted(project.groups, { ...op.group, pre: kept(op.group.pre), post: kept(op.group.post) }, op.index) };
     case 'remove_group': return { ...project, groups: without(project.groups, placeOf(project.groups, op.id, 'group')) };
     case 'set_group': return inGroup(project, op.id, group => patched(group, op, ['name']));

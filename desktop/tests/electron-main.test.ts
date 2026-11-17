@@ -4567,6 +4567,8 @@ describe('the engine of the studio', () => {
       'viewer.fusion',
       // The Tracker palette and the keys of the Color › Tracker menu (T24).
       'track.start', 'track.stop', 'track.edit',
+      // The Stabilize button of the Inspector of the Edit and Cut pages (phase 4, T18b).
+      'track.stabilize',
       // The meters and the analyses of sound (phase 3, T9b).
       'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.level_profile', 'audio.cancel',
       'audio.eq_response', 'audio.dynamics_curve', 'audio.fx_meters', 'audio.soft_clip_curve', 'audio.noise_learn',

@@ -154,6 +154,31 @@ describe('the compositions of the copy, where the examples do not reach', () => 
   });
 });
 
+describe('the stabilizer of the copy, where the examples do not reach', () => {
+  const stabilizing = () => examples.filter(example => example.done.op === 'set_stabilize');
+  const clipOf = (project: Project) => (project.timelines[0].tracks[0] as ClipTrack).clips[0];
+  const valueOf = (example: Example) => (example.done as Extract<Op, { op: 'set_stabilize' }>).value;
+
+  it('is replayed from the examples: set whole with its analysis, set without one, and taken away', () => {
+    const values = stabilizing().map(valueOf);
+    expect(values.some(value => value?.analysis !== undefined)).toBe(true);
+    expect(values.some(value => value !== null && value.analysis === undefined)).toBe(true);
+    expect(values.some(value => value === null)).toBe(true);
+    // As the engine writes it: whole where the clip has one, and no field where it has none.
+    for (const example of stabilizing()) {
+      const value = valueOf(example);
+      if (value === null) expect('stabilize' in clipOf(example.after)).toBe(false);
+      else expect(clipOf(example.after).stabilize).toStrictEqual(value);
+    }
+  });
+
+  it('takes nothing away from a clip that has none, and refuses a clip that the copy does not hold', () => {
+    const plain = structuredClone(stabilizing().find(example => !('stabilize' in clipOf(example.before)))!.before);
+    expect(applyOp(plain, { op: 'set_stabilize', timeline: 't1', clip: 'c1', value: null })).toStrictEqual(plain);
+    expect(() => applyOp(plain, { op: 'set_stabilize', timeline: 't1', clip: 'c99', value: null })).toThrow(CopyMismatch);
+  });
+});
+
 describe('the masks of the compositions of the copy', () => {
   const at = (name: string) => structuredClone(examples.find(example => example.name === name)!);
   const clipOf = (project: Project) => (project.timelines[0].tracks[0] as ClipTrack).clips[0];

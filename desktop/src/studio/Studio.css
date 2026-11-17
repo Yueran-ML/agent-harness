@@ -1842,6 +1842,52 @@ span.inspector-label,
   gap: 6px;
 }
 
+/* --- Stabilization of the Video tab: its heading with Reset, its switches, Stabilize and the lines of its analysis. */
+.inspector-stabilize {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inspector-section-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s1);
+  margin: var(--s2) 0 0;
+}
+
+.inspector-section-row .inspector-section {
+  margin: 0;
+}
+
+/* The label of a switch is not dragged, as the label of a number is. */
+.inspector-flag .inspector-label {
+  cursor: default;
+}
+
+.inspector-flag input[type='checkbox'] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.stabilize-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+  margin-top: 2px;
+}
+
+.stabilize-line {
+  margin: 0;
+}
+
+/* An analysis measured for another Method is still drawn: the note says that it is to be measured again. */
+.stabilize-again {
+  color: var(--warn);
+}
+
 .inspector-problem {
   display: flex;
   align-items: flex-start;

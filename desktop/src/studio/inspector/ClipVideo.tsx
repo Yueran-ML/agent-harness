@@ -1,7 +1,9 @@
 import { useWords } from '../../app/locale';
 import { Spline } from 'lucide-react';
+import type { EngineBridge } from '../../bridge';
 import { COMPOSITES } from '../color/nodeEdits';
 import { RETIME_PROCESSES, type Clip, type ClipKeyed, type Media, type Timeline } from '../engine';
+import { ClipStabilize } from './ClipStabilize';
 import { useClipKeyFields } from './ClipKeyFields';
 import { common, setClips, transitionEdges } from './common';
 import { ChoiceField, NumberField } from './fields';
@@ -50,11 +52,16 @@ export function Fades({ clips, timeline, commit, fineModifiers = false }: { clip
  *
  * Where the page has a Curve Editor (`onCurves`), a button at the top opens it on the clip chosen
  * (the Curve button of a keyframed clip in DaVinci Resolve, p. 1108).
+ *
+ * Where it is given the engine (`engine`), Stabilization comes after the cropping, as in DaVinci Resolve's Video tab, for
+ * the clips of moving pictures, which alone have a motion to measure (`ClipStabilize`).
  */
-export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSeek = () => {}, onCurves }: {
+export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSeek = () => {}, onCurves, engine }: {
   clips: readonly Clip[]; timeline: Timeline; commit: Commit; media?: readonly Media[]; frame?: number;
   onSeek?: (frame: number, scrubbing: boolean) => void;
   onCurves?: () => void;
+  /** The engine that the Stabilize button asks, the session it is of and the revision of the project. */
+  engine?: { bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; revision: number };
 }) {
   const words = useWords().label.studio;
   const labels = words.inspector;
@@ -103,6 +110,8 @@ export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSe
     {cropped('crop-top', 'crop.top', labels.cropTop)}
     {cropped('crop-bottom', 'crop.bottom', labels.cropBottom)}
     {cropped('crop-softness', 'crop.softness', labels.softness)}
+    {engine && retimed.length > 0 && <ClipStabilize clips={retimed} timeline={timeline} commit={commit}
+      bridge={engine.bridge} session={engine.session} revision={engine.revision} />}
     {retimed.length > 0 && <>
       <h3 className="inspector-section">{labels.retimeAndScaling}</h3>
       <ChoiceField name="retime-process" label={labels.retimeProcess} value={process}

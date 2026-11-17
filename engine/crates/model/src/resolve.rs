@@ -29,6 +29,15 @@
 //! crop, the composite mode and the opacity of the layer are done as they are to a source. A
 //! layer of a clip without a composition has none, and is as it always was.
 //!
+//! A clip that has a stabilizer with an analysis ([`crate::stabilize`]) gives with its layer
+//! where the stabilizer puts each point of its picture at the frame ([`Layer::stabilize`]),
+//! worked out from the frame of its source that the frame shows. Where that moves the picture,
+//! the layer has a composition: the clip's own, or the one that a clip has at first, in which
+//! the picture of the `media_in` is drawn through the stabilizer ([`Fused::stabilized`]), so
+//! that the stabilized picture is the source of the clip, before its composition, its grade,
+//! its transform, its crop and its composite mode. Where it moves nothing, as at every frame of
+//! a clip at no Strength, the composition of the layer is as it would be without it.
+//!
 //! A transition lies over the frames that [`Transition::handles`] gives about its cut, and there
 //! both of its clips are shown, each going on beyond its end with frames of its media. Over a
 //! transition of `length` frames, frame `i` of it is `(i + 1) / (length + 1)` of the way through
@@ -77,6 +86,7 @@ use crate::project::{
 };
 use crate::retime::{RetimeProcess, Sounding};
 use crate::span::{self, Reading, Share};
+use crate::stabilize::{self, Matrix};
 use crate::time::Rate;
 
 /// What a layer shows.
@@ -126,9 +136,17 @@ pub struct Layer {
     /// mixes two (Frame Blend) and the frame lies between them; none of any other layer.
     pub blend: Option<Blend>,
     /// The composition of its clip at the frame, where the clip has one: the picture of the
-    /// layer is then what comes out of it, made of its content. None of a clip that has none,
-    /// and of the colour of a transition.
+    /// layer is then what comes out of it, made of its content. Where the stabilizer moves the
+    /// picture ([`Layer::stabilize`]) it is that composition, or the one that a clip has at
+    /// first, with the picture of its `media_in` drawn through the stabilizer
+    /// ([`Fused::stabilized`]). None of a clip that has neither, and of the colour of a
+    /// transition.
     pub fusion: Option<Fused>,
+    /// Where the stabilizer of its clip puts each point of the picture of its content at the
+    /// frame ([`crate::stabilize::transform_of`]), in shares of the picture. None of a clip that
+    /// has no stabilizer or no analysis, of a title, a colour and a still, and of the colour of
+    /// a transition.
+    pub stabilize: Option<Matrix>,
 }
 
 /// The second picture of a layer of media whose clip is retimed by Frame Blend
@@ -177,8 +195,9 @@ pub fn video_of_track_at(t: &Timeline, project: &Project, track: &Track, frame: 
 /// It is at the frame of the keys of the clip, as the layer has it. A clip that has no
 /// composition is taken to have the one that a clip has at first, a `media_in` linked to a
 /// `media_out` (by their ids there, [`crate::fusion::MEDIA_IN`] and
-/// [`crate::fusion::MEDIA_OUT`]), which shows its source. None where the composition has no
-/// such node.
+/// [`crate::fusion::MEDIA_OUT`]), which shows its source. Its `media_in` shows the picture
+/// drawn through the stabilizer of the clip where that moves it, as [`Layer::fusion`] has it.
+/// None where the composition has no such node.
 #[must_use]
 pub fn fused_for(
     t: &Timeline,
@@ -202,10 +221,16 @@ pub fn fused_for(
     let at = at as f64;
     // The size of its pictures, which a Tracker and a centre that follows one read.
     let size = size_of(clip, project, t);
-    match node {
+    let fused = match node {
         Some(node) => composition.at_node_size(node, at, size),
         None => Some(composition.at_size(at, size)),
-    }
+    }?;
+    // The `media_in` shows the picture stabilized, as the layer of the clip has it.
+    let moved = stabilize::transform_of(clip, project, t.rate, frame).filter(stabilize::moves);
+    Some(match moved {
+        Some(matrix) => fused.stabilized(matrix),
+        None => fused,
+    })
 }
 
 /// The layers of a track at a frame.
@@ -244,6 +269,7 @@ fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: 
             opacity: unit(dipped),
             blend: None,
             fusion: None,
+            stabilize: None,
         });
         return;
     }
@@ -312,6 +338,7 @@ fn layer(
         Source::Color { color } => Content::Color { rgba: *color },
     };
     let (placed, cropped) = (clip.transform.at(at), clip.crop.at(at));
+    let stabilize = stabilize::transform_of(clip, project, t.rate, frame);
     Some(Layer {
         clip: clip.id.clone(),
         track: track.id.clone(),
@@ -321,10 +348,27 @@ fn layer(
         composite: clip.composite,
         opacity: unit(placed.opacity * faded(clip, k) * share),
         blend,
-        fusion: clip
-            .fusion
-            .as_ref()
-            .map(|composition| composition.at_size(at, size_of(clip, project, t))),
+        fusion: composed(clip, at, size_of(clip, project, t), stabilize),
+        stabilize,
+    })
+}
+
+/// The composition of `clip` at `at`, a frame of its keys, its pictures of `size` pixels:
+/// the clip's own, or, where `stabilize` moves the picture and the clip has none, the one that
+/// a clip has at first; and in either, the picture of its `media_in` drawn through `stabilize`
+/// ([`Fused::stabilized`]). None of a clip that has no composition and is not moved.
+fn composed(clip: &Clip, at: f64, size: (u32, u32), stabilize: Option<Matrix>) -> Option<Fused> {
+    let moved = stabilize.filter(stabilize::moves);
+    let first = Composition::default();
+    let composition = match (&clip.fusion, moved) {
+        (Some(composition), _) => composition,
+        (None, Some(_)) => &first,
+        (None, None) => return None,
+    };
+    let fused = composition.at_size(at, size);
+    Some(match moved {
+        Some(matrix) => fused.stabilized(matrix),
+        None => fused,
     })
 }
 

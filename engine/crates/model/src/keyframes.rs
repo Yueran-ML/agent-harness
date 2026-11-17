@@ -74,6 +74,7 @@ use crate::grade::{Grade, Target};
 use crate::ops::LARGEST;
 use crate::project::{Clip, Crop, Project, Source, Timeline, Transform};
 use crate::span::{self, Reading};
+use crate::stabilize::Stabilize;
 use crate::time::{Rate, Time};
 
 /// How the frame of the keys of a clip's grades, and of its group's as they apply to it, is
@@ -305,6 +306,25 @@ pub fn aligned_fusion(
             composition.with_key_frames(&|frame| moved.at(frame))
         }
         _ => composition.clone(),
+    }
+}
+
+/// `stabilize`, the stabilizer of a clip whose source frames are those of `from`, with the
+/// frames of its analysis put on the frames of `to` as `align` puts them, as
+/// [`aligned_transform`] puts the keys of the transform of the same clip
+/// ([`Stabilize::with_key_frames`]).
+#[must_use]
+pub fn aligned_stabilize(
+    stabilize: &Stabilize,
+    from: KeyBase,
+    to: KeyBase,
+    align: Align,
+) -> Stabilize {
+    match Moved::of(from, to, align) {
+        Some(moved) if stabilize.analysis.is_some() => {
+            stabilize.with_key_frames(&|frame| moved.at(frame))
+        }
+        _ => stabilize.clone(),
     }
 }
 

@@ -20,7 +20,9 @@ struct Params {
     // The pixel at (x, y) of the picture that comes out, in its pixels from its top left
     // corner, reads the foreground at
     // (row0.x * x + row0.y * y + row0.z, row1.x * x + row1.y * y + row1.z), in the pixels of
-    // the foreground from its top left corner.
+    // the foreground from its top left corner. A pass of the stabilizer whose map is
+    // projective has row0.w and row1.w, by which that place is divided by
+    // (row0.w * x + row1.w * y + 1); every other pass has 0 in both, and is not divided.
     row0: vec4<f32>,
     row1: vec4<f32>,
     // x: the pixels of the picture that comes out to a pixel of the foreground; y: how many
@@ -84,10 +86,19 @@ fn fusion_at(place: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
 // from the map, which is the same at every pixel.
 fn fusion_moved(position: vec2<f32>) -> vec4<f32> {
     let size = vec2<f32>(textureDimensions(foreground));
-    let at = vec2<f32>(
+    var at = vec2<f32>(
         params.row0.x * position.x + params.row0.y * position.y + params.row0.z,
         params.row1.x * position.x + params.row1.y * position.y + params.row1.z,
     );
+    // The map of the stabilizer may be projective: the place is divided by its third row. A
+    // map that is not is read as it always was.
+    if params.row0.w != 0.0 || params.row1.w != 0.0 {
+        let w = params.row0.w * position.x + params.row1.w * position.y + 1.0;
+        if w <= 0.0 {
+            return vec4<f32>(0.0);
+        }
+        at = at / w;
+    }
     let inside = min(min(at.x, size.x - at.x), min(at.y, size.y - at.y)) * params.extra.x;
     let coverage = clamp(inside + 0.5, 0.0, 1.0);
     if coverage <= 0.0 {

@@ -31,6 +31,11 @@
 //! `track.start` with `fusion` in the place of a window follows the patterns of a Tracker of a
 //! composition through the frames of its clip instead (T17b): the same job, gesture, writes,
 //! events and endings (see `fusion`).
+//!
+//! `track.stabilize` measures the motion of the whole picture of a clip, frame by frame, for
+//! its stabilizer (T18a): a job of the same kind, which `track.stop` stops and whose events are
+//! the same, but which goes over every frame that the clip shows whatever the playhead, and
+//! writes what it measured once, at its end (see `stabilize`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -58,6 +63,7 @@ use super::{
 use crate::proxy;
 
 mod fusion;
+mod stabilize;
 
 /// How often the track so far is written into the window while it goes on, while it is short.
 pub const COMMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
@@ -545,16 +551,36 @@ struct Shown {
 /// facts of its picture: those of the media that the clip shows, within the media. Refused
 /// where `frame`, the playhead as the keys count frames, is not among them (`frame`), and, by
 /// `untrackable`, where the clip shows none.
-#[allow(
-    clippy::many_single_char_names,
-    reason = "the frames of a sum of ticks and rates"
-)]
 fn shown_frames(
     project: &columbina_model::Project,
     timeline: &Timeline,
     clip: &Clip,
     picture: (&Media, &VideoFacts),
     frame: i64,
+    untrackable: &dyn Fn(&str) -> Fault,
+) -> Result<Shown, Fault> {
+    let shown = shown_of(project, timeline, clip, picture, untrackable)?;
+    let (first, last) = (shown.first, shown.last);
+    if frame < first || frame > last {
+        return Err(refused(
+            "frame",
+            &format!("frame {frame} is outside the clip, from {first} to {last}"),
+        ));
+    }
+    Ok(shown)
+}
+
+/// The frames of `picture` that `clip` of `timeline` shows, as [`shown_frames`] has them,
+/// wherever the playhead is; refused by `untrackable` where the clip shows none.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the frames of a sum of ticks and rates"
+)]
+fn shown_of(
+    project: &columbina_model::Project,
+    timeline: &Timeline,
+    clip: &Clip,
+    picture: (&Media, &VideoFacts),
     untrackable: &dyn Fn(&str) -> Fault,
 ) -> Result<Shown, Fault> {
     let (media, video) = picture;
@@ -573,12 +599,6 @@ fn shown_frames(
         return Err(untrackable("the clip has no frames"));
     };
     let (first, last) = (lo.max(0), hi.min(count - 1));
-    if frame < first || frame > last {
-        return Err(refused(
-            "frame",
-            &format!("frame {frame} is outside the clip, from {first} to {last}"),
-        ));
-    }
     Ok(Shown { map, first, last })
 }
 
@@ -1009,7 +1029,7 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
 
 #[allow(
     clippy::too_many_lines,
-    reason = "three RPC routes with their State lock boundaries"
+    reason = "four RPC routes with their State lock boundaries"
 )]
 pub(super) async fn call(
     engine: &Engine,
@@ -1067,6 +1087,33 @@ pub(super) async fn call(
                     });
                 }
             }
+            answer
+        }
+        "track.stabilize" => {
+            let request: stabilize::Request = rpc::params(method, stabilize::TAKES, params)?;
+            let mut state = engine.state.lock().await;
+            if state.tracks.running.is_some() {
+                return Err(refused("busy", "a track is going on").into());
+            }
+            if request.revision != state.history.revision() {
+                let actual = state.history.revision();
+                return Err(super::stale_revision(request.revision, actual).into());
+            }
+            state.tracks.next += 1;
+            let job = format!("track-{}", state.tracks.next);
+            let project = state.history.project();
+            let plan = stabilize::plan(project, &request, connection.id, kind, job.clone())?;
+            let answer = stabilize::answer(&plan);
+            let gesture = state.begin_owned_gesture(connection.id, request.revision)?;
+            let stop = Arc::new(AtomicBool::new(false));
+            state.tracks.running = Some(Running {
+                job,
+                owner: connection.id,
+                stop: Arc::clone(&stop),
+            });
+            drop(state);
+            let shared = Arc::clone(&engine.state);
+            tokio::task::spawn_blocking(move || stabilize::run(&shared, &plan, gesture, &stop));
             answer
         }
         "track.stop" => {

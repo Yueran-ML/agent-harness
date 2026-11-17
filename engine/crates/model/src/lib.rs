@@ -20,6 +20,7 @@ pub mod retime;
 #[cfg(any(test, feature = "sample"))]
 pub mod samples;
 pub mod span;
+pub mod stabilize;
 pub mod time;
 pub mod upgrade;
 
@@ -51,4 +52,5 @@ pub use project::{
     Placed, Project, Proxy, ReadError, Rgba, Source, Styled, TextAlign, Timeline, TitleStyle,
     Track, TrackKind, Transform, Transition, TransitionKind, VideoFacts, SCHEMA,
 };
+pub use stabilize::Stabilize;
 pub use time::{Rate, Speed, Time};

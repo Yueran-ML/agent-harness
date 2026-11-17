@@ -38,6 +38,8 @@
 //! As the tracker's: pixels of the frame, `[x, y]` with y down. The motion of a frame is about
 //! the centre of the frame.
 
+use serde::{Deserialize, Serialize};
+
 use crate::linalg::{Mat3, Point};
 use crate::motion::{Component, Components, Motion};
 
@@ -48,10 +50,14 @@ pub const SMOOTH_FRAMES: f64 = 40.0;
 /// How many times a share is halved to find how far a correction may go.
 const HALVINGS: u32 = 40;
 
-/// How much of the motion of the picture is taken to be the camera's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// How much of the motion of the picture is taken to be the camera's. It is written
+/// `"perspective"`, `"similarity"` or `"translation"`; Perspective is the one that a clip has at
+/// first, as the Inspector of `DaVinci` shows it first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Method {
     /// All of a homography: shift, turn, zoom and perspective.
+    #[default]
     Perspective,
     /// Shift, turn and zoom.
     Similarity,

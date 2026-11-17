@@ -238,8 +238,9 @@ Before `hello`, every other request is refused with `-32600`.
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete"\|"clear_points"\|"delete_points",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}`; `clear_points` and `delete_points` (Esc and Backspace on a Curve's point selection) answer `{binding,phase:"cleared",cleared}` and `{binding,phase:"deleted",selected,points,revision}` (see Curve Window controls) |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
 | `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}`, or for the patterns of a Tracker of a composition `{fusion:{timeline,clip,node,trackers?},revision,frame,direction}` | `{job,first,last,frame_size,direction}` (and `trackers` with `fusion`) at once, then `track.progress` and `track.state` (see Window tracking, and The patterns of a Tracker there) |
-| `track.stop` | `{job}` | `{}`; the track ends between frames, keeping what it tracked |
+| `track.stop` | `{job}` | `{}`; the track ends between frames, keeping what it tracked (a measure of `track.stabilize` keeps nothing) |
 | `track.edit` | `{grade,node,window,revision?,edit:{kind,...}}` | `{revision}`; one step to undo (see Window tracking) |
+| `track.stabilize` | `{timeline,clip,revision,method?}` | `{job,first,last,frame_size,method}` at once, then `track.progress` and `track.state`; the motion of the whole picture of the clip measured over every frame that it shows, and written as the analysis of its stabilizer at the end, one step to undo (see The stabilizer) |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n, "audio"?:{"bus"?, "rate"?, "codec"?, "bitrate"?, "normalize"?}}`, or with `"video":null` and no `codec` or `quality` for the sound alone | `{"job": "render-1"}` (see Rendering a timeline, and The sound of an export) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `audio.meters` | `{"timeline": "t1", "reset"?: false}` | what the meters of the timeline show now: `{"timeline", "playing", "rate": 30, "scale", "strips": [...], "control_room", "loudness": {...}, "lost"}` (see Meters, loudness and the analysis of sound) |
@@ -680,7 +681,8 @@ clients; a client must not write `project.json` itself.
   subtitle tracks is `enabled` (shown in the timeline monitor). A project with two is refused
   when it is read, and so is an operation that would make two (`subtitle_shown`, below).
 - A clip is `{id, start, length, source, enabled, speed, reverse, link, transform, crop,
-  composite, gain_db, pan, fade_in, fade_out, grade, group}`. `grade` is the clip's graph and `group` a group id or `null`
+  composite, gain_db, pan, fade_in, fade_out, grade, group}`, and `retime`, `retime_process`,
+  `fusion` and `stabilize` where it has them (below). `grade` is the clip's graph and `group` a group id or `null`
   (see Grades). `start >= 0`, `length > 0`; same-track clips cannot overlap.
   `speed: {num, den}` is a positive rational from 1/100 to 100; direction is the separate `reverse`
   flag. `link` is a group id or `null`. Time conversion uses integer ticks, rounded down, so a
@@ -741,6 +743,12 @@ clients; a client must not write `project.json` itself.
   It is written only on a clip that has one, so a clip without it is written as it always
   was; `set_fusion` gives a clip one or takes it away, and the operations of Compositions
   change its nodes, its links and the keys of its settings. A clip of sound has none.
+- A clip of a track of picture may have `stabilize` as well, its stabilizer (Stabilization of
+  the Inspector of the Edit and Cut pages): its Method, its controls and what its analysis
+  measured (see The stabilizer). It is written only on a clip that has one, so a clip without
+  it is written as it always was; `set_stabilize` gives a clip one, puts another in its place
+  or takes it away, and `track.stabilize` measures the clip and writes its analysis. A clip of
+  sound has none (`wrong_track`, `what` `stabilize`).
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
   `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
   Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; `x`/`y`
@@ -1699,7 +1707,7 @@ centre pivot and the anchor radius of a band are project choices.
 
 T24: the window tracker of the Color page (Resolve 20, chapter 140, pp. 3229–3255), the cloud
 tracker and the point tracker of `columbina-track` (Q7). IntelliTrack is not offered; the
-stabilizer is phase 4.
+stabilizer of the Edit and Cut pages is The stabilizer, below.
 
 **What a window keeps.** A tracked window has
 
@@ -1887,6 +1895,134 @@ own, written as the next change of one native gesture of the connection that ask
 
 Not yet: tracking the picture that comes into the Tracker through the nodes before it, and a
 pattern kept from its first frame (Fusion's Adaptive Mode None) or by its best match.
+
+## The stabilizer
+
+T18a: the stabilizer of the Edit and Cut pages (Resolve 20, pp. 633–634 and 1064–1065), its
+mathematics in `crates/track/src/stabilize.rs`, what a clip keeps of it in
+`crates/model/src/stabilize.rs`, its measure in `crates/server/src/session/tracker/stabilize.rs`
+and its drawing in `crates/compose/src/fusion.rs` (The stabilizer).
+
+**What a clip keeps.** A clip of a track of picture may have
+
+```json
+"stabilize": {"method": "similarity", "camera_lock": false, "zoom": true,
+  "cropping_ratio": 0.5, "smooth": 0.25, "strength": 1.0,
+  "analysis": {"method": "similarity", "size": [1280, 720], "path": {
+    "0": [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+    "1": [2.5, -1.25, 1.001, 0.002, 1.0, 0.0, 0.0, 0.0]}}}
+```
+
+| field | is | range, and what a clip is given at first |
+|---|---|---|
+| `method` | how much of the motion of the picture is taken to be the camera's: `perspective` (all of a homography), `similarity` (a shift, a turn and a zoom) or `translation` (a shift alone) | `perspective` |
+| `camera_lock` | Camera Lock: the camera is taken to have stood still where it was at the first frame of the analysis; Smooth and the Cropping Ratio then have no say | `false` |
+| `zoom` | Zoom: the picture is enlarged about its middle, by one factor for the whole clip, until no frame shows an edge; never by more than one over the Cropping Ratio | `true` |
+| `cropping_ratio` | the share of the frame about its middle that the corrected picture always covers: at 1 nothing is corrected, lower values let the stabilizer do more; a frame whose correction would leave less is corrected only as far as it may be | 0 to 1 (`stabilize.cropping_ratio`); 0.5 |
+| `smooth` | how much the path of the camera is smoothed: each of its numbers averaged over its neighbours by the weights of a Gaussian whose standard deviation is `smooth · 40` frames (ours: the manual gives no measure); at 0 nothing is corrected but by Camera Lock | 0 to 1 (`stabilize.smooth`); 0.25 |
+| `strength` | how much of the correction is made: 1 all of it, 0 none, −1 its opposite, which gives a still picture the shake of the clip | −1 to 1 (`stabilize.strength`); 1 |
+| `analysis` | what was measured of the clip (below); left out before it is measured, and nothing is then corrected | `stabilize.analysis` |
+
+The controls are numbers that take no keys. Where `stabilize` is left out the clip shows its
+source as it always did. The analysis is `{method, size, path}`: `method` the Method that the
+motion was measured for, `size` the `[width, height]` of the frames measured (upright, at most
+720 lines at the picture's aspect, as a track reads them; 1 to 16384 a side), and `path`, for
+each frame of the source (as the keys of the clip count frames: its source frames), the motion
+of the whole picture since the first frame measured, about the middle of the frame, as the eight
+numbers of `Motion` in this order: `pan`, `tilt` (pixels of `size`, x right and y down from the
+top left corner of the picture, a pixel one unit wide, so that the middle is `[width / 2,
+height / 2]`), `zoom`, `rotate` (radians, clockwise on the picture), `aspect`, `shear`, `yaw`
+and `pitch` (per pixel), as the curves of a tracked window are. An analysis has one frame at
+least, frames within ±(2^53−1), and finite numbers with `zoom` and `aspect` above 0
+(`out_of_range`, `stabilize.analysis`); `track.stabilize` writes the shifts to 1e-4 of a pixel,
+`zoom`, `rotate`, `aspect` and `shear` to 1e-8, and `yaw` and `pitch` to 1e-12.
+
+**What needs a new analysis.** The analysis holds the motion as it was measured, not what the
+controls make of it: a change of Camera Lock, Zoom, the Cropping Ratio, Smooth or Strength is
+drawn at once from the analysis that the clip has (the stabilizer works the whole clip out anew
+from it, and nothing is measured again for them). The Method is the one control that asks for
+a new one, as the manual has it chosen before
+Stabilize is pressed: the motion is measured as a homography for Perspective and as a
+similarity for Similarity and Translation. An analysis measured for another Method than the
+clip's is kept and still drawn, by the part of its motion that the clip's Method corrects
+(Translation of a Similarity analysis is exact; Perspective of a Similarity analysis corrects
+no perspective); a client shows that the clip is to be measured again where
+`analysis.method` is not `method`.
+
+**The frames.** The analysis counts the frames of the source, so the clips that an edit makes
+of a clip keep it as it is and put each picture of the source where the clip put it: a trim,
+a blade (both halves), a copy, a slip or a slide, a change of speed or of direction, speed
+points and a freeze. The whole analysis is stabilized as one path, whatever part of it the clip
+shows; a frame before its first frame is put as the first, and any other that it has not as the
+frame before it. A `replace` edit moves the frames of the analysis to those of the new source as
+it moves the keys of the grade (Keyframes Aligning Source Timecode): the same frames for the
+same media, and the frames of another rate for media of another rate. A title, a colour and a
+still have no frames of a source, and are not stabilized whatever they keep.
+
+**Where it is drawn.** The stabilizer belongs to the source of the clip. At a frame, `resolve`
+works out from the analysis, for the Method and the controls of the clip (its whole path at once,
+kept until they change), the transform of the frame of the source that the frame shows: a 3×3
+matrix acting on `[x, y, 1]`, row by row, in shares of the picture (x of its width and y of its
+height from its top left corner, y down), which puts each point of the picture where the
+stabilizer puts it (`Layer::stabilize`, none of a clip that has no analysis). Where it moves the
+picture, the layer has a composition (`Layer::fusion`): the clip's own, or the one that a clip
+has at first, with a node put after its first `media_in`, `media_in.stabilized` (an id with a
+dot, which no node has), that draws the picture of the source through the transform, and every
+input that read a `media_in` reads it. So the picture of every `media_in` is the picture
+stabilized: the nodes of the composition and the Fusion view (`viewer.fusion`, `view.sample`
+with `fusion`) see it, and the composition, the grade, the `transform`, the `crop` and the
+`composite` mode of the clip are done to it, in that order. What a track reads is still the
+media as it is: the patterns of a Tracker (`track.start` with `fusion`) and the windows of the
+Color page are followed through the source unstabilized. The node is drawn as a
+Transform of the source is, by one pass more (Compositions in the picture): what the picture is
+not moved over is transparent and shows the tracks below, and what is moved beyond the frame is
+cut away. The map of Similarity and Translation is affine; that of Perspective is projective,
+the place of each pixel divided by the third row of the map on the card. A frame where it moves
+nothing (a Strength of 0, a still camera) is drawn as the clip without it, to the bit, by the
+same passes.
+
+**`track.stabilize`** `{timeline, clip, revision, method?}` measures the motion of the whole
+picture of the clip and writes it as the analysis of its stabilizer. It goes as a track does
+(Window tracking): one at a time in an engine, a track of a window or of a Tracker among them
+(`busy`), `revision` the project's (`stale_revision`), answered at once, run on a thread of its
+own, `track.progress` while it goes and `track.state` at its end, stopped by `track.stop`, by a
+change of the project by anyone (Undo and Redo too) and by the connection going, with the
+endings and reasons of a track (the table of Window tracking). What differs:
+
+- `method`: the Method to measure for, which the stabilizer written takes; left out, the
+  clip's own, or `perspective` where it has none. Anything else is `-32602`.
+- Refused: no such timeline or clip (`target`); a clip of sound, a title, a colour, a still,
+  media that the project has not, and a clip that shows no frame of its media (`untrackable`).
+- **What is read**: every frame of the source from the first that the clip shows to the last
+  (`first` and `last` of the answer, as its keys count frames), in the order of the source,
+  whatever the playhead and whichever way the clip plays; the clip's media as a track reads it
+  (its proxy where usable, upright, at most 720 lines at its aspect, as luma: `frame_size`).
+- **How it is measured**: by the cloud tracker over the whole picture (a region of the frame
+  and as much again on each side, so that it holds the frame wherever the picture goes within
+  a frame of it), at most 200 features, fitted as a homography for `perspective` and as a
+  similarity for the others; started anew every 50 frames from the frame that it reached, so
+  that its features are found anew over the whole frame, and, where it has nothing to follow
+  (a frame of one colour), at the next frame that has. A frame at which the picture is lost,
+  or at which no tracker could start, holds the motion of the frame before it, and is counted in
+  `lost`.
+- **What is written**: nothing while it goes on. Once every frame is measured, `set_stabilize`
+  sets the clip's stabilizer whole: as the project has it (as a clip has one at first where it
+  has none), with `method` the Method measured for, and `analysis` what was measured: **one
+  step to undo**. A measure that is stopped, or that fails (`missing_frame`, `cannot_read`),
+  writes nothing and makes no step: the stabilizer works the whole clip out at once, and has
+  no use for a part of it.
+- The answer is `{job, first, last, frame_size, method}`. `track.progress` is
+  `{job, frame, timeline_frame, done, total, lost, revision}`, told about every 150 ms:
+  `frame` the frame of the source reached, `done` the frames measured of `total`
+  (`last − first + 1`), `revision` the project's, which does not change while it goes on.
+  `track.state` is `{job, phase, reason, frames, lost, frame, revision, analysed, method,
+  message?}`: `frames` the frames measured, `analysed` `[first, last]` where the analysis was
+  written and `null` where it was not, and `revision` the revision that its write made.
+
+The Inspector of the Edit and Cut pages has the controls and the Stabilize button (T18b). Not
+yet: the Camera Gyro and the Stabilizer mode of the Tracker palette of the Color page (pp. 3435–3437), the analysis edited
+on the curves of the Color page, and the motion of the picture measured through a transition's
+handles (the frames there are put as the nearest frame of the analysis).
 
 ## The transport
 
@@ -2231,6 +2367,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness`, and, of a clip whose source is a title, `title.size`, `title.x`, `title.y` of its style (all listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`; those of `title.x` and `title.y`, as those of `transform.x` and `transform.y`, are what a control offers, and the model takes any finite number). Any other path is `missing` with `what` `setting`, and so is a path under `title` on a clip that is not a title. Its inverse is the `set_clip_keys` of the setting as it was. |
 | `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`, and `size` or `position` for the style of a title). |
 | `set_retime` | `timeline`, `id`, `retime` (the speed points `{points: [...]}`, or `null`, which must be written, for the speed of the source, forward), `length?` (the new length of the clip in frames, for a change that makes it longer or shorter): sets how the clip plays its source, whole, so a drag may send it again and again. Speed points of one speed are written as the `speed` and `reverse` of the clip. `start` and `source.in` stay: `trim_clip` moves them. Refused for a title, a colour or a still (`out_of_range`, `retime_source`), for speed points that are not those of a clip of that length (`out_of_range`: `retime`, `speed`, `retime_unit`), where the clip would show what is not in its media (`out_of_source`), and where it would cover frames of another clip of its track (`overlap`): nothing is moved out of its way. A clip with speed points refuses the `speed` and `reverse` of `set_clip` (`out_of_range`, `retimed`). Inverse: `set_retime` of how the clip played before, and of its length. |
+| `set_stabilize` | `timeline`, `clip`, `value` (the clip's stabilizer whole, `{method, camera_lock, zoom, cropping_ratio, smooth, strength, analysis?}`, or `null`, which must be written, to take it away): sets the stabilizer of a clip of a track of picture, its analysis with it, as the page sets a control or as `track.stabilize` writes what it measured. Refused for a clip of sound (`wrong_track`, `what` `stabilize`) and for controls or an analysis out of their ranges (`out_of_range`, with `what` `stabilize.cropping_ratio`, `stabilize.smooth`, `stabilize.strength` or `stabilize.analysis`; see The stabilizer). One that sets what is there already changes nothing, and makes no step. Inverse: `set_stabilize` of what the clip had. |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |
@@ -3859,7 +3996,7 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 
 | kind | inputs, the first first | output | `params` |
 |---|---|---|---|
-| `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, and mixed of two pictures where its `retime_process` is `frame_blend`). A composition may have several: they are the same picture; it need not have one |
+| `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, mixed of two pictures where its `retime_process` is `frame_blend`, and drawn through its stabilizer where it has one, see The stabilizer). A composition may have several: they are the same picture; it need not have one |
 | `media_out` | `input` | — | `{}`: the picture that goes back to the timeline. A composition has **exactly one** (`one_media_out`). Where its input is not linked the clip is transparent |
 | `merge` | `background`, `foreground`, `mask` | yes | the foreground laid over the background, below |
 | `transform` | `input`, `mask` | yes | its picture moved, made larger or smaller, turned and flipped, below |
@@ -4343,7 +4480,10 @@ it is made about its middle (`size`) and how far it is turned there (`angle`); a
 size about a pivot and then a shift is the same map. With no motion, and with `operation`
 `none`, they are `[0.5, 0.5]`, 1 and 0. The composition is made at a frame for the size of
 its pictures (`Composition::at_size`), which the motion of a `tracker` is counted in; a
-composition with keys or with a path is another at another frame.
+composition with keys or with a path is another at another frame. Of a clip whose stabilizer
+moves the picture at the frame, a node `media_in.stabilized` is put after the first
+`media_in`, and every input that read a `media_in` reads it (see The stabilizer): it is drawn
+as a `transform` of the source laid over nothing, by a map that may be projective.
 
 **The picture of one node.** The composition is made the same way for the picture of any one
 of its nodes in place of what comes into the `media_out`
@@ -5628,8 +5768,8 @@ real ids. For example:
 | `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys,selected_points}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |
 | `window.points` | `{binding,sequence,revision,selected_points:[]}`: owner-only, when a project change drops the selected Curve's point selection (see Curve Window controls) |
-| `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`, and `following` of a track of a Tracker: to the connection that started the track, each time the track so far is written (see Window tracking) |
-| `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`, and `trackers` of a track of a Tracker: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
+| `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`, and `following` of a track of a Tracker: to the connection that started the track, each time the track so far is written (see Window tracking), and about every 150 ms of a measure of `track.stabilize`, which writes nothing while it goes on (see The stabilizer) |
+| `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`, and `trackers` of a track of a Tracker; of a measure of `track.stabilize`, `{job,phase,reason,frames,lost,frame,revision,analysed,method,message?}`: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
 | `automation.written` | `{"timeline", "punch", "lanes", "revision", "failed": [...]}`: a pass of the recording of automation, or a Punch In, written, to every connection (see Recording automation) |
 | `audio.analysis` | `{job, state: "running", done, total}` (seconds of sound measured, at most 4 a second), then `{job, state: "done", method, ...}`, `{job, state: "failed", message}` or `{job, state: "cancelled"}`: how an `audio.analyze`, `audio.normalize`, `audio.level_profile`, `audio.level_match` or `audio.noise_learn` goes and ends, to every connection (see Meters, loudness and the analysis of sound) |
 

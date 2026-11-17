@@ -95,6 +95,9 @@ mod tracking;
 #[path = "rpc/fusion_tracking.rs"]
 mod fusion_tracking;
 
+#[path = "rpc/stabilizing.rs"]
+mod stabilizing;
+
 #[path = "rpc/processor_curves.rs"]
 mod processor_curves;
 #[path = "rpc/protocol.rs"]

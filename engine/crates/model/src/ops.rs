@@ -110,6 +110,11 @@
 //! has an output and go into an input that their node has, no two into one input, and make no
 //! loop; and each setting of its nodes is within its bounds.
 //!
+//! A clip of a track of picture may have a stabilizer ([`crate::stabilize`]), set whole by
+//! [`Op::SetStabilize`], its analysis with it. A clip of sound has none. Its Cropping Ratio and
+//! its Smooth are from 0 to 1 and its Strength from −1 to 1; its analysis is of frames of a
+//! size, at frames within [`LARGEST`] of 0, of motions of finite numbers.
+//!
 //! Moving a set of clips together with `shift_clips` keeps the transitions whose two ends
 //! are in that set: their adjacency and media handles do not change.
 //!
@@ -154,6 +159,7 @@ use crate::project::{
 };
 use crate::retime::{Retime, RetimeProcess};
 use crate::span;
+use crate::stabilize::Stabilize;
 use crate::time::{Rate, Speed, Time};
 
 mod automation;
@@ -163,6 +169,7 @@ mod fusion;
 mod grade;
 mod retiming;
 mod sound;
+mod stabilizing;
 
 pub(crate) use automation::owner_of;
 pub use automation::LanesOf;
@@ -186,6 +193,10 @@ const LONGEST_TEXT: usize = 1000;
 /// A change to a project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "an operation is read, applied and let go, as a change is"
+)]
 pub enum Op {
     /// Add media to the project, at `index` in its list, or at the end if there is none.
     AddMedia {
@@ -889,6 +900,22 @@ pub enum Op {
         /// The keys that are put there.
         keys: Vec<Key>,
     },
+    /// Put a stabilizer in place of the one that a clip of a track of picture has
+    /// ([`crate::stabilize`]), whole, its analysis with it; or give it one where it has none;
+    /// or take the one that it has away, so that it shows its source as it is. Its inverse puts
+    /// back what the clip had. A clip of sound takes none (`wrong_track`, `stabilize`); controls
+    /// or an analysis out of their ranges are refused (`out_of_range`, with
+    /// `stabilize.cropping_ratio`, `stabilize.smooth`, `stabilize.strength` or
+    /// `stabilize.analysis`).
+    SetStabilize {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// What its stabilizer becomes; or `null`, which must be written, for none.
+        #[serde(deserialize_with = "nullable_required")]
+        value: Option<Stabilize>,
+    },
     /// Put a grade in place of a grade, whole, as copying a grade does.
     SetGrade {
         /// The grade that is replaced.
@@ -1219,8 +1246,8 @@ pub enum OpError {
     /// of subtitles), `title` or `color` (on a track of sound), `cue` (on a track of picture or
     /// sound), `language` (of a track of picture or sound), `transition` (on a track of
     /// subtitles), the kind of a transition (`dissolve`, `dip_black` or `dip_white` on a
-    /// track of sound, `crossfade` on one of picture), or `fusion` (the composition of a clip,
-    /// on a track of sound).
+    /// track of sound, `crossfade` on one of picture), `fusion` (the composition of a clip, on
+    /// a track of sound), or `stabilize` (the stabilizer of a clip, on a track of sound).
     #[error("a {what} cannot be on a {} track", name_of(*.kind))]
     WrongTrack {
         /// What is to be on it.
@@ -1335,6 +1362,8 @@ pub enum OpError {
     /// `tracker.trackers.path` (a number, or a frame of the path, of one of its patterns),
     /// `tracker.pivot_tracker`, `tracker.pivot_point` and `tracker.reference`; and of a centre
     /// that follows a Tracker, `center.follow.tracker` (a pattern that no Tracker may have).
+    /// Of the stabilizer of a clip ([`crate::stabilize`]): `stabilize.cropping_ratio`,
+    /// `stabilize.smooth`, `stabilize.strength` and `stabilize.analysis`.
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -1907,6 +1936,10 @@ fn source_message(media: &str, why: &str) -> String {
 }
 
 /// The message of [`OpError::OutOfRange`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "one message for each value that may be out of its range"
+)]
 fn range_message(what: &str) -> String {
     match what {
         "width" | "height" => format!("the {what} is not an even number from 16 to 16384"),
@@ -1981,6 +2014,17 @@ fn range_message(what: &str) -> String {
         "fusion_id" => "the id of a node of a composition has a dot in it, which ends the id \
                         in the path of a setting"
             .into(),
+        "stabilize.cropping_ratio" => {
+            "the Cropping Ratio of the stabilizer is not from 0 to 1".into()
+        }
+        "stabilize.smooth" => "the Smooth of the stabilizer is not from 0 to 1".into(),
+        "stabilize.strength" => "the Strength of the stabilizer is not from -1 to 1".into(),
+        "stabilize.analysis" => format!(
+            "the analysis of the stabilizer is not of frames of 1 to {} pixels a side, at frames \
+             within 2^53 of 0, one at least, with motions of finite numbers whose zoom and \
+             aspect are above 0",
+            crate::stabilize::MOST_SIDE
+        ),
         "custom_luminance" | "graphics_white" => {
             format!("the {what} is not a number of nits from 1 to 10000")
         }
@@ -2361,6 +2405,11 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             remove,
             keys,
         } => fusion::splice_keys(project, &timeline, &clip, path, (at, remove), keys),
+        Op::SetStabilize {
+            timeline,
+            clip,
+            value,
+        } => stabilizing::set_stabilize(project, &timeline, &clip, value),
         Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
         Op::AddGroup { group, index } => grade::add_group(project, group, index),
         Op::RemoveGroup { id } => grade::remove_group(project, &id),
@@ -4147,6 +4196,7 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
     }
     clip.grade.check()?;
     fusion::check_of(kind, clip)?;
+    stabilizing::check_of(kind, clip)?;
     match &clip.group {
         Some(group) if !project.groups.iter().any(|k| k.id == *group) => {
             Err(missing("group", group))

@@ -1581,7 +1581,7 @@ async fn dispatch(
         | "audio.level_profile"
         | "audio.noise_learn"
         | "audio.cancel" => sound::call(engine, connection, kind, id, method, params).await,
-        "track.start" | "track.stop" | "track.edit" => {
+        "track.start" | "track.stop" | "track.edit" | "track.stabilize" => {
             tracker::call(engine, connection, kind, id, method, params).await
         }
         "luts.list" | "grade.export_lut" | "luts.preview" => {

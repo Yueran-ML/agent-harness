@@ -806,7 +806,70 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
     all.extend(grade_examples());
     all.extend(sound_examples());
     all.extend(fusion_examples());
+    all.extend(stabilize_examples());
     all
+}
+
+/// A stabilizer of c1, the picture on V1, measured for Similarity over its first three frames
+/// on frames of 1280 × 720.
+fn measured_stabilizer() -> Op {
+    written_op(serde_json::json!({
+        "op": "set_stabilize", "timeline": "t1", "clip": "c1",
+        "value": {
+            "method": "similarity", "camera_lock": false, "zoom": true,
+            "cropping_ratio": 0.5, "smooth": 0.25, "strength": 1.0,
+            "analysis": {"method": "similarity", "size": [1280, 720], "path": {
+                "0": [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                "1": [2.5, -1.25, 1.001, 0.002, 1.0, 0.0, 0.0, 0.0],
+                "2": [4.75, 0.5, 0.999, -0.001, 1.0, 0.0, 0.0, 0.0],
+            }},
+        },
+    }))
+}
+
+/// The examples of the operation on the stabilizer of a clip.
+fn stabilize_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
+    vec![
+        (
+            "set_stabilize of a stabilizer with what its analysis measured",
+            vec![],
+            measured_stabilizer(),
+        ),
+        (
+            "set_stabilize of other controls of a stabilizer, its analysis kept",
+            vec![measured_stabilizer()],
+            written_op(serde_json::json!({
+                "op": "set_stabilize", "timeline": "t1", "clip": "c1",
+                "value": {
+                    "method": "translation", "camera_lock": true, "zoom": false,
+                    "cropping_ratio": 0.8, "smooth": 0.75, "strength": -0.5,
+                    "analysis": {"method": "similarity", "size": [1280, 720], "path": {
+                        "0": [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                        "1": [2.5, -1.25, 1.001, 0.002, 1.0, 0.0, 0.0, 0.0],
+                        "2": [4.75, 0.5, 0.999, -0.001, 1.0, 0.0, 0.0, 0.0],
+                    }},
+                },
+            })),
+        ),
+        (
+            "set_stabilize of the controls of a clip that is not measured yet",
+            vec![],
+            written_op(serde_json::json!({
+                "op": "set_stabilize", "timeline": "t1", "clip": "c1",
+                "value": {
+                    "method": "perspective", "camera_lock": false, "zoom": true,
+                    "cropping_ratio": 0.5, "smooth": 0.25, "strength": 1.0,
+                },
+            })),
+        ),
+        (
+            "set_stabilize of none, which takes the stabilizer away",
+            vec![measured_stabilizer()],
+            written_op(serde_json::json!({
+                "op": "set_stabilize", "timeline": "t1", "clip": "c1", "value": null,
+            })),
+        ),
+    ]
 }
 
 /// An operation written as a client writes it.
@@ -2618,6 +2681,7 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "set_fusion_node",
         "set_fusion_keys",
         "splice_fusion_keys",
+        "set_stabilize",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

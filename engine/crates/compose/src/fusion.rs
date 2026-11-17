@@ -280,6 +280,22 @@
 //! A turn that the model found is no whole number of quarter turns but by chance, and is
 //! drawn by its sine and its cosine: a picture that is brought back by a quarter turn is
 //! read within a rounding of the middles of its texels.
+//!
+//! # The stabilizer
+//!
+//! The stabilizer of a clip ([`columbina_model::stabilize`]) is given in the composition of its
+//! layer as a node that the model puts after its `MediaIn` ([`FusedKind::Stabilize`], see
+//! [`columbina_model::fusion::Fused::stabilized`]): a clip that is stabilized and has no
+//! composition of its own has the one that a clip has at first. It is the pass of a Transform
+//! of the picture of the source, laid over nothing, by the inverse of its matrix made a map of
+//! the pixels that the pictures are drawn at (`steadied`): so a pixel that the picture is not
+//! moved over is transparent, and the picture is cut at the edges of the frame, as a Transform
+//! cuts it. The map of a Similarity or a Translation is affine, and is drawn as the map of a
+//! Transform is, to the bit where it is that map; that of Perspective may be projective, and
+//! the place that the affine part gives is then divided by the third row of the map in the
+//! shader (`row0.w` and `row1.w` of its uniform, which are 0 of every other pass). Where a pixel
+//! is made of several points, they lie as the affine part puts them. A matrix that moves no
+//! point is no pass, and so is one that cannot be undone: the node is then its input.
 
 use columbina_model::fusion::{
     self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, Tracked, Transformed,
@@ -451,6 +467,7 @@ fn is_drawn(kind: &FusedKind) -> bool {
             | FusedKind::Mosaic { .. }
             | FusedKind::DeltaKeyer { .. }
             | FusedKind::Tracker { .. }
+            | FusedKind::Stabilize { .. }
     )
 }
 
@@ -996,6 +1013,7 @@ pub(crate) fn plan(
                 &mut passes,
             ),
             tracker @ FusedKind::Tracker { .. } => tracked(tracker, read, size, luma, &mut passes),
+            kind @ FusedKind::Stabilize { .. } => stabilized(kind, read, size, luma, &mut passes),
             other => match mask::of_node(other) {
                 // A mask node: a pass whatever its settings are, as a mask of nothing is a
                 // picture too, which limits what reads it to nothing.
@@ -1309,6 +1327,136 @@ fn tracked(
             mixed(input, under, limit, &as_it_lies, luma, passes)
         }
     }
+}
+
+/// The picture of the stabilizer of a clip, `node`, `read` giving the picture that its input
+/// reads, drawn `size` pixels large: the picture of the source put where the matrix of the
+/// node says, laid over nothing as a Transform lays its picture, by a pass whose map may be
+/// projective (see The stabilizer of the [module](self)). None where its input gives no
+/// picture; its input where the matrix moves no point, or cannot be undone. None of a node
+/// that is not the stabilizer.
+fn stabilized(
+    node: &FusedKind,
+    read: impl Fn(Option<usize>) -> Reads,
+    size: (u32, u32),
+    luma: [f32; 3],
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    let FusedKind::Stabilize { input, matrix } = node else {
+        return Reads::Nothing;
+    };
+    let input = read(*input);
+    if input == Reads::Nothing || !columbina_model::stabilize::moves(matrix) {
+        return input;
+    }
+    let Some((map, scale)) = steadied(matrix, size) else {
+        return input;
+    };
+    let mut params = uniform(&map.affine, scale, &Settings::default(), luma);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a map, as the card takes it"
+    )]
+    let (across, down) = (map.across as f32, map.down as f32);
+    params[PROJECTIVE_ACROSS_AT] = across;
+    params[PROJECTIVE_DOWN_AT] = down;
+    drawn(
+        passes,
+        Pass::Lay {
+            background: Reads::Nothing,
+            foreground: input,
+            mask: Reads::Nothing,
+            uniform: params,
+        },
+    )
+}
+
+/// How a pixel of the picture that the stabilizer draws reads the picture of the source, both
+/// drawn `size` pixels large, in pixels from their top left corners: the affine part of the
+/// map, and the two numbers of its third row by which the place that the affine part gives is
+/// divided (`across · x + down · y + 1`; both 0 of an affine map).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Steadied {
+    /// The affine part.
+    pub affine: Affine,
+    /// What the divisor gains a pixel across.
+    pub across: f64,
+    /// What the divisor gains a pixel down.
+    pub down: f64,
+}
+
+/// The place in the uniform of `fusion.wgsl` of what the divisor of a projective map gains a
+/// pixel across (`row0.w`): 0 of every pass but those of the stabilizer whose map is
+/// projective.
+const PROJECTIVE_ACROSS_AT: usize = 3;
+
+/// The place of what it gains a pixel down (`row1.w`).
+const PROJECTIVE_DOWN_AT: usize = 7;
+
+/// How a picture that the stabilizer puts by `matrix`, in shares of the picture, is read where
+/// it is drawn `size` pixels large ([`Steadied`]), and how many pixels of the picture drawn are
+/// a pixel of the picture read, about its middle: the inverse of the matrix made a map of
+/// pixels. None where the matrix flattens the picture, or is not of finite numbers.
+pub(crate) fn steadied(matrix: &[[f64; 3]; 3], size: (u32, u32)) -> Option<(Steadied, f64)> {
+    let (width, height) = (f64::from(size.0), f64::from(size.1));
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    // A share is so many pixels: the matrix of pixels is `S · matrix · S⁻¹`.
+    let scale = [width, height, 1.0];
+    let mut forward = [[0.0; 3]; 3];
+    for (row, (cells, own)) in forward.iter_mut().zip(matrix).enumerate() {
+        for (column, cell) in cells.iter_mut().enumerate() {
+            *cell = own[column] * scale[row] / scale[column];
+        }
+    }
+    let back = inverse(&forward)?;
+    // The divisor of the map is made 1 at the corner.
+    let corner = back[2][2];
+    if !corner.is_finite() || corner.abs() < 1e-12 {
+        return None;
+    }
+    let map = back.map(|row| row.map(|cell| cell / corner));
+    // How large the picture is drawn: the square root of the area that the affine part of the
+    // matrix gives a pixel.
+    let area = forward[0][0] * forward[1][1] - forward[0][1] * forward[1][0];
+    let grown = area.abs().sqrt();
+    if !(grown.is_finite() && grown > 0.0) || map.iter().flatten().any(|cell| !cell.is_finite()) {
+        return None;
+    }
+    let affine = Affine {
+        a: map[0][0],
+        b: map[0][1],
+        c: map[1][0],
+        d: map[1][1],
+        tx: map[0][2],
+        ty: map[1][2],
+    };
+    Some((
+        Steadied {
+            affine,
+            across: map[2][0],
+            down: map[2][1],
+        },
+        grown,
+    ))
+}
+
+/// The inverse of a 3×3 matrix, or none where it is singular.
+fn inverse(m: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let minor =
+        |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+    let det =
+        m[0][0] * minor(1, 2, 1, 2) - m[0][1] * minor(1, 2, 0, 2) + m[0][2] * minor(1, 2, 0, 1);
+    if !det.is_finite() || det.abs() < 1e-300 {
+        return None;
+    }
+    let adjugate = [
+        [minor(1, 2, 1, 2), -minor(0, 2, 1, 2), minor(0, 1, 1, 2)],
+        [-minor(1, 2, 0, 2), minor(0, 2, 0, 2), -minor(0, 1, 0, 2)],
+        [minor(1, 2, 0, 1), -minor(0, 2, 0, 1), minor(0, 1, 0, 1)],
+    ];
+    Some(adjugate.map(|row| row.map(|cell| cell / det)))
 }
 
 /// The picture `first` laid by `map` over the picture `under`, as a Merge as it is at first
@@ -4498,5 +4646,129 @@ mod tests {
                 "{point:?} is read at {read:?}"
             );
         }
+    }
+
+    /// The stabilizer of the source by `matrix`, in shares of the picture: a `MediaIn` and the
+    /// node that the model puts after it.
+    fn steady(matrix: [[f64; 3]; 3]) -> Plan {
+        planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node(
+                    "stabilized",
+                    FusedKind::Stabilize {
+                        input: Some(0),
+                        matrix,
+                    },
+                ),
+            ],
+            Some(1),
+        )
+    }
+
+    #[test]
+    fn the_stabilizer_is_the_pass_of_a_transform_of_the_source_and_none_where_it_moves_nothing() {
+        // Where it moves no point, and where it flattens the picture, it is the source.
+        for matrix in [
+            columbina_model::stabilize::IDENTITY,
+            [[0.0, 0.0, 0.5], [0.0, 0.0, 0.5], [0.0, 0.0, 1.0]],
+        ] {
+            let plan = steady(matrix);
+            assert_eq!(plan.passes, [] as [Pass; 0], "{matrix:?}");
+            assert_eq!(plan.output, Reads::Source, "{matrix:?}");
+        }
+        // Twice as large about the middle: the pass of a Transform of a Size of 2, to the
+        // number, but for the sign of a zero.
+        let zoomed = steady([[2.0, 0.0, -0.5], [0.0, 2.0, -0.5], [0.0, 0.0, 1.0]]);
+        let transform = planned(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node(
+                    "t",
+                    FusedKind::Transform {
+                        input: Some(0),
+                        mask: None,
+                        settings: Transformed {
+                            size: 2.0,
+                            ..transform()
+                        },
+                    },
+                ),
+            ],
+            Some(1),
+        );
+        assert_eq!(zoomed, transform);
+        let [Pass::Lay {
+            background,
+            foreground,
+            mask,
+            uniform,
+        }] = zoomed.passes.as_slice()
+        else {
+            panic!("one pass that lays: {zoomed:?}")
+        };
+        assert_eq!(
+            [*background, *foreground, *mask],
+            [Reads::Nothing, Reads::Source, Reads::Nothing]
+        );
+        assert_eq!(
+            [uniform[PROJECTIVE_ACROSS_AT], uniform[PROJECTIVE_DOWN_AT]],
+            [0.0, 0.0]
+        );
+        // Of no picture, no picture.
+        let nothing = plan_of(
+            vec![
+                node("in", FusedKind::MediaIn),
+                node(
+                    "stabilized",
+                    FusedKind::Stabilize {
+                        input: Some(0),
+                        matrix: [[2.0, 0.0, -0.5], [0.0, 2.0, -0.5], [0.0, 0.0, 1.0]],
+                    },
+                ),
+            ],
+            Some(1),
+            SIZE,
+            false,
+        );
+        assert_eq!(nothing, Plan::default());
+    }
+
+    #[test]
+    fn the_map_of_the_stabilizer_reads_where_its_matrix_put_each_point() {
+        // A turn, a zoom, a shift and a little perspective, in shares of a picture of 64 × 32.
+        let matrix = [[1.05, -0.02, 0.01], [0.03, 0.98, -0.02], [0.04, -0.03, 1.0]];
+        let (width, height) = (64.0, 32.0);
+        let (map, scale) = steadied(&matrix, (64, 32)).unwrap();
+        assert!(scale > 0.9 && scale < 1.1, "{scale}");
+        assert!(map.across != 0.0 && map.down != 0.0);
+        for point in [(0.0, 0.0), (64.0, 32.0), (10.5, 20.25), (32.0, 16.0)] {
+            // Where the matrix puts the point, in pixels.
+            let (u, v) = (point.0 / width, point.1 / height);
+            let w = matrix[2][0] * u + matrix[2][1] * v + matrix[2][2];
+            let put = (
+                (matrix[0][0] * u + matrix[0][1] * v + matrix[0][2]) / w * width,
+                (matrix[1][0] * u + matrix[1][1] * v + matrix[1][2]) / w * height,
+            );
+            // And where the pixel there reads, as the shader reads it.
+            let affine = map.affine.apply(put);
+            let divisor = map.across * put.0 + map.down * put.1 + 1.0;
+            let read = (affine.0 / divisor, affine.1 / divisor);
+            assert!(
+                (read.0 - point.0).abs() < 1e-9 && (read.1 - point.1).abs() < 1e-9,
+                "{point:?} is read at {read:?}"
+            );
+        }
+        // A shift of an eighth of the width is one of 8 pixels, affine.
+        let (shifted, scale) = steadied(
+            &[[1.0, 0.0, 0.125], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            (64, 32),
+        )
+        .unwrap();
+        assert_eq!(scale, 1.0);
+        assert_eq!((shifted.across, shifted.down), (0.0, 0.0));
+        assert_eq!(shifted.affine.apply((8.5, 3.5)), (0.5, 3.5));
+        assert_eq!(steadied(&[[0.0; 3]; 3], (64, 32)), None);
+        assert_eq!(steadied(&matrix, (0, 32)), None);
     }
 }

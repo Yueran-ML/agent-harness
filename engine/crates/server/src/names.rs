@@ -1248,6 +1248,7 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             visit_clip(timeline, clip, f)?;
             visit_setting(path, f)
         }
+        Op::SetStabilize { timeline, clip, .. } => visit_clip(timeline, clip, f),
         Op::AddGroup { group, .. } => {
             visit_grade(&mut group.pre, f)?;
             visit_grade(&mut group.post, f)?;

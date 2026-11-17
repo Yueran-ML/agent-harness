@@ -29,8 +29,9 @@
 //!
 //! - `media_in`, no inputs: the picture of the clip's own source at the frame, as the engine
 //!   reads it for a clip without a composition (along its speed points, and mixed of two
-//!   pictures where its Retime Process says so). A composition may have several: they are the
-//!   same picture.
+//!   pictures where its Retime Process says so), and drawn through the stabilizer of the clip
+//!   where it has one ([`crate::stabilize`], [`Fused::stabilized`]). A composition may have
+//!   several: they are the same picture.
 //! - `media_out`, one input, `input`: the picture that goes back to the timeline. A
 //!   composition has exactly one. Where its input is not linked the clip shows nothing: it is
 //!   transparent.
@@ -275,6 +276,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::grade::{check_label, Bounds, Composite, Param, Pos};
 use crate::ops::OpError;
 use crate::project::{Clip, Id, Project, Source, Timeline};
+use crate::stabilize::Matrix;
 
 mod tracker;
 
@@ -2949,15 +2951,134 @@ pub enum FusedKind {
         /// What it draws, and how the picture that is moved is put.
         settings: Tracked,
     },
+    /// The picture of the clip's source drawn through its stabilizer
+    /// ([`crate::stabilize`]): no node of the composition, but what [`Fused::stabilized`] puts
+    /// after its first `MediaIn`, in place of every `MediaIn` that a node reads, so that each
+    /// shows the picture stabilized. Where the picture is not moved over, it is transparent.
+    Stabilize {
+        /// The picture of the source: that of the `MediaIn`.
+        input: Option<usize>,
+        /// Where each point of the picture is put, in shares of the picture, x of its width and
+        /// y of its height from its top left corner, y down: a 3×3 matrix acting on `[x, y, 1]`,
+        /// row by row ([`crate::stabilize::Stabilize::transform_at`]).
+        matrix: Matrix,
+    },
+}
+
+/// The id of the node that [`Fused::stabilized`] puts after the first `MediaIn` of a
+/// composition: it has a dot in it, which the id of no node of a composition has, so that it is
+/// never that of one.
+pub const STABILIZER: &str = "media_in.stabilized";
+
+impl Fused {
+    /// It with the picture of its `MediaIn` drawn through the stabilizer of its clip, `matrix`
+    /// ([`FusedKind::Stabilize`]): a node that draws it so is put after the first `MediaIn`,
+    /// and every input that read a `MediaIn` reads that node, and so does `output` where it was
+    /// a `MediaIn`. A composition that has no `MediaIn`, and a matrix that moves no point of the
+    /// picture ([`crate::stabilize::moves`]), leave it as it is.
+    #[must_use]
+    pub fn stabilized(&self, matrix: Matrix) -> Fused {
+        let is_source = |at: usize| {
+            self.nodes
+                .get(at)
+                .is_some_and(|node| matches!(node.kind, FusedKind::MediaIn))
+        };
+        let first = (0..self.nodes.len()).find(|&at| is_source(at));
+        let Some(first) = first.filter(|_| crate::stabilize::moves(&matrix)) else {
+            return self.clone();
+        };
+        // The places after the first `MediaIn` are one further on, and a `MediaIn` is the node
+        // that stabilizes it.
+        let renumbered = |at: usize| {
+            if is_source(at) {
+                first + 1
+            } else if at > first {
+                at + 1
+            } else {
+                at
+            }
+        };
+        let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+        for (at, node) in self.nodes.iter().enumerate() {
+            let kind = if at > first {
+                node.kind.with_reads(&renumbered)
+            } else {
+                node.kind.clone()
+            };
+            nodes.push(FusedNode {
+                id: node.id.clone(),
+                kind,
+            });
+            if at == first {
+                nodes.push(FusedNode {
+                    id: STABILIZER.into(),
+                    kind: FusedKind::Stabilize {
+                        input: Some(first),
+                        matrix,
+                    },
+                });
+            }
+        }
+        Fused {
+            nodes,
+            output: self.output.map(renumbered),
+        }
+    }
 }
 
 impl FusedKind {
+    /// It with each picture that it reads, by its place in [`Fused::nodes`], at the place
+    /// `renumbered` gives for it.
+    #[must_use]
+    pub fn with_reads(&self, renumbered: &impl Fn(usize) -> usize) -> FusedKind {
+        let mut out = self.clone();
+        for read in out.inputs_mut() {
+            *read = read.map(renumbered);
+        }
+        out
+    }
+
+    /// Each input of a node of the kind that may read a picture, as [`FusedKind::reads`] has
+    /// them, to be changed.
+    fn inputs_mut(&mut self) -> Vec<&mut Option<usize>> {
+        match self {
+            Self::MediaIn => vec![],
+            Self::Background { mask, .. }
+            | Self::Rectangle { mask, .. }
+            | Self::Ellipse { mask, .. }
+            | Self::Polygon { mask, .. } => vec![mask],
+            Self::Merge {
+                background,
+                foreground,
+                mask,
+                ..
+            } => vec![background, foreground, mask],
+            Self::Tracker {
+                input,
+                foreground,
+                mask,
+                ..
+            } => vec![input, foreground, mask],
+            Self::Transform { input, mask, .. }
+            | Self::Blur { input, mask, .. }
+            | Self::Mosaic { input, mask, .. } => vec![input, mask],
+            Self::Stabilize { input, .. } => vec![input],
+            Self::DeltaKeyer {
+                input,
+                garbage_matte,
+                solid_matte,
+                mask,
+                ..
+            } => vec![input, garbage_matte, solid_matte, mask],
+        }
+    }
+
     /// The picture that the first input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur, a Mosaic, a Delta
-    /// Keyer and a Tracker their picture, and of a mask node the mask that comes into it.
-    /// None of a kind that has no such input, and where the input reads no picture. It is
-    /// the picture that a node that is passed through hands on ([`Kind::through`]), and that
-    /// what cannot draw a kind may hand on in its place.
+    /// Keyer and a Tracker their picture, of the stabilizer the picture of the source, and of a
+    /// mask node the mask that comes into it. None of a kind that has no such input, and where
+    /// the input reads no picture. It is the picture that a node that is passed through hands
+    /// on ([`Kind::through`]), and that what cannot draw a kind may hand on in its place.
     #[must_use]
     pub fn first_input(&self) -> Option<usize> {
         match self {
@@ -2967,7 +3088,8 @@ impl FusedKind {
             | Self::Blur { input, .. }
             | Self::Mosaic { input, .. }
             | Self::DeltaKeyer { input, .. }
-            | Self::Tracker { input, .. } => *input,
+            | Self::Tracker { input, .. }
+            | Self::Stabilize { input, .. } => *input,
             Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
             | Self::Polygon { mask, .. } => *mask,
@@ -2977,12 +3099,12 @@ impl FusedKind {
     /// The mask that the `mask` input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform, of a Background, of a
     /// Blur, of a Mosaic, of a Delta Keyer and of a Tracker, and the mask that comes into a
-    /// mask node. None of a `MediaIn`, which has no such input, and where the input is not
-    /// linked or brings no picture.
+    /// mask node. None of a `MediaIn` and of the stabilizer, which have no such input, and
+    /// where the input is not linked or brings no picture.
     #[must_use]
     pub fn mask(&self) -> Option<usize> {
         match self {
-            Self::MediaIn => None,
+            Self::MediaIn | Self::Stabilize { .. } => None,
             Self::Background { mask, .. }
             | Self::Merge { mask, .. }
             | Self::Transform { mask, .. }
@@ -3025,6 +3147,7 @@ impl FusedKind {
             Self::Transform { input, mask, .. }
             | Self::Blur { input, mask, .. }
             | Self::Mosaic { input, mask, .. } => vec![*input, *mask],
+            Self::Stabilize { input, .. } => vec![*input],
             Self::DeltaKeyer {
                 input,
                 garbage_matte,

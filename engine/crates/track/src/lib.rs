@@ -34,8 +34,8 @@
 //!
 //! `IntelliTrack` (Studio, an AI) is not made. Of the stabilizer, which shares this core, the
 //! mathematics is here ([`stabilize`]): the path of the camera from the motion between frames,
-//! its smoothing, and where each frame is put. Finding that motion in the frames of a clip is
-//! yet to be made.
+//! its smoothing, and where each frame is put. The motion is found in the frames of a clip by
+//! the engine, with a [`CloudTracker`] over the whole picture.
 //!
 //! # Determinism
 //!

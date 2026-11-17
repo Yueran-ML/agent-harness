@@ -35,7 +35,10 @@
 //! mixes the two, and a clip that is written without it shows the one picture that it always
 //! showed. And so is the composition of a clip of a track of picture (`fusion`, see
 //! [`crate::fusion`]), the graph of nodes that makes its picture: it is written only on a clip
-//! that has one, and a clip that is written without it shows its source as it always did.
+//! that has one, and a clip that is written without it shows its source as it always did. So is
+//! the stabilizer of such a clip (`stabilize`, see [`crate::stabilize`]), its controls and what
+//! its analysis measured: written only on a clip that has one, and a clip without it shows its
+//! source as it always did.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -50,6 +53,7 @@ use crate::fusion::Composition;
 use crate::grade::{Composite, Grade, Group, Param};
 use crate::ops::Invalid;
 use crate::retime::{Retime, RetimeProcess};
+use crate::stabilize::Stabilize;
 use crate::time::{Rate, Speed, Time};
 
 /// The schema of a project that this engine reads and writes.
@@ -650,6 +654,14 @@ pub struct Clip {
     /// may be left out, as none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fusion: Option<Composition>,
+    /// Its stabilizer (see [`crate::stabilize`]): the Method and the controls of the stabilizer
+    /// of the Edit and Cut pages, and what its analysis measured; or none, for its source as it
+    /// is. What it makes of the picture is done to the source of the clip: before its
+    /// composition, whose `media_in` shows the picture stabilized, and before its grade, its
+    /// transform, its crop and its composite mode. Only a clip of a track of picture has one.
+    /// It is written only where it is there, and may be left out, as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stabilize: Option<Stabilize>,
 }
 
 impl Clip {
@@ -1448,6 +1460,7 @@ impl Clip {
             grade: Grade::default(),
             group: None,
             fusion: None,
+            stabilize: None,
         }
     }
 

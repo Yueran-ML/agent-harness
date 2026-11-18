@@ -1296,6 +1296,7 @@ class Fake:
             given: dict[str, Any] = {"kind": "media", "media": source["media"], "in": begins}
         else:
             given = {key: value for key, value in source.items() if key != "length"}
+            _spans_checked(given, index)
         clip = _clip(given, int(at), length)
         return {"op": "insert_clip", "timeline": timeline["id"], "track": track["id"], "clip": clip}
 
@@ -1904,6 +1905,8 @@ class Fake:
                     if op.get("length") is not None:
                         clip["length"] = op["length"]
                 else:
+                    if "source" in op:
+                        _spans_checked(cast("dict[str, Any]", op["source"]), index)
                     clip.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
                     # A clip that shows the nearest picture is written without its Retime
                     # Process, as the engine writes it.
@@ -1923,20 +1926,25 @@ class Fake:
             message = f"there is no setting {path}"
             data = {"index": index, "reason": "missing", "what": "setting", "id": path}
             raise RefusedError(-32001, message, {**data, "message": message})
-        of, name = path.split(".")
+        of, _, name = path.partition(".")
         if of == "crop":
             # A clip that a test built without a crop has none, as one that the engine reads.
             none = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0}
             clip.setdefault("crop", none)
         if of == "title":
-            # The size and the place of a title are in the style of its source. A clip of
-            # anything else has no such setting, and is refused as a path that is not known is.
+            # The size and the place of a title are in the style of its source, and the width
+            # of its stroke and the like in that part of its style. A clip of anything else, or
+            # a title without the part, has no such setting, and is refused as a path that is
+            # not known is.
             source = cast("dict[str, Any]", clip["source"])
-            if source.get("kind") != "title":
+            holder = cast("dict[str, Any]", source.get("style") or {})
+            part, _, name = name.rpartition(".")
+            if part:
+                holder = cast("dict[str, Any]", holder.get(part) or {})
+            if source.get("kind") != "title" or not holder:
                 message = f"there is no setting {path}"
                 data = {"index": index, "reason": "missing", "what": "setting", "id": path}
                 raise RefusedError(-32001, message, {**data, "message": message})
-            holder = cast("dict[str, Any]", source["style"])
         else:
             holder = cast("dict[str, Any]", clip[of])
         if op["op"] == "set_clip_keys":
@@ -1956,9 +1964,36 @@ _CLIP_KEYED = frozenset(
     [f"transform.{name}" for name in ("x", "y", "scale", "rotation", "opacity")]
     + [f"crop.{name}" for name in ("left", "right", "top", "bottom", "softness")]
     + [f"title.{name}" for name in ("size", "x", "y")]
+    + ["title.stroke.width"]
+    + [f"title.shadow.{name}" for name in ("x", "y", "blur")]
+    + [f"title.background.{name}" for name in ("padding", "radius")]
 )
 """The settings of a clip that take keys, as the engine's catalog lists them. Those of ``title``
-are of the style of a clip whose source is a title."""
+are of the style of a clip whose source is a title, those of its parts of a title that has the
+part."""
+
+
+def _spans_checked(source: dict[str, Any], index: int) -> None:
+    """Refuse the spans of a title as the engine does (``out_of_range``, ``spans``).
+
+    They are runs of its text by Unicode scalars, as a ``str`` of Python counts them: each ends
+    after it begins, in the order of the text, none over another, 256 at the most, and none past
+    the end of the text. The other checks of a style, its stroke, shadow and background, are not
+    copied here.
+    """
+    if source.get("kind") != "title":
+        return
+    style = cast("dict[str, Any]", source.get("style") or {})
+    spans = cast("list[dict[str, Any]]", style.get("spans") or [])
+    reached = 0
+    ordered = True
+    for span in spans:
+        ordered = ordered and reached <= span["from"] < span["to"]
+        reached = span["to"]
+    if not ordered or len(spans) > 256 or reached > len(str(source.get("text", ""))):
+        message = "the spans of a title are runs of its text, in order, none over another"
+        data = {"index": index, "reason": "out_of_range", "what": "spans"}
+        raise RefusedError(-32001, message, {**data, "message": message})
 
 
 def _clip(source: dict[str, Any], start: int, length: int) -> dict[str, Any]:

@@ -667,11 +667,16 @@ def test_the_tool_costs_few_characters_on_every_request() -> None:
         )
     )
     # As video_grade_keys, which is under 1,300: the paths and their units are in the description.
-    assert size < 1300
-    assert len(told) < 520
+    # The six settings of the stroke, the shadow and the background of a title, and their unit,
+    # took it from 517 characters to 621, and from about 1,231 to 1,335 in all.
+    assert size < 1350
+    assert len(told) < 625
     for said in (
         "transform.x|y|scale|rotation|opacity",
         "crop.left|right|top|bottom|softness",
+        "title.size|x|y, title.stroke.width, title.shadow.x|y|blur, ",
+        "title.background.padding|radius",
+        "size, stroke, shadow, background: px",
         "widths, heights of the timeline's picture",
         "degrees clockwise",
         "shares 0-1",

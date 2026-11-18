@@ -23,7 +23,7 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video import audio, clip_keys, duck, fusion, grading, look, stabilize
+from columbina.video import audio, clip_keys, duck, fusion, grading, look, stabilize, titles
 from columbina.video.editing import Editor, chosen_subtitles, receipt, safe_name, sidecars
 from columbina.video.edits import FusionKind
 from columbina.video.engine import (
@@ -68,6 +68,7 @@ _FAILURES = (
     fusion.FusionError,
     look.LookError,
     stabilize.StabilizeError,
+    titles.TitleError,
     ProjectError,
     StoryError,
     WordsError,
@@ -1436,7 +1437,8 @@ what a slowed clip shows between two source frames). A transform or crop setting
 {keys:[{frame,value,interp}]}, frames counted as grade keyframes are; set_clip_keys
 {id,path:"transform.x"|"crop.left",param} and splice_clip_keys {id,path,at,remove,keys}
 set one setting's keys; a title's style.size, x and y take keys too, by the paths
-"title.size"|"title.x"|"title.y". Existing ids come
+"title.size"|"title.x"|"title.y", and so do title.stroke.width, title.shadow.x|y|blur and
+title.background.padding|radius of a title that has the part. Existing ids come
 from video_info; $names refer to new objects in this batch. Receipts include done operations,
 created names and clamped input indices. Locked tracks and unavailable source handles are
 enforced by the engine.
@@ -1449,6 +1451,13 @@ Omitted track uses the first of that kind; null disables it. A media source is
 video_info, and either length in timeline frames or to:{ticks,scale}. A title source is
 {kind:"title",text:"Title",length:50,style:{font:"",size:48,color:"#ffffffff",x:0.5,y:0.5,
 align:"center"}}; a color is {kind:"color",color:"#000000ff",length:50}.
+A style may add stroke:{color,width}, shadow:{color,x,y,blur} (offsets right, down) and
+background:{color,padding,radius}, in px; what a part leaves out is a new one's (stroke black
+4; shadow #00000080 4,4,4; background #00000099 16,8). spans style runs of the text:
+[{text:"word",occurrence?:2,color?,scale?:0.1-10,bold?,italic?,font?}] ({from,to} counts
+characters). set_title {clip,text?,style?,spans?} changes a title already there: style merges
+(null takes a part away), spans are laid over its runs (false/null takes a setting away, clear:
+true all; spans:null none), and its runs follow a new text.
 lift/ripple_delete: clips:[ids], linked?; ripple_delete_range: from,to,tracks?;
 close_gap: track,at,straddling?:"refuse"|"stay" (default "refuse": a clip of another unlocked
 track lying across the gap refuses it as ripple_blocked; "stay" keeps such superimposed clips in
@@ -1556,10 +1565,11 @@ parent:null}} to create a bin. Consult video_info after edits for final ids and 
 _CLIP_KEYS = (
     "Put, remove or clear one keyframe of a setting of a clip's picture; one undo step. path: "
     "transform.x|y|scale|rotation|opacity, crop.left|right|top|bottom|softness or a title's "
-    "title.size|x|y. x, y: widths, heights of the timeline's picture (right, down); scale: a "
-    "factor; rotation: degrees clockwise; opacity, crop: shares 0-1; size: px. frame: a timeline "
-    "frame within the clip. The key is kept on the picture shown there, at its frame of the "
-    "clip's media (of the clip, for a title or a still); the result gives both."
+    "title.size|x|y, title.stroke.width, title.shadow.x|y|blur, title.background.padding|radius. "
+    "x, y: widths, heights of the timeline's picture (right, down); scale: a factor; rotation: "
+    "degrees clockwise; opacity, crop: shares 0-1; size, stroke, shadow, background: px. frame: "
+    "a timeline frame within the clip. The key is kept on the picture shown there, at its frame "
+    "of the clip's media (of the clip, for a title or a still); the result gives both."
 )
 
 _STABILIZE = (

@@ -15,7 +15,9 @@ tells both, with the frame of the timeline that each key of the setting is shown
 
 The settings of a title's style, ``title.size``, ``title.x`` and ``title.y``, are of a clip whose
 source is a title only: the engine refuses them of any other clip as it refuses a path that it
-does not know, and so the tool says so before anything is sent.
+does not know, and so the tool says so before anything is sent. So are those of the parts of its
+style, ``title.stroke.width``, ``title.shadow.x``, ``y`` and ``blur``, and
+``title.background.padding`` and ``radius``, of a title that has the part only.
 """
 
 import difflib
@@ -57,6 +59,22 @@ class _Styled(Number):
         return f"{self.name}: {self.low:g} to {self.high:g}, {self.default:g} in a new title"
 
 
+@dataclass(frozen=True)
+class _Part(_Styled):
+    """A setting of a part of a title's style: its stroke, its shadow or its background.
+
+    A new title has none of them; its ``default`` is what the part has when it is given one,
+    as the engine's catalog gives it.
+    """
+
+    part: str
+
+    def told(self) -> str:
+        """Its range and what it is in a new part, in words."""
+        low, high, new = f"{self.low:g}", f"{self.high:g}", f"{self.default:g}"
+        return f"{self.name}: {low} to {high}, {new} in a new {self.part}"
+
+
 SETTINGS: dict[str, Number] = {
     "transform.x": Number("Position X, right, in widths of the timeline's picture", 0, -16, 16),
     "transform.y": Number("Position Y, down, in heights of the timeline's picture", 0, -16, 16),
@@ -71,14 +89,30 @@ SETTINGS: dict[str, Number] = {
     "title.size": _Styled("Size of a title, the height of its letters in pixels", 72, 1, 4096),
     "title.x": _Styled("Position X of a title's anchor, in widths of the picture", 0.5, -16, 16),
     "title.y": _Styled("Position Y of a title's anchor, in heights of the picture", 0.5, -16, 16),
+    "title.stroke.width": _Part("Stroke width of a title, in pixels", 4, 0, 256, "stroke"),
+    "title.shadow.x": _Part(
+        "Shadow offset X of a title, right, in pixels", 4, -1024, 1024, "shadow"
+    ),
+    "title.shadow.y": _Part(
+        "Shadow offset Y of a title, down, in pixels", 4, -1024, 1024, "shadow"
+    ),
+    "title.shadow.blur": _Part("Shadow blur of a title, in pixels", 4, 0, 256, "shadow"),
+    "title.background.padding": _Part(
+        "Background padding of a title, in pixels", 16, 0, 1024, "background"
+    ),
+    "title.background.radius": _Part(
+        "Background corner radius of a title, in pixels", 8, 0, 512, "background"
+    ),
 }
 """The settings of a clip that take keys, by their paths in the clip, with the bounds that the
 engine's catalog gives them (``clip`` of ``engine/crates/model/tests/data/catalog.json``). Those
-of ``title`` are of the style of a clip whose source is a title, and of no other clip."""
+of ``title`` are of the style of a clip whose source is a title, and of no other clip; those of
+``title.stroke``, ``title.shadow`` and ``title.background`` are of a title that has that part."""
 
 _PATHS = (
     "transform.x, y, scale, rotation, opacity and crop.left, right, top, bottom, softness, "
-    "and of a title title.size, x, y"
+    "and of a title title.size, x, y, stroke.width, shadow.x, y, blur, background.padding, "
+    "radius"
 )
 _AS_DAVINCI = {"zoom": "scale", "angle": "rotation"}
 """What the Inspector calls a setting, where a model may name it so."""
@@ -95,16 +129,22 @@ def setting_of(path: str) -> Number:
         return spec
     # A name alone, under the wrong one of the three, misspelt or as DaVinci has it, is that
     # name. A name that two of them have, x or y, is that of the one that the path names, or
-    # of the transform, which every clip of picture has.
-    named = path.split(".", 1)[0].lower()
+    # of the transform, which every clip of picture has. A part of a title's style named
+    # without the title, shadow.x, is that of the title.
+    asked = path.lower()
+    named, _, rest = asked.partition(".")
+    if not rest:
+        named, rest = "", asked
     names: dict[str, str] = {}
     for one in SETTINGS:
-        holder, name = one.split(".")
+        holder, _, name = one.partition(".")
         if name not in names or holder == named:
             names[name] = one
-    last = path.rsplit(".", 1)[-1].lower()
-    last = _AS_DAVINCI.get(last, last)
-    close = [last] if last in names else difflib.get_close_matches(last, list(names), n=1)
+    if asked in names:
+        close = [asked]
+    else:
+        rest = _AS_DAVINCI.get(rest, rest)
+        close = [rest] if rest in names else difflib.get_close_matches(rest, list(names), n=1)
     maybe = f" (did you mean {names[close[0]]}?)" if close else ""
     raise KeysError(f"a clip has no setting {path!r} that takes keys{maybe}; it has {_PATHS}")
 
@@ -287,13 +327,26 @@ def _is_title(clip: Mapping[str, Any]) -> bool:
     return _object(clip.get("source")).get("kind") == "title"
 
 
+def _style(clip: Mapping[str, Any]) -> dict[str, Any]:
+    """The style of a title, which is in its source, and not in the clip beside its transform."""
+    return _object(_object(clip.get("source")).get("style"))
+
+
+def _part_of(path: str) -> str | None:
+    """The part of a title's style that the setting at ``path`` is of, if it is of one."""
+    named = path.split(".")
+    return named[1] if len(named) == 3 and named[0] == "title" else None
+
+
 def _now(clip: Mapping[str, Any], path: str, spec: Number) -> Any:
     """What the setting at ``path`` of a clip is: a number, or keys."""
-    of, name = path.split(".")
-    if of == "title":
-        # The style of a title is in its source, and not in the clip beside its transform.
-        return _object(_object(clip.get("source")).get("style")).get(name, spec.default)
-    return _object(clip.get(of)).get(name, spec.default)
+    of, _, name = path.partition(".")
+    if of != "title":
+        return _object(clip.get(of)).get(name, spec.default)
+    part = _part_of(path)
+    if part is None:
+        return _style(clip).get(name, spec.default)
+    return _object(_style(clip).get(part)).get(name.rpartition(".")[2], spec.default)
 
 
 def _keys(now: Any) -> list[dict[str, Any]]:
@@ -352,7 +405,8 @@ async def keys(
     """Put a key of one setting of a clip's picture, take one away, or clear them all.
 
     ``path`` is one of :data:`SETTINGS`; ``title.size``, ``title.x`` and ``title.y`` are of a
-    clip whose source is a title. ``frame`` is a frame of the timeline, within the clip; the key
+    clip whose source is a title, and those of its stroke, its shadow and its background of a
+    title that has the part. ``frame`` is a frame of the timeline, within the clip; the key
     is at the frame of the clip's keys that the clip is at there (:class:`KeyClock`). The other
     keys of the setting are not sent: a key put at a frame that has one takes its place, and
     keeps its interpolation where none is given; the last key taken away leaves its value as a
@@ -384,6 +438,15 @@ async def keys(
             raise KeysError(
                 f"{clip} is not a title; {path} is a setting of the style of a title, and the "
                 "transform and the crop are of every clip of picture"
+            )
+        part = _part_of(path)
+        if part is not None and not isinstance(_style(found).get(part), Mapping):
+            # The engine has no such setting of a title without the part, as of a clip that
+            # is no title.
+            given = f'{{"edit": "set_title", "clip": "{clip}", "style": {{"{part}": {{}}}}}}'
+            raise KeysError(
+                f"title {clip} has no {part}, so no {path} to key: give it one first with "
+                f"video_edit, {given} for a new {part}"
             )
         clock = _clock(project, on, found)
         now = _now(found, path, spec)

@@ -14,7 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from columbina.video import edits, grading, media, stabilize, story, textcut, words
+from columbina.video import edits, grading, media, stabilize, story, textcut, titles, words
 from columbina.video.edits import CueItem
 from columbina.video.engine import Applied, Engine, EngineError, Progress
 from columbina.video.project import ProjectError, identity_of, written
@@ -195,6 +195,36 @@ def _timeline_left_out(item: Mapping[str, Any]) -> bool:
     return ("edit" in item or item.get("op") in _TIMELINE_OPERATIONS) and "timeline" not in item
 
 
+def _filled(batch: Sequence[dict[str, Any]], target: str) -> None:
+    """Give the items of a batch that leave their timeline out the timeline ``target``."""
+    for one in batch:
+        if one.get("edit") in _GRADE_EDITS:
+            for field in ("grade", "from", "to"):
+                if field in one:
+                    one[field] = _with_timeline(one[field], target)
+        elif "edit" in one or one.get("op") in _TIMELINE_OPERATIONS:
+            one.setdefault("timeline", target)
+
+
+def _each(
+    batch: Sequence[Mapping[str, Any]], work: Callable[[Mapping[str, Any]], dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Each item of a batch through ``work``; what is wrong with a title is told with its place.
+
+    Raises:
+        TitleError: What ``work`` raised, of the item at its place among several.
+    """
+    done: list[dict[str, Any]] = []
+    for index, one in enumerate(batch):
+        try:
+            done.append(work(one))
+        except titles.TitleError as error:
+            if len(batch) == 1:
+                raise
+            raise titles.TitleError(f"edits[{index}]: {error}") from None
+    return done
+
+
 def _applied(change: Applied) -> dict[str, Any]:
     return asdict(change)
 
@@ -265,18 +295,45 @@ class Editor:
 
         An edit of a grade takes no timeline of its own: its grades are named by targets, and
         a target of a clip or a timeline that leaves its timeline out is given the tool's.
+
+        Titles are the exception (:mod:`columbina.video.titles`): the style of a title that an
+        edit puts has the parts given in part filled, its runs found in its text, and all
+        checked before anything is sent; and ``set_title``, which the engine does not know, is
+        worked out into the ``set_clip`` of the title that it changes, from the project as it
+        is read, and sent at the revision that it was read at.
+
+        Raises:
+            TitleError: What is wrong with a title, said before anything is sent.
+            EngineError: The engine refused the batch.
         """
-        batch = [dict(one) for one in operations]
+        batch = _each(operations, titles.sourced)
+        if any(titles.is_set_title(one) for one in batch):
+            return receipt(_applied(await self._titled(batch, timeline)))
         if any(_timeline_left_out(one) for one in batch):
-            target = (await self.timeline(timeline))["id"]
-            for one in batch:
-                if one.get("edit") in _GRADE_EDITS:
-                    for field in ("grade", "from", "to"):
-                        if field in one:
-                            one[field] = _with_timeline(one[field], target)
-                elif "edit" in one or one.get("op") in _TIMELINE_OPERATIONS:
-                    one.setdefault("timeline", target)
+            _filled(batch, (await self.timeline(timeline))["id"])
         return receipt(_applied(await self.engine.apply(batch)))
+
+    async def _titled(self, batch: Sequence[Mapping[str, Any]], timeline: str | None) -> Applied:
+        """Send a batch with ``set_title``, worked out from the project as it is read.
+
+        It is sent at the revision that it was worked out from, and worked out again where
+        another client changed the project meanwhile.
+        """
+
+        def build(project: Mapping[str, Any]) -> list[dict[str, Any]]:
+            ops = [dict(one) for one in batch]
+            if any(_timeline_left_out(one) for one in ops):
+                _filled(ops, _timeline(project, timeline)["id"])
+
+            def work(one: Mapping[str, Any]) -> dict[str, Any]:
+                if not titles.is_set_title(one):
+                    return dict(one)
+                return titles.titled(one, _timeline(project, str(one.get("timeline"))))
+
+            return _each(ops, work)
+
+        done, _ = await grading.applied(self.engine, build)
+        return done
 
     async def told(self, timeline: str | None = None, track: str | None = None) -> str:
         """Refresh the editable story from one current dialogue track."""

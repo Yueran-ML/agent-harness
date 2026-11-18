@@ -23,11 +23,18 @@ as one transaction.
 """
 
 import enum
+import itertools
 from collections.abc import Iterable, Mapping, Sequence
 from fractions import Fraction
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, Final, Literal, cast
 
-from pydantic import Field, field_validator
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from columbina.data import Data
 
@@ -36,6 +43,7 @@ __all__ = [
     "Alignment",
     "AttributeItem",
     "AudioParamName",
+    "Background",
     "ChainOf",
     "ColorSource",
     "Composite",
@@ -51,10 +59,13 @@ __all__ = [
     "MediaSource",
     "Rate",
     "Retime",
+    "Shadow",
     "SignedSpeed",
     "Source",
+    "Span",
     "Speed",
     "SpeedPoint",
+    "Stroke",
     "TitleSource",
     "TitleStyle",
     "TrackKind",
@@ -327,13 +338,139 @@ _Size = Annotated[int, Field(ge=1)] | Annotated[float, Field(ge=1, allow_inf_nan
 """The size of a title: a number from 1 on, kept whole where it is given whole so that it is
 written as the engine writes it, or keys."""
 
+_COLOR = r"^#[0-9a-f]{8}$"
+"""A colour as the engine writes it, ``#rrggbbaa``: alpha last, in lower case."""
 
-class TitleStyle(Data):
+
+class _Sparse(Data):
+    """Data whose settings that it is without are left out where it is written.
+
+    So does the engine write a title: it leaves out the parts of a style that the title has not,
+    and the settings that a span does not change; a title without them is written as it was
+    before there were any.
+    """
+
+    @model_serializer(mode="wrap")
+    def _without_what_it_has_not(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        written = cast("dict[str, Any]", handler(self))
+        return {key: value for key, value in written.items() if value is not None}
+
+
+def _within(param: float | Keys, low: float, high: float, what: str) -> float | Keys:
+    """A setting of a part of a title, a number or keys, each of whose values is in its range."""
+    values = [key.value for key in param.keys] if isinstance(param, Keys) else [param]
+    if any(not low <= value <= high for value in values):
+        raise ValueError(f"{what} is {low:g} to {high:g}")
+    return param
+
+
+class Stroke(_Sparse):
+    """An outline drawn about the letters of a title.
+
+    Attributes:
+        color: Its colour, as ``#rrggbbaa``: black in a new one.
+        width: How wide it is, in pixels of the timeline: from 0 to 256, or :class:`Keys`.
+    """
+
+    color: str = Field(default="#000000ff", pattern=_COLOR)
+    width: float | Keys = 4
+
+    @field_validator("width")
+    @classmethod
+    def _width_within(cls, width: float | Keys) -> float | Keys:
+        return _within(width, 0, 256, "the width of a stroke")
+
+
+class Shadow(_Sparse):
+    """A shadow of the letters of a title, drawn under them.
+
+    Attributes:
+        color: Its colour, as ``#rrggbbaa``: black at half its opacity in a new one.
+        x: How far it is moved right of the letters, in pixels of the timeline: from -1024 to
+            1024, or :class:`Keys`.
+        y: How far it is moved down, likewise.
+        blur: How far it is blurred, in pixels: from 0 to 256, or :class:`Keys`.
+    """
+
+    color: str = Field(default="#00000080", pattern=_COLOR)
+    x: float | Keys = 4
+    y: float | Keys = 4
+    blur: float | Keys = 4
+
+    @field_validator("x", "y")
+    @classmethod
+    def _offset_within(cls, offset: float | Keys) -> float | Keys:
+        return _within(offset, -1024, 1024, "the offset of a shadow")
+
+    @field_validator("blur")
+    @classmethod
+    def _blur_within(cls, blur: float | Keys) -> float | Keys:
+        return _within(blur, 0, 256, "the blur of a shadow")
+
+
+class Background(_Sparse):
+    """A box drawn under the text of a title.
+
+    Attributes:
+        color: Its colour, as ``#rrggbbaa``: black at 60% of its opacity in a new one.
+        padding: How far it reaches beyond the text on every side, in pixels of the timeline:
+            from 0 to 1024, or :class:`Keys`.
+        radius: How round its corners are, in pixels: from 0 to 512, or :class:`Keys`.
+    """
+
+    color: str = Field(default="#00000099", pattern=_COLOR)
+    padding: float | Keys = 16
+    radius: float | Keys = 8
+
+    @field_validator("padding")
+    @classmethod
+    def _padding_within(cls, padding: float | Keys) -> float | Keys:
+        return _within(padding, 0, 1024, "the padding of a background")
+
+    @field_validator("radius")
+    @classmethod
+    def _radius_within(cls, radius: float | Keys) -> float | Keys:
+        return _within(radius, 0, 512, "the radius of a background")
+
+
+class Span(_Sparse):
+    """A run of the text of a title that is drawn its own way.
+
+    Its characters are counted from 0 by Unicode scalars, as a ``str`` of Python counts them. It
+    is given with its ``from`` by :meth:`pydantic.BaseModel.model_validate`.
+
+    Attributes:
+        from_: Its first character.
+        to: The character after its last.
+        color: The colour of its letters, as ``#rrggbbaa``, in place of the title's.
+        scale: How much larger its letters are than the title's: from 0.1 to 10.
+        bold: Whether its letters are bold.
+        italic: Whether they lean.
+        font: The family of its font, in place of the title's.
+    """
+
+    from_: int = Field(alias="from", ge=0)
+    to: int
+    color: str | None = Field(default=None, pattern=_COLOR)
+    scale: float | None = Field(default=None, ge=0.1, le=10, allow_inf_nan=False)
+    bold: bool | None = None
+    italic: bool | None = None
+    font: str | None = None
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> "Span":
+        if self.to <= self.from_:
+            raise ValueError("a span ends after it begins")
+        return self
+
+
+class TitleStyle(_Sparse):
     """How the text of a title is drawn.
 
     Its size and the place of its anchor are each a number, or :class:`Keys`, as the settings
     of a :class:`Transform` are; its font, its colour and its alignment are as they are given
-    on every frame.
+    on every frame. It may also have a stroke, a shadow and a background, each given whole, and
+    spans; a title without them is written as it was before them.
 
     Attributes:
         font: The family of the font, or empty for the one that the engine chooses.
@@ -343,6 +480,11 @@ class TitleStyle(Data):
         x: Where its anchor is across the picture: 0 at the left edge, 1 at the right.
         y: Where its anchor is down the picture: 0 at the top edge, 1 at the bottom.
         align: Which side of the text the anchor is on.
+        stroke: An outline about its letters, or none.
+        shadow: A shadow of its letters, or none.
+        background: A box under its text, or none.
+        spans: Runs of its text drawn their own way, in the order of the text, none over
+            another, 256 at the most; none is written as none.
     """
 
     font: str = ""
@@ -351,6 +493,10 @@ class TitleStyle(Data):
     x: float | Keys = 0.5
     y: float | Keys = 0.5
     align: Literal["left", "center", "right"] = "center"
+    stroke: Stroke | None = None
+    shadow: Shadow | None = None
+    background: Background | None = None
+    spans: list[Span] | None = Field(default=None, max_length=256)
 
     @field_validator("size")
     @classmethod
@@ -363,6 +509,15 @@ class TitleStyle(Data):
         # The engine writes a whole size with no keys without a fraction, as it did before a
         # size took keys: so is it written here, whichever way it was given.
         return int(size) if float(size).is_integer() else size
+
+    @field_validator("spans")
+    @classmethod
+    def _spans_in_order(cls, spans: list[Span] | None) -> list[Span] | None:
+        if not spans:
+            return None
+        if any(after.from_ < before.to for before, after in itertools.pairwise(spans)):
+            raise ValueError("spans are in the order of the text, none over another")
+        return spans
 
 
 class Transform(Data):
@@ -455,6 +610,14 @@ class TitleSource(Data):
     text: str
     style: TitleStyle = TitleStyle()
     length: int
+
+    @model_validator(mode="after")
+    def _spans_within_the_text(self) -> "TitleSource":
+        # The engine refuses a span past the end of the text (``out_of_range``, ``spans``).
+        spans = self.style.spans
+        if spans and spans[-1].to > len(self.text):
+            raise ValueError("a span of a title goes past the end of its text")
+        return self
 
 
 class ColorSource(Data):
@@ -1294,7 +1457,10 @@ def set_clip_keys(timeline: str, id: str, path: str, param: float | Keys) -> dic
     ``path`` names the setting in the clip: ``transform.x``, ``transform.y``,
     ``transform.scale``, ``transform.rotation`` or ``transform.opacity``, and ``crop.left``,
     ``crop.right``, ``crop.top``, ``crop.bottom`` or ``crop.softness``; and, of a clip whose
-    source is a title only, ``title.size``, ``title.x`` or ``title.y``, a setting of its style.
+    source is a title only, ``title.size``, ``title.x`` or ``title.y``, a setting of its style,
+    or ``title.stroke.width``, ``title.shadow.x``, ``title.shadow.y``, ``title.shadow.blur``,
+    ``title.background.padding`` or ``title.background.radius``, of a part of its style that it
+    has.
     """
     written = _json(param) if isinstance(param, Keys) else param
     return {"op": "set_clip_keys", "timeline": timeline, "id": id, "path": path, "param": written}

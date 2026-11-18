@@ -34,8 +34,6 @@ so is :func:`track` for the frame that a track starts from, and tells the frames
 at frames of the timeline.
 """
 
-import asyncio
-import contextlib
 import copy
 import difflib
 import math
@@ -2408,32 +2406,15 @@ def _ended_told(
 async def _waited(tracking: Tracking, seconds: float) -> tuple[dict[str, Any] | None, bool]:
     """How a track ended, waited for ``seconds`` at most, and whether it took longer.
 
-    One that takes longer is stopped, and how it ended then is waited for a while more; one
-    whose wait is given up on, as when the call is cancelled, is stopped too.
+    One that takes longer is stopped between frames, keeping what it tracked, and how it ended
+    then is waited for a while more; one whose wait is given up on, as when the call is
+    cancelled, is stopped too (:meth:`columbina.video.engine.Tracking.waited`).
 
     Returns:
         What ``track.state`` told, or ``None`` where a track that was stopped told nothing in
         time; and whether it was stopped for taking longer than ``seconds``.
     """
-    try:
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(seconds):
-                return await tracking.ended(), False
-        # It ends between frames, keeping what it tracked. One that ended meanwhile is no
-        # longer the engine's to stop, and its end has been told.
-        with contextlib.suppress(EngineError):
-            await tracking.stop()
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(_TRACK_STOP_SECONDS):
-                return await tracking.ended(), True
-        return None, True
-    except asyncio.CancelledError:
-        with contextlib.suppress(EngineError, TimeoutError):
-            async with asyncio.timeout(_TRACK_STOP_SECONDS):
-                await tracking.stop()
-        raise
-    finally:
-        await tracking.aclose()
+    return await tracking.waited(seconds, stop_seconds=_TRACK_STOP_SECONDS)
 
 
 async def track(

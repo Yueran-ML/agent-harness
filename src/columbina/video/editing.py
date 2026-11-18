@@ -14,7 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from columbina.video import edits, grading, media, story, textcut, words
+from columbina.video import edits, grading, media, stabilize, story, textcut, words
 from columbina.video.edits import CueItem
 from columbina.video.engine import Applied, Engine, EngineError, Progress
 from columbina.video.project import ProjectError, identity_of, written
@@ -145,7 +145,7 @@ _TIMELINE_OPERATIONS = frozenset(
         "set_fusion", "add_fusion_node", "remove_fusion_node", "connect_fusion",
         "disconnect_fusion", "set_fusion_node", "set_fusion_keys", "splice_fusion_keys",
         # The stabilizer of a clip (phase 4).
-        "set_stabilize",
+        "set_stabilize", "set_stabilize_settings",
     }
 )  # fmt: skip
 """The basic operations whose ``timeline`` the tool's fills where it is left out."""
@@ -571,6 +571,9 @@ class Editor:
                     graded = grading.brief(clip.get("grade"), missing)
                     if graded is not None:
                         item["grade"] = graded
+                    if clip.get("stabilize") is not None:
+                        # The motion of each frame that its analysis measured is not told.
+                        item["stabilize"] = stabilize.brief(clip["stabilize"])
                     position = placed(clip)
                     if position is not None:
                         item["source_out"] = {

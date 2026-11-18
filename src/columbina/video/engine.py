@@ -659,7 +659,8 @@ class Tracking:
     Attributes:
         job: What the engine knows the track by.
         started: What ``track.start`` answered: ``first``, ``last``, ``frame_size``,
-            ``direction`` and, of the patterns of a Tracker, ``trackers``.
+            ``direction`` and, of the patterns of a Tracker, ``trackers``; or what
+            ``track.stabilize`` answered: ``first``, ``last``, ``frame_size`` and ``method``.
     """
 
     def __init__(self, engine: "Engine", started: dict[str, Any], heard: "Changes") -> None:
@@ -705,6 +706,39 @@ class Tracking:
             EngineError: The engine refused, as for a track that is over (``job``).
         """
         await self._engine._call("track.stop", {"job": self.job})  # pyright: ignore[reportPrivateUsage]
+
+    async def waited(
+        self, seconds: float, *, stop_seconds: float = _STOP_SECONDS
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """How the track ended, waited for ``seconds`` at most, and whether it took longer.
+
+        One that takes longer is stopped, and how it ended then is waited for ``stop_seconds``
+        more; one whose wait is given up on, as when the call is cancelled, is stopped too.
+        Nothing more of the track is heard after.
+
+        Returns:
+            What ``track.state`` told, or ``None`` where a track that was stopped told nothing in
+            time; and whether it was stopped for taking longer than ``seconds``.
+        """
+        try:
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(seconds):
+                    return await self.ended(), False
+            # It ends between frames. One that ended meanwhile is no longer the engine's to
+            # stop, and its end has been told.
+            with contextlib.suppress(EngineError):
+                await self.stop()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(stop_seconds):
+                    return await self.ended(), True
+            return None, True
+        except asyncio.CancelledError:
+            with contextlib.suppress(EngineError, TimeoutError):
+                async with asyncio.timeout(stop_seconds):
+                    await self.stop()
+            raise
+        finally:
+            await self.aclose()
 
     async def aclose(self) -> None:
         """Hear nothing more of the track. It goes on in the engine."""
@@ -1980,21 +2014,31 @@ class Engine:
         finally:
             await heard.aclose()
 
-    async def track(self, params: Mapping[str, Any], *, session: int | None = None) -> Tracking:
+    async def track(
+        self,
+        params: Mapping[str, Any],
+        *,
+        session: int | None = None,
+        method: Literal["track.start", "track.stabilize"] = "track.start",
+    ) -> Tracking:
         """Have the engine track in the background, and follow what it tells of the track.
 
         ``track.start`` (PROTOCOL.md, Window tracking): a window of a grade, or with ``fusion``
         the patterns of a Tracker of a composition, followed through the frames of its clip and
-        written into the project as it goes, one step of its history in all. The engine answers
-        at once, and runs one track at a time; what it tells of the track is followed from
-        before it is asked for, by the :class:`Tracking` that is returned. A caller that gives
-        up before the answer has the track stopped.
+        written into the project as it goes, one step of its history in all. Or
+        ``track.stabilize`` (The stabilizer): the motion of the whole picture of a clip measured
+        through its frames and written at the end as the analysis of its stabilizer, one step.
+        The engine answers at once, and runs one track at a time, of either kind; what it tells
+        of the track is followed from before it is asked for, by the :class:`Tracking` that is
+        returned. A caller that gives up before the answer has the track stopped.
 
         Args:
-            params: The params of ``track.start``, as the protocol says (``fusion``,
-                ``revision``, ``frame``, ``direction``, ...).
+            params: The params of ``method``, as the protocol says (``fusion``, ``revision``,
+                ``frame``, ``direction``, ...; or ``timeline``, ``clip``, ``revision`` and
+                ``method``).
             session: The :attr:`session` that the revision of ``params`` was read in; as with
                 :meth:`apply`, a new engine refuses the request before it is sent.
+            method: What the engine is asked: ``track.start`` or ``track.stabilize``.
 
         Raises:
             EngineError: The engine refused: another track is going on (``busy``), the revision
@@ -2011,7 +2055,7 @@ class Engine:
                     code=-32001,
                     data={"reason": "stale_revision", "session": self._session},
                 )
-            number, asked = self._sent(wire, "track.start", dict(params))
+            number, asked = self._sent(wire, method, dict(params))
             try:
                 # Shielded as a render's answer is: a caller that gives up once the engine was
                 # asked still learns which track it began, and stops it.
@@ -2023,7 +2067,7 @@ class Engine:
                 self._asked.pop(number, None)
             answer: dict[str, Any] = cast("dict[str, Any]", said) if isinstance(said, dict) else {}
             if not isinstance(answer.get("job"), str):
-                raise EngineError("the engine answered track.start with no job", code=UNEXPECTED)
+                raise EngineError(f"the engine answered {method} with no job", code=UNEXPECTED)
         except BaseException:
             await heard.aclose()
             raise

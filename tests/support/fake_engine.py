@@ -42,6 +42,13 @@ right each frame, from where it starts to the end of the clip each way that the 
 paths are written as one change, and ``track.progress`` and ``track.state`` are told to the
 connection that started it alone. ``track.stop`` ends it. A window of a grade is not tracked.
 
+The stabilizer of a clip is kept as simply: ``set_stabilize`` puts it whole and
+``set_stabilize_settings`` the controls given (with those of a first stabilizer where the clip
+has none), refused as the engine refuses a clip of sound or a number out of its range. A measure
+of a clip (``track.stabilize``) is refused as the engine refuses one, and is made up: the picture
+pans a step further to the right each frame, but at the frames of ``stabilize_lost``; its
+analysis is written at the end as one change, and nothing where it is stopped.
+
 In a test, :func:`served` serves a project in the loop of the test. As a program, run it the way
 the engine is run, ``python fake_engine.py --project DIR --headless [--idle-seconds N]``, and with
 ``--mode`` it ends as an engine that cannot start ends instead:
@@ -167,6 +174,21 @@ _FUSION_OPS = {
     "set_fusion_keys",
     "splice_fusion_keys",
 }
+_STABILIZE_OPS = {"set_stabilize", "set_stabilize_settings"}
+_METHODS = ("perspective", "similarity", "translation")
+_STABILIZER: dict[str, Any] = {
+    "method": "perspective",
+    "camera_lock": False,
+    "zoom": True,
+    "cropping_ratio": 0.5,
+    "smooth": 0.25,
+    "strength": 1.0,
+}
+"""The stabilizer that a clip is given at first, as the Inspector shows it."""
+
+_STABILIZE_RANGES = {"cropping_ratio": (0.0, 1.0), "smooth": (0.0, 1.0), "strength": (-1.0, 1.0)}
+"""The bounds of the numbers of a stabilizer."""
+
 _GRADE_EDITS = {
     "append_node",
     "add_serial",
@@ -279,6 +301,8 @@ class Fake:
         track_step: How much further to the right a pattern is found each frame from the one
             that it starts from, in widths of the picture.
         track_lost: The frame of the clip's keys at which a pattern is lost, by its place.
+        stabilize_starts: What each ``track.stabilize`` was asked, in order.
+        stabilize_lost: The frames of a clip's source at which a measure loses the picture.
         rendered: What each ``render.start`` was asked, in order.
         looked: What each ``scopes.statistics``, ``timeline.thumbnail`` and ``luts.list`` was
             asked, in order.
@@ -330,6 +354,8 @@ class Fake:
         self.track_hold = False
         self.track_step = 0.001
         self.track_lost: dict[int, int] = {}
+        self.stabilize_starts: list[dict[str, Any]] = []
+        self.stabilize_lost: set[int] = set()
         self.standards: list[dict[str, Any]] = []
         self.rendered: list[dict[str, Any]] = []
         self.looked: list[tuple[str, dict[str, Any]]] = []
@@ -856,8 +882,120 @@ class Fake:
             raise RefusedError(-32001, "no such track is going on", {"reason": "job"})
         # It ends between frames, after the answer, as the engine's thread ends it.
         self.jobs[job] = "stopped"
-        asyncio.get_running_loop().call_soon(self._track_ended, job, "stopped", "stop")
+        ended = self._measure_ended if "measure" in plan else self._track_ended
+        asyncio.get_running_loop().call_soon(ended, job, "stopped", "stop")
         return {}
+
+    def track_stabilize(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """Measure the motion of the picture of a clip, refused as the engine refuses it."""
+        self.stabilize_starts.append(copy.deepcopy(params))
+        method = params.get("method")
+        if method is not None and method not in _METHODS:
+            raise RefusedError(-32602, f"there is no method {method}", {"reason": "method"})
+        if any(job.startswith("track-") and now == "running" for job, now in self.jobs.items()):
+            raise RefusedError(-32001, "a track is going on", {"reason": "busy"})
+        if params.get("revision") != self.revision:
+            told = {"reason": "stale_revision", "expected": params.get("revision")}
+            raise RefusedError(-32001, "the project changed", {**told, "actual": self.revision})
+        found = self._clip_on(params)
+        if found is None:
+            raise RefusedError(-32001, "there is no such clip", {"reason": "target"})
+        track, clip = found
+        source = clip["source"]
+        media = next(
+            (one for one in self.project["media"] if one["id"] == source.get("media")), None
+        )
+        video = None if media is None else media["facts"].get("video")
+        if track["kind"] != "video" or source["kind"] != "media" or not video or video.get("still"):
+            message = "this clip cannot be measured: it has no moving picture"
+            raise RefusedError(-32001, message, {"reason": "untrackable"})
+        # The frames of the media that the clip shows, as a clip of one speed shows them.
+        begins, speed, rate = source["in"], clip["speed"], video["rate"]
+        first = begins["ticks"] * rate["num"] // (begins["scale"] * rate["den"])
+        last = first + (clip["length"] - 1) * speed["num"] // speed["den"]
+        measured = method or clip.get("stabilize", _STABILIZER)["method"]
+        job = f"track-s{len(self.stabilize_starts)}"
+        self.jobs[job] = "running"
+        self.track_plans[job] = {
+            "asking": asking,
+            "timeline": params["timeline"],
+            "clip": params["clip"],
+            "measure": measured,
+            "first": first,
+            "last": last,
+        }
+        asyncio.get_running_loop().call_later(0.01, self._stabilizer_measured, job)
+        told: dict[str, Any] = {"job": job, "first": first, "last": last}
+        return {**told, "frame_size": [1280, 720], "method": measured}
+
+    def _clip_on(self, aim: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """The track and the clip that ``timeline`` and ``clip`` name, if there are such."""
+        for timeline in self.project["timelines"]:
+            if timeline["id"] != aim.get("timeline"):
+                continue
+            for track in timeline["tracks"]:
+                for clip in track.get("clips", []):
+                    if clip["id"] == aim.get("clip"):
+                        return track, clip
+        return None
+
+    def _stabilizer_measured(self, job: str) -> None:
+        """Measure a clip, made up, and write its analysis as one change of the project.
+
+        The picture pans ``track_step`` of the width further to the right each frame from the
+        first, but at the frames of ``stabilize_lost``, where it is lost and holds the motion of
+        the frame before. A measure held (``track_hold``) measures its first frame, and waits
+        there to be stopped, writing nothing.
+        """
+        plan = self.track_plans[job]
+        if self.jobs.get(job) != "running":
+            return
+        first, last = plan["first"], plan["last"]
+        frames = list(range(first, last + 1))[: 1 if self.track_hold else None]
+        path: dict[str, list[float]] = {}
+        pan, lost = 0.0, 0
+        for frame in frames:
+            if frame in self.stabilize_lost:
+                lost += 1
+            else:
+                pan = round(1280 * self.track_step * (frame - first), 4)
+            path[str(frame)] = [pan, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+        plan["report"] = {"frames": len(frames), "lost": lost, "frame": frames[-1]}
+        progress: dict[str, Any] = {"job": job, "frame": frames[-1], "timeline_frame": None}
+        progress.update(done=len(frames), total=last - first + 1, lost=lost)
+        self._told_to(plan, "track.progress", {**progress, "revision": self.revision})
+        if self.track_hold:
+            return
+        found = self._clip_on(plan)
+        if found is None:
+            self._measure_ended(job, "stopped", "target")
+            return
+        value = copy.deepcopy(found[1].get("stabilize", _STABILIZER))
+        value["method"] = plan["measure"]
+        value["analysis"] = {"method": plan["measure"], "size": [1280, 720], "path": path}
+        op: dict[str, Any] = {"op": "set_stabilize", "timeline": plan["timeline"]}
+        op.update(clip=plan["clip"], value=value)
+        before = copy.deepcopy(self.project)
+        done, _, _ = self._applied([op])
+        self.changed(str(cast("Connection", plan["asking"]).client), done, before)
+        plan["analysed"] = [first, last]
+        self._measure_ended(job, "done", None)
+
+    def _measure_ended(self, job: str, phase: str, reason: str | None) -> None:
+        """End a measure: ``track.state`` to the connection that started it, as the engine does."""
+        plan = self.track_plans[job]
+        self.jobs[job] = phase
+        report = plan.get("report") or {"frames": 0, "lost": 0, "frame": plan["first"]}
+        said: dict[str, Any] = {
+            "job": job,
+            "phase": phase,
+            "reason": reason,
+            **report,
+            "revision": self.revision,
+            "analysed": plan.get("analysed"),
+            "method": plan["measure"],
+        }
+        self._told_to(plan, "track.state", said)
 
     def _tracker_of(self, aim: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         """The clip and the Tracker that a track names, refused as the engine refuses them."""
@@ -1035,6 +1173,9 @@ class Fake:
             return
         if op["op"] in _FUSION_OPS:
             self._fused(op, names, index)
+            return
+        if op["op"] in _STABILIZE_OPS:
+            self._stabilized(op, names, index)
             return
         kind = _KINDS.get(op["op"], "clip" if op["op"] == "insert_clip" else None)
         for key in ("timeline", "track", "id"):
@@ -1595,6 +1736,38 @@ class Fake:
         op["links"] = list(op.get("links") or [])
         for link in op["links"]:
             _fusion_linked(composition, link)
+
+    def _stabilized(self, op: dict[str, Any], names: dict[str, str], index: int) -> None:
+        """Set the stabilizer of a clip, whole or some of its controls, checked as the engine does.
+
+        A clip of sound has none, and a number of one is within its range; the analysis is not
+        checked here.
+        """
+        for key in ("timeline", "clip"):
+            op[key] = self._named(op[key], names, index)
+        found = self._clip_on(op)
+        if found is None:
+            raise self._refused(
+                index, "missing", f"there is no clip {op['clip']}", what="clip", id=op["clip"]
+            )
+        track, clip = found
+        if op["op"] == "set_stabilize" and op["value"] is None:
+            # A clip that has no stabilizer is written without one, as the engine writes it.
+            clip.pop("stabilize", None)
+            return
+        kind = track["kind"]
+        if kind != "video":
+            message = "a clip of sound has no stabilizer"
+            raise self._refused(index, "wrong_track", message, what="stabilize", kind=kind)
+        if op["op"] == "set_stabilize":
+            value = copy.deepcopy(op["value"])
+        else:
+            value = {**copy.deepcopy(clip.get("stabilize", _STABILIZER)), **op["settings"]}
+        for name, (low, high) in _STABILIZE_RANGES.items():
+            if not low <= value[name] <= high:
+                message = f"{name} is {low} to {high}"
+                raise self._refused(index, "out_of_range", message, what=f"stabilize.{name}")
+        clip["stabilize"] = value
 
     def _fusion_node(self, nodes: list[dict[str, Any]], id: object, index: int) -> dict[str, Any]:
         for node in nodes:

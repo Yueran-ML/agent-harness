@@ -136,6 +136,8 @@ __all__ = [
     "set_segment_speed",
     "set_speed",
     "set_speed_points",
+    "set_stabilize",
+    "set_stabilize_settings",
     "set_timeline",
     "set_timeline_audio",
     "set_track",
@@ -1544,6 +1546,45 @@ def splice_fusion_keys(
         "at": at,
         "remove": remove,
         "keys": [_json(key) for key in keys],
+    }
+
+
+# The stabilizer of a clip (the Inspector of the Edit and Cut pages)
+#
+# A stabilizer is ``{"method", "camera_lock", "zoom", "cropping_ratio", "smooth", "strength",
+# "analysis"?}`` (``engine/PROTOCOL.md``, The stabilizer), of a clip of a track of picture. Its
+# operations name the clip by its timeline and its id; a clip of sound has none (``wrong_track``,
+# ``what`` ``stabilize``), and a number out of its range is refused as ``out_of_range`` with
+# ``what`` ``stabilize.cropping_ratio``, ``stabilize.smooth`` or ``stabilize.strength``.
+
+
+def set_stabilize(timeline: str, clip: str, value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The stabilizer of a clip, whole, its analysis with it; ``None`` takes it away.
+
+    A clip without a stabilizer shows its source as it is. One that sets what the clip has
+    already changes nothing, and makes no step.
+    """
+    return {
+        "op": "set_stabilize",
+        "timeline": timeline,
+        "clip": clip,
+        "value": None if value is None else dict(value),
+    }
+
+
+def set_stabilize_settings(timeline: str, clip: str, settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The controls of the stabilizer of a clip that are given, the others and its analysis kept.
+
+    ``settings`` holds some of ``method``, ``camera_lock``, ``zoom``, ``cropping_ratio``,
+    ``smooth`` and ``strength``. A clip that has no stabilizer is given one with the controls
+    that the Inspector shows at first, and those given in their place. Nothing changes, and no
+    step is made, where every one given is what the clip has.
+    """
+    return {
+        "op": "set_stabilize_settings",
+        "timeline": timeline,
+        "clip": clip,
+        "settings": dict(settings),
     }
 
 

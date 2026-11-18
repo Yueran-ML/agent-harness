@@ -23,7 +23,7 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video import audio, clip_keys, duck, fusion, grading, look
+from columbina.video import audio, clip_keys, duck, fusion, grading, look, stabilize
 from columbina.video.editing import Editor, chosen_subtitles, receipt, safe_name, sidecars
 from columbina.video.edits import FusionKind
 from columbina.video.engine import (
@@ -67,6 +67,7 @@ _FAILURES = (
     clip_keys.KeysError,
     fusion.FusionError,
     look.LookError,
+    stabilize.StabilizeError,
     ProjectError,
     StoryError,
     WordsError,
@@ -578,6 +579,19 @@ class _Look(_Graded):
     clip: str | None = Field(default=None, description="Clip id, of a video track.")
     alone: bool = False
     height: int = Field(default=look.HIGHEST, ge=look.LOWEST, le=look.HIGHEST)
+
+
+class _Stabilize(_Graded):
+    # The controls are told in the tool's description, and checked against their ranges by
+    # columbina.video.stabilize, which names them as the engine refuses them.
+    clip: str = Field(description="Clip id, of a video track.")
+    action: stabilize.Action = "info"
+    method: stabilize.Method | None = None
+    camera_lock: bool | None = None
+    zoom: bool | None = None
+    cropping_ratio: float | None = None
+    smooth: float | None = None
+    strength: float | None = None
 
 
 async def _fused(args: _Project, engine: Engine) -> dict[str, Any]:
@@ -1098,6 +1112,21 @@ def tools_of(videos: Videos) -> list[Tool[Any, str | look.Looked]]:
                         failure = _failing(error)
                         raise ToolFailure(f"{failure}; {hint}", code=failure.code) from None
 
+                if isinstance(args, _Stabilize):
+                    given = args.model_dump(include=set(stabilize.SETTINGS))
+                    try:
+                        return receipt(
+                            await stabilize.run(
+                                editor.engine, args.timeline, args.clip, args.action, given
+                            )
+                        )
+                    except EngineError as error:
+                        hint = stabilize.hint_of(error)
+                        if hint is None:
+                            raise
+                        failure = _failing(error)
+                        raise ToolFailure(f"{failure}; {hint}", code=failure.code) from None
+
                 if isinstance(args, _Look):
                     try:
                         return await look.look(
@@ -1224,6 +1253,7 @@ def tools_of(videos: Videos) -> list[Tool[Any, str | look.Looked]]:
         ),
         tool("video_edit", _Edit, _EDIT),
         tool("video_clip_keys", _ClipKeys, _CLIP_KEYS),
+        tool("video_stabilize", _Stabilize, _STABILIZE, long=True),
         tool(
             "video_duck",
             _Duck,
@@ -1530,6 +1560,17 @@ _CLIP_KEYS = (
     "factor; rotation: degrees clockwise; opacity, crop: shares 0-1; size: px. frame: a timeline "
     "frame within the clip. The key is kept on the picture shown there, at its frame of the "
     "clip's media (of the clip, for a title or a still); the result gives both."
+)
+
+_STABILIZE = (
+    "Stabilize a clip's picture (the Inspector's Stabilization): the motion of the whole picture "
+    "is measured once, then the camera's path is smoothed and each frame moved against the "
+    "shake. action info (default): its settings and analysis. analyse: measure it (waits; one "
+    "undo step) for method, else the clip's (default perspective; similarity: shift, turn, "
+    "zoom; translation: shift). set: method, camera_lock (hold the first frame's view), zoom "
+    "(enlarge to hide edges; on), cropping_ratio 0-1 (0.5; lower corrects more), smooth 0-1 "
+    "(0.25), strength -1 to 1 (1); these act at once, a new method needs analyse. remove. "
+    "video_look shows the result."
 )
 
 _FUSION_INFO = (

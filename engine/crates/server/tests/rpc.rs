@@ -108,6 +108,9 @@ mod protocol;
 #[path = "rpc/sound.rs"]
 mod sound;
 
+#[path = "rpc/phase4_export.rs"]
+mod phase4_export;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 

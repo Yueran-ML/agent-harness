@@ -20,6 +20,7 @@ import {
 } from '../src/studio/engine';
 import { copiedNodes, keepCopied } from '../src/studio/fusion/copied';
 import { newMerge, newNode, newPattern, newPolygon, newTracker, startPoints, withFollow } from '../src/studio/fusion/edits';
+import { NAME_ROOM } from '../src/studio/fusion/graph';
 import { matchingTools, TOOLS } from '../src/studio/fusion/SelectTool';
 import { chosenPicture, fusionClip } from '../src/studio/pages/FusionPage';
 import { likeABrowser } from './mounted';
@@ -1481,6 +1482,14 @@ describe('a Delta Keyer in the node editor of the Fusion page', () => {
   const ports = (id: string) => [...nodeOf(id).querySelectorAll<SVGElement>('[data-port]')].map(each => each.dataset.port);
   const linkDrawn = (name: string) => graph().querySelector<SVGElement>(`[data-link="${name}"]`);
 
+  it('presses a name too wide for its card into the room between its ports, and leaves a narrow one as it is', async () => {
+    await mount(projectOf([timelineOf(keyerComp())]));
+    const label = (id: string) => nodeOf(id).querySelector<SVGTextElement>('[data-test="node-label"]')!;
+    expect([label('n6').textContent, label('n6').getAttribute('textLength'), label('n6').getAttribute('lengthAdjust')])
+      .toEqual(['Delta Keyer …', String(NAME_ROOM), 'spacingAndGlyphs']);
+    expect([label('MediaIn1').getAttribute('textLength'), label('MediaIn1').getAttribute('lengthAdjust')]).toEqual([null, null]);
+  });
+
   it('draws its picture on its left, its two mattes on its upper edge, each in a colour of its own, its effect mask on its lower edge and its output on its right', async () => {
     await mount(projectOf([timelineOf(keyerComp())]));
     expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5', 'n6', 'n7', 'n8']);
@@ -2058,7 +2067,7 @@ describe('tracking the patterns of a Tracker on the Fusion page', () => {
   };
 
   it('tracks the enabled patterns from the frame of the keys at the playhead, follows it in the viewer, and stops with Stop', async () => {
-    const { bridge, news } = await tracking();
+    const { bridge, news, outside } = await tracking();
     // The buttons in the order of Fusion's, and Track Forward and Back; Stop off while nothing goes on.
     expect([...marked('fusion-track')!.querySelectorAll<HTMLButtonElement>('button')].map(each => [each.getAttribute('aria-label'), each.disabled])).toEqual([
       ['Track Reverse', false], ['Track One Frame Reverse', false], ['Stop Tracking', true], ['Track One Frame Forward', false], ['Track Forward', false],
@@ -2096,6 +2105,11 @@ describe('tracking the patterns of a Tracker on the Fusion page', () => {
     expect(calls(bridge, 'track.start').map(each => (each as { direction: string }).direction)).toEqual(['forward', 'reverse', 'one_reverse', 'one_forward', 'forward_and_back']);
     expect(status()).toBe(track.done.replace('{frames}', '5'));
     expect(marked('fusion-inspector-problem')).toBeNull();
+    // How it ended is said until the project changes after the revision that its last write made (4), as an undo of it does.
+    for (let at = 0; at < 4; at++) await outside([]);
+    expect(status()).toBe(track.done.replace('{frames}', '5'));
+    await outside([]);
+    expect(status() ?? '').toBe('');
   });
 
   it('says why the engine would not track, and tracks nothing then', async () => {
@@ -2461,6 +2475,27 @@ describe('Select Tool on the Fusion page', () => {
     fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
     expect(sent(bridge)).toEqual([[{ op: 'add_fusion_node', ...AT, node: newNode('rectangle'), links: [link('', 'n10', 'mask')] }]]);
     expect(linksDrawn()).toContain('n11>n10:mask');
+  });
+
+  it('opens on the release of Shift+Space where an input method took its press, as a Chinese or Japanese one does', async () => {
+    const { bridge } = await mount();
+    choose('n3');
+    bridge.call.mockClear();
+    // Only the release comes through: the press of the Space was the input method's, which turns full width on and off.
+    fireEvent.keyUp(document.body, { key: ' ', code: 'Space', shiftKey: true }); await settle();
+    expect(dialog()).not.toBeNull();
+    expect(calls(bridge, 'transport.play')).toHaveLength(0);
+    fireEvent.keyDown(field(), { key: 'Escape' }); await settle();
+    expect(dialog()).toBeNull();
+    // A press that came through opens it, and its release does not open it again.
+    shiftSpace(); await settle();
+    expect(dialog()).not.toBeNull();
+    fireEvent.keyDown(field(), { key: 'Escape' }); await settle();
+    fireEvent.keyUp(document.body, { key: ' ', code: 'Space', shiftKey: true }); await settle();
+    expect(dialog()).toBeNull();
+    // The release of a Space without Shift opens nothing.
+    fireEvent.keyUp(document.body, { key: ' ', code: 'Space' }); await settle();
+    expect(dialog()).toBeNull();
   });
 
   it('closes on Escape and adds nothing, says so where nothing is named as what was typed, and is not opened from another part of the page', async () => {

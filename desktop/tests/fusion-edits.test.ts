@@ -20,7 +20,8 @@ import {
 } from '../src/studio/fusion/edits';
 import {
   fusionLinkHalves, fusionLinkNear, fusionLinkPath, handedOn, hasMaskInput, hasOutput, INPUTS, inputPoint, isMaskKind, isMatteInput, isPictureInput,
-  layoutComposition, linkEnds, linkName, MASK_INSET, MATTE_INPUTS, MATTE_INSETS, matteInputs, namesOf, nodesIn, outputPoint, pictureInputs, placesOf, portAt, portsOf,
+  layoutComposition, linkEnds, linkName, MASK_INSET, MATTE_INPUTS, MATTE_INSETS, matteInputs, NAME_ROOM, nameWidth, namesOf, nodesIn, outputPoint, pictureInputs,
+  placesOf, portAt, portsOf,
 } from '../src/studio/fusion/graph';
 import {
   addKey, FUSION_SETTINGS, hasKeys, isPointSetting, keyerRefusals, keyOps, keyTimesOf, numbered, paramOf, pathOf, pointPath, putValue, putValues, removeKey,
@@ -1354,5 +1355,17 @@ describe('a Tracker', () => {
     expect(followOf(nodesOf(pasteNodes(AT, notTracker, alone))[0])).toBeNull();
     // What was copied is as it was, to be pasted again.
     expect(followOf(alone!.nodes[0])).toEqual(ofPattern(0));
+  });
+});
+
+describe('the width of the name of a node', () => {
+  it('counts a character of the CJK scripts or a full-width one as an em, and any other as a little more than half of one', () => {
+    expect(nameWidth('MediaIn1')).toBeCloseTo(8 * 6.2, 6);
+    expect(nameWidth('键控器')).toBe(33);
+    expect(nameWidth('ＡＢ')).toBe(22);
+    expect(nameWidth('Delta 键控器 1')).toBeCloseTo(8 * 6.2 + 33, 6);
+    // The names that the page gives in Chinese fit their cards but the Delta Keyer's, which is pressed into the room.
+    for (const fits of ['媒体输入 1', '媒体输出 1', '跟踪器 1', '椭圆 1', '多边形 1', 'Merge 12']) expect(nameWidth(fits)).toBeLessThanOrEqual(NAME_ROOM);
+    expect(nameWidth('Delta 键控器 1')).toBeGreaterThan(NAME_ROOM);
   });
 });

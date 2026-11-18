@@ -13,7 +13,12 @@ import { useTrackJob } from '../useTrackJob';
 import { patternName } from './tracker';
 
 /** What is said of tracking, and the Tracker that it is said of: null where the page took over a track that it did not start. */
-export interface TrackSaid { node: string | null; text: string }
+export interface TrackSaid {
+  node: string | null;
+  text: string;
+  /** Of how a track ended: the revision that its last write made, after which a change of the project (undo among them) makes it old. */
+  revision?: number;
+}
 
 /** The tracking of the patterns of a Tracker, as the Fusion page keeps it (see {@link useFusionTracking}). */
 export interface FusionTracking {
@@ -122,7 +127,7 @@ export function useFusionTracking({ bridge, session, revision, timeline, clip, m
       else text = told.reason !== null && Object.hasOwn(track.failed, told.reason) ? track.failed[told.reason as keyof typeof track.failed] : track.failed.other;
       // Where each pattern was lost, as far as the track went.
       if (told.phase !== 'failed') text = [text, ...lostLines(told)].join(' ');
-      setStatus({ node: aimed?.node ?? null, text });
+      setStatus({ node: aimed?.node ?? null, text, revision: told.revision });
       aim(null);
     },
   });
@@ -161,6 +166,12 @@ export function useFusionTracking({ bridge, session, revision, timeline, clip, m
     if (!going || target === null) return;
     if (target.clip !== clipId || target.node !== nodeId) stop();
   }, [going, target, clipId, nodeId, stop]);
+
+  // How a track ended is said until the project changes after it: an undo of the track, or any other change, makes it old.
+  const endedAt = status?.revision;
+  useEffect(() => {
+    if (endedAt !== undefined && revision > endedAt) setStatus(null);
+  }, [endedAt, revision]);
 
   // The page left, or made anew for another timeline or engine: the track goes no further.
   useEffect(() => {

@@ -20,7 +20,8 @@ import {
 } from './edits';
 import {
   fusionLinkHalves, fusionLinkNear, fusionLinkPath, hasMaskInput, hasOutput, isPictureInput, layoutComposition, linkEnds, linkName, MASK_INSET, MATTE_INSETS,
-  matteInputs, namesOf, nodesIn, pictureInputs, placesOf, portAt, portName, portPoint, type FusionLayout, type FusionPort, type PlacedFusion,
+  matteInputs, NAME_ROOM, nameWidth, namesOf, nodesIn, pictureInputs, placesOf, portAt, portName, portPoint, type FusionLayout, type FusionPort,
+  type PlacedFusion,
 } from './graph';
 import { ADD_ICONS, SelectTool, TOOLS, type AddableKind } from './SelectTool';
 import { hasKeys } from './settings';
@@ -79,6 +80,7 @@ const NodeCard = memo(function NodeCard({ node, x, y, name, kind, current, chose
     <rect className="color-node-card" x={x} y={y} width={NODE_WIDTH} height={NODE_HEIGHT} rx={5} />
     <rect className="fusion-node-stripe" x={x + 1} y={y + 1} width={NODE_WIDTH - 2} height={6} rx={3} />
     <text className="fusion-node-name" x={x + NODE_WIDTH / 2} y={y + NODE_HEIGHT / 2 + 5} textAnchor="middle" data-test="node-label"
+      {...(nameWidth(shownLabel(name)) > NAME_ROOM ? { textLength: NAME_ROOM, lengthAdjust: 'spacingAndGlyphs' } : {})}
       onDoubleClick={() => onLabel(node.id)}>{shownLabel(name)}</text>
     {keyed !== null && <KeyedMark x={x + NODE_WIDTH / 2} y={y + NODE_HEIGHT - 8} title={keyed} />}
     {viewed !== null && <circle className="fusion-node-viewed" cx={x + NODE_WIDTH - 9} cy={y + NODE_HEIGHT - 9} r={3.5} data-test="node-viewed"><title>{viewed}</title></circle>}
@@ -458,12 +460,26 @@ export function FusionNodeEditor({ bridge, session, revision, clip, composition,
       if (perform(command)) event.preventDefault();
     };
     const down = (event: KeyboardEvent) => take(event, false);
-    const first = (event: KeyboardEvent) => take(event, true);
+    // A Chinese or Japanese input method takes the press of Shift+Space for itself (it turns full width on and off), and lets
+    // only its release through: Shift+Space is then taken on its release, where no press of the Space came before it.
+    let spacePressed = false;
+    const first = (event: KeyboardEvent) => {
+      if (event.code === 'Space' || event.key === ' ') spacePressed = true;
+      take(event, true);
+    };
+    const released = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' && event.key !== ' ') return;
+      const pressed = spacePressed;
+      spacePressed = false;
+      if (!pressed && event.shiftKey) take(event, true);
+    };
     window.addEventListener('keydown', down);
     window.addEventListener('keydown', first, true);
+    window.addEventListener('keyup', released, true);
     return () => {
       window.removeEventListener('keydown', down);
       window.removeEventListener('keydown', first, true);
+      window.removeEventListener('keyup', released, true);
     };
   }, [perform]);
 

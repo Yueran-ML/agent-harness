@@ -67,6 +67,23 @@ export const handedOn = (kind: FusionKind): FusionInput | undefined => pictureIn
 
 /** How far from the left edge of a node its mask input lies, on the lower edge: clear of the badge of keys at the middle. */
 export const MASK_INSET = NODE_WIDTH / 4;
+
+/** The widest that the name of a node is drawn, in units of the graph: the card less room for its ports on either side. */
+export const NAME_ROOM = NODE_WIDTH - 20;
+
+/** The characters drawn a whole em wide: those of the CJK scripts, Hangul, and the full-width forms. */
+const WIDE = /[⺀-〿぀-鿿가-힯豈-﫿＀-｠￠-￦]/u;
+
+/**
+ * How wide the name of a node is drawn, roughly, in units of the graph at the size that a card draws it (11): a character of
+ * the CJK scripts or a full-width one an em, any other a little more than half of one. A name wider than {@link NAME_ROOM}
+ * would run into the ports of its card ("Delta 键控器 1"), and is drawn pressed into that room.
+ */
+export function nameWidth(name: string): number {
+  let width = 0;
+  for (const character of name) width += WIDE.test(character) ? 11 : 6.2;
+  return width;
+}
 /**
  * How far from the left edge of a node each of its matte inputs lies, on the upper edge: the garbage
  * matte a quarter of the way along, over the mask input, and the solid matte three quarters.

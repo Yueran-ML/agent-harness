@@ -66,6 +66,8 @@
 //!   none: see The Tracker below;
 //! - a Planar Tracker is one pass of `fusion.wgsl` (`Pass::Lay`) whose map may be projective,
 //!   or none: see The Planar Tracker below;
+//! - a Text+ is its picture drawn on the processor and put on the card (`Pass::Text`), and a
+//!   pass of `fusion.wgsl` more where it has a mask, or none: see Text+ below;
 //! - a node that changes nothing is no pass: its picture is that of its input. So is a
 //!   Transform as it is at first, a Merge whose foreground gives no picture or whose Blend is
 //!   0 (its background), and a Merge as it is at first over no background (its foreground):
@@ -74,10 +76,10 @@
 //!
 //! A composition whose `MediaOut` shows its `MediaIn`, as the one that a clip has at first
 //! does, has no pass at all: its layer is drawn as that of a clip without a composition, to
-//! the bit. One of `n` nodes, none of them a Blur, a Mosaic or a Delta Keyer, costs `n`
-//! passes at the most, and one more for its source; and a composition without a Blur,
-//! without a Mosaic and without a Delta Keyer is drawn by the passes that it was drawn by
-//! before there were any, to the bit.
+//! the bit. One of `n` nodes, none of them a Blur, a Mosaic, a Delta Keyer or a Text+, costs
+//! `n` passes at the most, and one more for its source; and a composition without a Blur,
+//! without a Mosaic, without a Delta Keyer and without a Text+ is drawn by the passes that it
+//! was drawn by before there were any, to the bit.
 //!
 //! The textures are those of the neighbourhoods of grades ([`crate::neighbourhood`]), kept from
 //! frame to frame by their size: a pass draws into one that no pass after it reads
@@ -306,6 +308,23 @@
 //! Merge. Where a pixel is made of several points, they lie as the affine part of the map puts
 //! them, as of the stabilizer.
 //!
+//! # Text+
+//!
+//! What a Text+ is is told with the model ([`columbina_model::fusion`], Text+). It is drawn on
+//! the processor, as a title is (`text/plus.rs`): its glyphs laid out by the fonts of the
+//! system, each drawn through its own map into a picture of the size that the pictures are
+//! drawn at, its outline and its border with them (`Pass::Text`). The compositor keeps that
+//! picture on the card by all that decides it, the settings and the follower's numbers for each
+//! character at the frame and the size, so that a Text+ that does not change is drawn once, and
+//! copies the block of it that something covers into the texture of the node, the rest of which
+//! is transparent. A picture of more pixels than a text is drawn at at once is drawn as many
+//! times smaller, and a pass of `fusion.wgsl` lays it as large.
+//!
+//! It makes its picture of nothing, as a Background does: its effect mask multiplies it, all
+//! four channels, by the pass of a Merge as it is at first that lays it over nothing, limited by
+//! the mask. One that draws nothing (its text is empty, or Write On draws none of it) is no
+//! picture, and no pass.
+//!
 //! # The stabilizer
 //!
 //! The stabilizer of a clip ([`columbina_model::stabilize`]) is given in the composition of its
@@ -327,7 +346,7 @@
 
 use columbina_model::fusion::{
     self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, PlanarTracked,
-    Tracked, Transformed,
+    TextPlused, Tracked, Transformed,
 };
 
 use crate::color::Filter;
@@ -497,6 +516,7 @@ fn is_drawn(kind: &FusedKind) -> bool {
             | FusedKind::DeltaKeyer { .. }
             | FusedKind::Tracker { .. }
             | FusedKind::PlanarTracker { .. }
+            | FusedKind::TextPlus { .. }
             | FusedKind::Stabilize { .. }
     )
 }
@@ -699,6 +719,16 @@ pub(crate) enum Pass {
         /// What its passes are drawn with.
         keying: Box<Keying>,
     },
+    /// A Text+: its picture drawn on the processor (`text/plus.rs`) `raster` pixels large and
+    /// put on the card in the top left corner of the texture, the rest of which is
+    /// transparent. Where `raster` is smaller than the pictures are drawn, a pass that lays it
+    /// as large reads it.
+    Text {
+        /// Its settings at the frame.
+        settings: Box<TextPlused>,
+        /// The size that it is drawn at.
+        raster: (u32, u32),
+    },
 }
 
 /// A control of the matte of a keyer that reads the pixels about each one (Erode/Dilate, the
@@ -733,7 +763,7 @@ impl Pass {
     fn reads(&self) -> [Reads; 4] {
         let none = Reads::Nothing;
         match self {
-            Pass::Fill(_) => [none; 4],
+            Pass::Fill(_) | Pass::Text { .. } => [none; 4],
             Pass::Lay {
                 background,
                 foreground,
@@ -756,7 +786,7 @@ impl Pass {
     /// The pass, each picture that it reads made what `renumbered` makes of it.
     fn with_reads(self, renumbered: impl Fn(Reads) -> Reads) -> Pass {
         match self {
-            fill @ Pass::Fill(_) => fill,
+            same @ (Pass::Fill(_) | Pass::Text { .. }) => same,
             Pass::Lay {
                 background,
                 foreground,
@@ -887,7 +917,11 @@ impl Plan {
         self.passes.iter().any(|pass| match pass {
             Pass::Blur { .. } => true,
             Pass::Key { keying, .. } => keying.pre_blur.is_some() || !keying.stages.is_empty(),
-            Pass::Fill(_) | Pass::Lay { .. } | Pass::Mask { .. } | Pass::Mosaic { .. } => false,
+            Pass::Fill(_)
+            | Pass::Lay { .. }
+            | Pass::Mask { .. }
+            | Pass::Mosaic { .. }
+            | Pass::Text { .. } => false,
         })
     }
 
@@ -1044,6 +1078,7 @@ pub(crate) fn plan(
             ),
             tracker @ FusedKind::Tracker { .. } => tracked(tracker, read, size, luma, &mut passes),
             node @ FusedKind::PlanarTracker { .. } => planar(node, read, size, luma, &mut passes),
+            text @ FusedKind::TextPlus { .. } => lettered(text, read, size, luma, &mut passes),
             kind @ FusedKind::Stabilize { .. } => stabilized(kind, read, size, luma, &mut passes),
             other => match mask::of_node(other) {
                 // A mask node: a pass whatever its settings are, as a mask of nothing is a
@@ -1485,6 +1520,83 @@ fn planar(
             )
         }
     }
+}
+
+/// The size that the picture of a Text+ of a composition whose pictures are drawn `size` pixels
+/// large is drawn at on the processor: that size where it is at most as many pixels as a text
+/// is drawn at at once (`MOST_PIXELS` of `text.rs`), and else as much smaller, of the same
+/// shape.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "sides of pictures, of at most what the card takes"
+)]
+fn text_raster(size: (u32, u32)) -> (u32, u32) {
+    let most = crate::text::MOST_PIXELS;
+    let area = u64::from(size.0) * u64::from(size.1);
+    if area <= most {
+        return size;
+    }
+    let by = (most as f64 / area as f64).sqrt();
+    let scaled = |pixels: u32| ((f64::from(pixels) * by).floor() as u32).max(1);
+    (scaled(size.0), scaled(size.1))
+}
+
+/// The picture of the Text+ `node`, `read` giving the picture that its effect mask reads, drawn
+/// `size` pixels large: none where it draws nothing; else its picture drawn on the processor
+/// (`Pass::Text`), at the size of the pictures or, where that is too many pixels, smaller and
+/// laid as large by a pass of `fusion.wgsl`; and that multiplied by its mask, where it has one,
+/// as a Merge as it is at first lays a foreground over nothing. None of a node that is no
+/// Text+.
+fn lettered(
+    node: &FusedKind,
+    read: impl Fn(Option<usize>) -> Reads,
+    size: (u32, u32),
+    luma: [f32; 3],
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    let FusedKind::TextPlus { mask, settings } = node else {
+        return Reads::Nothing;
+    };
+    if !settings.writes_any() || size.0 == 0 || size.1 == 0 {
+        return Reads::Nothing;
+    }
+    let limit = read(*mask);
+    let raster = text_raster(size);
+    let text = drawn(
+        passes,
+        Pass::Text {
+            settings: settings.clone(),
+            raster,
+        },
+    );
+    let plain = model::Merge::default().at(0.0);
+    if raster == size {
+        return merged(Reads::Nothing, text, limit, &plain, size, luma, passes);
+    }
+    // Drawn smaller, in the top left corner of its texture: each pixel reads it as many times
+    // nearer that corner.
+    let across = f64::from(raster.0) / f64::from(size.0);
+    let down = f64::from(raster.1) / f64::from(size.1);
+    let map = Affine {
+        a: across,
+        b: 0.0,
+        c: 0.0,
+        d: down,
+        tx: 0.0,
+        ty: 0.0,
+    };
+    let params = uniform(&map, 1.0 / across.min(down), &held(&plain), luma);
+    drawn(
+        passes,
+        Pass::Lay {
+            background: Reads::Nothing,
+            foreground: text,
+            mask: limit,
+            uniform: limited(params, limit, LIMITED_TO_BACKGROUND),
+        },
+    )
 }
 
 /// How a pixel of the picture that the stabilizer draws reads the picture that comes into it,
@@ -4991,5 +5103,89 @@ mod tests {
                 [Some(0), Some(1), None]
             )));
         }
+    }
+
+    /// A Text+ that says "Hi", written from the first of `written` up to the second, its effect
+    /// mask the node at `mask`.
+    fn text_plus(written: [usize; 2], mask: Option<usize>) -> FusedKind {
+        let mut settings = model::TextPlus {
+            text: "Hi".into(),
+            ..model::TextPlus::default()
+        }
+        .at(0.0);
+        settings.written = written;
+        FusedKind::TextPlus {
+            mask,
+            settings: Box::new(settings),
+        }
+    }
+
+    #[test]
+    fn a_text_plus_is_a_pass_of_its_picture_times_its_mask_and_none_where_it_writes_nothing() {
+        // Its picture alone, drawn at the size of the pictures.
+        let alone = text_plus([0, 2], None);
+        let FusedKind::TextPlus { settings, .. } = &alone else {
+            unreachable!("a text")
+        };
+        let made = planned(vec![node("t", alone.clone())], Some(0));
+        assert_eq!(
+            made,
+            Plan {
+                passes: vec![Pass::Text {
+                    settings: settings.clone(),
+                    raster: SIZE,
+                }],
+                output: Reads::Pass(0),
+            }
+        );
+        assert!(is_drawn(&alone));
+        // One that writes nothing is none, whatever its mask.
+        for mask in [None, Some(0)] {
+            let nodes = vec![node("e", ellipse(None)), node("t", text_plus([1, 1], mask))];
+            assert_eq!(planned(nodes, Some(1)), Plan::default());
+        }
+        // With a mask, its picture times the mask, by a Merge as it is at first over nothing.
+        let nodes = vec![
+            node("e", ellipse(None)),
+            node("t", text_plus([0, 2], Some(0))),
+        ];
+        let masked = planned(nodes, Some(1));
+        assert_eq!(masked.passes.len(), 3);
+        assert!(matches!(masked.passes[1], Pass::Text { raster: SIZE, .. }));
+        let plain = held(&model::Merge::default().at(0.0));
+        let map = reading(SIZE, [0.5, 0.5], 1.0, 0.0, (false, false));
+        let mut wanted = uniform(&map, 1.0, &plain, REC709_LUMA);
+        wanted[LIMITED_AT] = LIMITED_TO_BACKGROUND;
+        assert_eq!(
+            laid(&masked.passes[2]),
+            ([Reads::Nothing, Reads::Pass(1), Reads::Pass(0)], wanted)
+        );
+        assert_eq!(masked.output, Reads::Pass(2));
+        // A picture of more pixels than a text is drawn at at once is drawn smaller, in the top
+        // left corner of its texture, and laid as large.
+        let large = (8192, 4096);
+        assert_eq!(text_raster(large), (4096, 2048));
+        assert_eq!(text_raster(SIZE), SIZE);
+        let made = plan_of(
+            vec![node("t", text_plus([0, 2], None))],
+            Some(0),
+            large,
+            true,
+        );
+        assert_eq!(made.passes.len(), 2);
+        assert!(matches!(
+            made.passes[0],
+            Pass::Text {
+                raster: (4096, 2048),
+                ..
+            }
+        ));
+        let (reads, params) = laid(&made.passes[1]);
+        assert_eq!(reads, [Reads::Nothing, Reads::Pass(0), Reads::Nothing]);
+        assert_eq!(
+            (params[0], params[1], params[2], params[4], params[5], params[6]),
+            (0.5, 0.0, 0.0, 0.0, 0.5, 0.0)
+        );
+        assert_eq!(made.output, Reads::Pass(1));
     }
 }

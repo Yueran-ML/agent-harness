@@ -57,6 +57,8 @@
 //! - `planar_tracker`, the inputs `input` and `foreground`, and its effect mask, `mask`: the
 //!   plane that was tracked held still, or another picture laid on it ([`PlanarTracker`]; see
 //!   The Planar Tracker below).
+//! - `text_plus`, no input but its effect mask, `mask`: lines of text, shaded ([`TextPlus`];
+//!   see Text+ below).
 //!
 //! An input that is not linked gives no picture: a transparent one of the size of the
 //! composition; but a `mask` that is not linked is no mask at all (see Masks), and a
@@ -64,9 +66,9 @@
 //! passed through (Fusion's Pass Through, Ctrl-P) hands on the picture of its first input as
 //! it is ([`Kind::through`]): a Merge its background, a Transform, a Blur, a Mosaic, a Delta
 //! Keyer, a Tracker and a Planar Tracker their picture, and a mask node the mask that comes
-//! into it. A node that has no such input, a `media_in` or a `background`, then gives none:
-//! the effect mask of a node is not a picture that it hands on, and neither are the mattes of
-//! a Delta Keyer nor the foreground of a Tracker or of a Planar Tracker.
+//! into it. A node that has no such input, a `media_in`, a `background` or a `text_plus`, then
+//! gives none: the effect mask of a node is not a picture that it hands on, and neither are the
+//! mattes of a Delta Keyer nor the foreground of a Tracker or of a Planar Tracker.
 //!
 //! # Masks
 //!
@@ -99,8 +101,8 @@
 //!   not linked), and between them the two are mixed by the value of the mask, channel by
 //!   channel: `first + (own − first) · mask`. (A `mosaic` with Whole Cells Only reads its
 //!   mask cell by cell: see Blur and Mosaic.)
-//! - A `background`, which makes its picture of nothing: its picture multiplied by the
-//!   mask, all four channels.
+//! - A `background` and a `text_plus`, which make their pictures of nothing: the picture
+//!   multiplied by the mask, all four channels.
 //! - A mask node: the mask that comes in is combined with its own by its Paint Mode
 //!   (Merge, Add or Subtract). With nothing coming in there is no Paint Mode, and the mask
 //!   is its own.
@@ -230,9 +232,9 @@
 //!
 //! # Following a Tracker
 //!
-//! A [`Center`] (of a Merge, of a Transform and of the masks) may follow what a Tracker of
-//! its composition publishes ([`Follow`]), as a Center of Fusion is connected to one
-//! (pp. 1745–1748): the place of one pattern with its offset, the Steady Position or the
+//! A [`Center`] (of a Merge, of a Transform, of the masks and of a Text+) may follow what a
+//! Tracker of its composition publishes ([`Follow`]), as a Center of Fusion is connected to
+//! one (pp. 1745–1748): the place of one pattern with its offset, the Steady Position or the
 //! Unsteady Position ([`Tracker::published`]). At a frame the centre is then that place,
 //! held within the bounds of the centre, and its own `x` and `y` are kept and not read.
 //! Where nothing is published at the frame (the pattern has no path, there is no motion to
@@ -277,6 +279,31 @@
 //! may be projective: so the picture of a Planar Tracker does not depend on the size of the
 //! pictures of the composition.
 //!
+//! # Text+
+//!
+//! A Text+ is Fusion's Text+ node (Reference Manual 20, Chapter 104, pp. 2311–2331), its
+//! everyday part ([`TextPlus`]). It makes its picture of nothing, as a Background does: a
+//! picture of the size of the composition, transparent where nothing is drawn, and nothing at
+//! all where its text is empty or Write On draws none of its characters. What it draws, in this
+//! order:
+//!
+//! 1. **The layout.** Its text, in its font, its em `size` heights of the picture high, is laid
+//!    out line by line, `line_spacing` lines of the font apart and `tracking` ems more between
+//!    its characters; each line is justified across about the centre, and the block of the
+//!    lines up and down.
+//! 2. **The units.** Each character, word or line ([`TextSelect`]) is made larger, turned and
+//!    moved about the middle of the box of its glyphs as they are laid out; and each character
+//!    more by the follower, whose numbers it reads at the frame less its delay
+//!    ([`TextFollower::at`]), on the clock of the other keys of the clip.
+//! 3. **The turn.** All of it is turned by `angle` about the centre, its border with it.
+//! 4. **The shading.** Over the box of its border, which is behind the whole block of the text
+//!    as it is laid out (before the units are moved), the outlines of the characters that are
+//!    written are drawn, and then their fills over them; the follower's opacity multiplies the
+//!    alpha of a character in both.
+//!
+//! The composition at a frame has its settings as the numbers that they are there, and the
+//! follower's for each character ([`TextPlused`]).
+//!
 //! # Coordinates
 //!
 //! The settings are kept in Fusion's own units, so that a number is what `DaVinci` shows for
@@ -316,11 +343,18 @@ use crate::project::{Clip, Id, Project, Source, Timeline};
 use crate::stabilize::Matrix;
 
 mod planar;
+mod text_plus;
 mod tracker;
 
 pub use planar::{
     homography_of, matrix_of, Corners, Homography, PlanarMotion, PlanarOperation, PlanarTracked,
     PlanarTracker, LEAST_REGION_POINTS, MOST_REGION_POINTS, STILL,
+};
+pub use text_plus::{
+    characters, follower_delays, follower_rank, written, Bordered, Followed, FollowerDelay,
+    FollowerOrder, Outlined, TextBorder, TextFill, TextFollower, TextJustify, TextOutline,
+    TextPlus, TextPlused, TextSelect, TextShift, TextVertical, UnitTransform, UnitTransformed,
+    WriteOn, LONGEST_FONT, MOST_CHARACTERS,
 };
 pub use tracker::{
     Follow, FollowOutput, Pattern, PatternArea, Place, SearchArea, Tracked, Tracker, TrackerMerge,
@@ -454,13 +488,51 @@ pub mod bounds {
     /// A place of a Planar Tracker, across and up: a point of its region and a corner of its
     /// Corner Pin. As far as a place of a Tracker may be.
     pub const PLANAR_PLACE: Bounds = Bounds::new(0.5, -15.5, 16.5);
+    /// The Size of a Text+, the height of the em of its letters in heights of the picture:
+    /// 0.08 at first; from 0, no letters, to the height of the picture.
+    pub const TEXT_SIZE: Bounds = Bounds::new(0.08, 0.0, 1.0);
+    /// Line Spacing of a Text+, in lines of its font: 1, the lines as the font spaces them, at
+    /// first; up to ten.
+    pub const TEXT_LINE_SPACING: Bounds = Bounds::new(1.0, 0.0, 10.0);
+    /// Tracking of a Text+, the advance added between its characters, in ems: none at first;
+    /// from an em less to ten more.
+    pub const TEXT_TRACKING: Bounds = Bounds::new(0.0, -1.0, 10.0);
+    /// The Start of Write On of a Text+, a share of its characters: 0 at first.
+    pub const TEXT_WRITE_START: Bounds = Bounds::new(0.0, 0.0, 1.0);
+    /// The End of Write On of a Text+: 1, all of its characters, at first.
+    pub const TEXT_WRITE_END: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// An Offset of the units of a Text+ or of its follower, across and up, in heights of the
+    /// picture: none at first; as far as ten heights either way.
+    pub const TEXT_OFFSET: Bounds = Bounds::new(0.0, -10.0, 10.0);
+    /// A Size of the units of a Text+ or of its follower: 1 changes nothing; from 0, nothing
+    /// of them, to a hundred times.
+    pub const TEXT_SCALE: Bounds = Bounds::new(1.0, 0.0, 100.0);
+    /// The red, the green and the blue of the fill of a Text+: white at first.
+    pub const TEXT_FILL: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// The thickness of the outline of a Text+, in ems of its letters: a fiftieth at first; up
+    /// to half an em.
+    pub const TEXT_OUTLINE: Bounds = Bounds::new(0.02, 0.0, 0.5);
+    /// The alpha of the border of a Text+: 0.6 at first, what is behind it seen through it.
+    pub const TEXT_BORDER_ALPHA: Bounds = Bounds::new(0.6, 0.0, 1.0);
+    /// How far the border of a Text+ reaches beyond the block of its text, in heights of the
+    /// picture: a fiftieth at first; up to the height of the picture.
+    pub const TEXT_BORDER_EXTEND: Bounds = Bounds::new(0.02, 0.0, 1.0);
+    /// The radius of the corners of the border of a Text+, a share of half its shorter side:
+    /// 0, square corners, at first; 1 makes its shorter sides half circles.
+    pub const TEXT_BORDER_ROUND: Bounds = Bounds::new(0.0, 0.0, 1.0);
+    /// The opacity of the follower of a Text+, what the alpha of each character is multiplied
+    /// by: 1 at first.
+    pub const FOLLOWER_OPACITY: Bounds = Bounds::new(1.0, 0.0, 1.0);
+    /// The delay of the follower of a Text+, in frames of the keys of the clip: 2 at first; up
+    /// to ten thousand. It takes no keys.
+    pub const FOLLOWER_DELAY: Bounds = Bounds::new(2.0, 0.0, 10_000.0);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Kinds, inputs and links
 // ---------------------------------------------------------------------------------------------
 
-/// The kinds of node, as they are named in `kind`. Another is to come: Text+.
+/// The kinds of node, as they are named in `kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -491,6 +563,8 @@ pub enum Kind {
     Tracker,
     /// The plane that was tracked held still, or another picture laid on it.
     PlanarTracker,
+    /// Lines of text, shaded: Text+.
+    TextPlus,
 }
 
 impl Kind {
@@ -511,13 +585,15 @@ impl Kind {
             Self::DeltaKeyer => "delta_keyer",
             Self::Tracker => "tracker",
             Self::PlanarTracker => "planar_tracker",
+            Self::TextPlus => "text_plus",
         }
     }
 
     /// The inputs that a node of the kind has: its pictures, and after them its effect mask,
     /// `mask`, which every kind has but `media_in` and `media_out`. A mask node has that one
-    /// alone: the mask that comes into it. A Delta Keyer has its two mattes between its
-    /// picture and its mask, and a Tracker and a Planar Tracker their foreground.
+    /// alone: the mask that comes into it; and so has a kind that makes its picture of nothing,
+    /// a `background` and a `text_plus`. A Delta Keyer has its two mattes between its picture
+    /// and its mask, and a Tracker and a Planar Tracker their foreground.
     #[must_use]
     pub fn inputs(self) -> &'static [Input] {
         match self {
@@ -525,7 +601,9 @@ impl Kind {
             Self::MediaOut => &[Input::Input],
             Self::Transform | Self::Blur | Self::Mosaic => &[Input::Input, Input::Mask],
             Self::Merge => &[Input::Background, Input::Foreground, Input::Mask],
-            Self::Background | Self::Rectangle | Self::Ellipse | Self::Polygon => &[Input::Mask],
+            Self::Background | Self::TextPlus | Self::Rectangle | Self::Ellipse | Self::Polygon => {
+                &[Input::Mask]
+            }
             Self::DeltaKeyer => &[
                 Input::Input,
                 Input::GarbageMatte,
@@ -538,12 +616,12 @@ impl Kind {
 
     /// The input whose picture a node of the kind hands on where it is passed through: the
     /// first of its pictures, and of a mask node the mask that comes into it. None of a kind
-    /// that makes its picture of nothing, `media_in` and `background`: the effect mask of a
-    /// node is not a picture that it hands on.
+    /// that makes its picture of nothing, `media_in`, `background` and `text_plus`: the effect
+    /// mask of a node is not a picture that it hands on.
     #[must_use]
     pub fn through(self) -> Option<Input> {
         match self {
-            Self::MediaIn | Self::Background => None,
+            Self::MediaIn | Self::Background | Self::TextPlus => None,
             Self::MediaOut
             | Self::Transform
             | Self::Blur
@@ -591,8 +669,8 @@ pub enum Input {
     SolidMatte,
     /// The effect mask of a node (the blue input of an editor): the mask that limits a
     /// `merge`, a `transform`, a `background`, a `blur`, a `mosaic`, a `delta_keyer`, a
-    /// `tracker` or a `planar_tracker`, and the mask that comes into a mask node. It reads the
-    /// alpha of the picture that is linked to it; not linked, it is no mask.
+    /// `tracker`, a `planar_tracker` or a `text_plus`, and the mask that comes into a mask
+    /// node. It reads the alpha of the picture that is linked to it; not linked, it is no mask.
     Mask,
 }
 
@@ -1997,6 +2075,8 @@ pub enum NodeKind {
     Tracker(Tracker),
     /// The plane that was tracked held still, or another picture laid on it.
     PlanarTracker(PlanarTracker),
+    /// Lines of text, shaded. Its settings are many, and are kept apart.
+    TextPlus(Box<TextPlus>),
 }
 
 /// The settings of a kind that has none, as they are written: `{}`.
@@ -2022,6 +2102,7 @@ impl NodeKind {
             Self::DeltaKeyer(_) => Kind::DeltaKeyer,
             Self::Tracker(_) => Kind::Tracker,
             Self::PlanarTracker(_) => Kind::PlanarTracker,
+            Self::TextPlus(_) => Kind::TextPlus,
         }
     }
 
@@ -2042,6 +2123,7 @@ impl NodeKind {
             Kind::DeltaKeyer => Self::DeltaKeyer(DeltaKeyer::default()),
             Kind::Tracker => Self::Tracker(Tracker::default()),
             Kind::PlanarTracker => Self::PlanarTracker(PlanarTracker::default()),
+            Kind::TextPlus => Self::TextPlus(Box::default()),
         }
     }
 
@@ -2070,6 +2152,7 @@ impl NodeKind {
             Kind::DeltaKeyer => Self::DeltaKeyer(serde_json::from_value(params)?),
             Kind::Tracker => Self::Tracker(serde_json::from_value(params)?),
             Kind::PlanarTracker => Self::PlanarTracker(serde_json::from_value(params)?),
+            Kind::TextPlus => Self::TextPlus(serde_json::from_value(params)?),
         })
     }
 
@@ -2093,6 +2176,7 @@ impl NodeKind {
             Self::DeltaKeyer(params) => serde_json::to_value(params),
             Self::Tracker(params) => serde_json::to_value(params),
             Self::PlanarTracker(params) => serde_json::to_value(params),
+            Self::TextPlus(params) => serde_json::to_value(params),
         };
         value.expect("the settings of a node are written as JSON")
     }
@@ -2101,9 +2185,10 @@ impl NodeKind {
     /// that it has no more points than it may; of a Delta Keyer, that its thresholds are in
     /// order and its screen colour has a channel above its other two, where they have no
     /// keys; of a Tracker, that it has no more patterns than it may, each with its
-    /// numbers and the places and frames of its path within their bounds; and of a Planar
-    /// Tracker, its region, its corners, its path and its reference. That the node which a
-    /// centre follows is a Tracker is checked of the composition, whole.
+    /// numbers and the places and frames of its path within their bounds; of a Planar
+    /// Tracker, its region, its corners, its path and its reference; and of a Text+, its text,
+    /// its font and the delay of its follower. That the node which a centre follows is a
+    /// Tracker is checked of the composition, whole.
     pub(crate) fn check(&self) -> Result<(), OpError> {
         match self {
             Self::MediaIn | Self::MediaOut => Ok(()),
@@ -2118,11 +2203,13 @@ impl NodeKind {
             Self::DeltaKeyer(keyer) => keyer.check(),
             Self::Tracker(tracker) => tracker.check(),
             Self::PlanarTracker(planar) => planar.check(),
+            Self::TextPlus(text) => text.check(),
         }
     }
 
     /// Its settings that take keys, each with its path in `params`. A Tracker and a Planar
-    /// Tracker have none.
+    /// Tracker have none; a Text+ has those of its outline, its border and its follower only
+    /// where it has them.
     fn keyed(&self) -> Vec<(Cow<'static, str>, &Param)> {
         match self {
             Self::MediaIn | Self::MediaOut | Self::Tracker(_) | Self::PlanarTracker(_) => vec![],
@@ -2135,6 +2222,7 @@ impl NodeKind {
             Self::Blur(blur) => named(blur.settings()),
             Self::Mosaic(mosaic) => named(mosaic.settings()),
             Self::DeltaKeyer(keyer) => named(keyer.settings()),
+            Self::TextPlus(text) => named(text.settings()),
         }
     }
 
@@ -2151,6 +2239,7 @@ impl NodeKind {
             Self::Blur(blur) => named(blur.settings_mut()),
             Self::Mosaic(mosaic) => named(mosaic.settings_mut()),
             Self::DeltaKeyer(keyer) => named(keyer.settings_mut()),
+            Self::TextPlus(text) => named(text.settings_mut()),
         }
     }
 
@@ -2173,7 +2262,7 @@ impl NodeKind {
             .collect()
     }
 
-    /// Its centre, of a kind that has one: a Merge, a Transform and the masks.
+    /// Its centre, of a kind that has one: a Merge, a Transform, the masks and a Text+.
     fn center(&self) -> Option<&Center> {
         match self {
             Self::Merge(merge) => Some(&merge.center),
@@ -2181,6 +2270,7 @@ impl NodeKind {
             Self::Rectangle(rectangle) => Some(&rectangle.center),
             Self::Ellipse(ellipse) => Some(&ellipse.center),
             Self::Polygon(polygon) => Some(&polygon.center),
+            Self::TextPlus(text) => Some(&text.center),
             Self::MediaIn
             | Self::MediaOut
             | Self::Background(_)
@@ -2208,6 +2298,7 @@ impl NodeKind {
             Self::Rectangle(rectangle) => &mut rectangle.center,
             Self::Ellipse(ellipse) => &mut ellipse.center,
             Self::Polygon(polygon) => &mut polygon.center,
+            Self::TextPlus(text) => &mut text.center,
             Self::MediaIn
             | Self::MediaOut
             | Self::Background(_)
@@ -2262,8 +2353,8 @@ impl NodeKind {
 /// It is written `{"id", "kind", "label", "pass_through", "pos", "params"}`, where `params` is
 /// what a node of its kind is set by: a [`Merge`], a [`Transform`], a [`Background`], a
 /// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`], a [`Mosaic`], a [`DeltaKeyer`],
-/// a [`Tracker`] or a [`PlanarTracker`], and an object with no fields for `media_in` and
-/// `media_out`.
+/// a [`Tracker`], a [`PlanarTracker`] or a [`TextPlus`], and an object with no fields for
+/// `media_in` and `media_out`.
 /// `pass_through` and `pos` are always written, and may be left out where a node is read:
 /// they are then `false` and `null`.
 #[derive(Clone, Debug, PartialEq)]
@@ -2335,6 +2426,7 @@ impl Serialize for Node {
             NodeKind::DeltaKeyer(params) => node.serialize_field("params", params)?,
             NodeKind::Tracker(params) => node.serialize_field("params", params)?,
             NodeKind::PlanarTracker(params) => node.serialize_field("params", params)?,
+            NodeKind::TextPlus(params) => node.serialize_field("params", params)?,
         }
         node.end()
     }
@@ -2838,6 +2930,13 @@ impl Composition {
                 mask: read(Input::Mask),
                 settings: planar.at(frame),
             },
+            NodeKind::TextPlus(text) => FusedKind::TextPlus {
+                mask: read(Input::Mask),
+                settings: Box::new(TextPlused {
+                    center: self.center_at(&text.center, bounds::CENTER, moment),
+                    ..text.at(frame)
+                }),
+            },
         };
         let at = nodes.len();
         nodes.push(FusedNode {
@@ -3041,6 +3140,15 @@ pub enum FusedKind {
         /// What it draws, and where the picture that is moved is put.
         settings: PlanarTracked,
     },
+    /// Lines of text, shaded (see Text+ of the [module](self)): a picture of the size of the
+    /// composition, transparent where nothing is drawn.
+    TextPlus {
+        /// Its effect mask, which its picture is multiplied by; none where it has none.
+        mask: Option<usize>,
+        /// What it draws: its settings as the numbers that they are at the frame, and its
+        /// follower's for each character.
+        settings: Box<TextPlused>,
+    },
     /// What comes out of the composition drawn through the stabilizer of its clip
     /// ([`crate::stabilize`]): no node of the composition, but what [`Fused::stabilized`] puts
     /// after its last node, between the node that the `MediaOut` read and the `MediaOut`.
@@ -3107,6 +3215,7 @@ impl FusedKind {
         match self {
             Self::MediaIn => vec![],
             Self::Background { mask, .. }
+            | Self::TextPlus { mask, .. }
             | Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
             | Self::Polygon { mask, .. } => vec![mask],
@@ -3146,14 +3255,14 @@ impl FusedKind {
     /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur, a Mosaic, a Delta
     /// Keyer, a Tracker and a Planar Tracker their picture, of the stabilizer what comes out of
     /// the composition,
-    /// and of a mask node the mask that comes into it. None of a kind that has no such input,
-    /// and where the input reads no picture. It is the picture that a node that is passed
-    /// through hands on ([`Kind::through`]), and that what cannot draw a kind may hand on in
-    /// its place.
+    /// and of a mask node the mask that comes into it. None of a kind that has no such input
+    /// (a `MediaIn`, a Background and a Text+), and where the input reads no picture. It is the
+    /// picture that a node that is passed through hands on ([`Kind::through`]), and that what
+    /// cannot draw a kind may hand on in its place.
     #[must_use]
     pub fn first_input(&self) -> Option<usize> {
         match self {
-            Self::MediaIn | Self::Background { .. } => None,
+            Self::MediaIn | Self::Background { .. } | Self::TextPlus { .. } => None,
             Self::Merge { background, .. } => *background,
             Self::Transform { input, .. }
             | Self::Blur { input, .. }
@@ -3170,14 +3279,15 @@ impl FusedKind {
 
     /// The mask that the `mask` input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform, of a Background, of a
-    /// Blur, of a Mosaic, of a Delta Keyer, of a Tracker and of a Planar Tracker, and the mask
-    /// that comes into a mask node. None of a `MediaIn` and of the stabilizer, which have no such input, and
-    /// where the input is not linked or brings no picture.
+    /// Blur, of a Mosaic, of a Delta Keyer, of a Tracker, of a Planar Tracker and of a Text+,
+    /// and the mask that comes into a mask node. None of a `MediaIn` and of the stabilizer,
+    /// which have no such input, and where the input is not linked or brings no picture.
     #[must_use]
     pub fn mask(&self) -> Option<usize> {
         match self {
             Self::MediaIn | Self::Stabilize { .. } => None,
             Self::Background { mask, .. }
+            | Self::TextPlus { mask, .. }
             | Self::Merge { mask, .. }
             | Self::Transform { mask, .. }
             | Self::Rectangle { mask, .. }
@@ -3202,6 +3312,7 @@ impl FusedKind {
         let inputs: Vec<Option<usize>> = match self {
             Self::MediaIn => vec![],
             Self::Background { mask, .. }
+            | Self::TextPlus { mask, .. }
             | Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
             | Self::Polygon { mask, .. } => vec![*mask],
@@ -3534,7 +3645,8 @@ mod tests {
             json!({"id": "a", "kind": "delta_keyer", "label": "", "params": {}}),
             json!({"id": "a", "kind": "tracker", "label": "", "params": {}}),
             json!({"id": "a", "kind": "planar_tracker", "label": "", "params": {}}),
-            json!({"id": "a", "kind": "text_plus", "label": "", "params": {}}),
+            json!({"id": "a", "kind": "text_plus", "label": "", "params": {"glyphs": []}}),
+            json!({"id": "a", "kind": "paint", "label": "", "params": {}}),
             json!({"id": "a", "kind": "media_in", "label": "", "params": {}, "enabled": true}),
         ] {
             assert!(
@@ -3597,6 +3709,12 @@ mod tests {
         assert_eq!(Kind::PlanarTracker.through(), Some(Input::Input));
         assert!(!Kind::PlanarTracker.is_mask());
         assert_eq!(Kind::PlanarTracker.name(), "planar_tracker");
+        // A Text+ makes its picture of nothing, as a Background does: it has its effect mask
+        // alone, and hands nothing on.
+        assert_eq!(Kind::TextPlus.inputs(), Kind::Background.inputs());
+        assert_eq!(Kind::TextPlus.through(), None);
+        assert!(!Kind::TextPlus.is_mask());
+        assert_eq!(Kind::TextPlus.name(), "text_plus");
         assert_eq!(Kind::MediaIn.through(), None);
         assert_eq!(Kind::Background.through(), None);
         assert_eq!(Kind::MediaOut.through(), Some(Input::Input));
@@ -3616,6 +3734,7 @@ mod tests {
             Kind::DeltaKeyer,
             Kind::Tracker,
             Kind::PlanarTracker,
+            Kind::TextPlus,
         ] {
             // What is handed on is an input of the kind, and its mask comes after its pictures.
             let inputs = kind.inputs();

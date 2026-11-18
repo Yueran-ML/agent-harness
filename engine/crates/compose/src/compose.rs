@@ -1083,6 +1083,21 @@ enum Offscreen {
         pictures: [Option<wgpu::Texture>; 6],
         target: wgpu::Texture,
     },
+    /// The pixels of the picture of a Text+ that something covers, `from`, copied into `to` with
+    /// their left and top pixel at `at`, as they are.
+    Copy {
+        from: wgpu::Texture,
+        to: wgpu::Texture,
+        at: (u32, u32),
+    },
+}
+
+/// The picture of a Text+ on the card, kept by all that decides it
+/// ([`text::LetteringKey`]): the block of its pixels that something covers and where its left
+/// and top pixel lies, or none where nothing does; and the frame it was last drawn in.
+struct Lettered {
+    picture: Option<(wgpu::Texture, (u32, u32))>,
+    used: u64,
 }
 
 /// The pictures of a Delta Keyer of a composition: the picture that it keys, the pictures
@@ -1413,7 +1428,10 @@ pub struct Compositor {
     generation: u64,
     planes: HashMap<Shape, Vec<Planes>>,
     texts: HashMap<TextKey, LaidText>,
-    /// How many parts of texts it has drawn into pixels since it was made.
+    /// The pictures of the Text+ of compositions drawn in the last frame and in this one.
+    letterings: HashMap<text::LetteringKey, Lettered>,
+    /// How many parts of texts, and pictures of Text+, it has drawn into pixels since it was
+    /// made.
     text_draws: u64,
     /// What binds the uniform of a pass of a filter and its source, and its pipeline, made as
     /// it is first needed.
@@ -1641,6 +1659,7 @@ impl Compositor {
             generation: 0,
             planes: HashMap::new(),
             texts: HashMap::new(),
+            letterings: HashMap::new(),
             text_draws: 0,
             frame: 0,
             gpu,
@@ -1726,8 +1745,9 @@ impl Compositor {
         self.spares.bytes()
     }
 
-    /// How many parts of texts it has drawn into pixels since it was made: for the tests, that
-    /// a title that only moves is not drawn again.
+    /// How many parts of texts, and pictures of Text+, it has drawn into pixels since it was
+    /// made: for the tests, that a title that only moves, and a Text+ that does not change, are
+    /// not drawn again.
     #[doc(hidden)]
     #[must_use]
     pub fn texts_drawn(&self) -> u64 {
@@ -1933,6 +1953,10 @@ impl Compositor {
         }
         self.frame += 1;
         self.provisional = false;
+        // The pictures of Text+ that neither the last frame nor this one draws are let go.
+        let now = self.frame;
+        self.letterings
+            .retain(|_, kept| kept.used.saturating_add(1) >= now);
         let canvas = (f64::from(scene.width), f64::from(scene.height));
         let whole = [0.0, 0.0, canvas.0, canvas.1];
         let mut laid = Layered::default();
@@ -2437,6 +2461,20 @@ impl Compositor {
                     let read = pictures.each_ref().map(Option::as_ref);
                     card.key(self.gpu.device(), encoder, pipeline, *offset, read, target);
                 }
+                Offscreen::Copy { from, to, at } => encoder.copy_texture_to_texture(
+                    from.as_image_copy(),
+                    wgpu::TexelCopyTextureInfo {
+                        texture: to,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: at.0,
+                            y: at.1,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    from.size(),
+                ),
             }
             self.fusion_passes += 1;
         }
@@ -3770,6 +3808,22 @@ impl Compositor {
                     };
                     self.keyer_passes(laid, keying, pictures);
                 }
+                // The texture made transparent, and the pixels of the Text+ that something
+                // covers copied into it.
+                fusion::Pass::Text { settings, raster } => {
+                    let picture = self.lettering(settings, *raster);
+                    laid.offscreen.push(Offscreen::Fill {
+                        colour: [0.0; 4],
+                        target: target.clone(),
+                    });
+                    if let Some((from, corner)) = picture {
+                        laid.offscreen.push(Offscreen::Copy {
+                            from,
+                            to: target,
+                            at: corner,
+                        });
+                    }
+                }
             }
         }
         let Some(out) = read(Reads::Pass(output)) else {
@@ -3804,6 +3858,35 @@ impl Compositor {
             Some(at) => free.swap_remove(at),
             None => self.spares.take(&self.gpu, size),
         }
+    }
+
+    /// The picture of a Text+ of `settings` drawn `raster` pixels large, on the card: a texture
+    /// of the block of its pixels that something covers, and where the left and top pixel of
+    /// that lies; none where nothing does. It is drawn on the processor once, and kept by all
+    /// that decides it while frames draw it, so that a Text+ that does not change is not drawn
+    /// again.
+    fn lettering(
+        &mut self,
+        settings: &columbina_model::fusion::TextPlused,
+        raster: (u32, u32),
+    ) -> Option<(wgpu::Texture, (u32, u32))> {
+        let key = text::lettering_key(settings, raster);
+        let frame = self.frame;
+        if let Some(kept) = self.letterings.get_mut(&key) {
+            kept.used = frame;
+            return kept.picture.clone();
+        }
+        let picture = text::draw_plus(settings, raster)
+            .map(|lettering| (lettering_texture(&self.gpu, &lettering), lettering.at));
+        self.text_draws += 1;
+        self.letterings.insert(
+            key,
+            Lettered {
+                picture: picture.clone(),
+                used: frame,
+            },
+        );
+        picture
     }
 
     /// Put the passes of a Blur of a composition among those of the frame (`laid`): the two
@@ -5036,6 +5119,45 @@ fn text_texture(gpu: &Gpu, raster: &Raster) -> wgpu::TextureView {
         );
     }
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Put the pixels of a Text+ that something covers on the card, as half floats, the format of
+/// the pictures of compositions: a texture that is copied into those.
+fn lettering_texture(gpu: &Gpu, lettering: &text::Lettering) -> wgpu::Texture {
+    let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("columbina text of a composition"),
+        size: wgpu::Extent3d {
+            width: lettering.width.max(1),
+            height: lettering.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: fusion::FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    if lettering.width > 0 && lettering.height > 0 {
+        let bytes: Vec<u8> = lettering
+            .halves()
+            .iter()
+            .flat_map(|half| half.to_le_bytes())
+            .collect();
+        gpu.queue().write_texture(
+            texture.as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(lettering.width * 8),
+                rows_per_image: Some(lettering.height),
+            },
+            texture.size(),
+        );
+    }
+    texture
 }
 
 /// The uniform of a layer that puts the quad `quad` of its frame on a canvas by `place`, at

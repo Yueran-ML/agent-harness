@@ -13,6 +13,10 @@ use columbina_model::fusion::{
     TrackerOperation, TrackerPivot, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS, MOST_TRACKERS,
 };
 use columbina_model::fusion::{
+    FollowerDelay, FollowerOrder, TextFollower, TextJustify, TextPlus, TextPlused, TextSelect,
+    TextVertical, LONGEST_FONT, MOST_CHARACTERS,
+};
+use columbina_model::fusion::{
     PlanarMotion, PlanarOperation, PlanarTracked, PlanarTracker, MOST_REGION_POINTS, STILL,
 };
 use columbina_model::grade::{Composite, Interp, Key, Param, Pos, LONGEST_LABEL};
@@ -5485,4 +5489,505 @@ fn the_path_of_a_planar_tracker_is_moved_with_the_keys_of_its_clip() {
     );
     assert_eq!(planar_path_of(&media, "c1"), (vec![20, 60], 20));
     assert_eq!([30, 40, 70].map(|frame| planar_at(&media, frame)), before);
+}
+
+// Text+.
+
+/// The sample of `merged` with a Text+, n5, as a new one is, which the Merge n3 lays over the
+/// Background n4 in the place of the picture of c1: `next_id` is 6.
+fn texted() -> Project {
+    let mut project = merged();
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::TextPlus),
+            vec![Link::new("", "n3", Input::Foreground)],
+        ),
+    );
+    assert_eq!(project.next_id, 6);
+    project
+}
+
+/// The Text+ n5 of c1.
+fn text_of(project: &Project) -> &TextPlus {
+    match &composition(project, "c1").node("n5").unwrap().kind {
+        NodeKind::TextPlus(text) => text.as_ref(),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// What the Text+ that the one layer of the timeline draws at `frame` draws there.
+fn text_at(project: &Project, frame: i64) -> TextPlused {
+    let fused = layer_at(project, frame)
+        .fusion
+        .expect("the layer has its composition");
+    fused
+        .nodes
+        .iter()
+        .find_map(|node| match &node.kind {
+            FusedKind::TextPlus { settings, .. } => Some(TextPlused::clone(settings)),
+            _ => None,
+        })
+        .expect("the layer draws its text")
+}
+
+/// A patch of the `params` of a node that sets the setting at `path`, its parts by dots, to
+/// `value`.
+fn patch_at(path: &str, value: serde_json::Value) -> serde_json::Value {
+    path.rsplit('.').fold(value, |inner, part| {
+        let mut object = serde_json::Map::new();
+        object.insert(part.to_owned(), inner);
+        serde_json::Value::Object(object)
+    })
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a text as it is written, read, written by another program and taken away"
+)]
+fn a_text_plus_is_added_with_every_setting_written_and_is_read_back() {
+    let mut project = texted();
+    let written = serde_json::to_value(composition(&project, "c1")).unwrap();
+    // Its outline, its border and its follower are written only where it has them.
+    assert_eq!(
+        written["nodes"][4],
+        json!({
+            "id": "n5", "kind": "text_plus", "label": "", "pass_through": false, "pos": null,
+            "params": {
+                "text": "", "font": "", "size": 0.08, "center": {"x": 0.5, "y": 0.5},
+                "justify": "center", "vertical": "center", "line_spacing": 1.0,
+                "tracking": 0.0, "angle": 0.0, "write_on": {"start": 0.0, "end": 1.0},
+                "transform": {"select": "characters", "offset": {"x": 0.0, "y": 0.0},
+                              "angle": 0.0, "scale": 1.0},
+                "fill": {"color": {"r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0}},
+            },
+        })
+    );
+    // It is the foreground of the Merge, in the place of the picture of the clip.
+    assert_eq!(
+        written["links"],
+        json!([
+            {"from": "n3", "to": "MediaOut1", "input": "input"},
+            {"from": "n4", "to": "n3", "input": "background"},
+            {"from": "n5", "to": "n3", "input": "foreground"},
+        ])
+    );
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    assert_eq!(serde_json::to_string(&read).unwrap(), text);
+    // As another program writes one, with every setting and every element; the Text+ before
+    // it its mask.
+    let fade = json!({"keys": [
+        {"frame": 0, "value": 0, "interp": "linear"},
+        {"frame": 10, "value": 1, "interp": "linear"},
+    ]});
+    let whole = json!({
+        "text": "Two\nlines", "font": "Georgia", "size": 0.1,
+        "center": {"x": 0.25, "y": 0.75}, "justify": "right", "vertical": "top",
+        "line_spacing": 1.5, "tracking": -0.1, "angle": 30,
+        "write_on": {"start": 0.1, "end": fade},
+        "transform": {"select": "lines", "offset": {"x": 0.1, "y": -0.2}, "angle": 10,
+                      "scale": 2},
+        "fill": {"color": {"r": 1, "g": 0, "b": 0, "a": 0.5}},
+        "outline": {"color": {"r": 0, "g": 0, "b": 1, "a": 1}, "thickness": 0.1},
+        "border": {"color": {"r": 0, "g": 1, "b": 0, "a": 0.25}, "extend": 0.05, "round": 1},
+        "follower": {"order": "inside_out", "delay": 3.5, "delay_type": "first_to_last",
+                     "opacity": fade, "offset": {"x": 0, "y": 0.1}, "angle": -45,
+                     "scale": 0.5},
+    });
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "text_plus", "label": "Title", "params": whole},
+        "links": [{"from": "n5", "to": "", "input": "mask"}],
+    }))
+    .unwrap();
+    let (done, inverse) = applied(&mut project, op);
+    assert_eq!(inverse, remove("n6", Some(vec![])));
+    let Op::AddFusionNode { node, .. } = done else {
+        panic!("a node was added")
+    };
+    assert_eq!(node.id, "n6");
+    let NodeKind::TextPlus(title) = &node.kind else {
+        panic!("n6 is a text")
+    };
+    assert_eq!(**title, serde_json::from_value::<TextPlus>(whole).unwrap());
+    assert_eq!(title.text, "Two\nlines");
+    assert_eq!(
+        (title.justify, title.vertical, title.transform.select),
+        (TextJustify::Right, TextVertical::Top, TextSelect::Lines)
+    );
+    assert!(title.write_on.end.is_animated());
+    let follower = title.follower.as_ref().expect("it has a follower");
+    assert_eq!(
+        (follower.order, follower.delay_type),
+        (FollowerOrder::InsideOut, FollowerDelay::FirstToLast)
+    );
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    let value = serde_json::to_value(&project).unwrap();
+    assert_eq!(Project::from_value(value).unwrap(), project);
+    // One given with no settings, or with a part of them, is as a new one is but for those.
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "text_plus", "label": "", "params": {}},
+    }))
+    .unwrap();
+    let (done, _) = applied(&mut project, op);
+    let Op::AddFusionNode { node, .. } = done else {
+        panic!("a node was added")
+    };
+    assert_eq!(node.kind, NodeKind::new(Kind::TextPlus));
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "text_plus", "label": "", "params": {
+            "text": "Hi", "center": {"y": 0.2}, "follower": {"delay": 1},
+        }},
+    }))
+    .unwrap();
+    let (done, _) = applied(&mut project, op);
+    let Op::AddFusionNode { node, .. } = done else {
+        panic!("a node was added")
+    };
+    let wanted = TextPlus {
+        text: "Hi".into(),
+        follower: Some(TextFollower {
+            delay: 1.0,
+            ..TextFollower::default()
+        }),
+        ..TextPlus::default()
+    };
+    let NodeKind::TextPlus(hi) = &node.kind else {
+        panic!("it is a text")
+    };
+    assert_eq!(hi.center.y, Param::Fixed(0.2));
+    assert_eq!(hi.center.x, Param::Fixed(0.5));
+    assert_eq!(
+        TextPlus {
+            center: wanted.center.clone(),
+            ..TextPlus::clone(hi)
+        },
+        wanted
+    );
+    // A setting that a Text+ has not cannot be read.
+    let node = json!({"id": "", "kind": "text_plus", "label": "", "params": {"glyphs": 1}});
+    assert!(serde_json::from_value::<Node>(node).is_err());
+    // Taken away again, the first with the link that takes its place, they leave the
+    // composition as it was before them.
+    for id in ["n8", "n7", "n6"] {
+        applied(&mut project, remove(id, None));
+    }
+    let bridge = vec![Link::new(MEDIA_IN, "n3", Input::Foreground)];
+    applied(&mut project, remove("n5", Some(bridge)));
+    let before = merged();
+    assert_eq!(composition(&project, "c1"), composition(&before, "c1"));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a refusal for each setting of a text, the ends of their ranges, and what is not one"
+)]
+fn the_settings_of_a_text_plus_are_those_of_its_kind_within_their_ranges() {
+    let mut project = texted();
+    // With every element, each as a new one is, so that each setting is there.
+    applied(
+        &mut project,
+        set_params("n5", json!({"outline": {}, "border": {}, "follower": {}})),
+    );
+    assert_eq!(text_of(&project).follower, Some(TextFollower::default()));
+    for (path, what, bounds) in TextPlus::SETTINGS {
+        for value in [bounds.low - 0.001, bounds.high + 0.001] {
+            assert_eq!(
+                refused(&project, set_params("n5", patch_at(path, json!(value)))),
+                range(what),
+                "{path} at {value}"
+            );
+        }
+    }
+    // The text, the font and the delay of the follower, which take no keys.
+    let long = "x".repeat(MOST_CHARACTERS + 1);
+    assert_eq!(
+        refused(&project, set_params("n5", json!({ "text": long }))),
+        range("text_plus.text")
+    );
+    let wide = "f".repeat(LONGEST_FONT + 1);
+    assert_eq!(
+        refused(&project, set_params("n5", json!({ "font": wide }))),
+        range("text_plus.font")
+    );
+    for delay in [-1.0, 10_000.5] {
+        assert_eq!(
+            refused(
+                &project,
+                set_params("n5", json!({"follower": {"delay": delay}}))
+            ),
+            range("text_plus.follower.delay"),
+            "{delay}"
+        );
+    }
+    // What is not a setting of the kind, or not written as one, is refused.
+    let keyed = json!({"keys": [{"frame": 0, "value": 2, "interp": "linear"}]});
+    for patch in [
+        json!({"glyphs": 1}),
+        json!({"justify": "full"}),
+        json!({"vertical": 0}),
+        json!({"text": ["a"]}),
+        json!({"font": null}),
+        json!({"transform": {"select": "sentences"}}),
+        json!({"follower": {"order": "random"}}),
+        json!({"follower": {"delay": keyed}}),
+        json!({"fill": {"color": {"w": 1}}}),
+        json!({"outline": 0.1}),
+        json!({"border": {"radius": 0.5}}),
+    ] {
+        let error = refused(&project, set_params("n5", patch.clone()));
+        assert!(
+            matches!(&error, OpError::Params { node, .. } if node == "n5"),
+            "{patch}: {error:?}"
+        );
+    }
+    // Its centre follows a Tracker, as that of a Merge does, and nothing else.
+    let follow = json!({"center": {"follow": {"node": "n4", "output": "tracker"}}});
+    assert_eq!(
+        refused(&project, set_params("n5", follow)),
+        OpError::WrongNode {
+            node: "n4".into(),
+            kind: "background"
+        }
+    );
+    // What is given is set, and set back by the inverse: an element given null is taken away,
+    // and the inverse puts it back as it was.
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({"text": "Hello", "justify": "left", "outline": null, "follower": {"delay": 0}}),
+        ),
+    );
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({
+            "text": "", "justify": "center",
+            "outline": {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}, "thickness": 0.02},
+            "follower": {"delay": 2.0},
+        }))
+    );
+    let text = text_of(&project);
+    assert_eq!(
+        (text.text.as_str(), text.justify),
+        ("Hello", TextJustify::Left)
+    );
+    assert_eq!(text.outline, None);
+    assert_eq!(
+        text.follower.as_ref().map(|follower| follower.delay),
+        Some(0.0)
+    );
+    // An element given in part is the rest as a new one is.
+    applied(
+        &mut project,
+        set_params("n5", json!({"outline": {"color": {"r": 1}}})),
+    );
+    let outline = text_of(&project)
+        .outline
+        .clone()
+        .expect("it has an outline");
+    assert_eq!(
+        [outline.color.r, outline.color.g, outline.color.a],
+        [Param::Fixed(1.0), Param::Fixed(0.0), Param::Fixed(1.0)]
+    );
+    // The ends of each range are within it, and so is a text of as many characters as it may
+    // have, its line breaks among them.
+    for (path, _, bounds) in TextPlus::SETTINGS {
+        for value in [bounds.low, bounds.high] {
+            applied(&mut project, set_params("n5", patch_at(path, json!(value))));
+        }
+    }
+    let full = "a\n".repeat(MOST_CHARACTERS / 2);
+    applied(&mut project, set_params("n5", json!({ "text": full })));
+    let named = "f".repeat(LONGEST_FONT);
+    applied(&mut project, set_params("n5", json!({ "font": named })));
+    for delay in [0.0, 10_000.0] {
+        applied(
+            &mut project,
+            set_params("n5", json!({"follower": {"delay": delay}})),
+        );
+    }
+}
+
+#[test]
+fn the_keys_of_a_text_plus_are_set_by_their_paths_where_it_has_the_element() {
+    let mut project = texted();
+    // Of an outline, a border and a follower that it has not there is no setting; nor of what
+    // takes no keys, or is no number.
+    for path in [
+        "n5.outline.thickness",
+        "n5.outline.color.a",
+        "n5.border.round",
+        "n5.follower.opacity",
+        "n5.follower.offset.x",
+        "n5.text",
+        "n5.font",
+        "n5.justify",
+        "n5.center",
+        "n5.write_on",
+        "n5.fill.color",
+        "n5.transform.select",
+        "n5.follower.delay",
+        "n5.outline",
+    ] {
+        assert_eq!(
+            refused(&project, set_keys("c1", path, Param::Fixed(0.5))),
+            missing("setting", path),
+            "{path}"
+        );
+    }
+    applied(
+        &mut project,
+        set_params("n5", json!({"outline": {}, "border": {}, "follower": {}})),
+    );
+    assert_eq!(
+        refused(
+            &project,
+            set_keys("c1", "n5.follower.delay", Param::Fixed(0.5))
+        ),
+        missing("setting", "n5.follower.delay")
+    );
+    // Each that it has takes keys within its bounds, and is set back by the inverse.
+    for (path, what, bounds) in TextPlus::SETTINGS {
+        let full = format!("n5.{path}");
+        let moving = keys(&[(0, bounds.low), (24, bounds.high)]);
+        let (_, inverse) = applied(&mut project, set_keys("c1", &full, moving));
+        assert!(
+            matches!(
+                inverse,
+                Op::SetFusionKeys {
+                    param: Param::Fixed(_),
+                    ..
+                }
+            ),
+            "{path}"
+        );
+        let beyond = keys(&[(0, bounds.low), (24, bounds.high + 1.0)]);
+        assert_eq!(
+            refused(&project, set_keys("c1", &full, beyond)),
+            range(what),
+            "{path}"
+        );
+    }
+    assert!(composition(&project, "c1").is_animated());
+    // Taken away, an element takes its keys with it, and the inverse puts them back.
+    let (_, inverse) = applied(&mut project, set_params("n5", json!({"follower": null})));
+    let back = patch_of(&inverse).expect("the inverse sets the params");
+    assert!(back["follower"]["opacity"]["keys"].is_array());
+    assert_eq!(
+        refused(
+            &project,
+            set_keys("c1", "n5.follower.scale", Param::Fixed(1.0))
+        ),
+        missing("setting", "n5.follower.scale")
+    );
+}
+
+#[test]
+fn a_text_plus_of_a_layer_is_its_numbers_at_the_frame_and_its_follower_for_each_character() {
+    let mut project = texted();
+    let fade = json!({"keys": [
+        {"frame": 10, "value": 0, "interp": "linear"},
+        {"frame": 20, "value": 1, "interp": "linear"},
+    ]});
+    applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({
+                "text": "ab\nc", "size": 0.125, "write_on": {"end": fade},
+                "follower": {"delay": 5, "opacity": fade},
+            }),
+        ),
+    );
+    assert!(composition(&project, "c1").is_animated());
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20.
+    let at = text_at(&project, 20);
+    assert_eq!(
+        (at.text.as_str(), at.size, at.center),
+        ("ab\nc", 0.125, [0.5, 0.5])
+    );
+    // Three characters, the line break not among them, all of them written; the follower
+    // read for each at the frame less its delay, 0, 5 and 10.
+    assert_eq!(at.written, [0, 3]);
+    let faded: Vec<f64> = at
+        .followed
+        .iter()
+        .map(|followed| followed.opacity)
+        .collect();
+    assert_eq!(faded, [1.0, 0.5, 0.0]);
+    // Half way through the write-on, the first two of three; before it, none.
+    assert_eq!(text_at(&project, 15).written, [0, 2]);
+    assert_eq!(text_at(&project, 5).written, [0, 0]);
+    assert!(!text_at(&project, 5).writes_any());
+    // Without a follower, none.
+    applied(&mut project, set_params("n5", json!({"follower": null})));
+    assert_eq!(
+        text_at(&project, 20).followed,
+        [] as [columbina_model::fusion::Followed; 0]
+    );
+}
+
+#[test]
+fn a_text_plus_takes_its_effect_mask_alone_and_hands_nothing_on() {
+    let mut project = texted();
+    for input in [
+        Input::Input,
+        Input::Background,
+        Input::Foreground,
+        Input::GarbageMatte,
+    ] {
+        assert_eq!(
+            refused(&project, connect(Link::new(MEDIA_IN, "n5", input))),
+            OpError::NoInput {
+                node: "n5".into(),
+                input
+            }
+        );
+    }
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n5", Input::Mask)],
+        ),
+    );
+    // The layer draws it after its mask, which it names; it has no picture of its own to read.
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    let at = fused.nodes.iter().position(|node| node.id == "n5").unwrap();
+    let ids: Vec<&str> = fused.nodes[at]
+        .kind
+        .reads()
+        .iter()
+        .map(|&read| fused.nodes[read].id.as_str())
+        .collect();
+    assert_eq!(ids, ["n6"]);
+    assert_eq!(fused.nodes[at].kind.first_input(), None);
+    assert!(fused.nodes[at].kind.mask().is_some());
+    // A loop through its mask is a loop.
+    assert!(matches!(
+        refused(&project, connect(Link::new("n5", "n6", Input::Mask))),
+        OpError::Loop { .. }
+    ));
+    // Passed through, it gives no picture, and neither does its mask: the Merge is drawn with
+    // no foreground.
+    applied(&mut project, passed_through("n5"));
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    let ids: Vec<&str> = fused.nodes.iter().map(|node| node.id.as_str()).collect();
+    assert_eq!(ids, ["n4", "n3"]);
+    assert!(matches!(
+        fused.nodes[1].kind,
+        FusedKind::Merge {
+            foreground: None,
+            ..
+        }
+    ));
 }

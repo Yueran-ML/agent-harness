@@ -36,9 +36,9 @@
 //!
 //! And it lists what the nodes of the composition of a clip hold, of the Fusion page
 //! ([`fusion`]): the settings of a Merge, of a Transform, of a Background, of the masks (a
-//! Rectangle, an Ellipse and a Polygon), of a Blur, of a Mosaic and of a Delta Keyer, in
-//! Fusion's own units ([`crate::fusion`]), each with the bounds that the model checks it
-//! against.
+//! Rectangle, an Ellipse and a Polygon), of a Blur, of a Mosaic, of a Delta Keyer and of a
+//! Text+, in Fusion's own units ([`crate::fusion`]), each with the bounds that the model checks
+//! it against.
 //! [`crate::ops::Op::SetFusionKeys`] takes their paths, after the id of the node.
 
 use std::sync::OnceLock;
@@ -510,7 +510,8 @@ fn mask(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Mosaic
         | Kind::DeltaKeyer
         | Kind::Tracker
-        | Kind::PlanarTracker => &[],
+        | Kind::PlanarTracker
+        | Kind::TextPlus => &[],
     }
 }
 
@@ -549,7 +550,8 @@ fn filter(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Polygon
         | Kind::DeltaKeyer
         | Kind::Tracker
-        | Kind::PlanarTracker => &[],
+        | Kind::PlanarTracker
+        | Kind::TextPlus => &[],
     }
 }
 
@@ -583,11 +585,41 @@ fn keyer() -> &'static [Entry] {
     })
 }
 
+/// The settings of a Text+ of a composition that may take keys, in the order of its `params`
+/// ([`crate::fusion::TextPlus::SETTINGS`]): those of its outline, of its border and of its
+/// follower too, which are its settings only where it has those. The size of its letters, the
+/// offsets and how far its border reaches are in heights of the picture; the thickness of its
+/// outline (in ems of its letters), its tracking (in ems), its line spacing (in lines of its
+/// font), its write-on, its scales and its colours are numbers.
+fn text_plus() -> &'static [Entry] {
+    use crate::fusion::TextPlus;
+    use Unit::{DegreesCounterclockwise, Heights, Number, Widths};
+    static TEXT_PLUS: OnceLock<Vec<Entry>> = OnceLock::new();
+    TEXT_PLUS.get_or_init(|| {
+        let listed: Vec<(&str, Bounds, Unit)> = TextPlus::SETTINGS
+            .iter()
+            .map(|&(path, _, bounds)| {
+                let unit = match path {
+                    "center.x" => Widths,
+                    "size" | "center.y" | "transform.offset.x" | "transform.offset.y"
+                    | "border.extend" | "follower.offset.x" | "follower.offset.y" => Heights,
+                    "angle" | "transform.angle" | "follower.angle" => DegreesCounterclockwise,
+                    _ => Number,
+                };
+                (path, bounds, unit)
+            })
+            .collect();
+        fused(&listed)
+    })
+}
+
 /// The settings of a node of a composition of a kind that take keys
 /// ([`crate::fusion`]), each named by its path in the `params` of the node: `center.x`. A
 /// `media_in` and a `media_out` have none, and neither has a `tracker` nor a
 /// `planar_tracker`, whose numbers take no keys: their paths are what moves them. A point of
-/// a Polygon is listed with a star for its place in the list of points: `points.*.x`.
+/// a Polygon is listed with a star for its place in the list of points: `points.*.x`. A
+/// `text_plus` has those of its outline, of its border and of its follower listed whether it
+/// has them or not.
 #[must_use]
 pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
     use crate::fusion::bounds as f;
@@ -627,6 +659,7 @@ pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
         Kind::Rectangle | Kind::Ellipse | Kind::Polygon => mask(kind),
         Kind::Blur | Kind::Mosaic => filter(kind),
         Kind::DeltaKeyer => keyer(),
+        Kind::TextPlus => text_plus(),
     }
 }
 
@@ -942,9 +975,10 @@ mod tests {
     }
 
     /// The kinds of node of a composition.
-    const FUSION_KINDS: [crate::fusion::Kind; 13] = [
+    const FUSION_KINDS: [crate::fusion::Kind; 14] = [
         crate::fusion::Kind::Tracker,
         crate::fusion::Kind::PlanarTracker,
+        crate::fusion::Kind::TextPlus,
         crate::fusion::Kind::MediaIn,
         crate::fusion::Kind::MediaOut,
         crate::fusion::Kind::Merge,
@@ -962,10 +996,20 @@ mod tests {
     /// with two, each at its centre, so that it has every setting that one may have; and a
     /// Tracker, which has no patterns at first, with one that has a path of two frames, so
     /// that it has every number that one may have; and so a Planar Tracker, with a path of two
-    /// frames.
+    /// frames; and a Text+, which has no outline, no border and no follower at first, with
+    /// each of them as a new one is.
     fn first_of(kind: crate::fusion::Kind) -> crate::fusion::NodeKind {
-        use crate::fusion::{NodeKind, Pattern, PlanarTracker, Point, Polygon, Tracker, STILL};
+        use crate::fusion::{
+            NodeKind, Pattern, PlanarTracker, Point, Polygon, TextBorder, TextFollower,
+            TextOutline, TextPlus, Tracker, STILL,
+        };
         match kind {
+            crate::fusion::Kind::TextPlus => NodeKind::TextPlus(Box::new(TextPlus {
+                outline: Some(TextOutline::default()),
+                border: Some(TextBorder::default()),
+                follower: Some(TextFollower::default()),
+                ..TextPlus::default()
+            })),
             crate::fusion::Kind::PlanarTracker => NodeKind::PlanarTracker(PlanarTracker {
                 path: [(0, STILL), (12, [1.0, 0.0, 0.1, 0.0, 1.0, -0.05, 0.0, 0.0])]
                     .into_iter()
@@ -1003,6 +1047,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a node of each kind, its settings made one by one"
+    )]
     fn every_setting_of_a_node_of_a_composition_that_takes_keys_is_listed_and_nothing_else() {
         use crate::fusion::NodeKind;
         for kind in FUSION_KINDS {
@@ -1074,6 +1122,31 @@ mod tests {
         assert_eq!(fusion(crate::fusion::Kind::Blur).len(), 3);
         assert_eq!(fusion(crate::fusion::Kind::Mosaic).len(), 4);
         assert_eq!(fusion(crate::fusion::Kind::DeltaKeyer).len(), 16);
+        // A Text+ lists those of its outline, its border and its follower, which it may have;
+        // its text, its font, its menus and the delay of its follower take no keys.
+        let text = crate::fusion::Kind::TextPlus;
+        assert_eq!(fusion(text).len(), 32);
+        for path in [
+            "text",
+            "font",
+            "justify",
+            "center",
+            "transform.select",
+            "outline",
+            "follower.delay",
+            "follower.order",
+            "fill.color",
+        ] {
+            assert!(of_fusion(text, path).is_none(), "{path}");
+        }
+        assert_eq!(of_fusion(text, "size").unwrap().unit, Unit::Heights);
+        assert_eq!(of_fusion(text, "center.x").unwrap().unit, Unit::Widths);
+        assert_eq!(
+            of_fusion(text, "follower.angle").unwrap().unit,
+            Unit::DegreesCounterclockwise
+        );
+        let border = of_fusion(text, "border.color.a").unwrap();
+        assert_eq!((border.default, border.low, border.high), (0.6, 0.0, 1.0));
         let keyer = crate::fusion::Kind::DeltaKeyer;
         for path in [
             "screen",

@@ -475,6 +475,35 @@ fn read<'a>(project: &'a Project, timeline: &str, clip: &str) -> Option<&'a Comp
 /// # Panics
 /// If the composition or the node that was changed is not in the project, which would be a
 /// bug.
+/// What a patch of the params of a node did, as they are written after it: each field that it
+/// names, as it is now; and whole, as the engine filled it in, each field that it brought where
+/// there was none (`back`, the patch that takes it back, has `null` there). A part of a Text+
+/// added as `{}` is so written with its defaults, which is what taking its inverse back gives.
+fn written(
+    after: &serde_json::Value,
+    patch: &serde_json::Value,
+    back: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    match (after, patch) {
+        (serde_json::Value::Object(after), serde_json::Value::Object(patch)) => patch
+            .iter()
+            .map(|(name, value)| {
+                let was_back = back.and_then(|back| back.get(name));
+                let now = match after.get(name) {
+                    None => serde_json::Value::Null,
+                    Some(field) if was_back.is_some_and(serde_json::Value::is_null) => {
+                        field.clone()
+                    }
+                    Some(field) => written(field, value, was_back),
+                };
+                (name.clone(), now)
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into(),
+        (after, _) => after.clone(),
+    }
+}
+
 pub(super) fn done(project: &Project, op: Op, inverse: &Op) -> Op {
     const THERE: &str = "a composition that was changed is in the project";
     match (op, inverse) {
@@ -538,11 +567,15 @@ pub(super) fn done(project: &Project, op: Op, inverse: &Op) -> Op {
                 pos,
                 params,
             },
-            _,
+            inverse,
         ) => {
             let composition = read(project, &timeline, &clip).expect(THERE);
             let node = composition.node(&id).expect(THERE);
-            let params = params.map(|patch| changed(&node.kind.params(), &patch));
+            let back = match inverse {
+                Op::SetFusionNode { params, .. } => params.as_ref(),
+                _ => None,
+            };
+            let params = params.map(|patch| written(&node.kind.params(), &patch, back));
             Op::SetFusionNode {
                 timeline,
                 clip,

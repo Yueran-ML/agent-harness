@@ -150,7 +150,8 @@ use crate::audio::{
 };
 use crate::color_management::{Levels, LutPair};
 use crate::fusion::{
-    Composition, LEAST_REGION_POINTS, MOST_NODES, MOST_POINTS, MOST_REGION_POINTS, MOST_TRACKERS,
+    Composition, LEAST_REGION_POINTS, LONGEST_FONT, MOST_CHARACTERS, MOST_NODES, MOST_POINTS,
+    MOST_REGION_POINTS, MOST_TRACKERS,
 };
 use crate::grade::{
     Composite, Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL,
@@ -2058,6 +2059,12 @@ fn range_message(what: &str) -> String {
         "planar_tracker.path" => "a path of a Planar Tracker is not of finite numbers at frames \
                                   within 2^53 of 0"
             .into(),
+        "text_plus.text" => {
+            format!("the text of a Text+ is longer than {MOST_CHARACTERS} characters")
+        }
+        "text_plus.font" => {
+            format!("the name of the font of a Text+ is longer than {LONGEST_FONT} bytes")
+        }
         "fusion_id" => "the id of a node of a composition has a dot in it, which ends the id \
                         in the path of a setting"
             .into(),

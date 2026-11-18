@@ -2518,7 +2518,66 @@ fn fusion_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 })),
             },
         ),
+        (
+            "add_fusion_node of a text_plus with an outline, a border and a follower",
+            merged(),
+            text_node(),
+        ),
+        (
+            "set_fusion_keys of the end of the write-on of a text_plus",
+            {
+                let mut setup = merged();
+                setup.push(text_node());
+                setup
+            },
+            Op::SetFusionKeys {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                path: "n11.write_on.end".into(),
+                param: Param::Keys(vec![
+                    Key {
+                        frame: 0,
+                        value: 0.0,
+                        interp: Interp::Linear,
+                    },
+                    Key {
+                        frame: 24,
+                        value: 1.0,
+                        interp: Interp::Linear,
+                    },
+                ]),
+            },
+        ),
     ]
+}
+
+/// Add a Text+, n11 after `merge_node` and `background_node`, as another program writes one:
+/// two lines, an outline, a border and a follower that fades each character in two frames
+/// after the one before it, and the Merge n9 laying it over the Background in the place of the
+/// picture of c1. The settings that it leaves out are as they are at first.
+fn text_node() -> Op {
+    written_op(serde_json::json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {
+            "id": "", "kind": "text_plus", "label": "Title", "params": {
+                "text": "Columbina\nFusion", "size": 0.1, "center": {"x": 0.5, "y": 0.3},
+                "justify": "left", "line_spacing": 1.2, "tracking": 0.05,
+                "transform": {"select": "words", "angle": 5},
+                "fill": {"color": {"r": 1, "g": 0.9, "b": 0.2, "a": 1}},
+                "outline": {"thickness": 0.04},
+                "border": {"extend": 0.03, "round": 0.5},
+                "follower": {
+                    "order": "left_to_right", "delay": 2, "delay_type": "each",
+                    "opacity": {"keys": [
+                        {"frame": 0, "value": 0, "interp": "linear"},
+                        {"frame": 12, "value": 1, "interp": "linear"},
+                    ]},
+                    "offset": {"y": -0.05},
+                },
+            },
+        },
+        "links": [{"from": "", "to": "n9", "input": "foreground"}],
+    }))
 }
 
 /// Add a Planar Tracker, n12 after `masked`, as another program writes one: every setting, a

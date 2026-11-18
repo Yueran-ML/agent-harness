@@ -4089,10 +4089,10 @@ and is `n` + `next_id` where the engine makes it. `label` is at most 100 charact
 Grades). `pass_through` is Fusion's Pass Through (Ctrl-P): a node that is passed through hands
 on the picture of its **first** input as it is (a `merge` its `background`, a `transform`, a
 `blur`, a `mosaic`, a `delta_keyer`, a `tracker` and a `planar_tracker` their `input`, a mask
-node the mask that comes into it), and one that has no such input, a `media_in` or a
-`background`, then gives no picture: the effect mask of a node is not a picture that it hands
-on, and neither are the mattes of a `delta_keyer` nor the `foreground` of a `tracker` or of a
-`planar_tracker`. The engine always writes `pass_through` and `pos`, and reads a node without
+node the mask that comes into it), and one that has no such input, a `media_in`, a
+`background` or a `text_plus`, then gives no picture: the effect mask of a node is not a picture
+that it hands on, and neither are the mattes of a `delta_keyer` nor the `foreground` of a
+`tracker` or of a `planar_tracker`. The engine always writes `pass_through` and `pos`, and reads a node without
 them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 `fusion_nodes`).
 
@@ -4111,12 +4111,12 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 | `delta_keyer` | `input`, `garbage_matte`, `solid_matte`, `mask` | yes | its picture keyed, the screen that it was shot against made transparent, below (The Delta Keyer) |
 | `tracker` | `input`, `foreground`, `mask` | yes | the picture that was tracked (`input`) held still, or the `foreground` made to follow it, by the paths of its patterns, below (The Tracker) |
 | `planar_tracker` | `input`, `foreground`, `mask` | yes | the plane that was tracked in its picture (`input`) held still, or the `foreground` laid on it, by the homographies of its path, below (The Planar Tracker) |
+| `text_plus` | `mask` | yes | Text+: lines of text in a font, laid out about a place, written on, moved unit by unit and character by character, and shaded by a fill, an outline and a border, over a transparent picture of the size of the composition, below (Text+) |
 
 An input that is not linked gives no picture: a transparent one of the size of the
 composition; but a `mask` that is not linked is **no mask** (Masks, below), and a
 `garbage_matte` or a `solid_matte` that is not linked is no matte (The Delta Keyer, below).
-The other kinds (Text+) are not there yet: a `kind` or an `input` that is not
-listed cannot be read.
+A `kind` or an `input` that is not listed cannot be read.
 
 **Links.** A link `{from, to, input}` goes from the output of node `from` into the input
 `input` of node `to`. An output may feed any number of inputs; an input takes at most one link
@@ -4161,17 +4161,20 @@ settings these are, by the same names):
 Each of these numbers is a number or `{"keys": [...]}`, as a setting of a grade is (see
 Grades), and is refused out of its range as `out_of_range` with `what` the kind and the path:
 `merge.blend`, `merge.center.x`, `transform.size`, `background.color.a`, `ellipse.soft_edge`,
-`blur.size.x`, `mosaic.frequency`, `delta_keyer.gain`.
+`blur.size.x`, `mosaic.frequency`, `delta_keyer.gain`, `text_plus.outline.thickness`.
 The ranges are the engine's own (the manual gives none but that of a Corner Radius); they are
 listed with the defaults and the units under `fusion_merge`, `fusion_transform`,
 `fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur`,
-`fusion_mosaic` and `fusion_delta_keyer` in `crates/model/tests/data/catalog.json` (page and
+`fusion_mosaic`, `fusion_delta_keyer` and `fusion_text_plus` in
+`crates/model/tests/data/catalog.json` (page and
 palette `fusion`; an angle is in `degrees_counterclockwise`, a Blur Size and the lengths of a
-keyer in `pixels1080`, pixels of a picture 1080 high, and an offset of a mosaic in `pixels`,
-pixels of the picture of the composition). A `tracker` and a `planar_tracker` have no entry
+keyer in `pixels1080`, pixels of a picture 1080 high, an offset of a mosaic in `pixels`,
+pixels of the picture of the composition, and the size, the offsets and the reach of the border
+of a Text+ in `heights` of the picture). A `tracker` and a `planar_tracker` have no entry
 there: none of their numbers takes keys. Every field
 of the `params` of a node is written, and all of them must be there where a node is given whole
-(`add_fusion_node`, `set_fusion`).
+(`add_fusion_node`, `set_fusion`), but those of a `text_plus`, any of which may be left out
+(Text+, below).
 
 **Masks.** A `rectangle`, an `ellipse` and a `polygon` each make a mask (Reference Manual 20,
 Chapter 108, pp. 2386–2426): 1 where the shape is and 0 where it is not. Their settings are
@@ -4228,8 +4231,8 @@ What a mask does to the node whose `mask` it comes into:
   and between them the two are mixed by the value of the mask, channel by channel:
   `first + (own − first) · mask` (a `mosaic` with `whole_cells_only` reads its mask cell by
   cell: Blur and Mosaic, below);
-- a `background`, which makes its picture of nothing: its picture multiplied by the mask, all
-  four channels;
+- a `background` and a `text_plus`, which make their pictures of nothing: the picture
+  multiplied by the mask, all four channels;
 - a mask node: the mask that comes in is combined with its own by its `paint_mode`. With
   nothing coming in the mask is its own, whatever the mode.
 
@@ -4506,6 +4509,70 @@ What the node draws:
 The effect mask limits it as it limits every node that hands a picture on, the picture of its
 `input` being the first: `input + (own − input) · mask`. Passed through, it is its `input`.
 
+**Text+.** A `text_plus` is Fusion's Text+ node (Reference Manual 20, Chapter 104,
+pp. 2311–2331), its everyday part, with Fusion's Follower modifier for its characters
+(`crates/model/src/fusion/text_plus.rs`). It makes its picture of nothing, as a `background`
+does: a picture of the size of the composition, premultiplied, transparent where nothing is
+drawn. Its only input is its effect mask, which multiplies its picture, all four channels;
+passed through, it gives no picture. **Every field of its `params` may be left out**, at any
+depth (a `center` or a `color` given in part too), and is then as it is at first; one that it
+has not is `params`. The engine writes every field but `outline`, `border` and `follower`, which
+it writes only where the node has one. The ranges and defaults are the engine's own.
+
+The **characters** of a Text+ are the Unicode scalars of its `text` but its line breaks (`\n`),
+counted from 0 in the order of the text.
+
+| field | default | range |
+|---|---|---|
+| `text` | `""` | what it says, its lines broken by `\n`: at most 4096 characters, the line breaks among them (`out_of_range` `text_plus.text`); it takes no keys |
+| `font` | `""` | the family of its font, as a title's `font`: empty for the engine's own; at most 256 bytes (`text_plus.font`); it takes no keys |
+| `size` | 0.08 | 0…1: the height of the em of its letters, in heights of the picture |
+| `center.x`, `center.y` | 0.5 | −15.5…16.5: where it is laid out about, a `center` as those of the other nodes are (`y` up), which may follow a `tracker` as theirs may |
+| `justify` | `center` | `left`, `center` or `right`: each line's left end, middle or right end at `center.x`; it takes no keys |
+| `vertical` | `center` | `top`, `center` or `bottom`: the top, the middle or the bottom of the block of the lines at `center.y`; it takes no keys |
+| `line_spacing` | 1 | 0…10: how far apart the lines are, in lines of its font (a line is a quarter higher than its em, as a line of a title is) |
+| `tracking` | 0 | −1…10: the advance added between its characters, in ems |
+| `angle` | 0 | −3600…3600: all of it turned about `center`, degrees counter-clockwise, its border with it |
+| `write_on.start`, `write_on.end` | 0, 1 | 0…1 each, shares of its characters: with `n` characters, character `i` is drawn where `floor(start · n + 0.5) ≤ i < floor(end · n + 0.5)`; a `start` at or beyond the `end` draws nothing, and is no refusal |
+| `transform.select` | `characters` | what a unit is: `characters`, `words` (characters between whitespace) or `lines`; it takes no keys |
+| `transform.offset.x`, `transform.offset.y` | 0 | −10…10 each: how far each unit is moved, right and **up**, in heights of the picture |
+| `transform.angle` | 0 | −3600…3600: how far each unit is turned about its own middle, degrees counter-clockwise |
+| `transform.scale` | 1 | 0…100: how many times as large each unit is made about its own middle |
+| `fill.color.r`, `.g`, `.b`, `.a` | 1, 1, 1, 1 | 0…1 each: the colour of its glyphs, not premultiplied (the first element of shading) |
+| `outline` | none | `{color, thickness}` or none (left out, or `null`, which takes one away): a line about the outside of its glyphs, under the fill (the second element). `color.r`, `.g`, `.b`, `.a`: 0, 0, 0, 1 at first, 0…1 each; `thickness`: 0.02, 0…0.5, ems of the glyph wide |
+| `border` | none | `{color, extend, round}` or none: a filled box behind the whole block of the text (the third element): the box of the cells of its glyphs as they are laid out (each glyph's advance across and its line down), before the units are moved, grown by `extend` on every side, and turned with `angle`. `color`: 0, 0, 0, 0.6 at first, 0…1 each; `extend`: 0.02, 0…1, heights of the picture; `round`: 0, 0…1, the radius of its corners as a share of half its shorter side |
+| `follower` | none | `{order, delay, delay_type, opacity, offset, angle, scale}` or none: Fusion's Follower, below |
+
+**The follower.** Each character reads the numbers of the follower at the frame less its delay,
+on the clock of the other keys of the clip (Frames of keys, below), so that the characters do
+in turn what the keys of those numbers do:
+
+| field | default | range |
+|---|---|---|
+| `order` | `left_to_right` | the rank of character `i` of `n`: `left_to_right` `i`; `right_to_left` `n − 1 − i`; `inside_out` how far `i` is from `(n − 1) / 2`, rounded down; `outside_in` the greatest `inside_out` rank less that; it takes no keys |
+| `delay` | 2 | 0…10000 frames (`out_of_range` `text_plus.follower.delay`); a number, which takes no keys |
+| `delay_type` | `each` | `each`: the delay of a character is its rank times `delay`; `first_to_last`: its rank times `delay` over the greatest rank (0 where that is 0); it takes no keys |
+| `opacity` | 1 | 0…1: what the alpha of the character is multiplied by, in every element, its outline too |
+| `offset.x`, `offset.y` | 0 | −10…10 each: added to `transform.offset` |
+| `angle` | 0 | −3600…3600: added to `transform.angle` |
+| `scale` | 1 | 0…100: what `transform.scale` is multiplied by |
+
+**What it draws**, in this order. Its text is laid out line by line in its font, its em `size`
+heights of the picture; each line is justified about `center.x`, and the block of the lines
+about `center.y`. Each glyph of a character that is written is made `transform.scale` (times the
+follower's `scale`) times as large and turned by `transform.angle` (plus the follower's) about
+the middle of the box of its unit, moved by `transform.offset` (plus the follower's), and turned
+with the whole by `angle` about `center`. Over the `border`, the outlines of those glyphs are
+laid, and then their fills; the colours are held within 0 and 1 and premultiplied, as that of a
+`background` is, and are taken as values of the working space as they are (Space, below).
+
+The numbers that take keys are those above but `text`, `font`, the menus and the follower's
+`delay`, by their paths: `n5.size`, `n5.center.x`, `n5.write_on.end`, `n5.transform.offset.y`,
+`n5.fill.color.a`, `n5.outline.thickness`, `n5.border.color.a`, `n5.follower.opacity`. Those of
+an `outline`, a `border` or a `follower` are settings only where the node has one: of a node that
+has none, `set_fusion_keys` of them is `missing` `setting`, as of a path that names nothing. Taking
+an element away (`{"outline": null}`) takes its keys with it, and its inverse puts them back.
+
 **Frames of keys.** The keys of a composition count the frames that the other keys of its clip
 count (Frames of keys, in Grades): of media, the frames of the media, so that a key stays on
 its picture where the clip is trimmed, slipped, cut or played at another speed; of a title, a
@@ -4610,7 +4677,11 @@ places is `params`. Of a `planar_tracker`: `out_of_range` `planar_tracker.region
 3 places or more than 64, or one out of its range), `planar_tracker.corners`,
 `planar_tracker.path` (a number that is not finite, or a frame beyond ±(2^53−1)) and
 `planar_tracker.reference`; a path that is not written as frames and homographies of eight
-numbers (or `null`) is `params`. Of a `center` that follows: `missing` `node` (the composition has no such
+numbers (or `null`) is `params`. Of a `text_plus`: `out_of_range` `text_plus.text` (more than
+4096 characters), `text_plus.font` (more than 256 bytes), `text_plus.follower.delay`, and each
+number that takes keys by its path (`text_plus.size`, `text_plus.write_on.start`,
+`text_plus.border.extend`, ...); a field that it has not, or a menu that is none of its ways, is
+`params`. Of a `center` that follows: `missing` `node` (the composition has no such
 node), `wrong_node` with `node` and `kind` (it is no `tracker`), `out_of_range`
 `center.follow.tracker`, `params` (a `follow` that is not written as one, or on a kind that
 has no `center`); and `in_use` with `what` `node`, `id` and `by` (a `tracker` that node `by`
@@ -4637,7 +4708,10 @@ size about a pivot and then a shift is the same map. With no motion, and with `o
 matrix of shares of the picture from its top left corner, `y` down, as the stabilizer's below:
 where each point of the picture that is moved (its `input` with `steady`, its `foreground` with
 `corner_pin`) is put; the identity where nothing moves, and `operation` `none` where there is
-no motion or the corners pin nothing. The composition is made at a frame for the size of
+no motion or the corners pin nothing. A `text_plus` is given as its settings at the frame (its
+`center` where what it follows publishes, as any centre), the characters that Write On draws
+(the first and the one after the last, by the formula above), and the numbers of its follower
+for each of its characters, each at the frame less its delay (`TextPlused`). The composition is made at a frame for the size of
 its pictures (`Composition::at_size`), which the motion of a `tracker` is counted in; a
 composition with keys or with a path is another at another frame. Of a clip whose stabilizer
 moves the picture at the frame, the composition of its layer has a node more after its last,
@@ -4770,6 +4844,22 @@ for pixel; one in perspective is read between the pixels, and where a pixel is m
 points they lie as the affine part of the map puts them. A composition without a
 `planar_tracker` is drawn as it was before there were any, by the same passes and to the bit.
 
+**A Text+ is drawn.** A `text_plus` is drawn on the processor, as a title is
+(`crates/compose/src/text/plus.rs`), in the fonts that titles are drawn in: each line shaped
+alone, each glyph that is written drawn at the size that it is made (up to an em of 1024
+pixels, beyond which it is read between its pixels), and read through its map between the
+pixels of its image; its outline is the stroke of a title about the glyph (`thickness` ems
+wide, which the fill over it hides within the glyph), and its border the box of a title, with
+its rounded corners. Its picture is drawn at the size that the pictures are drawn at (Sizes,
+below), as half floats, and only the block of it that something covers: the compositor keeps it
+on the card by all that decides it (the size, the settings and the follower's numbers for each
+character), so that a Text+ that does not change is drawn on the processor once, and copies it
+into the picture of the node, the rest of which is transparent. A picture of more than 4096 ×
+2048 pixels is drawn as many times smaller and laid as large by the pass of a `transform`. With
+an effect mask it is the pass of a `merge` as it is at first that lays it over nothing, limited
+by the mask. One that draws nothing (its `text` is empty, Write On draws none of it, or its
+letters are less than a quarter of a pixel high) is no picture, at no cost.
+
 The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
 scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a
 composition as what comes out of it. (The tracker of a window reads the media of the clip
@@ -4800,7 +4890,8 @@ title or the colour on a transparent picture of the size of the timeline, throug
 transform of graphics.
 
 **Sizes.** Every picture of a composition is of one size, that of the composition (above):
-what a `media_in` shows fills it; a `background` covers it; a `transform` gives a picture of
+what a `media_in` shows fills it; a `background` covers it, and a `text_plus` is of it; a
+`transform` gives a picture of
 the size that came in, and what it moves beyond the edges is cut (a `blur`, a `mosaic`, a
 `delta_keyer`, a `tracker` and a `planar_tracker` give one of the size that came in too); a
 `merge` gives a picture of
@@ -4839,8 +4930,8 @@ foreground times the mask, and is drawn).
 
 **While a shader is being made.** A monitor draws its frames without waiting for the shaders
 of the card. Until the one that lays a foreground over a background is made (once for each
-card, the first time a composition with a `merge`, a `transform`, a `tracker` or a
-`planar_tracker` that is drawn is shown), and the one that draws masks (once for each card, the first time a composition with a mask node, or with a
+card, the first time a composition with a `merge`, a `transform`, a `tracker`, a
+`planar_tracker` or a `text_plus` that has a mask that is drawn is shown), and the one that draws masks (once for each card, the first time a composition with a mask node, or with a
 `background` that has a mask, is shown), a clip is shown as its source, without its
 composition, and the frame is drawn again when they are made; an export, a still and a frame
 drawn off screen wait for them. So it is with the one that mixes a blurred picture, the one

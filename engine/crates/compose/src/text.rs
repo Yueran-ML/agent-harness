@@ -24,12 +24,18 @@
 //! its text drawn otherwise than the rest ([`Dress`]): one that has any of them is laid out and
 //! drawn as [`dress`] says, and one that has none is drawn as it always was.
 //!
+//! The Text+ of a composition is laid out by the same fonts, and drawn glyph by glyph through
+//! the map of each, with the stroke and the box of a title as its outline and its border
+//! ([`plus`]).
+//!
 //! [cosmic-text]: https://github.com/pop-os/cosmic-text
 
 mod dress;
 mod planes;
+mod plus;
 
 pub(crate) use dress::Dress;
+pub(crate) use plus::{draw as draw_plus, key as lettering_key, Lettering, LetteringKey};
 
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock, PoisonError};

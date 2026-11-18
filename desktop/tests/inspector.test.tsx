@@ -232,11 +232,12 @@ describe('the clips chosen', () => {
 
   it('show the tabs that every clip of a kind has: no title fields beside media, Title and Video for titles, Video and Audio for linked clips', () => {
     const { rerender } = mount({ clips: ['c1', 't1'] });
-    expect(screen.queryByRole('tablist')).toBeNull();
+    // Clips of picture have the Effects of their picture beside Video; a clip of media beside a title has no Title tab.
+    expect(screen.getAllByRole('tab').map(tab => [tab.textContent, tab.getAttribute('aria-selected')])).toEqual([['Video', 'true'], ['Effects', 'false']]);
     expect(document.querySelector('[data-panel="video"]')).not.toBeNull();
     expect(document.querySelector('[data-panel="title"]')).toBeNull();
     rerender({ clips: ['t1', 't2'] });
-    expect(screen.getAllByRole('tab').map(tab => [tab.textContent, tab.getAttribute('aria-selected')])).toEqual([['Title', 'true'], ['Video', 'false']]);
+    expect(screen.getAllByRole('tab').map(tab => [tab.textContent, tab.getAttribute('aria-selected')])).toEqual([['Title', 'true'], ['Video', 'false'], ['Effects', 'false']]);
     expect(row('text').querySelector('textarea')!.placeholder).toBe('—');
     rerender({ clips: ['c1', 'a1'] });
     expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['Video', 'Audio', 'Effects', 'File']);

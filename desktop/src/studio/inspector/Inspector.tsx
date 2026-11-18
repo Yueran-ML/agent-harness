@@ -5,6 +5,7 @@ import type { EngineBridge } from '../../bridge';
 import type { Clip, ClipTrack, Media, Timeline } from '../engine';
 import { clipLocations } from '../timeline/selection';
 import { ClipAudio } from './ClipAudio';
+import { ClipEffects } from './ClipEffects';
 import { ClipColor, ClipTitle, isColor, isTitle } from './ClipTitle';
 import { ClipVideo } from './ClipVideo';
 import { CuePanel, cueOf } from './CuePanel';
@@ -33,13 +34,19 @@ type Tab = 'source' | 'video' | 'audio' | 'file' | 'effects';
  *
  * The Edit and the Cut page both show it, so both have Stabilization in the Video tab (Reference Manual 20, pp. 633–634 and
  * 1064–1065), whose Stabilize button asks the engine with `bridge`.
+ *
+ * The Effects tab, as DaVinci Resolve's beside Video, Audio and File, has the effects of the one clip of picture chosen, which are
+ * nodes of its composition (`ClipEffects`), and the effects of the clips of sound chosen (`InsertSlots`). Where the page can open
+ * the Fusion page (`onFusion`), it has a button that opens that clip there.
  */
-export function Inspector({ bridge, session, revision, timeline, media, clips: ids, transition: transitionId, cue: cueId = null, onSpeed, frame = 0, onSeek = () => {}, onCurves }: {
+export function Inspector({ bridge, session, revision, timeline, media, clips: ids, transition: transitionId, cue: cueId = null, onSpeed, frame = 0, onSeek = () => {}, onCurves, onFusion }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; revision: number; timeline: Timeline | null; media: readonly Media[];
   clips: readonly string[]; transition: string | null; cue?: string | null; onSpeed: (clips: string[]) => void;
   frame?: number; onSeek?: (frame: number, scrubbing: boolean) => void;
   /** Open the Curve Editor of the page. */
   onCurves?: () => void;
+  /** Open the Fusion page on the one clip of picture chosen. */
+  onFusion?: () => void;
 }) {
   const words = useWords();
   const t = useFairlightText();
@@ -76,7 +83,9 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
   const tabs: Tab[] = [
     ...(titles.length > 0 || colors.length > 0 ? ['source' as const] : []),
     ...(chosen.video.length > 0 ? ['video' as const] : []),
-    ...(chosen.audio.length > 0 ? ['audio' as const, 'effects' as const] : []),
+    ...(chosen.audio.length > 0 ? ['audio' as const] : []),
+    // The effects of clips of picture and of sound alike, after Audio and before File, as in DaVinci Resolve.
+    ...(chosen.video.length > 0 || chosen.audio.length > 0 ? ['effects' as const] : []),
     ...(chosen.audio.some(clip => clip.source.kind === 'media') ? ['file' as const] : []),
   ];
   const [tab, setTab] = useState<Tab>('video');
@@ -115,6 +124,9 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
         {tabs.map(each => <button key={each} type="button" role="tab" aria-selected={each === shown} onClick={() => setTab(each)}>{tabName[each]}</button>)}
       </div>}
       <FieldsLocked.Provider value={chosen.locked}>
+        {shown === 'effects' && chosen.video.length > 0 && <ClipEffects key={JSON.stringify([session, timeline.id, chosen.video.map(clip => clip.id)])}
+          clips={chosen.video} timeline={timeline} media={media} commit={commit} bridge={bridge} session={session} revision={revision} frame={frame}
+          onSeek={onSeek} onFusion={onFusion} />}
         {shown === 'effects' && chosen.audio.map(clip => <section key={clip.id} aria-label={clip.id}><strong>{name(clip)}</strong><InsertSlots bridge={bridge} session={session} revision={revision} timeline={timeline} target={{clip:clip.id}} seconds={frame * timeline.rate.den / timeline.rate.num} inline /></section>)}
         {shown === 'file' && <AudioConfig key={JSON.stringify([session, timeline.id, chosen.audio.map(clip => clip.id)])}
           clips={chosen.audio.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} bridge={bridge} session={session} />}

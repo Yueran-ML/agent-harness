@@ -75,7 +75,7 @@ export const TWO_MONITORS_PX = 1280;
  */
 export function EditPage({
   bridge, native, session, revision, pool, media, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
-  focus, onFocus, noticeOf, onRetry, onProblem, onExport, onChosenClips,
+  focus, onFocus, noticeOf, onRetry, onProblem, onExport, onChosenClips, onOpenFusion,
 }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
   native: boolean;
@@ -101,6 +101,8 @@ export function EditPage({
   onExport?: (marks: Marks | null) => void;
   /** Told the clips chosen on the timeline whenever they change: the Fusion page opens on the one clip of picture among them. */
   onChosenClips?: (clips: readonly string[]) => void;
+  /** Go to the Fusion page, which opens on the one clip of picture chosen: Open in Fusion, in the Effects tab of the inspector. */
+  onOpenFusion?: () => void;
 }) {
   const words = useWords();
   const audioText = useFairlightText();
@@ -267,7 +269,7 @@ export function EditPage({
       <h2 className="overline">{labels.editPage.inspector}</h2>
       <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={chosenClips} transition={chosenTransition}
         cue={chosenCue} onSpeed={setSpeedClips} frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} onSeek={timelineMonitor.seek}
-        onCurves={openCurves} />
+        onCurves={openCurves} onFusion={onOpenFusion} />
     </aside>}
     <div className="edit-timeline" onPointerDownCapture={() => onFocus('timeline')} onFocusCapture={() => onFocus('timeline')}>
       <div className="edit-audio-bottom">

@@ -979,6 +979,7 @@ export const zhCN: Messages = {
         name: '名称', resolution: '分辨率', width: '宽度', height: '高度', custom: '自定义', frameRate: '帧率', sampleRate: '音频采样率',
         changeSpeed: '更改片段速度', titleText: '标题', useLongest: (frames: number) => `改用 ${frames} 帧`,
         subtitle: '字幕', cueStart: '起点（帧）', removeCue: '删除字幕',
+        effectKinds: { blur: '模糊', mosaic: '马赛克', delta_keyer: '3D 键控器' }, openInFusion: '在 Fusion 中打开',
       },
       curves: {
         title: '曲线编辑器', parameters: '参数', graph: '曲线', interpolation: '关键帧插值',
@@ -1552,6 +1553,9 @@ export const zhCN: Messages = {
         speedRange: '速度范围为 1% 到 10000%。',
         library: '把转场拖到时间线的剪辑点上，把标题或纯色拖到视频轨上，它会覆盖 5 秒。',
         addCue: '在字幕轨道的空处双击，会在播放头处添加一条字幕；右键选择“添加字幕”，会在点击的位置添加。',
+        effectsOne: '选中一个片段，查看它的效果。',
+        noEffects: '这个片段还没有效果。',
+        effectsComposition: '这个片段的合成里还有效果以外的节点。Fusion 页面显示完整的合成。',
         stabilize: {
           analysing: '正在分析：已完成 {done} 帧，共 {total} 帧。',
           done: '已稳定，分析了 {frames} 帧。',

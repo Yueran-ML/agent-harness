@@ -185,8 +185,12 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * in the Inspector of the Edit page (Reference Manual 20, p. 762): every field, switch and button
  * that changes something is off, and the Inspector says why. The buttons that go to the key before
  * and after stay, since they move the playhead alone.
+ *
+ * The Effects tab of the Inspector of the Edit page shows the settings of the effects of a clip, which are nodes of its
+ * composition, with these same controls (`embedded`): the settings alone, under the heading that the tab gives the effect,
+ * without the name of the node, its Name field or the sentence of a locked track, which the tab has of its own.
  */
-export function FusionInspector({ bridge, session, revision, timeline, clip, media, node, name, frame, onSeek, locked: onLockedTrack = false, tracking }: {
+export function FusionInspector({ bridge, session, revision, timeline, clip, media, node, name, frame, onSeek, locked: onLockedTrack = false, tracking, embedded = false }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline;
   /** The clip whose composition the node is of. */
   clip: Clip;
@@ -202,6 +206,8 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   locked?: boolean;
   /** The tracking of the patterns of a Tracker, the page's: its buttons, what it says, and the track going on. */
   tracking?: FusionTracking;
+  /** Shown in the Effects tab of the Inspector of the Edit page: the settings of the node alone. */
+  embedded?: boolean;
 }) {
   // A Tracker whose patterns are tracked is changed by the track alone, which any other change of the project would stop: its
   // settings are shown, and none is changed, as on a locked track.
@@ -687,6 +693,15 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     body = <p className="caption" data-test="fusion-no-settings">{said.noSettings}</p>;
   }
 
+  if (embedded) {
+    return <div className="clip-effect-settings" data-test="clip-effect-settings" data-node={node.id} data-kind={node.kind}>
+      {problem}
+      <FieldsLocked.Provider value={locked}>
+        <div className="inspector-panel" data-panel="fusion">{body}</div>
+      </FieldsLocked.Provider>
+      {menu && <CoveringMenu menu={menu} onClose={closeMenu} />}
+    </div>;
+  }
   return <div className="inspector" data-test="fusion-inspector-body" data-node={node.id} data-kind={node.kind}>
     {problem}
     <div className="inspector-what">

@@ -1030,6 +1030,7 @@ export const ja: Messages = {
         name: '名前', resolution: '解像度', width: '幅', height: '高さ', custom: 'カスタム', frameRate: 'フレームレート', sampleRate: 'オーディオサンプルレート',
         changeSpeed: 'クリップ速度変更', titleText: 'タイトル', useLongest: (frames: number) => `${frames} フレームにする`,
         subtitle: '字幕', cueStart: '開始（フレーム）', removeCue: '字幕を削除',
+        effectKinds: { blur: 'ブラー', mosaic: 'モザイク', delta_keyer: '3D キーヤー' }, openInFusion: 'Fusion で開く',
       },
       curves: {
         title: 'カーブエディター', parameters: 'パラメーター', graph: 'カーブ', interpolation: 'キーフレーム補間',
@@ -1631,6 +1632,9 @@ export const ja: Messages = {
         speedRange: '速度は 1% から 10000% までです。',
         library: 'トランジションはタイムラインの編集点に、タイトルや単色はビデオトラックにドラッグしてください。5 秒分を上書きします。',
         addCue: '字幕トラックの空いている所をダブルクリックすると再生ヘッドの位置に、右クリックして「字幕を追加」を選ぶとクリックした位置に字幕を追加します。',
+        effectsOne: 'クリップを 1 つ選択すると、そのエフェクトが表示されます。',
+        noEffects: 'このクリップにはまだエフェクトがありません。',
+        effectsComposition: 'このクリップのコンポジションには、エフェクト以外のノードもあります。Fusion ページにすべて表示されます。',
         stabilize: {
           analysing: '解析しています（{done} / {total} フレーム）。',
           done: 'スタビライズしました。解析したフレームは {frames} です。',

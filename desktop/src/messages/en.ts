@@ -1172,6 +1172,11 @@ export const en = {
         name: 'Name', resolution: 'Resolution', width: 'Width', height: 'Height', custom: 'Custom', frameRate: 'Frame rate', sampleRate: 'Audio sample rate',
         changeSpeed: 'Change clip speed', titleText: 'Title', useLongest: (frames: number) => `Use ${frames} frames`,
         subtitle: 'Subtitle', cueStart: 'Start (frame)', removeCue: 'Delete subtitle',
+        /**
+         * The effects of a clip of picture in the Effects tab, which are nodes of its composition: the names that the Edit page
+         * gives them (the Fusion page calls the 3D Keyer a Delta Keyer), and the button that opens the clip on the Fusion page.
+         */
+        effectKinds: { blur: 'Blur', mosaic: 'Mosaic', delta_keyer: '3D Keyer' }, openInFusion: 'Open in Fusion',
       },
       /** The Curve Editor of the Edit page, as DaVinci Resolve names its controls (Reference Manual 20, pp. 1119–1120). */
       curves: {
@@ -1817,6 +1822,10 @@ export const en = {
         speedRange: 'The speed is from 1% to 10000%.',
         library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
         addCue: 'Double-click empty space on a subtitle track to add a subtitle at the playhead, or right-click it and choose Add subtitle to add one where you clicked.',
+        /** The effects of a clip of picture in the Effects tab: several clips chosen, a clip that has none, and a composition with more nodes than its effects. */
+        effectsOne: 'Select one clip to see its effects.',
+        noEffects: 'This clip has no effects yet.',
+        effectsComposition: 'This clip has a composition with more nodes than these effects. The Fusion page shows all of it.',
         /**
          * The analysis of the stabilizer of a clip: how far it went (`{done}` frames of `{total}`), how it ended, where the picture
          * was lost (`{lost}` frames), a Method that needs a new analysis (`{method}`), and why the engine would not measure.

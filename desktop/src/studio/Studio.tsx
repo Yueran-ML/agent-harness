@@ -112,6 +112,8 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   // The clips chosen on the Edit page as it was left, which the Fusion page opens on: kept apart from what is drawn, as only that page reads them.
   const editChosen = useRef<readonly string[]>([]);
   const onEditChosen = useCallback((clips: readonly string[]) => { editChosen.current = clips; }, []);
+  // Open in Fusion, in the Effects tab of the Edit page's inspector: the Fusion page opens on the one clip of picture chosen there.
+  const openFusion = useCallback(() => setPage('fusion'), []);
   // The bin that the pool shows: the Cut page's source tape is made of its media.
   const [bin, setBin] = useState<string | null>(null);
   // Whether the Cut page's viewer shows the source tape: the pool then chooses the medium under its playhead.
@@ -353,6 +355,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       onProblem={(said, failure) => fail(said)(failure)}
       onExport={onExport}
       onChosenClips={onEditChosen}
+      onOpenFusion={pages.includes('fusion') ? openFusion : undefined}
     />}
     {page === 'fusion' && pages.includes('fusion') && <FusionPage
       bridge={bridge}

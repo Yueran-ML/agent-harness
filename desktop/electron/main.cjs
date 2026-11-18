@@ -1108,6 +1108,8 @@ async function attachView(monitor) {
   showView(monitor);
   if (viewer.rect !== rect) placeView(monitor);
   tellView(open, monitor, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
+  // Made while the page was being loaded again: hidden above, and made anew for the new page, as every view is.
+  if (viewer.blank) remakeView(monitor);
 }
 /** Move the view where the page keeps the viewer now. */
 function placeView(monitor) {
@@ -1132,14 +1134,28 @@ function showView(monitor) {
 }
 /**
  * Hide the view while the page is gone or being loaded again: the native window would stay over
- * whatever the page shows meanwhile. The new page wants it shown once it says where the viewer is.
+ * whatever the page shows meanwhile. The new page wants it shown once it says where the viewer is,
+ * and has it made anew then, as the first page had it made: a view that was kept hidden while the
+ * page was loaded again and shown again stayed black on the real machine, also as frames were
+ * stepped, until another page showed it at another size first.
  */
 function blankView() {
   for (const monitor of MONITORS) {
     viewers[monitor].blank = true;
     viewers[monitor].shown = true;
     showView(monitor);
+    if (viewers[monitor].state === 'attached') remakeView(monitor);
   }
+}
+/**
+ * Have the view of a monitor made anew the next time the page wants it shown where it says: the
+ * view there is stays as it is, hidden, until `view.attach` replaces it, and what is said late of
+ * it is passed over.
+ */
+function remakeView(monitor) {
+  const viewer = viewers[monitor];
+  viewer.state = 'none';
+  viewer.generation += 1;
 }
 function monitorOf(monitor) {
   if (!MONITORS.includes(monitor)) throw new Error('A monitor is source or timeline.');
@@ -2975,7 +2991,7 @@ app.whenReady().then(() => {
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
   window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); endPreview(); endFusion(); closeScopesWindow(); stopSigningIn(); void enqueueService(stopService); });
-  // The view of the engine is hidden while the page is loaded again, until the new page says where the viewer is.
+  // The view of the engine is hidden while the page is loaded again, and made anew once the new page says where the viewer is.
   window.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     const main = details?.isMainFrame ?? mainFrame;
     const same = details?.isSameDocument ?? inPlace;

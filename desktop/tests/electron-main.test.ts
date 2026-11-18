@@ -5113,13 +5113,82 @@ describe('the engine of the studio', () => {
     expect(told(shell).slice(-2)).toEqual([
       expect.objectContaining({ kind: 'opened', session: 1 }), { kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null },
     ]);
-    // Shown again only once it says where the viewer is.
+    // Shown again only once it says where the viewer is: made anew there, as for the first page.
     await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 330, height: 180 });
-    expect(view.methods().slice(-2)).toEqual(['view.place', 'view.show']);
-    expect(view.written.at(-1)).toMatchObject({ params: { shown: true } });
+    await settledAll();
+    expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(2);
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.attach', params: { monitor: 'source', x: 0, y: 0, width: 330, height: 180 } });
+    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null });
     // A page that crashed is the same.
     shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
     expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { shown: false } });
+  });
+
+  it('makes the view anew for a page that was loaded again, where its viewer says it lies as it is mounted, and shows the old one no more', async () => {
+    const shell = await shellHarness();
+    const { cwd } = await openIn(shell);
+    const [, view] = connections(shell);
+    const rect = { x: 650, y: 20, width: 640, height: 360 };
+    // What a viewer of the page says as it is mounted (`useViewerRect`): hidden until it is told,
+    // where it lies at the next frame, and shown.
+    const mount = async () => {
+      await shell.invoke('engine-view-show', { monitor: 'timeline', shown: false });
+      await shell.invoke('engine-view-rect', { monitor: 'timeline', ...rect });
+      await shell.invoke('engine-view-show', { monitor: 'timeline', shown: true });
+      await settledAll();
+    };
+    const attached = () => view.written.filter(request => request.method === 'view.attach' && request.params.monitor === 'timeline');
+    await mount();
+    expect(attached()).toHaveLength(1);
+    // The page is loaded again: the view is hidden while it loads, and nothing more is asked of it.
+    const before = view.written.length;
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    expect(view.written.slice(before)).toEqual([expect.objectContaining({ method: 'view.show', params: { monitor: 'timeline', shown: false } })]);
+    // The page that goes hides what it showed; the new one opens its project again, and its viewer
+    // is mounted where the first one lay.
+    await shell.invoke('engine-view-show', { monitor: 'timeline', shown: false });
+    await shell.invoke('engine-open', { cwd });
+    await mount();
+    // Made anew there, as on the first page: the view kept hidden through the load is shown no more.
+    expect(attached()).toHaveLength(2);
+    expect(attached()[1].params).toMatchObject(rect);
+    expect(view.written.slice(before).filter(request => request.method === 'view.show' && request.params.shown === true)).toEqual([]);
+    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, monitor: 'timeline', adapter: null, backend: null });
+    // Hidden and moved as before once it is made.
+    await shell.invoke('engine-view-show', { monitor: 'timeline', shown: false });
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', ...rect, x: 660 });
+    await shell.invoke('engine-view-show', { monitor: 'timeline', shown: true });
+    expect(view.methods().slice(-3)).toEqual(['view.show', 'view.place', 'view.show']);
+    expect(attached()).toHaveLength(2);
+    // A page that crashed and is loaded again is the same.
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { monitor: 'timeline', shown: false } });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await mount();
+    expect(attached()).toHaveLength(3);
+  });
+
+  it('makes anew a view that was being made as the page was loaded again', async () => {
+    const shell = await shellHarness();
+    const { cwd } = await openIn(shell);
+    const [, view] = connections(shell);
+    const server = shell.engines.servers.get(view.address)!;
+    const attaches = () => view.methods().filter(method => method === 'view.attach').length;
+    server.answers.set('view.attach', () => 'hold');
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 1, y: 1, width: 100, height: 100 });
+    expect(attaches()).toBe(1);
+    // The page is loaded again before the view is made: it is hidden as soon as it is.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    server.answerHeld('view.attach', { result: { adapter: null, backend: null } });
+    await settledAll();
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { monitor: 'timeline', shown: false } });
+    // The new page has it made anew where its viewer lies.
+    server.answers.delete('view.attach');
+    await shell.invoke('engine-open', { cwd });
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 2, y: 2, width: 100, height: 100 });
+    await settledAll();
+    expect(attaches()).toBe(2);
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.attach', params: { monitor: 'timeline', x: 2, y: 2 } });
   });
 
   it('takes no late word of a view that was made before for the one there is', async () => {

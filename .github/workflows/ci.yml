@@ -77,6 +77,37 @@ jobs:
           uv run --no-project python tests/support/failed.py junit.xml >> "$GITHUB_STEP_SUMMARY"
           uv run --no-project python tests/support/failed.py --annotations junit.xml
 
+  # The page of the desktop application (desktop/): its types, and its tests as the author runs
+  # them, in jsdom. The tests that time how long the page takes to draw (the project "perf",
+  # *.perf.test.tsx) are left out: the runner shares its processor, and a frame of 60 Hz is no
+  # measure there. Nothing of the engine is built: the tests that read what the engine wrote read
+  # its data files, which are in the checkout.
+  desktop:
+    name: Desktop / Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npx vitest run --project unit
+
   # The engine of video (engine/), in Rust, against FFmpeg 8.1: see .github/scripts/ffmpeg.sh for
   # where it comes from. The studio is made for Windows first, and its engine is built and tested
   # only there for now. cargo runs in engine/, so that its rust-toolchain.toml holds. There

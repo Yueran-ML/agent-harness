@@ -71,6 +71,15 @@ function answer(run: { child: any }, document: unknown) {
  *   system: The system, Windows unless it is named, and whether the shell is a package, which it is not
  *     unless that is said.
  */
+/**
+ * The page of the main window loaded again, as Electron tells it: the navigation starts, and
+ * another page is loaded (`did-navigate`, which is not told of a navigation that was stopped).
+ */
+function loadedAgain(shell: { window: { webContents: { emit(event: string, ...args: unknown[]): unknown } } }): void {
+  shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+  shell.window.webContents.emit('did-navigate', {}, 'file:///index.html', -1, '');
+}
+
 async function shellHarness(kept?: string, env: Record<string, string> = {}, system: System = {}) {
   const platform = system.platform ?? 'win32';
   const handlers = new Map<string, (...args: any[]) => any>();
@@ -3906,7 +3915,7 @@ describe('the engine of the studio', () => {
     await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 670, y: 30, width: 640, height: 360 });
     expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { monitor: 'timeline', x: 670 } });
     await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     expect(view.written.slice(-2).map(request => request.params)).toEqual([
       { monitor: 'source', shown: false }, { monitor: 'timeline', shown: false },
     ]);
@@ -4329,7 +4338,7 @@ describe('the engine of the studio', () => {
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
     await settledAll();
     expect(unsubscribed()).toEqual(['scope-2']);
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(unsubscribed()).toEqual(['scope-2', 'scope-1', 'scope-3']);
     // Let go once: the new page's scopes are its own.
@@ -4347,7 +4356,7 @@ describe('the engine of the studio', () => {
     const ended = () => main.written.filter(request => request.method === 'viewer.preview' && request.params?.on === false).length;
     const preview = { method: 'viewer.preview', params: { grade: { level: 'clip', timeline: 't1', clip: 'c1' }, node: 'n1', lut: 'Film/Look.cube' } };
     // A page that previewed nothing leaves nothing to end.
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(ended()).toBe(0);
     await shell.invoke('engine-call', preview);
@@ -4356,11 +4365,11 @@ describe('the engine of the studio', () => {
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
     await settledAll();
     expect(ended()).toBe(0);
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(ended()).toBe(1);
     // Ended once: the new page's previews are its own.
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(ended()).toBe(1);
     // A page that crashed is the same.
@@ -4378,7 +4387,7 @@ describe('the engine of the studio', () => {
     const ended = () => main.written.filter(request => request.method === 'viewer.fusion' && request.params?.clip === null).length;
     const view = { method: 'viewer.fusion', params: { clip: 'c1', node: 'n4' } };
     // A page that looked at no node leaves nothing to turn off.
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(ended()).toBe(0);
     await shell.invoke('engine-call', view);
@@ -4387,17 +4396,17 @@ describe('the engine of the studio', () => {
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
     await settledAll();
     expect(ended()).toBe(0);
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(ended()).toBe(1);
     // Turned off once; and a view that the page turned off itself is not turned off again.
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(ended()).toBe(1);
     await shell.invoke('engine-call', view);
     await shell.invoke('engine-call', { method: 'viewer.fusion', params: { clip: null } });
     expect(ended()).toBe(2);
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await settledAll();
     expect(ended()).toBe(2);
     // A page that crashed with the view on is the same as one loaded again.
@@ -4538,7 +4547,7 @@ describe('the engine of the studio', () => {
     expect(again.close).toHaveBeenCalledOnce();
     await shell.invoke('engine-scopes-window', { open: true });
     const third = shell.windows.at(-1);
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     expect(third.close).toHaveBeenCalledOnce();
   });
 
@@ -5100,11 +5109,11 @@ describe('the engine of the studio', () => {
     const [, view] = connections(shell);
     await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     // The page is loaded again: the native view would stay over it.
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     // Hidden already; nothing more is sent.
     expect(view.methods().filter(method => method === 'view.show')).toHaveLength(1);
     await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
     expect(view.methods().filter(method => method === 'view.show')).toHaveLength(1);
@@ -5142,7 +5151,7 @@ describe('the engine of the studio', () => {
     expect(attached()).toHaveLength(1);
     // The page is loaded again: the view is hidden while it loads, and nothing more is asked of it.
     const before = view.written.length;
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     expect(view.written.slice(before)).toEqual([expect.objectContaining({ method: 'view.show', params: { monitor: 'timeline', shown: false } })]);
     // The page that goes hides what it showed; the new one opens its project again, and its viewer
     // is mounted where the first one lay.
@@ -5163,9 +5172,30 @@ describe('the engine of the studio', () => {
     // A page that crashed and is loaded again is the same.
     shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
     expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { monitor: 'timeline', shown: false } });
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     await mount();
     expect(attached()).toHaveLength(3);
+  });
+
+  it('keeps the view of a page whose navigation was stopped, shown where it was', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [, view] = connections(shell);
+    const rect = { x: 650, y: 20, width: 640, height: 360 };
+    await shell.invoke('engine-view-show', { monitor: 'timeline', shown: false });
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', ...rect });
+    await shell.invoke('engine-view-show', { monitor: 'timeline', shown: true });
+    await settledAll();
+    const before = view.written.length;
+    // The page asks to be loaded again itself (`location.reload()`), or follows a link: the
+    // navigation starts, and the window, which goes to no other page, stops it. Nothing is hidden.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(view.written.slice(before)).toEqual([]);
+    // The page is there as it was: its viewer moves, and the view is moved, not made again.
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', ...rect, x: 660 });
+    await settledAll();
+    expect(view.methods().slice(before)).toEqual(['view.place']);
   });
 
   it('makes anew a view that was being made as the page was loaded again', async () => {
@@ -5178,7 +5208,7 @@ describe('the engine of the studio', () => {
     await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 1, y: 1, width: 100, height: 100 });
     expect(attaches()).toBe(1);
     // The page is loaded again before the view is made: it is hidden as soon as it is.
-    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    loadedAgain(shell);
     server.answerHeld('view.attach', { result: { adapter: null, backend: null } });
     await settledAll();
     expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { monitor: 'timeline', shown: false } });

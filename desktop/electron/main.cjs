@@ -2991,12 +2991,12 @@ app.whenReady().then(() => {
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
   window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); endPreview(); endFusion(); closeScopesWindow(); stopSigningIn(); void enqueueService(stopService); });
-  // The view of the engine is hidden while the page is loaded again, and made anew once the new page says where the viewer is.
-  window.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
-    const main = details?.isMainFrame ?? mainFrame;
-    const same = details?.isSameDocument ?? inPlace;
-    if (main === true && same !== true) { blankView(); dropScopes(); endPreview(); endFusion(); closeScopesWindow(); }
-  });
+  // The view of the engine is hidden once another page is loaded in the window (it was loaded
+  // again), and made anew once the new page says where the viewer is. A navigation that only starts
+  // loads none: the window goes to no other page (`closeToTheWorld`), so one that the page asks for,
+  // `location.reload()` among them, is stopped and leaves the page as it was, its viewer told, which
+  // would not tell it again. Hidden at the start of one such, the view stayed black on the real machine.
+  window.webContents.on('did-navigate', () => { blankView(); dropScopes(); endPreview(); endFusion(); closeScopesWindow(); });
   void window.loadFile(indexPath);
   // An assistant runs again where it ran when the application was left.
   for (const one of Object.values(assistants)) {

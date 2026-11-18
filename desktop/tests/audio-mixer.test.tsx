@@ -79,14 +79,14 @@ it('keeps automated faders read-only at real playback values and blocks reset ev
 });
 it('includes the first button in one solo/mute sweep and sends Solo Safe through the real edit', async () => {
   const { call } = mount();
-  fireEvent.pointerDown(screen.getByRole('button', { name: 'mute Audio 1' }), pointer(0));
-  fireEvent.pointerEnter(screen.getByRole('button', { name: 'mute Audio 2' }), { buttons: 1 }); fireEvent.pointerUp(window); await settle();
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'Mute Audio 1' }), pointer(0));
+  fireEvent.pointerEnter(screen.getByRole('button', { name: 'Mute Audio 2' }), { buttons: 1 }); fireEvent.pointerUp(window); await settle();
   expect((call.mock.calls[0] as any)[1].ops).toMatchObject([{ track: 'a1', patch: { mute: true } }, { track: 'a2', patch: { mute: true } }]);
   // A new accepted revision is delivered by the host in normal use.
 });
 it('handles Solo Safe, single/range/toggle selection and double-click rename with isolated keys', async () => {
   const { call, props } = mount();
-  fireEvent.click(screen.getByRole('button', { name: 'solo Audio 1' }), { ctrlKey: true, shiftKey: true }); await settle();
+  fireEvent.click(screen.getByRole('button', { name: 'Solo Audio 1' }), { ctrlKey: true, shiftKey: true }); await settle();
   expect((call.mock.calls[0] as any)[1].ops[0]).toMatchObject({ edit: 'set_track_audio', patch: { solo_safe: true } });
   fireEvent.click(screen.getByRole('button', { name: 'Audio 2' }), { ctrlKey: true }); expect(props.onSelect).toHaveBeenLastCalledWith(['track:a1', 'track:a2']);
   fireEvent.click(screen.getByRole('button', { name: 'Audio 3' }), { shiftKey: true }); expect(props.onSelect).toHaveBeenLastCalledWith(['track:a1', 'track:a2', 'track:a3']);
@@ -159,8 +159,8 @@ it('preserves the engine group Solo under Exclusive Solo for a pointer click and
       return { ok: true, result: { revision: 8, done: [] } };
     }) as never);
     const first = sweeping ? 'Audio 3' : 'Audio 1';
-    fireEvent.pointerDown(screen.getByRole('button', { name: `solo ${first}` }), pointer(0));
-    if (sweeping) fireEvent.pointerEnter(screen.getByRole('button', { name: 'solo Audio 1' }), { buttons: 1 });
+    fireEvent.pointerDown(screen.getByRole('button', { name: `Solo ${first}` }), pointer(0));
+    if (sweeping) fireEvent.pointerEnter(screen.getByRole('button', { name: 'Solo Audio 1' }), { buttons: 1 });
     fireEvent.pointerUp(window); await settle();
     expect([...solo].sort()).toEqual(['a1', 'a2']);
     expect((view.call.mock.calls[0] as any)[1].ops.every((op: any) => op.follow_groups === true)).toBe(true);

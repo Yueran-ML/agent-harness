@@ -173,7 +173,7 @@ const entries = {
   'Mixer channels': ['调音台条带', 'ミキサーチャンネル'], 'Buses': ['总线', 'バス'],
   'Input': ['输入', '入力'], 'Track FX': ['轨道效果', 'トラック FX'], 'Effects In': ['插入效果启用', 'エフェクト有効'],
   'Sends': ['发送', 'センド'], 'Outputs': ['输出', '出力'], 'Fader value': ['推子数值', 'フェーダー値'],
-  'Solo Safe': ['独听保护', 'ソロセーフ'], 'Exclusive Solo': ['独占独听', '排他的ソロ'],
+  'Solo Safe': ['独奏保护', 'ソロセーフ'], 'Exclusive Solo': ['独占独奏', '排他的ソロ'],
   'Automation controls playback': ['自动化控制播放', 'オートメーションが再生を制御'], 'Base value': ['基础值', '基本値'],
   'Automation controls playback. Static settings do not replace the lane.': ['自动化控制播放，静态设置不会替换车道。', 'オートメーションが再生を制御します。静的設定はレーンを置き換えません。'],
   'No monitored bus': ['未选择监听总线', 'モニターバス未選択'],
@@ -271,7 +271,7 @@ const english: Partial<Record<FairlightText, string>> = {
   narrow: 'Narrow Band', wide: 'Wide Band', all_high: 'All High Frequency',
   slow: 'Slow', medium: 'Medium', fast: 'Fast', auto_speech: 'Auto Speech', manual: 'Manual', voice: 'Voice',
   'Move track up': 'Move {name} up', 'Move track down': 'Move {name} down',
-  'Medium size': 'Medium',
+  'Medium size': 'Medium', solo: 'Solo', mute: 'Mute',
 };
 const catalogue = (language: 'en' | 'zh' | 'ja'): Record<FairlightText, string> => Object.fromEntries(Object.entries(entries).map(([key, value]) => [key,
   language === 'en' ? english[key as FairlightText] ?? key : value[language === 'zh' ? 0 : 1]])) as Record<FairlightText, string>;

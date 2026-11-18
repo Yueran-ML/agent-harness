@@ -29,9 +29,9 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 it('makes the Index Solo an edit that follows groups and Exclusive Solo, and its Mute a mute of the group', () => {
   const edit = vi.fn();
   render(<IndexTracks timeline={song()} hidden={[]} onHidden={() => {}} onSelect={() => {}} onEdit={edit} />);
-  fireEvent.click(screen.getByRole('button', { name: 'solo Voice a1' }), { detail: 0 });
+  fireEvent.click(screen.getByRole('button', { name: 'Solo Voice a1' }), { detail: 0 });
   expect(edit).toHaveBeenLastCalledWith([{ edit: 'set_track_audio', timeline: 't1', track: 'a1', patch: { solo: true }, follow_groups: true }]);
-  fireEvent.click(screen.getByRole('button', { name: 'mute Voice a1' }), { detail: 0 });
+  fireEvent.click(screen.getByRole('button', { name: 'Mute Voice a1' }), { detail: 0 });
   expect(edit).toHaveBeenLastCalledWith(['a1', 'a2'].map(track => ({ edit: 'set_track_audio', timeline: 't1', track,
     patch: { mute: true }, follow_groups: false })));
 });
@@ -41,7 +41,7 @@ it('takes the other solos off when a VCA is soloed under Exclusive Solo, and onl
   const context = (t: Timeline, revision = 7) => ({ bridge: { call } as never, session: 1, revision, timeline: t });
   const exclusive = song({ audio: { exclusive_solo: true } as Timeline['audio'] });
   const view = render(<VcaStrip context={context(exclusive)} vca={exclusive.vcas![0]} seconds={0} selected={false} onSelect={() => {}} />);
-  fireEvent.click(screen.getByRole('button', { name: 'solo VCA 1' })); await settle();
+  fireEvent.click(screen.getByRole('button', { name: 'Solo VCA 1' })); await settle();
   const ops = () => (call.mock.calls.at(-1) as unknown as [string, { ops: unknown[] }])[1].ops;
   expect(ops()).toEqual([
     { op: 'set_track_audio', timeline: 't1', track: 'a2', patch: { solo: false } },
@@ -51,7 +51,7 @@ it('takes the other solos off when a VCA is soloed under Exclusive Solo, and onl
   ]);
   const shared = song();
   view.rerender(<VcaStrip context={context(shared, 8)} vca={shared.vcas![0]} seconds={0} selected={false} onSelect={() => {}} />);
-  fireEvent.click(screen.getByRole('button', { name: 'solo VCA 1' })); await settle();
+  fireEvent.click(screen.getByRole('button', { name: 'Solo VCA 1' })); await settle();
   expect(ops()).toEqual([{ op: 'set_vca', timeline: 't1', id: 'V1', patch: { solo: true } }]);
 });
 

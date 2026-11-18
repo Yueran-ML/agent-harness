@@ -754,7 +754,7 @@ export const zhCN: Messages = {
         output: '输出', passThrough: '直通', passedThrough: '已直通', rename: '重命名',
         resetComposition: '重置 Fusion 合成', removeComposition: '移除合成', nodeName: '名称',
         masks: '遮罩',
-        effects: '特效',
+        effects: '效果',
         copy: '复制', cut: '剪切', paste: '粘贴', duplicate: '创建副本',
         selectTool: '选择工具', selectToolMenu: '选择工具…', searchTools: '搜索工具',
         view: '查看', viewOutput: '查看输出', viewedMark: '正在检视器中显示', viewing: '检视器：{name}',

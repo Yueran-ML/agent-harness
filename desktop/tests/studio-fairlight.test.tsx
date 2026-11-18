@@ -293,9 +293,9 @@ it('captures a reference in page state and applies Level Matcher through the rea
 it('commits an Index control sweep once, including the start and repeated crossings, and discards cancellation', () => {
   const edit = vi.fn();
   const view = render(<IndexTracks timeline={song()} hidden={[]} onHidden={() => {}} onSelect={() => {}} onEdit={edit} />);
-  const first = screen.getByRole('button', { name: 'mute Audio 1' });
-  const second = screen.getByRole('button', { name: 'mute Audio 2' });
-  const third = screen.getByRole('button', { name: 'mute Audio 3' });
+  const first = screen.getByRole('button', { name: 'Mute Audio 1' });
+  const second = screen.getByRole('button', { name: 'Mute Audio 2' });
+  const third = screen.getByRole('button', { name: 'Mute Audio 3' });
   // The mixer's switch edits: one per member, as a mixer strip's mute writes them.
   const mute = (track: string) => ({ edit: 'set_track_audio', timeline: 't1', track, patch: { mute: true }, follow_groups: false });
   fireEvent.pointerDown(first, { button: 0, buttons: 1 });

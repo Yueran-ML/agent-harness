@@ -12,8 +12,9 @@
 import type { Key } from '../../app/keys';
 import {
   firstComposition, sortFusionLinks, type Clip, type Composition, type FusionBackground, type FusionBlur, type FusionDeltaKeyer, type FusionEllipse, type FusionFollow,
-  type FusionKind, type FusionLink, type FusionMaskCommon, type FusionMerge, type FusionMosaic, type FusionNode, type FusionPoint, type FusionPolygon,
-  type FusionRectangle, type FusionTracker, type FusionTrackerPattern, type FusionTransform, type NodePos, type Op,
+  type FusionKind, type FusionLink, type FusionMaskCommon, type FusionMerge, type FusionMosaic, type FusionNode, type FusionPlanarTracker, type FusionPoint,
+  type FusionPolygon, type FusionRectangle, type FusionTextBorder, type FusionTextFollower, type FusionTextOutline, type FusionTextPlus, type FusionTracker,
+  type FusionTrackerPattern, type FusionTransform, type NodePos, type Op,
 } from '../engine';
 import { valueAt } from '../keyframes/value';
 import {
@@ -41,13 +42,18 @@ export function withFirst(at: FusionAt, has: boolean, ops: Op[]): Op[] {
   return [{ op: 'set_fusion', ...at, value: firstComposition() }, ...ops];
 }
 
-/** The kinds of node of a picture that the editor adds: a composition has exactly one MediaOut, so none is added. */
-export const ADDABLE: readonly Exclude<FusionKind, 'media_out'>[] = ['merge', 'transform', 'background', 'media_in'];
 /**
- * The effects on a picture that the editor adds, in a group of their own: a Blur, a Mosaic, a Delta Keyer and a Tracker. Each has
- * a picture, `input`, so it goes in after the node chosen as a Transform does (`addNode`).
+ * The kinds of node of a picture that the editor adds: a composition has exactly one MediaOut, so none is added. A Text+ makes
+ * its picture of nothing, as a Background does, and stands beside it.
  */
-export const ADDABLE_EFFECTS: readonly Extract<FusionKind, 'blur' | 'mosaic' | 'delta_keyer' | 'tracker'>[] = ['blur', 'mosaic', 'delta_keyer', 'tracker'];
+export const ADDABLE: readonly Exclude<FusionKind, 'media_out'>[] = ['merge', 'transform', 'background', 'text_plus', 'media_in'];
+/**
+ * The effects on a picture that the editor adds, in a group of their own: a Blur, a Mosaic, a Delta Keyer, a Tracker and a
+ * Planar Tracker. Each has a picture, `input`, so it goes in after the node chosen as a Transform does (`addNode`).
+ */
+export const ADDABLE_EFFECTS: readonly Extract<FusionKind, 'blur' | 'mosaic' | 'delta_keyer' | 'tracker' | 'planar_tracker'>[] = [
+  'blur', 'mosaic', 'delta_keyer', 'tracker', 'planar_tracker',
+];
 /** The masks that the editor adds, in a group of their own. */
 export const ADDABLE_MASKS: readonly MaskKind[] = MASK_KINDS;
 
@@ -100,6 +106,41 @@ export const newTracker = (): FusionTracker => ({
   pivot_point: { x: 0.5, y: 0.5 }, reference: 0, trackers: [],
 });
 
+/**
+ * The settings of a Planar Tracker as the engine makes a new one (PROTOCOL.md, "The Planar Tracker"): an Operation Mode of None,
+ * the motion Perspective, frame 0 of the keys as the reference, a region of the middle half of the picture across and up, from
+ * its lower left corner round, the corners of the Corner Pin at the corners of that box, and no path.
+ */
+export const newPlanarTracker = (): FusionPlanarTracker => ({
+  operation: 'none', motion: 'perspective', reference: 0,
+  region: [{ x: 0.25, y: 0.25 }, { x: 0.75, y: 0.25 }, { x: 0.75, y: 0.75 }, { x: 0.25, y: 0.75 }],
+  corners: { tl: { x: 0.25, y: 0.75 }, tr: { x: 0.75, y: 0.75 }, br: { x: 0.75, y: 0.25 }, bl: { x: 0.25, y: 0.25 } },
+  path: {},
+});
+
+/**
+ * The settings of a Text+ as the engine makes a new one: no text, in the engine's font, an em 0.08 of the picture high, in the
+ * middle, centred both ways, its lines one apart and its characters as the font sets them, not turned, written on whole, its
+ * characters not moved by its Transform, and filled with opaque white; with no outline, no border and no Follower.
+ */
+export const newTextPlus = (): FusionTextPlus => ({
+  text: '', font: '', size: 0.08, center: { x: 0.5, y: 0.5 }, justify: 'center', vertical: 'center', line_spacing: 1, tracking: 0, angle: 0,
+  write_on: { start: 0, end: 1 },
+  transform: { select: 'characters', offset: { x: 0, y: 0 }, angle: 0, scale: 1 },
+  fill: { color: { r: 1, g: 1, b: 1, a: 1 } },
+});
+/** The outline that a Text+ is given as it is turned on: opaque black, 0.02 thick. */
+export const newOutline = (): FusionTextOutline => ({ color: { r: 0, g: 0, b: 0, a: 1 }, thickness: 0.02 });
+/** The border that a Text+ is given as it is turned on: black at 0.6, reaching 0.02 beyond the characters, its corners sharp. */
+export const newBorder = (): FusionTextBorder => ({ color: { r: 0, g: 0, b: 0, a: 0.6 }, extend: 0.02, round: 0 });
+/**
+ * The Follower that a Text+ is given as it is turned on: from left to right, each character 2 frames after the one before,
+ * at full opacity, where it is, not turned and as large as it is.
+ */
+export const newFollower = (): FusionTextFollower => ({
+  order: 'left_to_right', delay: 2, delay_type: 'each', opacity: 1, offset: { x: 0, y: 0 }, angle: 0, scale: 1,
+});
+
 /** The most points that a Polygon may have (PROTOCOL.md, "Masks"). */
 export const MOST_POINTS = 128;
 /** The fewest points that make a shape: with fewer a Polygon is a mask of nothing, so the page takes none away below them. */
@@ -129,6 +170,8 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
     case 'mosaic': return { ...base, kind, params: newMosaic() };
     case 'delta_keyer': return { ...base, kind, params: newDeltaKeyer() };
     case 'tracker': return { ...base, kind, params: newTracker() };
+    case 'planar_tracker': return { ...base, kind, params: newPlanarTracker() };
+    case 'text_plus': return { ...base, kind, params: newTextPlus() };
     default: return { ...base, kind, params: {} };
   }
 }
@@ -180,9 +223,10 @@ export const followersOf = (composition: Composition, ids: readonly string[]): F
 /**
  * Add a node. With `after`, a node that has an output, a node that has an input of a picture is
  * inserted after it: the links of the operation put the output of `after` into the first input of
- * the new node (`input` of a Transform, a Blur, a Mosaic, a Delta Keyer and a Tracker, `background` of a Merge), and the
- * output of the new node into every input that `after` fed, each in the place of the link that was there. A node without
- * such an input (a Background, a MediaIn), or one added with no node chosen, is added with no links. A Tracker begins
+ * the new node (`input` of a Transform, a Blur, a Mosaic, a Delta Keyer, a Tracker and a Planar Tracker, `background` of a
+ * Merge), and the output of the new node into every input that `after` fed, each in the place of the link that was there. A
+ * node without such an input (a Background, a Text+, a MediaIn), or one added with no node chosen, is added with no links. A
+ * Planar Tracker begins with the region of the engine's new one, the middle half of the picture. A Tracker begins
  * with one pattern in the middle of the picture (`newPattern`), as a Polygon begins with a square: the engine makes one
  * with none, and a Tracker without a pattern has nothing to place on the picture.
  *
@@ -376,7 +420,8 @@ export function insertOnLink(at: FusionAt, composition: Composition, id: string,
  * it fed without a picture; the mask that comes into a mask node is the picture that it hands on,
  * and is counted. The mattes of a Delta Keyer are not counted either: it is joined across by its
  * `input` alone, and what fed its mattes is joined to nothing; nor is the `foreground` of a Tracker,
- * which it makes follow its patterns and does not hand on. Each node is taken away from the
+ * which it makes follow its patterns and does not hand on, nor that of a Planar Tracker, which its
+ * Corner Pin lays on the plane. Each node is taken away from the
  * composition as the ones before it left it, as the engine applies them.
  *
  * A Tracker that the centre of a node follows is not taken away by the engine (`in_use`, PROTOCOL.md,
@@ -392,7 +437,7 @@ export function removeNodes(at: FusionAt, composition: Composition, ids: readonl
     if (!node || node.kind === 'media_out') continue;
     const passed = handedOn(node.kind);
     const into = now.links.filter(link => link.to === id && !isMatteInput(link.input) && (link.input !== 'mask' || passed === 'mask')
-      && !(node.kind === 'tracker' && link.input === 'foreground'));
+      && !((node.kind === 'tracker' || node.kind === 'planar_tracker') && link.input === 'foreground'));
     const fed = now.links.filter(link => link.from === id);
     const links: FusionLink[] = into.length === 1 ? fed.map(link => ({ from: into[0].from, to: link.to, input: link.input })) : [];
     ops.push(links.length > 0 ? { op: 'remove_fusion_node', ...at, id, links } : { op: 'remove_fusion_node', ...at, id });

@@ -8,7 +8,7 @@
  * The settings, their defaults and their ranges are those of the engine's catalog of the settings
  * that take keys (`engine/crates/model/tests/data/catalog.json`, `fusion_merge`, `fusion_transform`,
  * `fusion_background`, `fusion_rectangle`, `fusion_ellipse`, `fusion_polygon`, `fusion_blur`,
- * `fusion_mosaic` and `fusion_delta_keyer`; the tests hold the two together). A setting is named by its path in the `params` of its node, and in an
+ * `fusion_mosaic`, `fusion_delta_keyer` and `fusion_text_plus`; the tests hold the two together). A setting is named by its path in the `params` of its node, and in an
  * operation by the id of the node, a dot, and that path (`n4.center.x`). The two numbers of a point
  * of a Polygon are settings each, named by the place of the point in the list of points, from 0
  * (`points.2.x`); the catalog writes them once, for every point (`points.*.x`). The keys are at the
@@ -17,7 +17,7 @@
  */
 import { getAt, patchAt, patchOf, type Bounds } from '../color/corrector';
 import { keyClockOf, shownKeyRange } from '../color/keyFrames';
-import type { Clip, FusionKind, FusionNode, Keyframe, Media, Op, Param, Timeline } from '../engine';
+import { TEXT_PARTS, type Clip, type FusionKind, type FusionNode, type Keyframe, type Media, type Op, type Param, type TextPart, type Timeline } from '../engine';
 import { frameOfKey, keyAt, mediaOf } from '../inspector/clipKeys';
 import { spliceOf } from '../keyframes/curveGeometry';
 import { valueAt } from '../keyframes/value';
@@ -53,11 +53,21 @@ const MOST_COLOR = 65504;
 const keyerColor = (name: string, r: number, g: number, b: number): FusionSetting[] => [
   s(`${name}.r`, r, 0, MOST_COLOR), s(`${name}.g`, g, 0, MOST_COLOR), s(`${name}.b`, b, 0, MOST_COLOR),
 ];
+/** The four channels of a colour of a Text+, each a setting from 0 to 1: of its fill, of its outline and of its border. */
+const textColor = (name: string, r: number, g: number, b: number, a: number): FusionSetting[] => [
+  s(`${name}.r`, r, 0, 1), s(`${name}.g`, g, 0, 1), s(`${name}.b`, b, 0, 1), s(`${name}.a`, a, 0, 1),
+];
+/** Where a thing of a Text+ is moved, how far it is turned and how large it is made: its Transform and its Follower. */
+const textMove = (name: string): FusionSetting[] => [
+  s(`${name}.offset.x`, 0, -10, 10, 'widths'), s(`${name}.offset.y`, 0, -10, 10, 'heights'), s(`${name}.angle`, 0, -3600, 3600, 'degrees_counterclockwise'),
+  s(`${name}.scale`, 1, 0, 100),
+];
 
 /**
  * The settings of each kind of node that take keys, in the order of the catalog. A MediaIn, a
- * MediaOut and a Tracker have none. Those of a Polygon end with the two numbers of a point, written once for
- * every point as the catalog writes them; `settingsOf` gives them for each point of a node.
+ * MediaOut, a Tracker and a Planar Tracker have none. Those of a Polygon end with the two numbers of a point, written once for
+ * every point as the catalog writes them; `settingsOf` gives them for each point of a node. Those of a Text+ are all that it
+ * may have, those of its outline, its border and its Follower among them; `settingsOf` gives those of the parts that it has.
  */
 export const FUSION_SETTINGS: Record<Exclude<FusionKind, 'media_in' | 'media_out'>, readonly FusionSetting[]> = {
   merge: [s('subtractive_additive', 1, 0, 1), s('alpha_gain', 1, 0, 1), s('burn_in', 0, 0, 1), s('blend', 1, 0, 1), ...PLACE],
@@ -78,6 +88,20 @@ export const FUSION_SETTINGS: Record<Exclude<FusionKind, 'media_in' | 'media_out
   ],
   // A Tracker has no entry in the catalog: none of its settings takes keys, and the paths of its patterns are what moves it.
   tracker: [],
+  // Nor has a Planar Tracker: its region and its corners are set whole, and its path is what moves it.
+  planar_tracker: [],
+  // A Text+: the size of an em in heights of the picture, its centre, its lines and characters, its angle, its Write On, the
+  // Transform of its characters, the colour of its fill; and those of its outline, its border and its Follower, which a Text+
+  // that has not got the part has not (`settingsOf`).
+  text_plus: [
+    s('size', 0.08, 0, 1, 'heights'), s('center.x', 0.5, -15.5, 16.5, 'widths'), s('center.y', 0.5, -15.5, 16.5, 'heights'),
+    s('line_spacing', 1, 0, 10), s('tracking', 0, -1, 10), s('angle', 0, -3600, 3600, 'degrees_counterclockwise'),
+    s('write_on.start', 0, 0, 1), s('write_on.end', 1, 0, 1),
+    ...textMove('transform'), ...textColor('fill.color', 1, 1, 1, 1),
+    s('outline.thickness', 0.02, 0, 0.5, 'heights'), ...textColor('outline.color', 0, 0, 0, 1),
+    s('border.extend', 0.02, 0, 1, 'heights'), s('border.round', 0, 0, 1), ...textColor('border.color', 0, 0, 0, 0.6),
+    s('follower.opacity', 1, 0, 1), ...textMove('follower'),
+  ],
 };
 
 /**
@@ -111,9 +135,40 @@ function polygonSettings(points: number): readonly FusionSetting[] {
   return made;
 }
 
-/** The settings of a node that take keys: of a Polygon, those of its kind and then the two numbers of each of its points, in their order. */
+/** The part of a Text+ that a setting of it lies in (`outline.thickness` in its outline), or null for one of the Text+ itself. */
+export function textPartOf(path: string): TextPart | null {
+  const head = path.split('.')[0];
+  return (TEXT_PARTS as readonly string[]).includes(head) ? head as TextPart : null;
+}
+
+/** The settings of a Text+ that has the parts `parts`, kept so that the same list is given each time. */
+const OF_TEXT = new Map<string, readonly FusionSetting[]>();
+function textSettings(parts: readonly TextPart[]): readonly FusionSetting[] {
+  const named = parts.join(',');
+  const known = OF_TEXT.get(named);
+  if (known) return known;
+  const made = FUSION_SETTINGS.text_plus.filter((setting) => {
+    const part = textPartOf(setting.path);
+    return part === null || parts.includes(part);
+  });
+  OF_TEXT.set(named, made);
+  return made;
+}
+
+/** The parts of a Text+ that it has, in the order of `TEXT_PARTS`: an outline, a border, a Follower, each left out where it has none. */
+export function textPartsOf(node: FusionNode): TextPart[] {
+  if (node.kind !== 'text_plus') return [];
+  const params = node.params as unknown as Record<string, unknown>;
+  return TEXT_PARTS.filter(part => typeof params[part] === 'object' && params[part] !== null);
+}
+
+/**
+ * The settings of a node that take keys: of a Polygon, those of its kind and then the two numbers of each of its points, in their
+ * order; of a Text+, those of its kind but of the parts that it has not, which the engine refuses a key of.
+ */
 export function settingsOf(node: FusionNode): readonly FusionSetting[] {
   if (node.kind === 'media_in' || node.kind === 'media_out') return NONE;
+  if (node.kind === 'text_plus') return textSettings(textPartsOf(node));
   if (node.kind !== 'polygon') return FUSION_SETTINGS[node.kind];
   return polygonSettings(Array.isArray(node.params.points) ? node.params.points.length : 0);
 }

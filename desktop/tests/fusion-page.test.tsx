@@ -724,7 +724,7 @@ describe('the masks in the node editor of the Fusion page', () => {
     const groups = [...document.querySelectorAll<HTMLElement>('.fusion-add')];
     expect(groups.map(each => each.getAttribute('aria-label'))).toEqual(['Add Node', 'Effects', 'Masks']);
     expect(groups.map(each => [...each.querySelectorAll('button')].map(button => button.textContent))).toEqual([
-      ['Merge', 'Transform', 'Background', 'MediaIn'], ['Blur', 'Mosaic', 'Delta Keyer', 'Tracker'], ['Rectangle', 'Ellipse', 'Polygon'],
+      ['Merge', 'Transform', 'Background', 'Text+', 'MediaIn'], ['Blur', 'Mosaic', 'Delta Keyer', 'Tracker', 'Planar Tracker'], ['Rectangle', 'Ellipse', 'Polygon'],
     ]);
     // No node chosen: the mask is added with no links, and is the node chosen.
     bridge.call.mockClear();
@@ -1185,7 +1185,8 @@ describe('a Blur and a Mosaic in the node editor of the Fusion page', () => {
   it('adds each from their group of the tool bar: loose where no node is chosen, and after the node chosen on its picture', async () => {
     const { bridge } = await mount();
     const group = one('.fusion-add-effects');
-    expect([group.getAttribute('aria-label'), [...group.querySelectorAll('button')].map(button => button.textContent)]).toEqual(['Effects', ['Blur', 'Mosaic', 'Delta Keyer', 'Tracker']]);
+    expect([group.getAttribute('aria-label'), [...group.querySelectorAll('button')].map(button => button.textContent)])
+      .toEqual(['Effects', ['Blur', 'Mosaic', 'Delta Keyer', 'Tracker', 'Planar Tracker']]);
     expect([marked('add-blur')!.title, marked('add-mosaic')!.title]).toEqual(['Add Node: Blur', 'Add Node: Mosaic']);
     // No node chosen: the Blur is added with no links, and is the node chosen.
     bridge.call.mockClear();
@@ -2442,9 +2443,12 @@ describe('Select Tool on the Fusion page', () => {
     expect(dialog()).not.toBeNull();
     expect(document.activeElement).toBe(field());
     expect(screen.getByRole('listbox', { name: 'Select Tool' }).id).toBe(field().getAttribute('aria-controls'));
-    expect(kinds()).toEqual(['merge', 'transform', 'background', 'media_in', 'blur', 'mosaic', 'delta_keyer', 'tracker', 'rectangle', 'ellipse', 'polygon']);
-    expect(options().map(each => each.querySelector('.fusion-select-tool-name')!.textContent))
-      .toEqual(['Merge', 'Transform', 'Background', 'MediaIn', 'Blur', 'Mosaic', 'Delta Keyer', 'Tracker', 'Rectangle', 'Ellipse', 'Polygon']);
+    expect(kinds()).toEqual([
+      'merge', 'transform', 'background', 'text_plus', 'media_in', 'blur', 'mosaic', 'delta_keyer', 'tracker', 'planar_tracker', 'rectangle', 'ellipse', 'polygon',
+    ]);
+    expect(options().map(each => each.querySelector('.fusion-select-tool-name')!.textContent)).toEqual([
+      'Merge', 'Transform', 'Background', 'Text+', 'MediaIn', 'Blur', 'Mosaic', 'Delta Keyer', 'Tracker', 'Planar Tracker', 'Rectangle', 'Ellipse', 'Polygon',
+    ]);
     expect(options().every(each => each.getAttribute('role') === 'option')).toBe(true);
     expect([markedKind(), field().getAttribute('aria-activedescendant')]).toEqual(['merge', options()[0].id]);
     // Shift+Space was the editor's: the transport, which plays on Space, was not asked to.
@@ -2469,7 +2473,7 @@ describe('Select Tool on the Fusion page', () => {
     bridge.call.mockClear();
     shiftSpace();
     fireEvent.change(field(), { target: { value: 'e' } });
-    expect(kinds()).toEqual(['ellipse', 'merge', 'media_in', 'delta_keyer', 'tracker', 'rectangle']);
+    expect(kinds()).toEqual(['ellipse', 'merge', 'text_plus', 'media_in', 'delta_keyer', 'tracker', 'planar_tracker', 'rectangle']);
     fireEvent.keyDown(field(), { key: 'ArrowUp' });
     expect(markedKind()).toBe('rectangle');
     fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
@@ -2578,7 +2582,7 @@ describe('a clip on a locked track on the Fusion page', () => {
     expect(nodesDrawn()).toEqual(['MediaIn1', 'MediaOut1', 'n3', 'n4', 'n5']);
     expect([inspector().dataset.node, box('blend').value]).toEqual(['n4', '1.000']);
     // The buttons of the tool bar are off, and so is every field, switch and button of the Inspector that changes something.
-    expect([...document.querySelectorAll<HTMLButtonElement>('.fusion-add button')].map(each => each.disabled)).toEqual(Array.from({ length: 11 }, () => true));
+    expect([...document.querySelectorAll<HTMLButtonElement>('.fusion-add button')].map(each => each.disabled)).toEqual(Array.from({ length: 13 }, () => true));
     expect([box('blend').disabled, slider('blend').disabled, row('apply').querySelector('select')!.disabled, row('label').querySelector('input')!.disabled])
       .toEqual([true, true, true, true]);
     expect(keysOf('blend')[1].disabled).toBe(true);

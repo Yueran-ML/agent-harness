@@ -34,6 +34,17 @@ export function settingNames(labels: SettingLabels): Record<string, string> {
     clean_foreground: labels.cleanForeground, clean_background: labels.cleanBackground,
     'replace_color.r': labels.replaceRed, 'replace_color.g': labels.replaceGreen, 'replace_color.b': labels.replaceBlue,
     spill_suppression: labels.spillSuppression,
+    // A Text+: the numbers of its Transform, of its colours and of its parts are named with what they are of.
+    tracking: labels.tracking, line_spacing: labels.lineSpacing, 'write_on.start': labels.writeOnStart, 'write_on.end': labels.writeOnEnd,
+    'transform.offset.x': labels.transformOffsetX, 'transform.offset.y': labels.transformOffsetY, 'transform.angle': labels.transformAngle,
+    'transform.scale': labels.transformSize,
+    'fill.color.r': labels.fillRed, 'fill.color.g': labels.fillGreen, 'fill.color.b': labels.fillBlue, 'fill.color.a': labels.fillAlpha,
+    'outline.color.r': labels.outlineRed, 'outline.color.g': labels.outlineGreen, 'outline.color.b': labels.outlineBlue, 'outline.color.a': labels.outlineAlpha,
+    'outline.thickness': labels.outlineThickness,
+    'border.color.r': labels.borderRed, 'border.color.g': labels.borderGreen, 'border.color.b': labels.borderBlue, 'border.color.a': labels.borderAlpha,
+    'border.extend': labels.borderExtend, 'border.round': labels.borderRound,
+    'follower.opacity': labels.followerOpacity, 'follower.offset.x': labels.followerOffsetX, 'follower.offset.y': labels.followerOffsetY,
+    'follower.angle': labels.followerAngle, 'follower.scale': labels.followerSize,
   };
 }
 

@@ -919,12 +919,72 @@ export interface FusionTracker {
   operation: FusionTrackerOperation; merge: FusionTrackerMerge; position: boolean; rotation: boolean; scaling: boolean;
   pivot: FusionTrackerPivot; pivot_tracker: number; pivot_point: FusionTrackerPlace; reference: number; trackers: FusionTrackerPattern[];
 }
+/** What a Planar Tracker does with its pictures (Operation Mode, p. 2750): nothing, Steady, or Corner Pin. */
+export type FusionPlanarOperation = 'none' | 'steady' | 'corner_pin';
+/** Which parts of the motion of the plane a track of a Planar Tracker keeps (Motion Type, p. 2752). */
+export type FusionPlanarMotion = 'translation' | 'translation_rotation' | 'translation_rotation_scale' | 'perspective';
+/** Where the four corners of the foreground of a Planar Tracker go at its reference frame (Corner Pin, p. 2754): places, as a centre counts them. */
+export interface FusionPlanarCorners { tl: FusionTrackerPlace; tr: FusionTrackerPlace; br: FusionTrackerPlace; bl: FusionTrackerPlace }
+/**
+ * A homography of the path of a Planar Tracker, row by row but for its last number, which is 1:
+ * `[h11, h12, h13, h21, h22, h23, h31, h32]`. It acts on places as a centre counts them.
+ */
+export type FusionHomography = [number, number, number, number, number, number, number, number];
+/**
+ * The settings of a Planar Tracker node (Reference Manual 20, Chapter 83, pp. 1760–1766 and 2749–2758; PROTOCOL.md, "The Planar
+ * Tracker"), every field written and none taking keys: its Operation Mode, its Motion Type, its Reference Frame (a frame of the
+ * keys of the clip), its region (3 to 64 places, set whole), the corners of its Corner Pin (set whole) and its path, the
+ * homography from the reference frame to each frame of the keys that was tracked, written as an object of the frames; a frame
+ * set to `null` by `set_fusion_node` is taken away.
+ */
+export interface FusionPlanarTracker {
+  operation: FusionPlanarOperation; motion: FusionPlanarMotion; reference: number; region: FusionTrackerPlace[]; corners: FusionPlanarCorners;
+  path: Record<string, FusionHomography>;
+}
+/** A colour of a Text+, not premultiplied: each channel 0…1, and a number or keys. */
+export interface FusionTextColor { r: Param; g: Param; b: Param; a: Param }
+/** How the lines of a Text+ lie across (Horizontal Justification) and how the block of them lies about its centre (Vertical Justification). */
+export type FusionTextJustify = 'left' | 'center' | 'right';
+export type FusionTextVertical = 'top' | 'center' | 'bottom';
+/** What the Transform of a Text+ moves each of (Select Transform). */
+export type FusionTextSelect = 'characters' | 'words' | 'lines';
+/** The order in which a Follower comes to the characters of a Text+, and how its Delay is counted. */
+export type FusionFollowerOrder = 'left_to_right' | 'right_to_left' | 'inside_out' | 'outside_in';
+export type FusionFollowerDelayType = 'each' | 'first_to_last';
+/** The outline of the characters of a Text+: its colour and its thickness (0…0.5). */
+export interface FusionTextOutline { color: FusionTextColor; thickness: Param }
+/** The border of a Text+, a box behind its characters: its colour, how far it reaches beyond them (0…1) and how round its corners are (0…1). */
+export interface FusionTextBorder { color: FusionTextColor; extend: Param; round: Param }
+/**
+ * The Follower of a Text+: the characters come one after the other, `delay` frames apart (0…10000, no keys), each from where
+ * its `opacity`, `offset`, `angle` and `scale` put it.
+ */
+export interface FusionTextFollower {
+  order: FusionFollowerOrder; delay: number; delay_type: FusionFollowerDelayType;
+  opacity: Param; offset: { x: Param; y: Param }; angle: Param; scale: Param;
+}
+/**
+ * The settings of a Text+ node (Fusion's Text+ generator): its text (at most 4096 characters, `\n` breaking a line) and its
+ * font ('' for the engine's own), neither taking keys; its size (the height of an em in heights of the picture), centre,
+ * justification, line spacing, tracking and angle; its Write On; the Transform of its characters, words or lines; and its
+ * shading: the fill, and the outline and the border where it has them (`outline` and `border` are left out where it has
+ * none). The Follower is left out where it has none. The engine merges a patch into it as into every node; a part set to
+ * `null` is taken away.
+ */
+export interface FusionTextPlus {
+  text: string; font: string; size: Param; center: FusionCenter; justify: FusionTextJustify; vertical: FusionTextVertical;
+  line_spacing: Param; tracking: Param; angle: Param; write_on: { start: Param; end: Param };
+  transform: { select: FusionTextSelect; offset: { x: Param; y: Param }; angle: Param; scale: Param };
+  fill: { color: FusionTextColor };
+  outline?: FusionTextOutline; border?: FusionTextBorder; follower?: FusionTextFollower;
+}
 /**
  * An input of a node of a composition, by its name: `input` of a `media_out`, a `transform`, a `blur`,
- * a `mosaic`, a `delta_keyer` and a `tracker`, the two pictures of a `merge`, the `foreground` of a
- * `tracker` too (the picture that it makes follow its patterns), and `mask`, the effect mask of a
- * `merge`, a `transform`, a `background`, a `blur`, a `mosaic`, a `delta_keyer` and a `tracker` and
- * the mask that comes into a mask node. A `mask` reads the alpha of the picture linked to it (a mask
+ * a `mosaic`, a `delta_keyer`, a `tracker` and a `planar_tracker`, the two pictures of a `merge`, the
+ * `foreground` of a `tracker` (the picture that it makes follow its patterns) and of a `planar_tracker`
+ * (the picture that its Corner Pin lays on the plane) too, and `mask`, the effect mask of a `merge`, a
+ * `transform`, a `background`, a `blur`, a `mosaic`, a `delta_keyer`, a `tracker`, a `planar_tracker`
+ * and a `text_plus` and the mask that comes into a mask node. A `mask` reads the alpha of the picture linked to it (a mask
  * node gives white premultiplied by its mask); not linked, it is no mask. `garbage_matte` and
  * `solid_matte` are the two mattes of a `delta_keyer`, read as a `mask` is: where the garbage matte is
  * 1 the matte of the keyer is made transparent, where the solid matte is 1 it is made solid, and the
@@ -949,7 +1009,9 @@ export type FusionNode = { id: string; label: string; pass_through?: boolean; po
   | { kind: 'blur'; params: FusionBlur }
   | { kind: 'mosaic'; params: FusionMosaic }
   | { kind: 'delta_keyer'; params: FusionDeltaKeyer }
-  | { kind: 'tracker'; params: FusionTracker });
+  | { kind: 'tracker'; params: FusionTracker }
+  | { kind: 'planar_tracker'; params: FusionPlanarTracker }
+  | { kind: 'text_plus'; params: FusionTextPlus });
 export type FusionKind = FusionNode['kind'];
 /** A link from the output of node `from` into the input `input` of node `to`. */
 export interface FusionLink { from: string; to: string; input: FusionInput }
@@ -2246,6 +2308,30 @@ function settledFollow(params: unknown): unknown {
   return { ...params, center: { ...center, follow: { ...follow, tracker: 0 } } };
 }
 
+/** The parts of a Text+ that it has or has not: each is left out where it has none, and a patch takes one away by `null`. */
+export const TEXT_PARTS = ['outline', 'border', 'follower'] as const;
+export type TextPart = (typeof TEXT_PARTS)[number];
+
+/**
+ * The settings of a node of a composition of a kind as the engine reads them once a patch is merged in: of a Planar Tracker,
+ * a frame of its path that the patch gave `null` is not there; of a Text+, a part that the patch gave `null` (its outline, its
+ * border, its Follower) is not there. Every other node, and one with nothing so given, is as it is.
+ */
+function settledParts(kind: FusionKind, params: unknown): unknown {
+  if (!isObject(params)) return params;
+  if (kind === 'planar_tracker') {
+    const path = params.path;
+    if (!isObject(path) || !Object.values(path).some(sample => sample === null)) return params;
+    return { ...params, path: Object.fromEntries(Object.entries(path).filter(([, sample]) => sample !== null)) };
+  }
+  if (kind === 'text_plus' && TEXT_PARTS.some(part => params[part] === null)) {
+    const kept: Record<string, unknown> = { ...params };
+    for (const part of TEXT_PARTS) if (kept[part] === null) delete kept[part];
+    return kept;
+  }
+  return params;
+}
+
 /** A list of things with ids, the one `id` merged with `patch` (a bus, a VCA, a group of tracks). */
 function patchedIn<T extends { id: string }>(list: readonly T[], id: string, what: string, patch: Record<string, unknown>): T[] {
   const at = placeOf(list, id, what);
@@ -2631,7 +2717,8 @@ export function applyOp(project: Project, op: Op): Project {
       const at = fusionNodeAt(composition, op.id);
       // `pos: null` puts a node back where the editor lays it out; left out, it stays.
       const changed = patched(composition.nodes[at], op, ['label', 'pass_through', 'pos'], ['pos']);
-      const node = op.params == null ? changed : { ...changed, params: settledFollow(mergePatch(changed.params, op.params)) } as FusionNode;
+      const node = op.params == null ? changed
+        : { ...changed, params: settledParts(changed.kind, settledFollow(mergePatch(changed.params, op.params))) } as FusionNode;
       return { ...composition, nodes: replaced(composition.nodes, at, node) };
     });
     case 'set_fusion_keys': return inFusion(project, op, composition => withFusionSetting(composition, op.path, () => op.param));

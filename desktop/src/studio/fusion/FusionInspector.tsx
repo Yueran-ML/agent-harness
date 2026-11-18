@@ -7,31 +7,36 @@ import { CoveringMenu } from '../color/CoveringMenu';
 import { COMPOSITES } from '../color/nodeEdits';
 import { TrackButtons, type TrackButton } from '../color/TrackButtons';
 import {
-  EngineError, type Clip, type Composite, type Composition, type FusionBlurFilter, type FusionFillMethod, type FusionFollow, type FusionKeyerReplace,
-  type FusionKeyerSpill, type FusionKeyerView, type FusionMaskCommon, type FusionNode, type FusionPaintMode, type FusionTrackerMerge, type FusionTrackerOperation,
-  type FusionTrackerPattern, type FusionTrackerPivot, type Media, type Op, type Param, type Timeline,
+  EngineError, type Clip, type Composite, type Composition, type FusionBlurFilter, type FusionFillMethod, type FusionFollow, type FusionFollowerDelayType,
+  type FusionFollowerOrder, type FusionKeyerReplace, type FusionKeyerSpill, type FusionKeyerView, type FusionMaskCommon, type FusionNode, type FusionPaintMode,
+  type FusionPlanarMotion, type FusionPlanarOperation, type FusionPlanarTracker, type FusionTextJustify, type FusionTextPlus, type FusionTextSelect,
+  type FusionTextVertical, type FusionTrackerMerge, type FusionTrackerOperation, type FusionTrackerPattern, type FusionTrackerPivot, type Media, type Op,
+  type Param, type TextPart, type Timeline,
 } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { frameOfKey, keyAt, keyFrameOf } from '../inspector/clipKeys';
 import { ChoiceField, ColorField, FieldsLocked, KeyDiamond, NumberField, TextField } from '../inspector/fields';
 import { refusalOf } from '../inspector/refusal';
+import { FontField } from '../inspector/TitleFont';
 import { useCommit, type Build } from '../inspector/useCommit';
 import { valueAt } from '../keyframes/value';
 import { clipLocations } from '../timeline/selection';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import {
-  followOf, followOps, insertPoint, LEAST_POINTS, MOST_POINTS, MOST_TRACKERS, relabel, removePoint, shownComposition, withFirst, type FusionAt,
+  followOf, followOps, insertPoint, LEAST_POINTS, MOST_POINTS, MOST_TRACKERS, newPlanarTracker, relabel, removePoint, shownComposition, withFirst, type FusionAt,
 } from './edits';
 import { isMaskKind, namesOf } from './graph';
+import { clearTrack, CORNERS, pathFrames, PLANAR_PLACE, planarRefusals, setPlanar, type Corner } from './planar';
 import {
-  addKey, isPointSetting, keyerRefusals, keyTimesOf, numbered, paramOf, pointPath, putValue, putValues, removeKey, settingOf, wholeParam, wholeValue,
+  addKey, isPointSetting, keyerRefusals, keyTimesOf, numbered, paramOf, pointPath, putValue, putValues, removeKey, settingOf, textPartsOf, wholeParam, wholeValue,
   type FusionSetting,
 } from './settings';
+import { FOLLOWER_DELAY, limitedText, setPart, setText } from './textPlus';
 import {
   addPattern, clearPath, enablePattern, followChoices, followName, pathSamples, PATTERN_FIELDS, patternName, patternValue, removePattern, renamePattern,
   setPatternValue, setTracker, TRACKER_PLACE, type PatternField,
 } from './tracker';
-import type { FusionTracking } from './useFusionTracking';
+import { isBeingTracked, type FusionTracking } from './useFusionTracking';
 
 /** How a setting is written and dragged: its decimals, how much a pixel of dragging changes it, its unit, and the range of its slider, where it has one. */
 interface Shape { digits: number; scrub: number; unit?: string; slider?: { min: number; max: number; step: number } }
@@ -55,6 +60,15 @@ const PIVOTS: readonly FusionTrackerPivot[] = ['tracker_average', 'selected_trac
  * playhead.
  */
 const TRACK_BUTTONS: readonly TrackButton[] = ['reverse', 'one_reverse', 'stop', 'one_forward', 'forward', 'forward_and_back'];
+/** What a Planar Tracker does with its pictures, and the parts of the motion that its track keeps, as the engine names them and in the order of Fusion's menus. */
+const PLANAR_OPERATIONS: readonly FusionPlanarOperation[] = ['none', 'steady', 'corner_pin'];
+const PLANAR_MOTIONS: readonly FusionPlanarMotion[] = ['translation', 'translation_rotation', 'translation_rotation_scale', 'perspective'];
+/** How the lines of a Text+ are justified, what its Transform moves, and the order and the Delay Type of its Follower, as the engine names them. */
+const JUSTIFIES: readonly FusionTextJustify[] = ['left', 'center', 'right'];
+const VERTICALS: readonly FusionTextVertical[] = ['top', 'center', 'bottom'];
+const SELECTS: readonly FusionTextSelect[] = ['characters', 'words', 'lines'];
+const ORDERS: readonly FusionFollowerOrder[] = ['left_to_right', 'right_to_left', 'inside_out', 'outside_in'];
+const DELAY_TYPES: readonly FusionFollowerDelayType[] = ['each', 'first_to_last'];
 /** The switches of the nodes, which take no keys: each a field of the `params` of its node. */
 type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy' | 'whole_cells_only' | 'garbage_invert' | 'position' | 'rotation' | 'scaling';
 
@@ -62,8 +76,11 @@ type Flag = 'flip_horizontal' | 'flip_vertical' | 'invert' | 'solid' | 'lock_xy'
 const sameFollow = (a: FusionFollow, b: FusionFollow): boolean => a.node === b.node && a.output === b.output && a.tracker === b.tracker;
 /** The modes of a Delta Keyer, which take no keys: each a field of its `params` that is one of a few names. */
 type KeyerMode = 'view' | 'replace' | 'spill_method';
-/** The two colours of a Delta Keyer, each three settings: its `r`, its `g` and its `b`. */
-type KeyerColor = 'screen' | 'replace_color';
+/**
+ * The colours that are chosen as one, each three settings, its `r`, its `g` and its `b`: the two of a Delta Keyer, and the fill,
+ * the outline and the border of a Text+, whose fourth, its `a`, is a number of its own.
+ */
+type ColorName = 'screen' | 'replace_color' | 'fill.color' | 'outline.color' | 'border.color';
 
 /**
  * How each kind of setting is shown, by its unit in the catalog. A place is a share of the picture,
@@ -86,13 +103,20 @@ type KeyerColor = 'screen' | 'replace_color';
  * a Gain of 4 keys a screen a quarter as bright as the colour picked. Its lengths (Pre-Blur and
  * Matte Blur, each to 100 pixels of a picture 1080 high, and Erode/Dilate, 100 either way) have
  * sliders to 20, and from 20 the one way to 20 the other: a matte is seldom moved by more.
+ *
+ * So it is with a Text+: a length of it that ends below one width or height of the picture (the thickness of its outline) has a
+ * slider to its end; its Line Spacing a slider to 3 of its 10, its Tracking one from −1 to 2 of its 10, and the size of its
+ * Transform and of its Follower one up to five times, as a Size has, of their 100.
  */
 function shapeOf(setting: FusionSetting): Shape {
   if (isPointSetting(setting)) return { digits: 3, scrub: 0.002 };
   if (setting.unit === 'widths' || setting.unit === 'heights') {
     const least = setting.bounds.low < 0 && !setting.path.startsWith('center.') ? -1 : 0;
-    return { digits: 3, scrub: 0.002, slider: { min: least, max: 1, step: 0.001 } };
+    return { digits: 3, scrub: 0.002, slider: { min: least, max: Math.min(1, setting.bounds.high), step: 0.001 } };
   }
+  if (setting.path === 'line_spacing') return { digits: 3, scrub: 0.005, slider: { min: 0, max: 3, step: 0.01 } };
+  if (setting.path === 'tracking') return { digits: 3, scrub: 0.005, slider: { min: -1, max: 2, step: 0.01 } };
+  if (setting.path.endsWith('.scale')) return { digits: 3, scrub: 0.005, slider: { min: 0, max: 5, step: 0.01 } };
   if (setting.unit === 'degrees_counterclockwise') return { digits: 1, scrub: 0.5, unit: '°', slider: { min: -180, max: 180, step: 0.1 } };
   // The lengths of a Delta Keyer, whose ranges end at 100, and a Blur Size, whose range ends at 500.
   if (setting.unit === 'pixels1080' && setting.bounds.high <= 100) return { digits: 1, scrub: 0.1, slider: { min: setting.bounds.low < 0 ? -20 : 0, max: 20, step: 0.1 } };
@@ -161,6 +185,11 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  *   otherwise), the three boxes of the motion, Pivot Type with the pattern or the place that it
  *   reads, and the Reference frame, shown and typed at a frame of the timeline and kept at the frame
  *   of the keys of the clip that the clip shows there, with Set to Playhead. None of it takes keys;
+ * - a Planar Tracker (Reference Manual 20, pp. 2749–2758; PROTOCOL.md, "The Planar Tracker"): Operation Mode, Motion Type, the
+ *   buttons that track its region from the playhead with what the track says (lost frames, refusals), which frames its path
+ *   reaches, Clear Track, and the Reference Time with Set; with the Corner Pin, its four corners. None of it takes keys, and its
+ *   region is drawn and changed in the viewer (`planarBody`);
+ * - a Text+: its Text, Layout, Transform, Shading and Follower, its parts turned on and off (`textBody`);
  * - a MediaIn and a MediaOut: nothing but the name.
  *
  * The centre of a Merge, a Transform and a mask has Connect To beside it (PROTOCOL.md, "Following a
@@ -209,10 +238,9 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   /** Shown in the Effects tab of the Inspector of the Edit page: the settings of the node alone. */
   embedded?: boolean;
 }) {
-  // A Tracker whose patterns are tracked is changed by the track alone, which any other change of the project would stop: its
-  // settings are shown, and none is changed, as on a locked track.
-  const tracked = tracking !== undefined && tracking.running && node !== null && node.kind === 'tracker'
-    && (tracking.node === null || tracking.node === node.id);
+  // A Tracker whose patterns are tracked, or a Planar Tracker whose region is, is changed by the track alone, which any other
+  // change of the project would stop: its settings are shown, and none is changed, as on a locked track.
+  const tracked = isBeingTracked(tracking, node);
   const locked = onLockedTrack || tracked;
   const words = useWords();
   const t = useFairlightText();
@@ -222,8 +250,9 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
   const at: FusionAt = { timeline: timeline.id, clip: clip.id };
   const has = clip.fusion !== undefined;
   const { commit: send, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
-  // What the Inspector says better than the general sentences: the refusals of a Delta Keyer that are of no one number.
-  const overrides = keyerRefusals(said);
+  // What the Inspector says better than the general sentences: the refusals of a Delta Keyer that are of no one number, and those
+  // of the region, the corners and the reference of a Planar Tracker.
+  const overrides = { ...keyerRefusals(said), ...planarRefusals(said) };
   /** One transaction of the Inspector; what the engine refuses of it is said in the words of the Inspector. */
   const commit = (made: Build) => send(made, { overrides });
   const failed = (error: unknown) => { if (!isEmpty(error)) setRefusal(refusalOf(error, words.hint.studio, overrides)); };
@@ -353,11 +382,11 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     onCommit={chosen => void commit(build((found, _keyFrame, where) => (found.kind === 'delta_keyer' && (found.params[field] as string) !== chosen
       ? [{ op: 'set_fusion_node', ...where, id: found.id, params: { [field]: chosen } }] : [])))} />;
   /**
-   * A colour of a Delta Keyer as one: its red, green and blue are set together, those without keys by one patch of the node and
-   * those with keys each where a value at the playhead goes (`putValues`). A channel above 1 is shown as 1: the field of the
-   * channel has it whole.
+   * A colour of a Delta Keyer or of a Text+ as one: its red, green and blue are set together, those without keys by one patch of
+   * the node and those with keys each where a value at the playhead goes (`putValues`). A channel above 1 is shown as 1: the
+   * field of the channel has it whole.
    */
-  const keyerColor = (name: KeyerColor, label: string): ReactNode => {
+  const keyerColor = (name: ColorName, label: string): ReactNode => {
     const paths = [`${name}.r`, `${name}.g`, `${name}.b`];
     return <ColorField name={name} label={label} value={`#${paths.map(path => hex(channel(path))).join('')}ff`} onCommit={(chosen) => {
       const shares = [1, 3, 5].map(from => Number((Number.parseInt(chosen.slice(from, from + 2), 16) / 255).toFixed(3)));
@@ -532,6 +561,167 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     </>;
   };
 
+  /** What tracking says of the node shown, where it is said of that node: a track that the page took over is of a Tracker, and is said there. */
+  const trackSaidOf = (): string | null => {
+    const status = tracking?.status ?? null;
+    return status !== null && status.node === shown.id ? status.text : null;
+  };
+
+  /**
+   * The settings of a Planar Tracker, none of which takes keys (Reference Manual 20, pp. 2749–2758), in the sections of Fusion's
+   * tabs: Controls (Operation Mode, Motion Type, the buttons that track the region from the playhead with what the track says,
+   * which frames the path reaches and Clear Track, which takes the path away, and the Reference Time, shown and typed at a frame of
+   * the timeline and kept at the frame of the keys of the clip that the clip shows there, with Set, which takes the playhead's);
+   * and, with the Corner Pin, Corner Pin, the four corners that the foreground is pinned to. The region is drawn in the viewer.
+   */
+  const planarBody = (params: FusionPlanarTracker): ReactNode => {
+    const frames = pathFrames(params.path);
+    const lastFrame = clip.start + Math.max(clip.length, 1) - 1;
+    const trackSaid = trackSaidOf();
+    const trackLine = frames.length === 0 ? settings.notTracked
+      : frames.length === 1 ? settings.trackOne.replace('{first}', () => String(frameOfKey(clip, timeline, media, frames[0][0])))
+        : settings.trackFrames.replace('{count}', () => String(frames.length)).replace('{first}', () => String(frameOfKey(clip, timeline, media, frames[0][0])))
+          .replace('{last}', () => String(frameOfKey(clip, timeline, media, frames[frames.length - 1][0])));
+    const corners = params.corners;
+    /** A number of a corner of the Corner Pin: the corners are set whole, the others as they are. */
+    const cornerNumber = (corner: Corner, axis: 'x' | 'y', label: string): ReactNode => <NumberField key={`corners.${corner}.${axis}`} name={`corners.${corner}.${axis}`}
+      label={label} value={corners[corner][axis]} fallback={newPlanarTracker().corners[corner][axis]} min={PLANAR_PLACE.low} max={PLANAR_PLACE.high}
+      digits={3} scrub={0.002} slider={{ min: 0, max: 1, step: 0.001 }}
+      onCommit={value => void commit(build((found, _keyFrame, where) => (found.kind === 'planar_tracker'
+        ? setPlanar(where, found, { corners: { ...found.params.corners, [corner]: { ...found.params.corners[corner], [axis]: value } } }) : [])))} />;
+    const cornerNames: Record<Corner, [string, string]> = {
+      tl: [settings.topLeftX, settings.topLeftY], tr: [settings.topRightX, settings.topRightY],
+      br: [settings.bottomRightX, settings.bottomRightY], bl: [settings.bottomLeftX, settings.bottomLeftY],
+    };
+    return <>
+      <h3 className="inspector-section">{labels.planarTabs.controls}</h3>
+      <ChoiceField<FusionPlanarOperation> name="operation" label={settings.operationMode} value={params.operation}
+        options={PLANAR_OPERATIONS.map(each => ({ value: each, label: labels.planarOperations[each] }))}
+        onCommit={operation => void commit(build((found, _keyFrame, where) => setPlanar(where, found, { operation })))} />
+      <ChoiceField<FusionPlanarMotion> name="motion" label={settings.motionType} value={params.motion}
+        options={PLANAR_MOTIONS.map(each => ({ value: each, label: labels.planarMotions[each] }))}
+        onCommit={motion => void commit(build((found, _keyFrame, where) => setPlanar(where, found, { motion })))} />
+      {/* The region tracked from the playhead; a clip on a locked track is not tracked, and Stop stops a track that goes on. */}
+      {tracking && <div className="fusion-track" data-test="fusion-track">
+        <TrackButtons running={tracking.running} buttons={TRACK_BUTTONS} disabled={onLockedTrack} onStart={tracking.start} onStop={tracking.stop} />
+        {trackSaid !== null && <p className="caption fusion-track-status" role="status" data-test="fusion-track-status">{trackSaid}</p>}
+      </div>}
+      <p className="caption fusion-planar-path" data-test="planar-path">{trackLine}</p>
+      <div className="fusion-points-tools">
+        {/* The path is what the tracking wrote: it is taken away whole, and the region is where it was drawn at every frame again. */}
+        <button type="button" className="color-tool" disabled={locked || frames.length === 0} data-test="clear-track"
+          onClick={() => void commit(build((found, _keyFrame, where) => clearTrack(where, found)))}>
+          <Eraser size={14} aria-hidden="true" />{settings.clearTrack}</button>
+      </div>
+      {/* The reference is kept at a frame of the keys of the clip, and shown and typed at the frame of the timeline that shows it. */}
+      <NumberField name="reference" label={settings.referenceTime} value={frameOfKey(clip, timeline, media, params.reference)} fallback={clip.start}
+        min={clip.start} max={lastFrame} digits={0} scrub={0.25}
+        onCommit={value => {
+          const reference = keyFrameOf(clip, timeline, media, value);
+          void commit(build((found, _keyFrame, where) => setPlanar(where, found, { reference })));
+        }} />
+      <div className="fusion-points-tools">
+        <button type="button" className="color-tool" disabled={locked} data-test="set-reference"
+          onClick={() => void commit(build((found, keyFrameNow, where) => setPlanar(where, found, { reference: keyFrameNow })))}>
+          {settings.setReference}</button>
+      </div>
+      <p className="caption" data-test="planar-region">{said.planarRegion}</p>
+      {params.operation === 'corner_pin' && <>
+        <h3 className="inspector-section">{labels.planarTabs.cornerPin}</h3>
+        {CORNERS.flatMap(corner => [cornerNumber(corner, 'x', cornerNames[corner][0]), cornerNumber(corner, 'y', cornerNames[corner][1])])}
+      </>}
+    </>;
+  };
+
+  /**
+   * The settings of a Text+, in the sections of Fusion's tabs: Text (the text, its font, its size, its Tracking and Line Spacing,
+   * how its lines are justified across and its block about its centre, its angle and its Write On), Layout (its centre),
+   * Transform (what it moves, by how much, how far it turns them and how large it makes them), Shading (the colour of its fill,
+   * and its outline and its border, each turned on and off and, while it is on, its colour and its numbers) and Follower (turned on
+   * and off, and while it is on its order, its Delay and its Delay Type, which take no keys, and its numbers). Every number takes
+   * keys; those of a part that the Text+ has not are not shown. A part turned on is given as the engine makes a new one, and one
+   * turned off is taken away with its keys: one step each.
+   */
+  const textBody = (params: FusionTextPlus): ReactNode => {
+    const parts = textPartsOf(shown);
+    /** Settings that take no keys, set by one patch where it changes them (`setText`). */
+    const patch = (made: Record<string, unknown>) => void commit(build((found, _keyFrame, where) => setText(where, found, made)));
+    /** The switch of a part. */
+    const partSwitch = (part: TextPart, label: string): ReactNode => <div className="inspector-row" data-field={part}>
+      <label htmlFor={`${flipId}-${part}`} className="inspector-label fusion-flag-label">{label}</label>
+      <span className="inspector-value">
+        <input id={`${flipId}-${part}`} type="checkbox" checked={parts.includes(part)} disabled={locked} data-test={`text-${part}`}
+          onChange={(event) => { const on = event.target.checked; void commit(build((found, _keyFrame, where) => setPart(where, found, part, on))); }} />
+      </span>
+    </div>;
+    const follower = params.follower;
+    return <>
+      <h3 className="inspector-section">{labels.textTabs.text}</h3>
+      <TextField name="text" label={settings.styledText} value={params.text} multiline allowEmpty onCommit={text => patch({ text: limitedText(text) })} />
+      <FontField name="font" label={settings.font} value={params.font} placeholder={settings.defaultFont} onCommit={font => patch({ font })} />
+      {number('size', settings.size)}
+      {number('tracking', settings.tracking)}
+      {number('line_spacing', settings.lineSpacing)}
+      <ChoiceField<FusionTextJustify> name="justify" label={settings.justify} value={params.justify}
+        options={JUSTIFIES.map(each => ({ value: each, label: labels.justifies[each] }))} onCommit={justify => patch({ justify })} />
+      <ChoiceField<FusionTextVertical> name="vertical" label={settings.vertical} value={params.vertical}
+        options={VERTICALS.map(each => ({ value: each, label: labels.verticals[each] }))} onCommit={vertical => patch({ vertical })} />
+      {number('angle', settings.angle)}
+      {number('write_on.start', settings.writeOnStart)}
+      {number('write_on.end', settings.writeOnEnd)}
+      <h3 className="inspector-section">{labels.textTabs.layout}</h3>
+      {number('center.x', settings.centerX)}
+      {number('center.y', settings.centerY)}
+      <h3 className="inspector-section">{labels.textTabs.transform}</h3>
+      <ChoiceField<FusionTextSelect> name="transform.select" label={settings.selectTransform} value={params.transform.select}
+        options={SELECTS.map(each => ({ value: each, label: labels.transformSelects[each] }))} onCommit={select => patch({ transform: { select } })} />
+      {number('transform.offset.x', settings.transformOffsetX)}
+      {number('transform.offset.y', settings.transformOffsetY)}
+      {number('transform.angle', settings.transformAngle)}
+      {number('transform.scale', settings.transformSize)}
+      <h3 className="inspector-section">{labels.textTabs.shading}</h3>
+      {keyerColor('fill.color', settings.fillColor)}
+      {number('fill.color.r', settings.fillRed)}
+      {number('fill.color.g', settings.fillGreen)}
+      {number('fill.color.b', settings.fillBlue)}
+      {number('fill.color.a', settings.fillAlpha)}
+      {partSwitch('outline', settings.outline)}
+      {parts.includes('outline') && <>
+        {keyerColor('outline.color', settings.outlineColor)}
+        {number('outline.color.r', settings.outlineRed)}
+        {number('outline.color.g', settings.outlineGreen)}
+        {number('outline.color.b', settings.outlineBlue)}
+        {number('outline.color.a', settings.outlineAlpha)}
+        {number('outline.thickness', settings.outlineThickness)}
+      </>}
+      {partSwitch('border', settings.border)}
+      {parts.includes('border') && <>
+        {keyerColor('border.color', settings.borderColor)}
+        {number('border.color.r', settings.borderRed)}
+        {number('border.color.g', settings.borderGreen)}
+        {number('border.color.b', settings.borderBlue)}
+        {number('border.color.a', settings.borderAlpha)}
+        {number('border.extend', settings.borderExtend)}
+        {number('border.round', settings.borderRound)}
+      </>}
+      <h3 className="inspector-section">{labels.textTabs.follower}</h3>
+      {partSwitch('follower', settings.follower)}
+      {follower !== undefined && parts.includes('follower') && <>
+        <ChoiceField<FusionFollowerOrder> name="follower.order" label={settings.order} value={follower.order}
+          options={ORDERS.map(each => ({ value: each, label: labels.followerOrders[each] }))} onCommit={order => patch({ follower: { order } })} />
+        <NumberField name="follower.delay" label={settings.delay} value={follower.delay} fallback={FOLLOWER_DELAY.neutral} min={FOLLOWER_DELAY.low}
+          max={FOLLOWER_DELAY.high} digits={1} scrub={0.1} slider={{ min: 0, max: 30, step: 0.5 }} onCommit={delay => patch({ follower: { delay } })} />
+        <ChoiceField<FusionFollowerDelayType> name="follower.delay_type" label={settings.delayType} value={follower.delay_type}
+          options={DELAY_TYPES.map(each => ({ value: each, label: labels.delayTypes[each] }))} onCommit={type => patch({ follower: { delay_type: type } })} />
+        {number('follower.opacity', settings.followerOpacity)}
+        {number('follower.offset.x', settings.followerOffsetX)}
+        {number('follower.offset.y', settings.followerOffsetY)}
+        {number('follower.angle', settings.followerAngle)}
+        {number('follower.scale', settings.followerSize)}
+      </>}
+    </>;
+  };
+
   let body: ReactNode;
   if (node.kind === 'merge') {
     const apply = node.params.apply;
@@ -689,6 +879,10 @@ export function FusionInspector({ bridge, session, revision, timeline, clip, med
     </>;
   } else if (node.kind === 'tracker') {
     body = trackerBody(node.params);
+  } else if (node.kind === 'planar_tracker') {
+    body = planarBody(node.params);
+  } else if (node.kind === 'text_plus') {
+    body = textBody(node.params);
   } else {
     body = <p className="caption" data-test="fusion-no-settings">{said.noSettings}</p>;
   }

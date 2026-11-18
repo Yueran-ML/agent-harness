@@ -12,10 +12,11 @@ import { FusionInspector } from '../fusion/FusionInspector';
 import { FusionNodeEditor, NO_SELECTION, type FusionSelection } from '../fusion/FusionNodeEditor';
 import { shownComposition, type FusionAt } from '../fusion/edits';
 import { namesOf } from '../fusion/graph';
+import { planarRefusals } from '../fusion/planar';
 import { useFusionOnscreen } from '../fusion/useFusionOnscreen';
-import { useFusionTracking } from '../fusion/useFusionTracking';
+import { isBeingTracked, useFusionTracking } from '../fusion/useFusionTracking';
 import { useFusionView } from '../fusion/useFusionView';
-import { refusalText } from '../inspector/refusal';
+import { refusalOf } from '../inspector/refusal';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import type { MonitorControls } from '../useMonitor';
@@ -87,10 +88,11 @@ interface Props {
  * node), which the bar names and whose card has a dot; another clip begins with the output again,
  * and so does a node that is taken away. The page left, the monitor shows the timeline again. Over
  * the picture the node that is chosen has its on-screen controls, where its kind has any: the
- * outline and the handles of a mask, the centre of a Merge or a Transform, and the patterns of a
- * Tracker with their paths, dragged on the picture (`useFusionOnscreen`). A Tracker chosen tracks its patterns from the
- * playhead, by the buttons of its Inspector and the keys of the Tracker menu of the Color page (`useFusionTracking`); the track
- * is stopped as another clip or node is chosen and as the page is left.
+ * outline and the handles of a mask, the centre of a Merge, a Transform or a Text+, the patterns of a
+ * Tracker with their paths, and the region and the corners of a Planar Tracker, dragged on the picture (`useFusionOnscreen`). A
+ * Tracker chosen tracks its patterns, and a Planar Tracker its region, from the playhead, by the buttons of its Inspector and the
+ * keys of the Tracker menu of the Color page (`useFusionTracking`); the track is stopped as another clip or node is chosen and
+ * as the page is left.
  *
  * The clip is the one at the playhead on the topmost enabled video track, or the one clip of
  * picture chosen on the Edit page (`fusionClip`); the bar names it, and goes to the clip before and
@@ -194,15 +196,20 @@ function FusionSession({ bridge, native, session, revision, media, timelines, se
     bridge, session, revision, timeline: selected, clip, media, node, frame, locked, keys: area === 'nodes' || area === 'inspector', onSeek: seekTo,
     onStarted: pinTracked,
   });
-  // While the Tracker chosen is tracked nothing of it is changed: a change of the project would stop the track.
-  const tracked = tracking.running && node?.kind === 'tracker' && (tracking.node === null || tracking.node === node.id);
+  // While the Tracker or the Planar Tracker chosen is tracked nothing of it is changed: a change of the project would stop the track.
+  const tracked = isBeingTracked(tracking, node);
   // The controls of the node that is chosen, over the picture of the composition of this clip, where the monitor shows it.
   const viewerPressed = useCallback(() => setArea('viewer'), []);
   useFusionOnscreen({
     bridge, session, revision, native, timeline: selected, clip, media, composition, node, frame: frame ?? 0, view: told !== null && told.clip === clipId ? told : null,
     locked: locked || tracked,
     onPress: viewerPressed,
-    onFailure: (failure) => { if (!isEmpty(failure)) editing.setProblem(refusalText(failure, now.current.words.hint.studio)); },
+    // A region or a corner of a Planar Tracker that the engine refused is said in the words of the Inspector.
+    onFailure: (failure) => {
+      if (isEmpty(failure)) return;
+      const hint = now.current.words.hint.studio;
+      editing.setProblem(refusalOf(failure, hint, planarRefusals(hint.fusionPage)).text);
+    },
   });
 
   // The keys of the transport go to the timeline monitor; Ctrl+Z and Ctrl+Shift+Z undo and redo in the one history of the engine.

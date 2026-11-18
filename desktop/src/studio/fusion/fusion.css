@@ -299,6 +299,16 @@
   fill: var(--fusion-effect);
 }
 
+/* And a Planar Tracker, which is added with the Tracker. */
+.fusion-page .fusion-node[data-kind='planar_tracker'] .fusion-node-stripe {
+  fill: var(--fusion-effect);
+}
+
+/* A Text+ makes its picture of nothing, as a Background does, and has its colour. */
+.fusion-page .fusion-node[data-kind='text_plus'] .fusion-node-stripe {
+  fill: var(--fusion-background);
+}
+
 .fusion-page .fusion-node-name {
   font-size: calc(11px * var(--type));
   fill: var(--moon-0);

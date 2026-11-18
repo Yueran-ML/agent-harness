@@ -7,7 +7,11 @@ import {
 import { keyFrameOf } from '../inspector/clipKeys';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { followOf, withFirst, type FusionAt } from './edits';
-import { controlsOf, draggedPattern, draggedValues, handleName, hitHandle, overlayOf, reachOf, type Controls, type Handle } from './onscreen';
+import {
+  controlsOf, draggedCorner, draggedPattern, draggedRegion, draggedValues, edgeAt, handleName, hitHandle, overlayOf, reachOf, regionWithPoint, type Controls,
+  type Handle,
+} from './onscreen';
+import { cornersOp, regionOp, removeRegionPoint, restoredPlanar, withRegion } from './planar';
 import { paramOf, wholeParam, wholeValue } from './settings';
 import { followedPlace, placedPattern, restoredPatterns } from './tracker';
 
@@ -59,6 +63,13 @@ interface Drag {
  *   where it was drawn at the press, by the list of patterns set whole at each move (`placedPattern`),
  *   in one gesture as a centre is; while it is dragged the pattern is drawn where the drag puts it. A
  *   pattern that has a path keeps its path: let go, it is drawn on its path again.
+ * - A place of the region of a Planar Tracker, and a corner of its Corner Pin, goes with the pointer
+ *   from where it is drawn at the playhead (`draggedRegion`, `draggedCorner`), the region or the
+ *   corners set whole at each move (`regionOp`, `cornersOp`), in one gesture. A press on a side of the
+ *   region, off its handles, puts a place there and takes hold of it: the place put and the drag of
+ *   it are one gesture, one step to undo, and a press that does not move puts the place alone. Alt
+ *   and a press, or a press of the middle button, on a place of the region takes it away, one step
+ *   too; the region keeps three places at the least.
  * - A clip on a locked track shows its controls, and a press on a handle does nothing: the node
  *   editor and the Inspector say why.
  * - A press on the picture is told to `onPress`: the page beneath the view does not hear it.
@@ -167,16 +178,42 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
   const press = useCallback((pointer: ViewPointer) => {
     const at = now.current;
     if (!at.controls || !at.picture || !at.node || !at.clip || !at.timeline) return;
-    if (pointer.x === null || pointer.y === null || pointer.button !== 'left') return;
+    // The middle button takes a place of the region of a Planar Tracker away, and does nothing else.
+    if (pointer.x === null || pointer.y === null || (pointer.button !== 'left' && pointer.button !== 'middle')) return;
     // A picture of another timeline than the one whose controls are drawn is not the one that the handle is on.
     if (pointer.snapshot && pointer.snapshot.timeline !== at.timeline.id) return;
-    const index = hitHandle(at.controls, [pointer.x, pointer.y], reachOf(pointer));
     // Nothing of a clip on a locked track is changed: its handles are drawn, and none is taken hold of.
-    if (index < 0 || at.locked) return;
-    const handle = at.controls.handles[index];
+    if (at.locked) return;
+    const where: FusionAt = { timeline: at.timeline.id, clip: at.clip.id };
+    const index = hitHandle(at.controls, [pointer.x, pointer.y], reachOf(pointer));
+    const handle = index < 0 ? null : at.controls.handles[index];
+    // A place of the region taken away, by Alt and a press or by the middle button: one transaction, one step to undo.
+    if (handle?.kind === 'region' && (pointer.alt || pointer.button === 'middle')) {
+      const ops = removeRegionPoint(where, at.node, handle.index ?? -1);
+      if (ops.length > 0) at.gesture.commit(ops);
+      return;
+    }
+    if (pointer.button !== 'left') return;
+    if (handle === null) {
+      // A press on a side of the region of a Planar Tracker puts a place there, at once, and takes hold of it: the gesture that
+      // puts it is the one that drags it. Alt, which takes a place away, puts none.
+      if (pointer.alt) return;
+      const edge = edgeAt(at.controls, [pointer.x, pointer.y], reachOf(pointer));
+      const region = edge === null ? null : regionWithPoint(at.node, edge.after, at.keyFrame, at.picture, edge.at);
+      const put = region === null ? null : regionOp(where, at.node, region);
+      const restore = restoredPlanar(where, at.node);
+      if (edge === null || region === null || put === null || restore === null || !at.gesture.start([restore])) return;
+      at.gesture.preview([put]);
+      const made: Handle = { kind: 'region', index: edge.after + 1, at: edge.at };
+      drag.current = {
+        at: where, has: at.has, node: withRegion(at.node, region), handle: made, keyFrame: at.keyFrame, picture: at.picture,
+        from: [pointer.x, pointer.y], began: true, cancelled: false,
+      };
+      setActive(handleName(made));
+      return;
+    }
     drag.current = {
-      at: { timeline: at.timeline.id, clip: at.clip.id }, has: at.has, node: at.node, handle, keyFrame: at.keyFrame, picture: at.picture,
-      from: [pointer.x, pointer.y], began: false, cancelled: false,
+      at: where, has: at.has, node: at.node, handle, keyFrame: at.keyFrame, picture: at.picture, from: [pointer.x, pointer.y], began: false, cancelled: false,
     };
     setActive(handleName(handle));
   }, []);
@@ -185,9 +222,35 @@ export function useFusionOnscreen({ bridge, session, revision, native, timeline,
     if (held.cancelled || pointer.x === null || pointer.y === null) return;
     let dx = pointer.x - held.from[0];
     let dy = pointer.y - held.from[1];
-    // Shift keeps the centre, a point or a pattern on the axis that the pointer has gone further along.
-    if (pointer.shift && (held.handle.kind === 'center' || held.handle.kind === 'point' || held.handle.kind === 'pattern')) {
+    // Shift keeps the centre, a point, a pattern, a place of a region or a corner on the axis that the pointer has gone further along.
+    if (pointer.shift && held.handle.kind !== 'width' && held.handle.kind !== 'height') {
       if (Math.abs(dx) < Math.abs(dy)) dx = 0; else dy = 0;
+    }
+    if (held.handle.kind === 'region' || held.handle.kind === 'corner') {
+      // A place of the region or a corner of a Planar Tracker: the region or the corners set whole at each move.
+      const index = held.handle.index ?? -1;
+      let op: Op | null = null;
+      if (held.handle.kind === 'region') {
+        const region = draggedRegion(held.node, index, held.keyFrame, held.picture, dx, dy);
+        op = region === null ? null : regionOp(held.at, held.node, region);
+      } else {
+        const corners = draggedCorner(held.node, index, held.keyFrame, held.picture, dx, dy);
+        op = corners === null ? null : cornersOp(held.at, held.node, corners);
+      }
+      if (op === null) return;
+      const { gesture: sending } = now.current;
+      if (!held.began) {
+        if (dx === 0 && dy === 0) return;
+        const restore = restoredPlanar(held.at, held.node);
+        if (restore === null || !sending.start([restore])) {
+          drag.current = null;
+          setActive(null);
+          return;
+        }
+        held.began = true;
+      }
+      sending.preview([op]);
+      return;
     }
     if (held.handle.kind === 'pattern') {
       // The place where a pattern of a Tracker is put: the list of patterns set whole at each move, the others as they are.

@@ -872,6 +872,7 @@ export const en = {
         kinds: {
           media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
           rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer', tracker: 'Tracker',
+          planar_tracker: 'Planar Tracker', text_plus: 'Text+',
         },
         inputs: {
           input: 'Input', background: 'Background', foreground: 'Foreground', mask: 'Effect Mask',
@@ -934,9 +935,51 @@ export const en = {
            */
           connectTo: 'Connect To', notConnected: 'Not connected', disconnect: 'Disconnect', steadyPosition: 'Steady Position',
           unsteadyPosition: 'Unsteady Position', follows: 'Follows {name}', noTrackers: 'No tracker in this composition',
+          /**
+           * The controls of a Planar Tracker (Reference Manual 20, pp. 2749–2758). Its path is said at frames of the timeline: how many
+           * frames it has (`{count}`), its first (`{first}`) and its last (`{last}`).
+           */
+          operationMode: 'Operation Mode', motionType: 'Motion Type', referenceTime: 'Reference Time', setReference: 'Set', clearTrack: 'Clear Track',
+          notTracked: 'Not tracked', trackOne: 'Track: 1 frame, {first}', trackFrames: 'Track: {count} frames, {first}–{last}',
+          topLeftX: 'Top Left X', topLeftY: 'Top Left Y', topRightX: 'Top Right X', topRightY: 'Top Right Y',
+          bottomRightX: 'Bottom Right X', bottomRightY: 'Bottom Right Y', bottomLeftX: 'Bottom Left X', bottomLeftY: 'Bottom Left Y',
+          /**
+           * The controls of a Text+. The numbers of its Transform, of its colours and of its parts are named with what they are of, so
+           * that each has a name of its own beside its keys and in the Spline Editor.
+           */
+          styledText: 'Styled Text', font: 'Font', defaultFont: 'Default font', tracking: 'Tracking', lineSpacing: 'Line Spacing',
+          justify: 'Horizontal Justification', vertical: 'Vertical Justification', writeOnStart: 'Write On Start', writeOnEnd: 'Write On End',
+          selectTransform: 'Select Transform', transformOffsetX: 'Transform Offset X', transformOffsetY: 'Transform Offset Y',
+          transformAngle: 'Transform Angle', transformSize: 'Transform Size',
+          fillColor: 'Fill Color', fillRed: 'Fill Red', fillGreen: 'Fill Green', fillBlue: 'Fill Blue', fillAlpha: 'Fill Alpha',
+          outline: 'Outline', outlineColor: 'Outline Color', outlineRed: 'Outline Red', outlineGreen: 'Outline Green', outlineBlue: 'Outline Blue',
+          outlineAlpha: 'Outline Alpha', outlineThickness: 'Outline Thickness',
+          border: 'Border', borderColor: 'Border Color', borderRed: 'Border Red', borderGreen: 'Border Green', borderBlue: 'Border Blue',
+          borderAlpha: 'Border Alpha', borderExtend: 'Border Extend', borderRound: 'Border Round',
+          follower: 'Follower', order: 'Order', delay: 'Delay', delayType: 'Delay Type', followerOpacity: 'Follower Opacity',
+          followerOffsetX: 'Follower Offset X', followerOffsetY: 'Follower Offset Y', followerAngle: 'Follower Angle', followerSize: 'Follower Size',
         },
         /** The tabs of a Tracker, which are the sections of its settings in the Inspector. */
         trackerTabs: { trackers: 'Trackers', operation: 'Operation' },
+        /** The tabs of a Planar Tracker, which are the sections of its settings in the Inspector. */
+        planarTabs: { controls: 'Controls', cornerPin: 'Corner Pin' },
+        /** What a Planar Tracker does with its pictures. */
+        planarOperations: { none: 'None', steady: 'Steady', corner_pin: 'Corner Pin' },
+        /** Which parts of the motion of the plane the track of a Planar Tracker keeps. */
+        planarMotions: {
+          translation: 'Translation', translation_rotation: 'Translation/Rotation', translation_rotation_scale: 'Translation/Rotation/Scale',
+          perspective: 'Perspective',
+        },
+        /** The tabs of a Text+, which are the sections of its settings in the Inspector. */
+        textTabs: { text: 'Text', layout: 'Layout', transform: 'Transform', shading: 'Shading', follower: 'Follower' },
+        /** How the lines of a Text+ lie across, and how the block of them lies about its centre. */
+        justifies: { left: 'Left', center: 'Center', right: 'Right' },
+        verticals: { top: 'Top', center: 'Center', bottom: 'Bottom' },
+        /** What the Transform of a Text+ moves each of. */
+        transformSelects: { characters: 'Characters', words: 'Words', lines: 'Lines' },
+        /** The order in which the Follower of a Text+ comes to its characters, and how its Delay is counted. */
+        followerOrders: { left_to_right: 'Left to Right', right_to_left: 'Right to Left', inside_out: 'Inside Out', outside_in: 'Outside In' },
+        delayTypes: { each: 'Between Each Character', first_to_last: 'Between First and Last Character' },
         /** What a Tracker does with its pictures. */
         operations: { none: 'None', match_move: 'Match Move' },
         /** Which pictures a Tracker that match moves draws, and which way the motion goes. */
@@ -1948,6 +1991,27 @@ export const en = {
             stale_revision: 'The project changed. Try again.',
             target: 'This Tracker is no longer in the composition of the clip.',
             other: 'Tracking failed.',
+          },
+        },
+        /** How the region of a Planar Tracker is drawn and changed on the viewer. */
+        planarRegion: 'Drag the points of the region in the viewer. Click a side of it to add a point there, and Alt+click a point to remove it.',
+        /** Settings of a Planar Tracker that the engine refused: its region, a corner of its Corner Pin, its reference frame. */
+        planarRegionRange: 'The region needs 3 to 64 points, none of them far outside the picture.',
+        planarCornersRange: 'A corner of the Corner Pin lies too far outside the picture.',
+        planarReferenceRange: 'The reference frame is too far from the clip.',
+        /**
+         * The tracking of the region of a Planar Tracker: the frame of the timeline reached (`{timecode}`), how many frames of how
+         * many are done, and how many frames the plane was lost at; how it ended; and why the engine would not track, by its reason,
+         * where the words of the Tracker do not say it.
+         */
+        planarTrack: {
+          tracking: 'Tracking {timecode}: frame {done} of {total}. Frames lost: {lost}.',
+          done: 'Frames tracked: {frames}. Frames lost: {lost}.',
+          failed: {
+            region: 'The region cannot be tracked from here. It needs three points or more, an area of a pixel at least, and a part inside the picture.',
+            no_features: 'The region holds nothing that can be followed at the playhead. Draw it over more detail, or track from another frame.',
+            target: 'This Planar Tracker is no longer in the composition of the clip.',
+            wrong_node: 'This node is not a Planar Tracker.',
           },
         },
       },

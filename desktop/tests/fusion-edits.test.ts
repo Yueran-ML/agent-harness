@@ -220,6 +220,7 @@ describe('the layout of a composition', () => {
     const kinds = {
       media_in: 'MediaIn', media_out: 'MediaOut', merge: 'Merge', transform: 'Transform', background: 'Background',
       rectangle: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', blur: 'Blur', mosaic: 'Mosaic', delta_keyer: 'Delta Keyer', tracker: 'Tracker',
+      planar_tracker: 'Planar Tracker', text_plus: 'Text+',
     };
     const labelled: Composition = { ...comp(), nodes: [...comp().nodes.map(node => (node.id === 'n4' ? { ...node, label: 'Over the sky' } : node)), transform('n6')] };
     expect([...namesOf(labelled, kinds)]).toEqual([
@@ -604,7 +605,7 @@ describe('a Blur and a Mosaic', () => {
   });
 
   it('are added in a group of their own: loose where no node is chosen, and after the node chosen on their picture, in the one operation', () => {
-    expect(ADDABLE_EFFECTS).toEqual(['blur', 'mosaic', 'delta_keyer', 'tracker']);
+    expect(ADDABLE_EFFECTS).toEqual(['blur', 'mosaic', 'delta_keyer', 'tracker', 'planar_tracker']);
     expect([...ADDABLE, ...ADDABLE_MASKS].some(kind => kind === 'blur' || kind === 'mosaic' || kind === 'delta_keyer' || kind === 'tracker')).toBe(false);
     // A Tracker begins with a pattern of its own, which the engine's new one has not: it is held below, with the Tracker.
     for (const kind of ['blur', 'mosaic', 'delta_keyer'] as const) {

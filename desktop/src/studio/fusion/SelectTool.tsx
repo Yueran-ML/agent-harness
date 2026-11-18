@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Blend, Circle, Contrast, Crosshair, Droplet, Grid3x3, ImagePlus, Move, Pentagon, RectangleHorizontal, Square } from 'lucide-react';
+import { Blend, Circle, Contrast, Crosshair, Droplet, Grid3x3, ImagePlus, Move, Pentagon, RectangleHorizontal, Scan, Square, Type } from 'lucide-react';
 import { keyOf, pickerKey } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { FusionKind } from '../engine';
@@ -11,11 +11,12 @@ export type AddableKind = Exclude<FusionKind, 'media_out'>;
 
 /** The face of the button that adds a node of each kind, in the tool bar and in Select Tool. */
 export const ADD_ICONS = {
-  merge: Blend, transform: Move, background: Square, media_in: ImagePlus,
+  // A Text+ writes letters: the face of a letter.
+  merge: Blend, transform: Move, background: Square, text_plus: Type, media_in: ImagePlus,
   rectangle: RectangleHorizontal, ellipse: Circle, polygon: Pentagon,
   // A Delta Keyer makes a matte: what is kept and what is not, as the two halves of the face. A Tracker follows a pattern: the
-  // crosshair that the patterns of a tracker are placed with.
-  blur: Droplet, mosaic: Grid3x3, delta_keyer: Contrast, tracker: Crosshair,
+  // crosshair that the patterns of a tracker are placed with. A Planar Tracker follows a plane: the four corners of one.
+  blur: Droplet, mosaic: Grid3x3, delta_keyer: Contrast, tracker: Crosshair, planar_tracker: Scan,
 } as const;
 
 /** Every kind that the editor adds, in the order of the tool bar: the nodes of a picture, the effects on one, the masks. */

@@ -21,17 +21,23 @@
  *   a line through `ELLIPSE_STEPS` places of it.
  * - A Polygon: each point from its `center` in widths both ways, `x` to the right and `y` up,
  *   multiplied by `size` and turned by `angle` about the centre.
- * - A Merge and a Transform: `center` alone, where the foreground of the one and the picture of the
- *   other lie.
+ * - A Merge, a Transform and a Text+: `center` alone, where the foreground of the one, the picture of
+ *   the other and the text of the third lie.
  * - A Tracker (PROTOCOL.md, "The Tracker"): of each pattern that is on, the box of the pattern and
  *   the box that it is searched for in, about where the pattern is at the playhead (on its path,
  *   where it has one, else where it was put), its path as a line through its frames, and a handle
  *   at its middle. A pattern that is off is not drawn: the view draws every line alike.
+ * - A Planar Tracker (PROTOCOL.md, "The Planar Tracker"): its region, a polygon through its places,
+ *   and with the Corner Pin the four corners that the foreground is pinned to, both where the motion
+ *   of the path puts them at the playhead (`planar.ts`); a handle at each place of the region and,
+ *   with the Corner Pin, at each corner.
  *
  * Each handle is a setting, or two: the centre is `center.x` and `center.y`; the handle in the
  * middle of the right side of a Rectangle or an Ellipse is its `width`, and the one in the middle of
  * its upper side its `height` (right and upper before it is turned); a point of a Polygon is its `x`
- * and its `y`; the handle of a pattern of a Tracker is where it was put, `pattern.x` and `pattern.y`.
+ * and its `y`; the handle of a pattern of a Tracker is where it was put, `pattern.x` and `pattern.y`;
+ * a place of the region of a Planar Tracker, and a corner of its Corner Pin, is that place at its
+ * reference frame, the region and the corners each set whole.
  * A drag moves a handle by as much as the pointer moves, along the axes of the shape as it is
  * turned, so that a press a little off a handle does not make it jump.
  *
@@ -41,34 +47,40 @@
  * Pure: the hook `useFusionOnscreen` sends what these work out.
  */
 import type { Bounds } from '../color/corrector';
-import type { FusionKind, FusionNode, FusionPicture, OverlayPoint, ViewOverlay, ViewPointer } from '../engine';
+import type { FusionKind, FusionNode, FusionPicture, FusionPlanarCorners, FusionPlanarTracker, FusionTrackerPlace, OverlayPoint, ViewOverlay, ViewPointer } from '../engine';
 import { valueAt } from '../keyframes/value';
 import { HIT_PX } from '../motionPath/motionPath';
+import { applyTo, CORNERS, IDENTITY, inverse, MOST_REGION_POINTS, motionAt, PLANAR_PLACE, type Corner, type Matrix3 } from './planar';
 import { paramOf, pointPath, settingOf, type FusionSetting } from './settings';
 import { MOST_PATH_POINTS, pathSamples, placeOnPath, thinned, TRACKER_PLACE } from './tracker';
 
 /** The kinds of node that have controls on the picture. */
-export type ControlKind = Extract<FusionKind, 'rectangle' | 'ellipse' | 'polygon' | 'merge' | 'transform' | 'tracker'>;
-const CONTROL_KINDS: readonly FusionKind[] = ['rectangle', 'ellipse', 'polygon', 'merge', 'transform', 'tracker'];
+export type ControlKind = Extract<FusionKind, 'rectangle' | 'ellipse' | 'polygon' | 'merge' | 'transform' | 'tracker' | 'planar_tracker' | 'text_plus'>;
+const CONTROL_KINDS: readonly FusionKind[] = ['rectangle', 'ellipse', 'polygon', 'merge', 'transform', 'tracker', 'planar_tracker', 'text_plus'];
 /** Whether a kind of node has controls on the picture. */
 export const hasControls = (kind: FusionKind): kind is ControlKind => CONTROL_KINDS.includes(kind);
 
 /** How many straight strokes the outline of an Ellipse is drawn with: a multiple of four, so that the ends of its two axes are places of it. */
 export const ELLIPSE_STEPS = 64;
 
-/** What a handle sets: the centre, the width or the height of a Rectangle or an Ellipse, a point of a Polygon, or the place of a pattern of a Tracker. */
-export type HandleKind = 'center' | 'width' | 'height' | 'point' | 'pattern';
 /**
- * A handle: what it sets, of a point of a Polygon or of a pattern of a Tracker which one (from 0), and where it is, in pixels of
- * the frame drawn. One that is `fixed` is drawn and not taken hold of: the centre of a node that follows a Tracker.
+ * What a handle sets: the centre, the width or the height of a Rectangle or an Ellipse, a point of a Polygon, the place of a
+ * pattern of a Tracker, or a place of the region or a corner of the Corner Pin of a Planar Tracker.
+ */
+export type HandleKind = 'center' | 'width' | 'height' | 'point' | 'pattern' | 'region' | 'corner';
+/**
+ * A handle: what it sets, of a point of a Polygon, of a pattern of a Tracker, of a place of a region or of a corner (in the order
+ * of `CORNERS`) which one (from 0), and where it is, in pixels of the frame drawn. One that is `fixed` is drawn and not taken
+ * hold of: the centre of a node that follows a Tracker.
  */
 export interface Handle { kind: HandleKind; index?: number; at: OverlayPoint; fixed?: true }
 /**
  * The controls of a node: the lines of its outline, each through its places in order, and its handles. Of two handles at one place,
  * the later is the one pressed. `marks`, of a Tracker, are where its patterns are on their paths at the playhead, drawn over the
- * handles in the colour of the playhead.
+ * handles in the colour of the playhead. `edges`, of a Planar Tracker, are the places of its region as they are drawn, in their
+ * order: a press on a side between two of them puts a place there (`edgeAt`).
  */
-export interface Controls { lines: OverlayPoint[][]; handles: Handle[]; marks?: OverlayPoint[] }
+export interface Controls { lines: OverlayPoint[][]; handles: Handle[]; marks?: OverlayPoint[]; edges?: OverlayPoint[] }
 /** A setting and the value that a drag gives it. */
 export interface Moved { setting: FusionSetting; value: number }
 /**
@@ -82,7 +94,8 @@ export interface ControlOptions {
 }
 
 /** The name of a handle among those of its node: what is dragged is known by it though the node is drawn anew. */
-export const handleName = (handle: Pick<Handle, 'kind' | 'index'>): string => (handle.kind === 'point' || handle.kind === 'pattern' ? `${handle.kind}:${handle.index ?? 0}` : handle.kind);
+export const handleName = (handle: Pick<Handle, 'kind' | 'index'>): string => (handle.kind === 'point' || handle.kind === 'pattern' || handle.kind === 'region'
+  || handle.kind === 'corner' ? `${handle.kind}:${handle.index ?? 0}` : handle.kind);
 
 /** A number of pixels as it is sent: to a thousandth of a pixel, and never the zero that is written with a minus. */
 const pixel = (value: number): number => Math.round(value * 1000) / 1000 + 0;
@@ -149,8 +162,9 @@ const heightUnit = (node: FusionNode, picture: FusionPicture): number => (node.k
  * - A Polygon: its outline through its points and back to the first (none with fewer than two
  *   points), and a handle at the centre and at each point. A polygon of no size has all its points
  *   at its centre, and no handle but that one: a point of it cannot be told from where it is.
- * - A Merge and a Transform: the handle of the centre alone.
+ * - A Merge, a Transform and a Text+: the handle of the centre alone.
  * - A Tracker: `trackerControls`.
+ * - A Planar Tracker: `planarControls`.
  *
  * The handle of the centre is first, so that a handle that lies on it (of a shape of no width) is
  * the one pressed, and the shape can be drawn out again. A centre that follows a Tracker is where
@@ -160,6 +174,7 @@ const heightUnit = (node: FusionNode, picture: FusionPicture): number => (node.k
 export function controlsOf(node: FusionNode, keyFrame: number, picture: FusionPicture, options: ControlOptions = {}): Controls | null {
   if (!hasControls(node.kind)) return null;
   if (node.kind === 'tracker') return trackerControls(node, keyFrame, picture, options.placing ?? null);
+  if (node.kind === 'planar_tracker') return planarControls(node.params, keyFrame, picture);
   const follows = options.follows ?? null;
   const own: [number, number] = [read(node, 'center.x', keyFrame), read(node, 'center.y', keyFrame)];
   const followed = follows?.place ?? null;
@@ -167,7 +182,7 @@ export function controlsOf(node: FusionNode, keyFrame: number, picture: FusionPi
   const centre = toPixels(picture, u, v);
   const middle: Handle = follows === null ? { kind: 'center', at: [pixel(centre[0]), pixel(centre[1])] }
     : { kind: 'center', at: [pixel(centre[0]), pixel(centre[1])], fixed: true };
-  if (node.kind === 'merge' || node.kind === 'transform') return { lines: [], handles: [middle] };
+  if (node.kind === 'merge' || node.kind === 'transform' || node.kind === 'text_plus') return { lines: [], handles: [middle] };
   const [cosine, sine] = turnOf(read(node, 'angle', keyFrame));
   /** A place from the centre along the axes of the shape, `x` to the right and `y` up before it is turned, in pixels. */
   const place = (x: number, y: number): OverlayPoint => [pixel(centre[0] + x * cosine - y * sine), pixel(centre[1] - (x * sine + y * cosine))];
@@ -235,6 +250,129 @@ function trackerControls(node: Extract<FusionNode, { kind: 'tracker' }>, keyFram
   return { lines, handles, marks };
 }
 
+/** The places of a Planar Tracker that are drawn: those of its region, and with the Corner Pin its four corners, in the order of `CORNERS`. */
+const planarPlaces = (params: FusionPlanarTracker): FusionTrackerPlace[] => [
+  ...(Array.isArray(params.region) ? params.region : []), ...(params.operation === 'corner_pin' ? CORNERS.map(corner => params.corners[corner]) : []),
+];
+
+/**
+ * The motion by which a Planar Tracker is drawn at a frame of its keys: that of its path there (`motionAt`), where it puts every
+ * place that is drawn somewhere; the identity where there is none, or where it would send one to no place (beyond the line where
+ * the plane vanishes), and the region is drawn where it was drawn then.
+ */
+function shownMotion(params: FusionPlanarTracker, keyFrame: number): Matrix3 {
+  const motion = motionAt(params, keyFrame);
+  if (motion === null) return IDENTITY;
+  return planarPlaces(params).every(place => applyTo(motion, [place.x, place.y]) !== null) ? motion : IDENTITY;
+}
+
+/**
+ * The controls of a Planar Tracker at a frame of its keys (PROTOCOL.md, "The Planar Tracker"), each place where the motion of
+ * its path puts it there (`shownMotion`), so that the region is drawn on the plane that it follows:
+ *
+ * - its region, a line through its places and back to the first, and a handle at each place (`region`, in their order);
+ * - with the Corner Pin, the four corners that the corners of the foreground are put on, a line from the upper left one round
+ *   and back to it, and a handle at each (`corner`, in the order of `CORNERS`), after those of the region, so that a corner
+ *   that lies on a place of the region is the one pressed.
+ *
+ * The places of the region are given as `edges` too, for a press on a side to put a place there.
+ */
+function planarControls(params: FusionPlanarTracker, keyFrame: number, picture: FusionPicture): Controls {
+  const motion = shownMotion(params, keyFrame);
+  const drawn = (place: FusionTrackerPlace): OverlayPoint => {
+    const [u, v] = applyTo(motion, [place.x, place.y]) ?? [place.x, place.y];
+    const [x, y] = toPixels(picture, u, v);
+    return [pixel(x), pixel(y)];
+  };
+  const region = (Array.isArray(params.region) ? params.region : []).map(drawn);
+  const lines: OverlayPoint[][] = region.length >= 2 ? [[...region, region[0]]] : [];
+  const handles: Handle[] = region.map((at, index): Handle => ({ kind: 'region', index, at }));
+  if (params.operation === 'corner_pin') {
+    const corners = CORNERS.map(corner => drawn(params.corners[corner]));
+    lines.push([...corners, corners[0]]);
+    corners.forEach((at, index) => handles.push({ kind: 'corner', index, at }));
+  }
+  return { lines, handles, edges: region };
+}
+
+/**
+ * The side of the region of a Planar Tracker that a press at a place of the frame drawn is on: the nearest within `reach` pixels,
+ * as the place of the region after which a new place goes (from 0; the last side goes back to the first place), and the point of
+ * that side nearest the press, which is where the new place goes. Null where none is so near, and where there is no region.
+ */
+export function edgeAt(controls: Controls, at: OverlayPoint, reach: number): { after: number; at: OverlayPoint } | null {
+  const edges = controls.edges ?? [];
+  if (edges.length < 2) return null;
+  let found: { after: number; at: OverlayPoint } | null = null;
+  let nearest = Infinity;
+  for (let index = 0; index < edges.length; index++) {
+    const from = edges[index];
+    const to = edges[(index + 1) % edges.length];
+    const [dx, dy] = [to[0] - from[0], to[1] - from[1]];
+    const length = dx * dx + dy * dy;
+    const share = length > 0 ? Math.min(1, Math.max(0, ((at[0] - from[0]) * dx + (at[1] - from[1]) * dy) / length)) : 0;
+    const near: OverlayPoint = [pixel(from[0] + share * dx), pixel(from[1] + share * dy)];
+    const away = Math.hypot(near[0] - at[0], near[1] - at[1]);
+    if (away <= reach && away < nearest) { found = { after: index, at: near }; nearest = away; }
+  }
+  return found;
+}
+
+/**
+ * The place at the reference frame of a Planar Tracker that a place of the frame drawn is at: where the inverse of the motion that
+ * it is drawn by (`shownMotion`) puts the place of the picture there, kept within the range of a place and written to a millionth.
+ */
+function placeUnder(params: FusionPlanarTracker, keyFrame: number, picture: FusionPicture, u: number, v: number): FusionTrackerPlace {
+  const back = inverse(shownMotion(params, keyFrame));
+  const [x, y] = (back === null ? null : applyTo(back, [u, v])) ?? [u, v];
+  return { x: tidy(within(PLANAR_PLACE, x)), y: tidy(within(PLANAR_PLACE, y)) };
+}
+
+/**
+ * Where a place of the region or a corner of a Planar Tracker goes once the pointer has gone `dx` pixels of the frame drawn to the
+ * right and `dy` down since it pressed its handle: from where it is drawn at the frame `keyFrame` of the keys (`shownMotion`),
+ * `dx` of the width of the picture across and `dy` of its height down, taken back to the reference frame by the inverse of that
+ * motion, so that it goes with the pointer whatever the motion; kept within the range of a place and written to a millionth.
+ * Worked out from the node as it was when the drag began, on a picture that has a size.
+ */
+function draggedPlace(params: FusionPlanarTracker, place: FusionTrackerPlace, keyFrame: number, picture: FusionPicture, dx: number, dy: number): FusionTrackerPlace {
+  const [u, v] = applyTo(shownMotion(params, keyFrame), [place.x, place.y]) ?? [place.x, place.y];
+  return placeUnder(params, keyFrame, picture, u + dx / picture.width, v - dy / picture.height);
+}
+
+/**
+ * The region of a Planar Tracker with its place `index` dragged (see `draggedPlace`): the others the objects that they are. Null
+ * for a node that is no Planar Tracker, a place that it has not, and a picture that has no size.
+ */
+export function draggedRegion(node: FusionNode, index: number, keyFrame: number, picture: FusionPicture, dx: number, dy: number): FusionTrackerPlace[] | null {
+  if (node.kind !== 'planar_tracker' || picture.width <= 0 || picture.height <= 0) return null;
+  const region = node.params.region;
+  if (!Number.isInteger(index) || index < 0 || index >= region.length) return null;
+  const moved = draggedPlace(node.params, region[index], keyFrame, picture, dx, dy);
+  return region.map((place, at) => (at === index ? moved : place));
+}
+
+/** The corners of the Corner Pin of a Planar Tracker with the corner `index` (in the order of `CORNERS`) dragged (see `draggedPlace`). */
+export function draggedCorner(node: FusionNode, index: number, keyFrame: number, picture: FusionPicture, dx: number, dy: number): FusionPlanarCorners | null {
+  if (node.kind !== 'planar_tracker' || picture.width <= 0 || picture.height <= 0) return null;
+  const corner: Corner | undefined = CORNERS[index];
+  if (corner === undefined) return null;
+  return { ...node.params.corners, [corner]: draggedPlace(node.params, node.params.corners[corner], keyFrame, picture, dx, dy) };
+}
+
+/**
+ * The region of a Planar Tracker with a place put after its place `after` (from 0), where a press on a side of it at `at`, a place
+ * of the frame drawn, puts one: the place at the reference frame that is drawn there (`placeUnder`). Null where the region has as
+ * many places as it may have or no such place, for a node that is no Planar Tracker, and for a picture that has no size.
+ */
+export function regionWithPoint(node: FusionNode, after: number, keyFrame: number, picture: FusionPicture, at: OverlayPoint): FusionTrackerPlace[] | null {
+  if (node.kind !== 'planar_tracker' || picture.width <= 0 || picture.height <= 0) return null;
+  const region = node.params.region;
+  if (region.length >= MOST_REGION_POINTS || !Number.isInteger(after) || after < 0 || after >= region.length) return null;
+  const [u, v] = fromPixels(picture, at[0], at[1]);
+  return [...region.slice(0, after + 1), placeUnder(node.params, keyFrame, picture, u, v), ...region.slice(after + 1)];
+}
+
 /**
  * What the engine is to draw for the controls of a node (`view.overlay`), over a frame of `canvas`
  * pixels: the outline, the centre in the colour of the place at the playhead (`current`), the other
@@ -295,7 +433,7 @@ export function reachOf(pointer: Pick<ViewPointer, 'presentation'>): number {
  * a Tracker is no setting that takes keys: it is dragged by `draggedPattern`.
  */
 export function draggedValues(node: FusionNode, handle: Pick<Handle, 'kind' | 'index'>, keyFrame: number, picture: FusionPicture, dx: number, dy: number): Moved[] {
-  if (!hasControls(node.kind) || node.kind === 'tracker' || picture.width <= 0 || picture.height <= 0) return [];
+  if (!hasControls(node.kind) || node.kind === 'tracker' || node.kind === 'planar_tracker' || picture.width <= 0 || picture.height <= 0) return [];
   const moved = (path: string, value: (was: number) => number): Moved[] => {
     const setting = settingOf(node, path);
     return setting ? [{ setting, value: tidy(within(setting.bounds, value(read(node, path, keyFrame)))) }] : [];
@@ -303,7 +441,7 @@ export function draggedValues(node: FusionNode, handle: Pick<Handle, 'kind' | 'i
   if (handle.kind === 'center') {
     return [...moved('center.x', was => was + dx / picture.width), ...moved('center.y', was => was - dy / picture.height)];
   }
-  if (node.kind === 'merge' || node.kind === 'transform') return [];
+  if (node.kind === 'merge' || node.kind === 'transform' || node.kind === 'text_plus') return [];
   const [cosine, sine] = turnOf(read(node, 'angle', keyFrame));
   // How far the pointer has gone along the two axes of the shape as it is turned: across, and up.
   const across = dx * cosine - dy * sine;

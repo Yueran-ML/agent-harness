@@ -50,7 +50,7 @@ const isEmpty = (error: unknown): boolean => error instanceof EngineError && typ
  * A node of a composition: a card with a stripe in the colour of its kind and its name, the inputs
  * of its pictures down its left side (a Merge's background orange above its foreground green, as
  * in Fusion, p. 2162), its mask input blue on its lower edge, where it has one (the effect mask of
- * a Merge, a Transform, a Background, a Blur, a Mosaic, a Delta Keyer and a Tracker, and the mask that comes into a mask), the
+ * a Merge, a Transform, a Background, a Blur, a Mosaic, a Delta Keyer, a Tracker, a Planar Tracker and a Text+, and the mask that comes into a mask), the
  * two matte inputs of a Delta Keyer on its upper edge, each in a colour of its own (the garbage matte a quarter of
  * the way along, the solid matte three quarters), and its output at
  * the middle of its right side. A node that is passed through is drawn dimmed, and one whose
@@ -168,9 +168,9 @@ function linkUnder(at: FusionAt, composition: Composition, layout: FusionLayout,
  * it sends a change and says a refusal), about the nodes and the named inputs of a composition:
  *
  * - a node added from the tool bar or from the right-click menu (Merge, Transform, Background,
- *   MediaIn), where the menu was opened; with one node chosen, a node that has an input goes in
+ *   Text+, MediaIn), where the menu was opened; with one node chosen, a node that has an input goes in
  *   after it (`addNode`), and the new node is the one chosen; an effect on a picture (Blur, Mosaic,
- *   Delta Keyer, Tracker, a group of their own in the tool bar) goes in after the node chosen in the same way; a mask
+ *   Delta Keyer, Tracker, Planar Tracker, a group of their own in the tool bar) goes in after the node chosen in the same way; a mask
  *   (Rectangle, Ellipse, Polygon, a group of their own too) is linked into the `mask` of the node
  *   chosen instead, where that node has one and nothing is linked into it;
  * - a node chosen with a click, more with Ctrl+click or Shift+click or a box drawn round them, all

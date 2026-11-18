@@ -800,6 +800,60 @@ mod tests {
             None
         );
         assert_eq!(top_left(&Mat3::IDENTITY), Some(IDENTITY));
+        assert_eq!(top_left(&Mat3::IDENTITY.scaled(2.0)), Some(IDENTITY));
+    }
+
+    #[test]
+    fn a_corner_below_1e_12_is_taken_for_0_and_one_of_1e_12_is_divided_by() {
+        let tiny = Mat3::IDENTITY.scaled(1e-13);
+        assert_eq!(homography_of(&tiny), None);
+        assert_eq!(top_left(&tiny), None);
+        let least = Mat3::IDENTITY.scaled(1e-12);
+        let read = homography_of(&least).unwrap();
+        assert!(
+            read.iter().zip(STILL).all(|(n, s)| (n - s).abs() < 1e-9),
+            "{read:?}"
+        );
+        let seen = top_left(&least).unwrap();
+        assert!(
+            seen.iter()
+                .flatten()
+                .zip(IDENTITY.iter().flatten())
+                .all(|(n, s)| (n - s).abs() < 1e-9),
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_region_no_more_than_a_millionth_across_or_down_is_bounded_by_the_picture() {
+        let spanning = |[left, right]: [f64; 2], [bottom, top]: [f64; 2]| PlanarTracker {
+            region: vec![
+                Place { x: left, y: bottom },
+                Place {
+                    x: right,
+                    y: bottom,
+                },
+                Place { x: right, y: top },
+                Place { x: left, y: top },
+            ],
+            ..PlanarTracker::default()
+        };
+        // A line up and down, one across, and a box exactly as small as the least.
+        assert_eq!(spanning([0.5, 0.5], [0.25, 0.75]).bounding_box(), PICTURE);
+        assert_eq!(
+            spanning([0.0, SMALLEST], [0.25, 0.75]).bounding_box(),
+            PICTURE
+        );
+        assert_eq!(
+            spanning([0.25, 0.75], [0.0, SMALLEST]).bounding_box(),
+            PICTURE
+        );
+        // Any more across and down, and it is the box.
+        let wider = 2.0 * SMALLEST;
+        assert_eq!(
+            spanning([0.0, wider], [0.0, wider]).bounding_box(),
+            [[0.0, 0.0], [wider, 0.0], [wider, wider], [0.0, wider]]
+        );
     }
 
     #[test]

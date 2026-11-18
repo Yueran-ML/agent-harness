@@ -10,7 +10,8 @@ use columbina_model::fusion::{
     size_of, BlurFilter, Blurred, Composition, DeltaKeyed, FillMethod, Follow, FollowOutput, Fused,
     FusedKind, FusedNode, Input, KeyerView, Kind, Link, Mosaicked, Node, NodeKind, PaintMode,
     Pattern, Place, Point, ReplaceMode, SpillMethod, Tracked, Tracker, TrackerMerge,
-    TrackerOperation, TrackerPivot, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS, MOST_TRACKERS,
+    TrackerOperation, TrackerPivot, LEAST_DOMINANCE, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS,
+    MOST_TRACKERS, STABILIZER,
 };
 use columbina_model::fusion::{
     FollowerDelay, FollowerOrder, TextFollower, TextJustify, TextPlus, TextPlused, TextSelect,
@@ -1483,6 +1484,46 @@ fn the_keys_of_a_composition_are_read_at_the_frame_of_the_keys_of_its_clip() {
         seen_at(&colour, &[200, 210, 240, 249]),
         [0.0, 0.25, 1.0, 1.0]
     );
+}
+
+#[test]
+fn each_picture_that_a_node_reads_is_renumbered_and_nothing_else_of_it() {
+    // A Merge that reads two pictures, and a keyer that reads three: its picture and its
+    // two mattes.
+    let fused = layer_at(&matted(), 20).fusion.unwrap();
+    let reading: Vec<usize> = fused
+        .nodes
+        .iter()
+        .map(|node| node.kind.reads().len())
+        .collect();
+    assert!(reading.contains(&2) && reading.contains(&3), "{reading:?}");
+    for node in &fused.nodes {
+        let moved = node.kind.with_reads(&|at| at + 10);
+        let wanted: Vec<usize> = node.kind.reads().iter().map(|at| at + 10).collect();
+        assert_eq!(moved.reads(), wanted, "{}", node.id);
+        assert_eq!(moved.with_reads(&|at| at - 10), node.kind, "{}", node.id);
+    }
+}
+
+#[test]
+fn a_composition_stabilized_ends_in_the_stabilizer_which_reads_what_came_out_of_it() {
+    let plain = moving(&[(10, 0.0), (30, 1.0)]).at(20.0);
+    assert_eq!(plain.output, Some(1));
+    let shift = [[1.0, 0.0, 0.125], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let steady = plain.stabilized(shift);
+    assert_eq!(steady.nodes.len(), 3);
+    assert_eq!(steady.nodes[..2], plain.nodes[..]);
+    assert_eq!(
+        steady.nodes[2],
+        FusedNode {
+            id: STABILIZER.into(),
+            kind: FusedKind::Stabilize {
+                input: Some(1),
+                matrix: shift,
+            },
+        }
+    );
+    assert_eq!(steady.output, Some(2));
 }
 
 // The edits of a clip.
@@ -3325,6 +3366,25 @@ fn the_settings_of_a_delta_keyer_are_those_of_its_kind_within_their_ranges() {
 }
 
 #[test]
+fn a_screen_colour_whose_one_channel_is_above_the_others_by_the_least_dominance_is_kept() {
+    let mut project = keyed();
+    let least = f64::from(LEAST_DOMINANCE);
+    applied(
+        &mut project,
+        set_params("n5", json!({"screen": {"r": 0, "g": least, "b": 0}})),
+    );
+    assert_eq!(keyer_of(&project).screen.g, Param::Fixed(least));
+    // Any less, and it is refused.
+    assert_eq!(
+        refused(
+            &project,
+            set_params("n5", json!({"screen": {"g": least / 2.0}}))
+        ),
+        range("delta_keyer.screen")
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "a key for each setting of a keyer, and what its keys are not held to"
@@ -4682,6 +4742,91 @@ fn a_centre_follows_what_a_tracker_publishes_and_lets_go_of_it() {
     // And the Tracker may go.
     let bridge = vec![Link::new(MEDIA_IN, "n3", Input::Foreground)];
     applied(&mut project, remove("n5", Some(bridge)));
+}
+
+#[test]
+fn what_a_centre_follows_is_reached_to_be_changed_and_a_node_without_one_has_none() {
+    let follow = json!({"node": "track", "output": "tracker", "tracker": 1});
+    for kind in [
+        Kind::Merge,
+        Kind::Transform,
+        Kind::Rectangle,
+        Kind::Ellipse,
+        Kind::Polygon,
+        Kind::TextPlus,
+    ] {
+        let mut written = serde_json::to_value(Node::new("n9", kind)).unwrap();
+        written["params"]["center"]["follow"] = follow.clone();
+        let mut node: Node = serde_json::from_value(written).unwrap();
+        // The name of the node that is followed is put in the place of its id.
+        let reached = node
+            .kind
+            .follow_mut()
+            .expect("its centre follows a tracker");
+        reached.node = "n5".into();
+        assert_eq!(
+            node.kind.follow(),
+            Some(&Follow::tracker("n5", 1)),
+            "{kind:?}"
+        );
+        // A centre that follows nothing has nothing to change.
+        assert!(
+            Node::new("n9", kind).kind.follow_mut().is_none(),
+            "{kind:?}"
+        );
+    }
+    for kind in [
+        Kind::MediaIn,
+        Kind::MediaOut,
+        Kind::Background,
+        Kind::Blur,
+        Kind::Mosaic,
+        Kind::DeltaKeyer,
+        Kind::Tracker,
+        Kind::PlanarTracker,
+    ] {
+        assert!(
+            Node::new("n9", kind).kind.follow_mut().is_none(),
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn a_rectangle_a_polygon_and_a_text_plus_that_follow_a_tracker_are_drawn_where_it_publishes() {
+    let mut composition = holding(&[(0, [0.25, 0.5]), (20, [0.375, 0.625])], 0);
+    let follow = Follow::tracker("track", 0);
+    let ids = ["box", "shape", "words"];
+    for (id, kind) in ids
+        .into_iter()
+        .zip([Kind::Rectangle, Kind::Polygon, Kind::TextPlus])
+    {
+        let mut node = Node::new(id, kind);
+        let center = match &mut node.kind {
+            NodeKind::Rectangle(rectangle) => &mut rectangle.center,
+            NodeKind::Polygon(polygon) => &mut polygon.center,
+            NodeKind::TextPlus(text) => &mut text.center,
+            other => panic!("{other:?}"),
+        };
+        center.x = Param::Fixed(0.125);
+        center.y = Param::Fixed(0.875);
+        center.follow = Some(follow.clone());
+        composition.nodes.push(node);
+    }
+    // Its own numbers are not read: it is where the pattern is at the frame.
+    let size = (1920, 1080);
+    let published = composition.published(&follow, 20.0, size).unwrap();
+    assert_ne!(published, [0.125, 0.875]);
+    for id in ids {
+        let fused = composition.at_node_size(id, 20.0, size).unwrap();
+        let center = match &fused.nodes[fused.output.unwrap()].kind {
+            FusedKind::Rectangle { shape, .. } => shape.center,
+            FusedKind::Polygon { shape, .. } => shape.center,
+            FusedKind::TextPlus { settings, .. } => settings.center,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(center, published, "{id}");
+    }
 }
 
 /// A composition that holds the picture of its clip still: `in` through the Tracker

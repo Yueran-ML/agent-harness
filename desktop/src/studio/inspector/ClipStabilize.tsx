@@ -2,37 +2,51 @@ import { useContext, useId } from 'react';
 import { RotateCcw } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { analysedForAnother, DEFAULT_STABILIZE, STABILIZE_METHODS, type Clip, type Op, type Stabilize, type Timeline } from '../engine';
+import {
+  analysedForAnother, DEFAULT_STABILIZE, STABILIZE_CONTROLS, STABILIZE_METHODS,
+  type Clip, type Op, type Stabilize, type StabilizeControl, type StabilizeSettings, type Timeline,
+} from '../engine';
 import { clipLocations } from '../timeline/selection';
 import { common } from './common';
 import { ChoiceField, FieldsLocked, NumberField } from './fields';
 import type { Build, Commit } from './useCommit';
 import { useStabilizing } from './useStabilizing';
 
-/** The controls of a stabilizer that the Inspector sets one by one. */
-type Control = Exclude<keyof Stabilize, 'analysis'>;
-
 /** What a clip's stabilizer is, as the Inspector shows it: the one that a clip is given at first, where it has none. */
 const shownOf = (clip: Clip): Stabilize => clip.stabilize ?? DEFAULT_STABILIZE;
 
+/** The clips of `ids` that are still there and may have a stabilizer: not on a locked track, nor on a track of sound. */
+function stabilizable(timeline: Timeline, ids: readonly string[]): Clip[] {
+  const locations = clipLocations(timeline);
+  return ids.flatMap(id => {
+    const located = locations.get(id);
+    return located && !located.track.locked && located.track.kind === 'video' ? [located.clip] : [];
+  });
+}
+
 /**
- * One transaction that sets the stabilizer of each of the clips that are still there as `change` makes it of the one it has
- * (null where it has none), each set whole, its analysis with it. A clip that it would not change is left out, as the engine
- * makes no step of one, and so is a clip on a locked track or on a track of sound, which has no stabilizer.
+ * One transaction that sets the controls `settings` of the stabilizer of each of the clips that are still there, one
+ * `set_stabilize_settings` of those controls alone for each: what was measured is kept by the engine and never sent back. A
+ * clip that has no stabilizer is given the one that a clip has at first with them, as the engine gives it. A clip whose
+ * stabilizer has them already is left out, as the engine makes no step of one, and so is a clip on a locked track or on a
+ * track of sound, which has no stabilizer.
  */
-export function setStabilizers(ids: readonly string[], change: (now: Stabilize | null) => Stabilize | null): Build {
+export function setStabilizers(ids: readonly string[], settings: StabilizeSettings): Build {
   return timeline => {
-    const locations = clipLocations(timeline);
     const ops: Op[] = [];
-    for (const id of ids) {
-      const located = locations.get(id);
-      if (!located || located.track.locked || located.track.kind !== 'video') continue;
-      const before = located.clip.stabilize ?? null;
-      const after = change(before);
-      if (JSON.stringify(before) !== JSON.stringify(after)) ops.push({ op: 'set_stabilize', timeline: timeline.id, clip: id, value: after });
+    for (const clip of stabilizable(timeline, ids)) {
+      const now = clip.stabilize;
+      const changes = now === undefined || STABILIZE_CONTROLS.some(key => settings[key] !== undefined && settings[key] !== now[key]);
+      if (changes) ops.push({ op: 'set_stabilize_settings', timeline: timeline.id, clip: clip.id, settings: { ...settings } });
     }
     return ops;
   };
+}
+
+/** One transaction that takes the stabilizer away from each of the clips that has one, its analysis with it. */
+export function resetStabilizers(ids: readonly string[]): Build {
+  return timeline => stabilizable(timeline, ids).filter(clip => clip.stabilize !== undefined)
+    .map((clip): Op => ({ op: 'set_stabilize', timeline: timeline.id, clip: clip.id, value: null }));
 }
 
 /**
@@ -40,9 +54,10 @@ export function setStabilizers(ids: readonly string[], change: (now: Stabilize |
  * Camera Lock, Zoom, the Cropping Ratio, Smooth and Strength of the stabilizer of the clips of moving pictures chosen, and the
  * Stabilize button that has the engine measure the motion of the picture of one of them.
  *
- * - A clip that has no stabilizer shows the one that a clip is given at first; the first change writes it whole, with the
- *   change, and Stabilize writes it whole with what was measured. Each change sets every clip chosen, in one transaction,
- *   as the other sections of the tab do; a control where they differ shows a dash.
+ * - A clip that has no stabilizer shows the one that a clip is given at first; the first change gives it that one, with the
+ *   change, and Stabilize has the engine write it whole with what was measured. Each change sends the one control changed
+ *   (`set_stabilize_settings`), never what was measured, and sets every clip chosen, in one transaction, as the other
+ *   sections of the tab do: a slider is sent once, as it is let go. A control where they differ shows a dash.
  * - The controls are numbers that take no keys. Camera Lock leaves Smooth and the Cropping Ratio no say, so they are off
  *   while it is on, as DaVinci's are.
  * - A change of the controls is drawn at once from the analysis that a clip has; a change of the Method needs a new one, and
@@ -65,13 +80,13 @@ export function ClipStabilize({ clips, timeline, commit, bridge, session, revisi
   const one = clips.length === 1 ? clips[0] : null;
   const stabilizing = useStabilizing({ bridge, session, revision, timeline, clip: one, locked });
   const busy = stabilizing.running || stabilizing.asking;
-  const value = <K extends Control>(key: K) => common(clips, clip => shownOf(clip)[key]);
-  /** Set one control of every clip chosen: the stabilizer it has, or the one it is given at first, with the control changed. */
-  const set = <K extends Control>(key: K, to: Stabilize[K]) => void commit(setStabilizers(ids, now => {
-    const next: Stabilize = { ...(now ?? DEFAULT_STABILIZE) };
-    next[key] = to;
-    return next;
-  }));
+  const value = <K extends StabilizeControl>(key: K) => common(clips, clip => shownOf(clip)[key]);
+  /** Set one control of every clip chosen, that control alone: of the stabilizer it has, or of the one it is given at first. */
+  const set = <K extends StabilizeControl>(key: K, to: Stabilize[K]) => {
+    const settings: StabilizeSettings = {};
+    settings[key] = to;
+    void commit(setStabilizers(ids, settings));
+  };
   const cameraLock = value('camera_lock');
   const zoom = value('zoom');
   const method = value('method');
@@ -96,7 +111,7 @@ export function ClipStabilize({ clips, timeline, commit, bridge, session, revisi
       <h3 className="inspector-section">{labels.stabilization}</h3>
       <button type="button" className="icon-btn" aria-label={labels.resetStabilization} title={labels.resetStabilization} data-test="stabilize-reset"
         disabled={locked || busy || !clips.some(clip => clip.stabilize !== undefined)}
-        onClick={() => void commit(setStabilizers(ids, () => null))}><RotateCcw size={12} aria-hidden="true" /></button>
+        onClick={() => void commit(resetStabilizers(ids))}><RotateCcw size={12} aria-hidden="true" /></button>
     </div>
     <ChoiceField name="stabilize-method" label={labels.stabilizeMethod} value={method} disabled={busy}
       options={STABILIZE_METHODS.map(each => ({ value: each, label: labels.stabilizeMethods[each] }))}

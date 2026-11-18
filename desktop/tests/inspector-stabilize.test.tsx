@@ -2,7 +2,8 @@
 /**
  * Stabilization of the Video tab of the Inspector of the Edit and Cut pages (DaVinci Resolve's, Reference Manual 20,
  * pp. 633–634 and 1064–1065): the controls of a clip's stabilizer, shown as a clip is given one at first where it has none
- * and each change sent as one `set_stabilize` of the whole stabilizer; Camera Lock, which leaves the Cropping Ratio and
+ * and each change sent as one `set_stabilize_settings` of the control changed alone, never what was measured, however long;
+ * a slider sent once, as it is let go; Camera Lock, which leaves the Cropping Ratio and
  * Smooth no say; the Stabilize button, which has the engine measure the clip (`track.stabilize`), what it says while the
  * measure goes on and how it ended, Stop, and the measure stopped as the clip or the Inspector goes; the note of a Method
  * that needs a new analysis; Reset; several clips; and the copy of the project that keeps the stabilizer as the engine does.
@@ -12,7 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import { en } from '../src/messages/en';
 import {
-  applyOp, DEFAULT_STABILIZE, emptyGrade, type Clip, type EngineEvent, type Media, type Project, type Stabilize, type Timeline,
+  applyOp, DEFAULT_STABILIZE, emptyGrade, type Clip, type EngineEvent, type Media, type Project, type Stabilize, type StabilizeMotion,
+  type StabilizeSettings, type Timeline,
 } from '../src/studio/engine';
 import { Inspector } from '../src/studio/inspector/Inspector';
 import { clip, media } from './timeline-fixture';
@@ -72,6 +74,7 @@ const status = () => byTest('stabilize-status')?.textContent ?? null;
 const section = () => document.querySelector('[data-section="stabilization"]');
 const type = (input: HTMLInputElement, value: string) => { fireEvent.change(input, { target: { value } }); fireEvent.keyDown(input, { key: 'Enter' }); };
 const set = (value: Stabilize | null, id = 'c1') => ({ op: 'set_stabilize', timeline: 't1', clip: id, value });
+const settings = (fields: StabilizeSettings, id = 'c1') => ({ op: 'set_stabilize_settings', timeline: 't1', clip: id, settings: fields });
 const ended = (fields: Record<string, unknown>) => ({ job: 'track-1', phase: 'done', reason: null, frames: 60, lost: 0, frame: 59, revision: 18, analysed: [0, 59], method: 'perspective', ...fields });
 
 describe('Stabilization of the Video tab', () => {
@@ -95,18 +98,18 @@ describe('Stabilization of the Video tab', () => {
     expect([byTest('stabilize-again'), byTest('stabilize-stop'), byTest('stabilize-status'), byTest('stabilize-one')]).toEqual([null, null, null, null]);
   });
 
-  it('writes the whole stabilizer with the first change of a clip that has none, each change one transaction', async () => {
+  it('sends the control changed alone of a clip that has none, which the engine gives the stabilizer of a clip at first, each change one transaction', async () => {
     const { applied } = mount([clip('c1', 10, 60)]);
     type(box('stabilize-smooth'), '0.6');
     await settle();
-    expect(applied()).toEqual([{ revision: 17, ops: [set({ ...DEFAULT_STABILIZE, smooth: 0.6 })] }]);
+    expect(applied()).toEqual([{ revision: 17, ops: [settings({ smooth: 0.6 })] }]);
     fireEvent.click(check('stabilize-camera-lock'));
     await settle();
     fireEvent.change(methodOf(), { target: { value: 'translation' } });
     await settle();
     expect(applied().slice(1)).toEqual([
-      { revision: 17, ops: [set({ ...DEFAULT_STABILIZE, camera_lock: true })] },
-      { revision: 17, ops: [set({ ...DEFAULT_STABILIZE, method: 'translation' })] },
+      { revision: 17, ops: [settings({ camera_lock: true })] },
+      { revision: 17, ops: [settings({ method: 'translation' })] },
     ]);
   });
 
@@ -117,10 +120,11 @@ describe('Stabilization of the Video tab', () => {
     expect(byTest('stabilize-again')).toBeNull();
     type(box('stabilize-strength'), '-0.5');
     await settle();
-    expect(applied()).toEqual([{ revision: 17, ops: [set(measured({ strength: -0.5 }))] }]);
+    expect(applied()).toEqual([{ revision: 17, ops: [settings({ strength: -0.5 })] }]);
     fireEvent.change(methodOf(), { target: { value: 'translation' } });
     await settle();
-    expect(applied()[1]).toEqual({ revision: 17, ops: [set(measured({ method: 'translation' }))] });
+    // The engine keeps the analysis measured for Similarity: the Method alone is sent.
+    expect(applied()[1]).toEqual({ revision: 17, ops: [settings({ method: 'translation' })] });
     // The copy takes it in: the analysis measured for Similarity is drawn until the clip is measured again.
     rerender({ revision: 18, timeline: timelineOf([clip('c1', 10, 60, { stabilize: measured({ method: 'translation' }) })]) });
     expect(byTest('stabilize-again')!.textContent).toBe('Stabilize again to use Translation.');
@@ -263,7 +267,43 @@ describe('Stabilization of the Video tab', () => {
     expect(sent('track.stabilize')).toEqual([]);
     type(box('stabilize-smooth'), '0.5');
     await settle();
-    expect(applied()).toEqual([{ revision: 17, ops: [set(measured({ camera_lock: true, smooth: 0.5 })), set({ ...DEFAULT_STABILIZE, smooth: 0.5 }, 'c2')] }]);
+    expect(applied()).toEqual([{ revision: 17, ops: [settings({ smooth: 0.5 }), settings({ smooth: 0.5 }, 'c2')] }]);
+    // Camera Lock on for all of them: a clip that has it on already is left out.
+    fireEvent.click(check('stabilize-camera-lock'));
+    await settle();
+    expect(applied()[1]).toEqual({ revision: 17, ops: [settings({ camera_lock: true }, 'c2')] });
+  });
+
+  it('never sends what was measured, however long, and sends a slider once, as it is let go, one change for each clip', async () => {
+    // A stabilizer measured over 2000 frames: its analysis is tens of thousands of bytes of JSON.
+    const path: Record<string, StabilizeMotion> = {};
+    for (let frame = 0; frame < 2000; frame++) path[frame] = [frame * 0.5, frame * -0.25, 1.001, 0.002, 1, 0, 0, 0];
+    const long = measured({ analysis: { method: 'similarity', size: [1920, 1080], path } });
+    expect(JSON.stringify(long).length).toBeGreaterThan(50_000);
+    const { applied } = mount([clip('c1', 10, 60, { stabilize: long }), clip('c2', 100, 60)]);
+    type(box('stabilize-smooth'), '0.6');
+    await settle();
+    fireEvent.change(methodOf(), { target: { value: 'translation' } });
+    await settle();
+    fireEvent.click(check('stabilize-zoom'));
+    await settle();
+    // The Strength slider dragged: shown as it moves, and nothing sent until it is let go.
+    fireEvent.pointerDown(slider('stabilize-strength'));
+    fireEvent.input(slider('stabilize-strength'), { target: { value: '0.25' } });
+    fireEvent.input(slider('stabilize-strength'), { target: { value: '-0.25' } });
+    expect(box('stabilize-strength').value).toBe('-0.250');
+    await settle();
+    expect(applied()).toHaveLength(3);
+    fireEvent.change(slider('stabilize-strength'), { target: { value: '-0.5' } });
+    await settle();
+    expect(applied()).toEqual([
+      { revision: 17, ops: [settings({ smooth: 0.6 }), settings({ smooth: 0.6 }, 'c2')] },
+      { revision: 17, ops: [settings({ method: 'translation' }), settings({ method: 'translation' }, 'c2')] },
+      { revision: 17, ops: [settings({ zoom: false }), settings({ zoom: false }, 'c2')] },
+      { revision: 17, ops: [settings({ strength: -0.5 }), settings({ strength: -0.5 }, 'c2')] },
+    ]);
+    for (const sent of applied()) expect(JSON.stringify(sent).length).toBeLessThan(300);
+    expect(JSON.stringify(applied())).not.toContain('analysis');
   });
 
   it('is not shown for a title or a still, which have no motion to measure, and is off on a locked track', () => {

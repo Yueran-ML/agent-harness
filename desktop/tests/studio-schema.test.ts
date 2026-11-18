@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  applyOp, CopyMismatch, defaultColorSettings, emptyGrade, firstComposition, fixedOf, keptColor, mergePatch, SOUND_FIELDS,
-  sortFusionLinks, sortLinks,
+  analysedForAnother, applyOp, CopyMismatch, DEFAULT_STABILIZE, defaultColorSettings, emptyGrade, firstComposition, fixedOf, keptColor, mergePatch,
+  SOUND_FIELDS, sortFusionLinks, sortLinks,
   type Clip, type ClipTrack, type FusionBlur, type FusionDeltaKeyer, type FusionLink, type FusionMosaic, type FusionNode, type FusionPolygon, type GradeNode,
-  type Link, type Media, type Op, type Project, type Timeline,
+  type Link, type Media, type Op, type Project, type StabilizeSettings, type Timeline,
 } from '../src/studio/engine';
 
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
@@ -176,6 +176,85 @@ describe('the stabilizer of the copy, where the examples do not reach', () => {
     const plain = structuredClone(stabilizing().find(example => !('stabilize' in clipOf(example.before)))!.before);
     expect(applyOp(plain, { op: 'set_stabilize', timeline: 't1', clip: 'c1', value: null })).toStrictEqual(plain);
     expect(() => applyOp(plain, { op: 'set_stabilize', timeline: 't1', clip: 'c99', value: null })).toThrow(CopyMismatch);
+  });
+});
+
+describe('the controls of the stabilizer of the copy set alone, its analysis kept', () => {
+  const stabilizing = () => examples.filter(example => example.done.op === 'set_stabilize');
+  const clipOf = (project: Project) => (project.timelines[0].tracks[0] as ClipTrack).clips[0];
+  /** The clip `id` of the timeline `timeline`, on whichever track it lies. */
+  const clipIn = (project: Project, timeline: string, id: string) => project.timelines.find(each => each.id === timeline)!.tracks
+    .flatMap(track => track.kind === 'subtitle' ? [] : track.clips).find(clip => clip.id === id)!;
+  /** The project of the examples whose clip c1 has no stabilizer. */
+  const plain = () => structuredClone(stabilizing().find(example => !('stabilize' in clipOf(example.before)))!.before);
+  /** The project of the examples whose clip c1 has a stabilizer measured for its Method, with its analysis. */
+  const measured = () => structuredClone(stabilizing().find(example => clipOf(example.before).stabilize?.analysis !== undefined)!.before);
+  const set = (settings: StabilizeSettings, clip = 'c1'): Op => ({ op: 'set_stabilize_settings', timeline: 't1', clip, settings });
+
+  it('gives a clip that has none the stabilizer of a clip at first with the controls given, and no analysis', () => {
+    const project = plain();
+    const before = structuredClone(project);
+    const changed = applyOp(project, set({ smooth: 0.6, zoom: false }));
+    expect(clipOf(changed).stabilize).toStrictEqual({ ...DEFAULT_STABILIZE, smooth: 0.6, zoom: false });
+    expect('analysis' in clipOf(changed).stabilize!).toBe(false);
+    expect(project).toStrictEqual(before);
+    expect(DEFAULT_STABILIZE).toStrictEqual({ method: 'perspective', camera_lock: false, zoom: true, cropping_ratio: 0.5, smooth: 0.25, strength: 1 });
+    // Its inverse takes it away again.
+    expect(applyOp(changed, { op: 'set_stabilize', timeline: 't1', clip: 'c1', value: null })).toStrictEqual(before);
+  });
+
+  it('changes the controls given of a clip that has one and keeps the others, and its analysis, the same object', () => {
+    const project = measured();
+    const before = structuredClone(project);
+    const had = clipOf(project).stabilize!;
+    const changed = applyOp(project, set({ strength: -0.5, cropping_ratio: 0.8 }));
+    expect(clipOf(changed).stabilize).toStrictEqual({ ...had, strength: -0.5, cropping_ratio: 0.8 });
+    expect(clipOf(changed).stabilize!.analysis).toBe(had.analysis);
+    expect(project).toStrictEqual(before);
+    // Its inverse sets back what the controls given were.
+    expect(applyOp(changed, set({ strength: had.strength, cropping_ratio: had.cropping_ratio }))).toStrictEqual(before);
+    // A control left out is kept.
+    const left = applyOp(project, set({ smooth: 0.75, zoom: undefined }));
+    expect(clipOf(left).stabilize).toStrictEqual({ ...had, smooth: 0.75 });
+  });
+
+  it('keeps the analysis as the Method changes, which is then of another Method', () => {
+    const project = measured();
+    const had = clipOf(project).stabilize!;
+    expect(analysedForAnother(had)).toBe(false);
+    const changed = applyOp(project, set({ method: 'translation' }));
+    expect(clipOf(changed).stabilize).toStrictEqual({ ...had, method: 'translation' });
+    expect(clipOf(changed).stabilize!.analysis).toBe(had.analysis);
+    expect(clipOf(changed).stabilize!.analysis).toStrictEqual(clipOf(measured()).stabilize!.analysis);
+    expect(analysedForAnother(clipOf(changed).stabilize)).toBe(true);
+    // Back to the Method that it was measured for: measured for it again.
+    expect(analysedForAnother(clipOf(applyOp(changed, set({ method: had.method }))).stabilize)).toBe(false);
+  });
+
+  it('refuses a clip or a timeline that the copy does not hold', () => {
+    const project = measured();
+    expect(() => applyOp(project, set({ smooth: 0.5 }, 'c99'))).toThrow(CopyMismatch);
+    expect(() => applyOp(project, { op: 'set_stabilize_settings', timeline: 't99', clip: 'c1', settings: { smooth: 0.5 } })).toThrow(CopyMismatch);
+  });
+
+  it('is replayed from the examples of the engine: the controls given alone, the analysis kept, and the inverse of those controls', () => {
+    const setting = examples.filter(example => example.done.op === 'set_stabilize_settings');
+    expect(setting.length).toBeGreaterThan(0);
+    for (const example of setting) {
+      const done = example.done as Extract<Op, { op: 'set_stabilize_settings' }>;
+      const had = clipIn(example.before, done.timeline, done.clip).stabilize;
+      const has = clipIn(example.after, done.timeline, done.clip).stabilize;
+      expect('analysis' in done.settings, example.name).toBe(false);
+      expect(has, example.name).toBeDefined();
+      expect(has!.analysis, example.name).toStrictEqual(had?.analysis);
+      if (had === undefined) {
+        expect(example.inverse, example.name).toStrictEqual({ op: 'set_stabilize', timeline: done.timeline, clip: done.clip, value: null });
+      } else {
+        expect(example.inverse.op, example.name).toBe('set_stabilize_settings');
+        const inverse = example.inverse as Extract<Op, { op: 'set_stabilize_settings' }>;
+        expect(Object.keys(inverse.settings).sort(), example.name).toEqual(Object.keys(done.settings).sort());
+      }
+    }
   });
 });
 

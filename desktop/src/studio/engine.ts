@@ -145,6 +145,12 @@ export interface Stabilize {
 }
 /** The stabilizer as a clip is given it at first, and as the Inspector shows a clip that has none: measured for nothing yet. */
 export const DEFAULT_STABILIZE: Readonly<Stabilize> = { method: 'perspective', camera_lock: false, zoom: true, cropping_ratio: 0.5, smooth: 0.25, strength: 1 };
+/** A control of a stabilizer: any of its fields but what was measured. */
+export type StabilizeControl = Exclude<keyof Stabilize, 'analysis'>;
+/** The controls of a stabilizer, in the order of the Inspector. */
+export const STABILIZE_CONTROLS: readonly StabilizeControl[] = ['method', 'camera_lock', 'zoom', 'cropping_ratio', 'smooth', 'strength'];
+/** Some of the controls of a stabilizer, as `set_stabilize_settings` sets them: a control left out is kept. */
+export type StabilizeSettings = Partial<Pick<Stabilize, StabilizeControl>>;
 /**
  * Whether a stabilizer is to be measured again to stabilize as its Method says: it has an analysis that was measured for
  * another Method, which is kept and still drawn meanwhile. One that was never measured says nothing of it.
@@ -995,6 +1001,13 @@ export type Op =
   | { op: 'splice_fusion_keys'; timeline: string; clip: string; path: string; at: number; remove: number; keys: Keyframe[] }
   /** The stabilizer of the clip `clip` of `timeline` set whole, its analysis with it; `value: null` (always written) takes it away. */
   | { op: 'set_stabilize'; timeline: string; clip: string; value: Stabilize | null }
+  /**
+   * The controls given of the stabilizer of the clip `clip` of `timeline`, the others and its analysis kept as they are (the
+   * analysis also where the Method changes); a clip that has none is given the one a clip has at first (`DEFAULT_STABILIZE`)
+   * with them, and no analysis. Its inverse sets back what the controls given were, or takes the stabilizer away where the
+   * clip had none (`set_stabilize` of null).
+   */
+  | { op: 'set_stabilize_settings'; timeline: string; clip: string; settings: StabilizeSettings }
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
   | { op: 'set_group'; id: string; name?: string | null }
@@ -2559,6 +2572,12 @@ export function applyOp(project: Project, op: Op): Project {
       // Set whole, as the engine sets it; a clip that has none is written without the field.
       const { stabilize: _before, ...rest } = clip;
       return op.value === null ? rest : { ...rest, stabilize: op.value };
+    }));
+    case 'set_stabilize_settings': return inTimeline(project, op.timeline, timeline => inClip(timeline, op.clip, clip => {
+      // The controls given merged into the stabilizer that the clip has, or the one it is given at first; the analysis is kept
+      // as it is, the same object, as the engine keeps it.
+      const stabilize: Stabilize = patched<Stabilize>(clip.stabilize ?? DEFAULT_STABILIZE, op.settings, STABILIZE_CONTROLS);
+      return { ...clip, stabilize };
     }));
     case 'add_group': return { ...project, groups: inserted(project.groups, { ...op.group, pre: kept(op.group.pre), post: kept(op.group.post) }, op.index) };
     case 'remove_group': return { ...project, groups: without(project.groups, placeOf(project.groups, op.id, 'group')) };

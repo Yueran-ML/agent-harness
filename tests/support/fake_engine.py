@@ -30,17 +30,23 @@ only its input is linked), a corrector that it adds has no settings but ``lut`` 
 changes nothing.
 
 Compositions (the Fusion page) are kept as simply: the operations on the composition of a clip
-do what they say, on a clip that has one, with none of the engine's checks of it: a node of any
+do what they say, on a clip that has one, with few of the engine's checks of it: a node of any
 kind (the masks ``rectangle``, ``ellipse`` and ``polygon`` among them) and a link into any input
 (``mask`` among them) are kept as they are given, the links in the engine's order, and a setting
 is found by its path in the ``params`` of its node, a point of a polygon by its place in the
-list of its points.
+list of its points; a link names a node added before in the transaction by its ``$name``. The
+numbers of a Planar Tracker and of a Text+, its text and its font, are checked as the engine
+checks them (``out_of_range``); a frame of the path of a Planar Tracker, or a part of a Text+,
+that is set ``null`` is taken away; and the keys of a setting that is not there are ``missing``.
 
 A track of the patterns of a Tracker of a composition (``track.start`` with ``fusion``) is refused
 as the engine refuses one, and is made up: each pattern followed is found a step further to the
 right each frame, from where it starts to the end of the clip each way that the track goes; the
 paths are written as one change, and ``track.progress`` and ``track.state`` are told to the
-connection that started it alone. ``track.stop`` ends it. A window of a grade is not tracked.
+connection that started it alone. ``track.stop`` ends it. A window of a grade is not tracked. So
+is a track of the region of a Planar Tracker (``track.start`` with ``planar``): the plane is
+found a step further to the right each frame, but at the frames of ``planar_lost``, and nothing
+is found where ``planar_features`` is false.
 
 The stabilizer of a clip is kept as simply: ``set_stabilize`` puts it whole and
 ``set_stabilize_settings`` the controls given (with those of a first stabilizer where the clip
@@ -301,6 +307,10 @@ class Fake:
         track_step: How much further to the right a pattern is found each frame from the one
             that it starts from, in widths of the picture.
         track_lost: The frame of the clip's keys at which a pattern is lost, by its place.
+        planar_lost: The frames of the clip's keys at which the plane of a Planar Tracker is
+            lost, and not written.
+        planar_features: Whether the region of a Planar Tracker holds anything to follow: a
+            track of one that does not fails with ``no_features``.
         stabilize_starts: What each ``track.stabilize`` was asked, in order.
         stabilize_lost: The frames of a clip's source at which a measure loses the picture.
         rendered: What each ``render.start`` was asked, in order.
@@ -354,6 +364,8 @@ class Fake:
         self.track_hold = False
         self.track_step = 0.001
         self.track_lost: dict[int, int] = {}
+        self.planar_lost: set[int] = set()
+        self.planar_features = True
         self.stabilize_starts: list[dict[str, Any]] = []
         self.stabilize_lost: set[int] = set()
         self.standards: list[dict[str, Any]] = []
@@ -808,16 +820,20 @@ class Fake:
         self.tell("audio.analysis", told)
 
     def track_start(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
-        """Follow the patterns of a Tracker (``fusion``), refused as the engine refuses it."""
+        """Follow the patterns of a Tracker (``fusion``) or the region of a Planar Tracker
+        (``planar``), refused as the engine refuses it."""
         self.track_starts.append(copy.deepcopy(params))
-        if not isinstance(params.get("fusion"), dict) or _WINDOW & set(params):
-            message = "track.start takes a window or fusion, one of the two"
+        aims = [key for key in ("fusion", "planar") if key in params]
+        if len(aims) != 1 or not isinstance(params[aims[0]], dict) or _WINDOW & set(params):
+            message = "track.start takes a window, fusion or planar, one of them"
             raise RefusedError(-32602, message, {"reason": "fusion"})
         if any(job.startswith("track-") and now == "running" for job, now in self.jobs.items()):
             raise RefusedError(-32001, "a track is going on", {"reason": "busy"})
         if params.get("revision") != self.revision:
             told = {"reason": "stale_revision", "expected": params.get("revision")}
             raise RefusedError(-32001, "the project changed", {**told, "actual": self.revision})
+        if aims == ["planar"]:
+            return self._planar_started(params, asking)
         aim = cast("dict[str, Any]", params["fusion"])
         clip, node = self._tracker_of(aim)
         source = clip["source"]
@@ -882,7 +898,12 @@ class Fake:
             raise RefusedError(-32001, "no such track is going on", {"reason": "job"})
         # It ends between frames, after the answer, as the engine's thread ends it.
         self.jobs[job] = "stopped"
-        ended = self._measure_ended if "measure" in plan else self._track_ended
+        if "measure" in plan:
+            ended = self._measure_ended
+        elif "planar" in plan:
+            ended = self._planar_ended
+        else:
+            ended = self._track_ended
         asyncio.get_running_loop().call_soon(ended, job, "stopped", "stop")
         return {}
 
@@ -1123,6 +1144,154 @@ class Fake:
             **report,
             "revision": self.revision,
         }
+        self._told_to(plan, "track.state", said)
+
+    def _planar_started(self, params: dict[str, Any], asking: "Connection") -> dict[str, Any]:
+        """Follow the region of a Planar Tracker, refused as the engine refuses it.
+
+        It takes the params first, so that it is not read as a method of the protocol.
+        """
+        aim = cast("dict[str, Any]", params["planar"])
+        clip, node = self._planar_of(aim)
+        source = clip["source"]
+        media = next(
+            (one for one in self.project["media"] if one["id"] == source.get("media")), None
+        )
+        video = None if media is None else media["facts"].get("video")
+        if source["kind"] != "media" or video is None or video.get("still"):
+            message = "this Planar Tracker cannot be tracked: it has no moving picture"
+            raise RefusedError(-32001, message, {"reason": "untrackable"})
+        # The frames of the media that the clip shows, as a clip of one speed shows them.
+        begins, speed, rate = source["in"], clip["speed"], video["rate"]
+        first = begins["ticks"] * rate["num"] // (begins["scale"] * rate["den"])
+        last = first + (clip["length"] - 1) * speed["num"] // speed["den"]
+        frame = params.get("frame")
+        if not isinstance(frame, int) or not first <= frame <= last:
+            message = f"frame {frame} is outside the clip, from {first} to {last}"
+            raise RefusedError(-32001, message, {"reason": "frame"})
+        if len(node["params"].get("region", [])) < 3:
+            message = "the region cannot be followed"
+            raise RefusedError(-32001, message, {"reason": "region", "node": node["id"]})
+        direction = str(params.get("direction"))
+        if clip.get("reverse"):
+            direction = _BACKWARD.get(direction, direction)
+        job = f"track-p{len(self.track_starts)}"
+        self.jobs[job] = "running"
+        self.track_plans[job] = {
+            "asking": asking,
+            "timeline": aim["timeline"],
+            "clip": aim["clip"],
+            "node": aim["node"],
+            "planar": True,
+            "frame": frame,
+            "first": first,
+            "last": last,
+            "direction": direction,
+        }
+        asyncio.get_running_loop().call_later(0.01, self._planar_followed, job)
+        told = {"job": job, "first": first, "last": last, "frame_size": [1280, 720]}
+        return {**told, "direction": direction}
+
+    def _planar_of(self, aim: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The clip and the Planar Tracker that a track names, refused as the engine refuses."""
+        found = self._clip_on(aim)
+        nodes: list[dict[str, Any]] = (
+            [] if found is None else found[1].get("fusion", {}).get("nodes", [])
+        )
+        node = next((one for one in nodes if one["id"] == aim.get("node")), None)
+        if node is None:
+            message = "the clip's composition has no such node"
+            raise RefusedError(-32001, message, {"reason": "target"})
+        if node["kind"] != "planar_tracker":
+            data = {"reason": "wrong_node", "node": node["id"], "kind": node["kind"]}
+            raise RefusedError(-32001, f"{node['id']} is not a planar tracker", data)
+        assert found is not None
+        return found[1], node
+
+    def _planar_followed(self, job: str) -> None:
+        """Write the path of a track of a Planar Tracker, made up, as one change of the project.
+
+        The plane is found ``track_step`` of the width further to the right each frame from the
+        one that it starts from, on to the end of the clip each way that the track goes, but at
+        the frames of ``planar_lost``, where it is lost and not written, and the track goes on.
+        Where ``planar_features`` is false it fails, and writes nothing. A track held
+        (``track_hold``) goes one frame each way, and waits there to be stopped.
+        """
+        plan = self.track_plans[job]
+        if self.jobs.get(job) != "running":
+            return
+        if not self.planar_features:
+            self._planar_ended(job, "failed", "no_features")
+            return
+        start, first, last = plan["frame"], plan["first"], plan["last"]
+        ways: dict[str, list[tuple[int, int]]] = {
+            "forward": [(1, last)],
+            "reverse": [(-1, first)],
+            "forward_and_back": [(1, last), (-1, first)],
+            "one_forward": [(1, min(start + 1, last))],
+            "one_reverse": [(-1, max(start - 1, first))],
+        }
+        path: dict[str, list[float]] = {str(start): [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]}
+        stepped, reached, lost = 0, start, 0
+        for way, end in ways[plan["direction"]]:
+            frames = list(range(start + way, end + way, way))[: 1 if self.track_hold else None]
+            for frame in frames:
+                if frame in self.planar_lost:
+                    lost += 1
+                    continue
+                shift = round(self.track_step * (frame - start), 9)
+                path[str(frame)] = [1.0, 0.0, shift, 0.0, 1.0, 0.0, 0.0, 0.0]
+            stepped += len(frames)
+            reached = frames[-1] if frames else reached
+        try:
+            written = self._planar_written(plan, path)
+        except RefusedError:
+            self._planar_ended(job, "stopped", "target")
+            return
+        frames_of = sorted(int(frame) for frame in path)
+        report: dict[str, Any] = {
+            "frames": stepped,
+            "lost": lost,
+            "frame": reached,
+            "tracked": [frames_of[0], frames_of[-1]] if written else None,
+        }
+        plan["report"] = report
+        progress: dict[str, Any] = {"job": job, "frame": reached, "timeline_frame": None}
+        progress.update(done=stepped, total=stepped, lost=lost, revision=self.revision)
+        self._told_to(plan, "track.progress", progress)
+        if not self.track_hold:
+            self._planar_ended(job, "done", None)
+
+    def _planar_written(self, plan: dict[str, Any], path: dict[str, list[float]]) -> bool:
+        """Write the frames of a path that the Planar Tracker has not so, as one change."""
+        _, node = self._planar_of(plan)
+        had: dict[str, Any] = node["params"].get("path", {})
+        patch = {frame: one for frame, one in path.items() if had.get(frame) != one}
+        if not patch:
+            return False
+        op = {
+            "op": "set_fusion_node",
+            "timeline": plan["timeline"],
+            "clip": plan["clip"],
+            "id": plan["node"],
+            "params": {"path": patch},
+        }
+        before = copy.deepcopy(self.project)
+        done, _, _ = self._applied([op])
+        self.changed(str(cast("Connection", plan["asking"]).client), done, before)
+        return True
+
+    def _planar_ended(self, job: str, phase: str, reason: str | None) -> None:
+        """End a track of a Planar Tracker: ``track.state`` to the connection that started it."""
+        plan = self.track_plans[job]
+        self.jobs[job] = phase
+        report: dict[str, Any] = plan.get("report") or {
+            "frames": 0,
+            "lost": 0,
+            "frame": plan["frame"],
+            "tracked": None,
+        }
+        said = {"job": job, "phase": phase, "reason": reason, **report, "revision": self.revision}
         self._told_to(plan, "track.state", said)
 
     def _told_to(self, plan: dict[str, Any], method: str, params: dict[str, Any]) -> None:
@@ -1656,7 +1825,7 @@ class Fake:
         return [{"op": "add_node", "grade": target, "node": corrector, "links": links}]
 
     def _fused(self, op: dict[str, Any], names: dict[str, str], index: int) -> None:
-        """Apply an operation on the composition of a clip; the engine's checks are not copied."""
+        """Apply an operation on the composition of a clip, with few of the engine's checks."""
         name = op["op"]
         for key in ("timeline", "clip"):
             op[key] = self._named(op[key], names, index)
@@ -1685,13 +1854,19 @@ class Fake:
                     names[given] = node["id"]
             op.setdefault("index", len(nodes))
             nodes.insert(op["index"], node)
-            links = [
-                {**link, **{end: node["id"] for end in ("from", "to") if link[end] in ("", given)}}
-                for link in op.get("links", [])
-            ]
-            for link in links:
+            # A link names the node by the id that it was given, and a node added before in the
+            # transaction by its $name.
+            wired: list[dict[str, Any]] = []
+            for link in op.get("links", []):
+                one = dict(link)
+                for end in ("from", "to"):
+                    own = one[end] in ("", given)
+                    one[end] = node["id"] if own else self._named(one[end], names, index)
+                wired.append(one)
+            for link in wired:
                 _fusion_linked(composition, link)
-            op["links"] = links
+            op["links"] = wired
+            self._kind_checked(node, index)
             return
         if name == "connect_fusion":
             _fusion_linked(composition, op["link"])
@@ -1706,12 +1881,24 @@ class Fake:
             # The id of the node, a dot, and the path of the setting in its params: a point of a
             # polygon is named by its place in the list of its points (``points.2.x``).
             node_id, _, path = str(op["path"]).partition(".")
-            place: Any = self._fusion_node(nodes, node_id, index)["params"]
+            keyed = self._fusion_node(nodes, node_id, index)
+            place: Any = keyed["params"]
             *heads, last = path.split(".")
             for head in heads:
-                place = place[int(head)] if head.isdigit() else place[head]
+                # A part of a node that it has not (the outline of a Text+) has no setting.
+                inner: Any = None
+                if isinstance(place, list):
+                    items = cast("list[Any]", place)
+                    inner = items[int(head)] if head.isdigit() and int(head) < len(items) else None
+                elif isinstance(place, dict):
+                    inner = cast("dict[str, Any]", place).get(head)
+                if inner is None:
+                    message = f"there is no setting {op['path']}"
+                    raise self._refused(index, "missing", message, what="setting", path=op["path"])
+                place = inner
             if name == "set_fusion_keys":
                 place[last] = op["param"]
+                self._kind_checked(keyed, index)
                 return
             now = place[last]
             keys: list[Any] = (
@@ -1722,6 +1909,7 @@ class Fake:
                 message = "a setting keeps one key at least"
                 raise self._refused(index, "params", message, node=node_id)
             place[last] = {"keys": keys}
+            self._kind_checked(keyed, index)
             return
         id = op["id"] = self._named(op["id"], names, index)
         node = self._fusion_node(nodes, id, index)
@@ -1729,6 +1917,8 @@ class Fake:
             node.update({k: op[k] for k in ("label", "pass_through", "pos") if k in op})
             if "params" in op:
                 node["params"] = _patched(node.get("params", {}), op["params"])
+                _nulls_taken(node)
+                self._kind_checked(node, index)
             return
         # remove_fusion_node: its links go, and those that are given are put in their place.
         nodes.remove(node)
@@ -1775,6 +1965,32 @@ class Fake:
             if node["id"] == id:
                 return node
         raise self._refused(index, "missing", f"there is no node {id}", what="node", id=id)
+
+    def _kind_checked(self, node: dict[str, Any], index: int) -> None:
+        """Check a Planar Tracker or a Text+ as the engine does: its numbers within their ranges,
+        the text and the font of a Text+ no longer than they may be (``out_of_range``)."""
+        params = cast("dict[str, Any]", node.get("params", {}))
+        if node["kind"] == "planar_tracker":
+            region = cast("list[Any]", params.get("region", []))
+            if not 3 <= len(region) <= 64 or not all(map(_placed, region)):
+                message = "a region is 3 to 64 places, each -15.5 to 16.5"
+                raise self._refused(index, "out_of_range", message, what="planar_tracker.region")
+            corners = cast("dict[str, Any]", params.get("corners", {}))
+            if not all(map(_placed, corners.values())):
+                message = "a corner is -15.5 to 16.5 across and up"
+                raise self._refused(index, "out_of_range", message, what="planar_tracker.corners")
+        if node["kind"] != "text_plus":
+            return
+        if len(str(params.get("text", ""))) > 4096:
+            message = "the text is 4096 characters at most"
+            raise self._refused(index, "out_of_range", message, what="text_plus.text")
+        if len(str(params.get("font", "")).encode("utf-8")) > 256:
+            message = "the font is 256 bytes at most"
+            raise self._refused(index, "out_of_range", message, what="text_plus.font")
+        for path, (low, high) in _TEXT_PLUS_RANGES.items():
+            if any(not low <= value <= high for value in _numbers_at(params, path)):
+                message = f"{path} is {low} to {high}"
+                raise self._refused(index, "out_of_range", message, what=f"text_plus.{path}")
 
     def _named(self, value: object, names: dict[str, str], index: int) -> object:
         if isinstance(value, str) and value.startswith("$"):
@@ -2081,6 +2297,75 @@ def _fusion_linked(composition: dict[str, Any], link: dict[str, Any]) -> None:
     links.append(link)
     links.sort(key=lambda one: (one["to"], one["input"]))
     composition["links"] = links
+
+
+_TEXT_PLUS_RANGES: dict[str, tuple[float, float]] = {
+    "size": (0.0, 1.0),
+    "center.x": (-15.5, 16.5),
+    "center.y": (-15.5, 16.5),
+    "line_spacing": (0.0, 10.0),
+    "tracking": (-1.0, 10.0),
+    "angle": (-3600.0, 3600.0),
+    "write_on.start": (0.0, 1.0),
+    "write_on.end": (0.0, 1.0),
+    "transform.offset.x": (-10.0, 10.0),
+    "transform.offset.y": (-10.0, 10.0),
+    "transform.angle": (-3600.0, 3600.0),
+    "transform.scale": (0.0, 100.0),
+    **{
+        f"{part}.color.{channel}": (0.0, 1.0)
+        for part in ("fill", "outline", "border")
+        for channel in "rgba"
+    },
+    "outline.thickness": (0.0, 0.5),
+    "border.extend": (0.0, 1.0),
+    "border.round": (0.0, 1.0),
+    "follower.delay": (0.0, 10000.0),
+    "follower.opacity": (0.0, 1.0),
+    "follower.offset.x": (-10.0, 10.0),
+    "follower.offset.y": (-10.0, 10.0),
+    "follower.angle": (-3600.0, 3600.0),
+    "follower.scale": (0.0, 100.0),
+}
+"""The bounds of the numbers of a Text+, by their paths; those of a part that it has not are not
+read."""
+
+_TEXT_PLUS_PARTS = ("outline", "border", "follower")
+"""The parts of a Text+, which it may be without."""
+
+
+def _placed(place: Any) -> bool:
+    """Whether a place of a Planar Tracker is within its bounds, across and up."""
+    if not isinstance(place, dict):
+        return False
+    axes = cast("dict[str, Any]", place)
+    numbers = [axes.get(one) for one in "xy"]
+    return all(isinstance(one, int | float) and -15.5 <= one <= 16.5 for one in numbers)
+
+
+def _numbers_at(params: dict[str, Any], path: str) -> list[float]:
+    """The numbers of a setting at a path: its value, or the values of its keys; none where the
+    node has no such setting."""
+    now: Any = params
+    for part in path.split("."):
+        now = cast("dict[str, Any]", now).get(part) if isinstance(now, dict) else None
+    if isinstance(now, dict):
+        keys = cast("list[dict[str, Any]]", cast("dict[str, Any]", now).get("keys", []))
+        return [float(key["value"]) for key in keys]
+    return [float(now)] if isinstance(now, int | float) else []
+
+
+def _nulls_taken(node: dict[str, Any]) -> None:
+    """Take away what a patch set ``null`` of a Planar Tracker or a Text+, as the engine reads it:
+    a frame of the path of the one, a part of the other."""
+    params = cast("dict[str, Any]", node.get("params", {}))
+    if node["kind"] == "planar_tracker" and isinstance(params.get("path"), dict):
+        path = cast("dict[str, Any]", params["path"])
+        params["path"] = {frame: one for frame, one in path.items() if one is not None}
+    if node["kind"] == "text_plus":
+        for part in _TEXT_PLUS_PARTS:
+            if part in params and params[part] is None:
+                del params[part]
 
 
 def _patched(params: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:

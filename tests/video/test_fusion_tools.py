@@ -127,18 +127,25 @@ def test_the_settings_and_their_bounds_are_those_of_the_engines_catalog() -> Non
             assert [one["path"] for one in points] == [f"points.*.{axis}" for axis in fusion.POINT]
             numbers = {**numbers, **{f"points.*.{axis}": fusion.POINT[axis] for axis in "xy"}}
             listed += points
-        assert [one["path"] for one in listed] == list(numbers), kind
+        if kind == "text_plus":
+            # The numbers of a part that a Text+ may be without are listed too; each is found by
+            # its path, in whatever order the catalog has them.
+            assert {one["path"] for one in listed} == set(numbers), kind
+        else:
+            assert [one["path"] for one in listed] == list(numbers), kind
         for one in listed:
             spec = numbers[one["path"]]
             found = (spec.default, spec.low, spec.high, spec.unit)
             assert found == (one["default"], one["low"], one["high"], one["unit"]), one["path"]
             assert (one["clock"], one["page"]) == ("source_frame", "fusion")
     assert {name for name in catalog if name.startswith("fusion_")} == with_numbers
-    # A tracker has numbers, but none of them takes keys: the catalog has no fusion_tracker.
+    # A tracker and a planar tracker have numbers, but none of them takes keys: the catalog has
+    # no fusion_tracker and no fusion_planar_tracker.
     assert set(fusion.KINDS) - {name.removeprefix("fusion_") for name in with_numbers} == {
         "media_in",
         "media_out",
         "tracker",
+        "planar_tracker",
     }
 
 
@@ -186,12 +193,20 @@ def test_a_new_node_has_every_setting_that_the_engine_writes_and_its_defaults() 
     assert set(fusion.KINDS) - set(written) <= {"rectangle"}
     blank = fusion.new_pattern()
     for kind, each in written.items():
-        new = fusion.new_params(kind)
+        parts = fusion.KINDS[kind].parts
         for found in each:
+            # A Text+ is compared with a new one that has the parts that it has, each as new.
+            had = [part for part in parts if part in found]
+            new = {**fusion.new_params(kind), **{one: fusion.new_part(kind, one) for one in had}}
+            seen: dict[str, Any] = found
+            if kind == "planar_tracker":
+                # The path of a planar tracker has a homography of eight numbers at each frame.
+                assert all(len(one) == 8 for one in found["path"].values()), kind
+                seen = {**found, "path": {}}
             # The same fields, each of the same sort: none left out, none that the engine has not.
-            assert shape(found) == shape(new), kind
+            assert shape(seen) == shape(new), kind
             for path, spec in fusion.KINDS[kind].settings.items():
-                if isinstance(spec, fusion.Follows):
+                if isinstance(spec, fusion.Follows) or path.split(".")[0] in set(parts) - set(had):
                     continue
                 value: Any = found
                 for part in path.split("."):
@@ -216,6 +231,54 @@ def test_a_new_node_has_every_setting_that_the_engine_writes_and_its_defaults() 
     # A new tracker has no patterns, and a new centre follows nothing.
     assert fusion.new_params("tracker")["trackers"] == []
     assert ellipse["center"] == {"x": 0.5, "y": 0.5}
+    # A new planar tracker is as the engine's PlanarTracker::default writes it: the middle half
+    # of the picture as its region and its corners, and no path.
+    box = [{"x": x, "y": y} for x, y in ((0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75))]
+    corners = {"tl": (0.25, 0.75), "tr": (0.75, 0.75), "br": (0.75, 0.25), "bl": (0.25, 0.25)}
+    assert fusion.new_params("planar_tracker") == {
+        "operation": "none",
+        "motion": "perspective",
+        "reference": 0,
+        "region": box,
+        "corners": {corner: {"x": x, "y": y} for corner, (x, y) in corners.items()},
+        "path": {},
+    }
+    # A new Text+ has none of its parts; each is added as new.
+    assert fusion.new_params("text_plus") == {
+        "text": "",
+        "font": "",
+        "size": 0.08,
+        "center": {"x": 0.5, "y": 0.5},
+        "justify": "center",
+        "vertical": "center",
+        "line_spacing": 1,
+        "tracking": 0,
+        "angle": 0,
+        "write_on": {"start": 0, "end": 1},
+        "transform": {"select": "characters", "offset": {"x": 0, "y": 0}, "angle": 0, "scale": 1},
+        "fill": {"color": {"r": 1, "g": 1, "b": 1, "a": 1}},
+    }
+    black = {"r": 0, "g": 0, "b": 0}
+    assert fusion.new_part("text_plus", "outline") == {
+        "thickness": 0.02,
+        "color": {**black, "a": 1},
+    }
+    assert fusion.new_part("text_plus", "border") == {
+        "extend": 0.02,
+        "round": 0,
+        "color": {**black, "a": 0.6},
+    }
+    assert fusion.new_part("text_plus", "follower") == {
+        "order": "left_to_right",
+        "delay": 2,
+        "delay_type": "each",
+        "opacity": 1,
+        "offset": {"x": 0, "y": 0},
+        "angle": 0,
+        "scale": 1,
+    }
+    with pytest.raises(KeyError):
+        fusion.new_part("text_plus", "shadow")
     assert edits.first_composition() == {
         "nodes": [
             {"id": id, "kind": kind, "label": "", "pass_through": False, "pos": None, "params": {}}
@@ -330,10 +393,11 @@ def test_the_tools_of_the_fusion_page_are_given_and_tell_what_a_composition_is()
         name: len(tools[name].schema.description) + len(json.dumps(tools[name].schema.parameters))
         for name in names
     }
-    # What the four cost on every request: the node tool carries what a composition is.
+    # What the four cost on every request: the node tool carries what a composition is. The
+    # track tells a planar tracker too, in some 110 characters more.
     assert sizes["video_fusion_info"] < 2000
     assert sizes["video_fusion_keys"] < 1600
-    assert sizes["video_fusion_track"] < 1500
+    assert sizes["video_fusion_track"] < 1600
     assert sum(sizes.values()) < 10500
 
 

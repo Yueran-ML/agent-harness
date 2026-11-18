@@ -564,13 +564,26 @@ class _FusionKeys(_Graded):
 
 class _FusionTrack(_Graded):
     clip: str = Field(description="Clip id, of a video track.")
-    node: str = Field(description="The tracker's id.")
+    node: str = Field(description="A tracker or planar_tracker.")
     trackers: list[int] | None = Field(default=None, description="Places of patterns, from 0.")
     frame: int | None = Field(default=None, description="A timeline frame within the clip.")
     direction: fusion.TrackDirection = "forward"
 
 
-_FUSION = (_FusionInfo, _FusionNode, _FusionKeys, _FusionTrack)
+class _TextAnimate(_Graded):
+    clip: str = Field(description="Clip id, of a video track.")
+    preset: fusion.Preset
+    node: str | None = Field(default=None, description="A text_plus to animate; omit to add one.")
+    text: str | None = Field(default=None, description="The words (\\n: a new line).")
+    at: int | None = Field(default=None, description="First frame, from the clip's first (0).")
+    length: int | None = Field(default=None, description="Frames; default a second.")
+    font: str | None = None
+    size: float | None = Field(default=None, description="0-1 (0.08).")
+    color: str | None = Field(default=None, description="#rrggbb[aa].")
+    outline: bool | None = Field(default=None, description="true: a black outline; false: none.")
+
+
+_FUSION = (_FusionInfo, _FusionNode, _FusionKeys, _FusionTrack, _TextAnimate)
 
 
 class _Look(_Graded):
@@ -623,6 +636,21 @@ async def _fused(args: _Project, engine: Engine) -> dict[str, Any]:
             trackers=args.trackers,
             frame=args.frame,
             direction=args.direction,
+        )
+    if isinstance(args, _TextAnimate):
+        return await fusion.animate(
+            engine,
+            args.timeline,
+            args.clip,
+            args.preset,
+            node=args.node,
+            text=args.text,
+            at=args.at,
+            length=args.length,
+            font=args.font,
+            size=args.size,
+            color=args.color,
+            outline=args.outline,
         )
     assert isinstance(args, _FusionNode)
     return await fusion.node(
@@ -1409,6 +1437,7 @@ def tools_of(videos: Videos) -> list[Tool[Any, str | look.Looked]]:
         tool("video_fusion_node", _FusionNode, _FUSION_NODE),
         tool("video_fusion_keys", _FusionKeys, _FUSION_KEYS),
         tool("video_fusion_track", _FusionTrack, _FUSION_TRACK, long=True),
+        tool("video_text_animate", _TextAnimate, _TEXT_ANIMATE),
         tool("video_look", _Look, _LOOK, effect="read"),
     ]
 
@@ -1587,7 +1616,8 @@ _FUSION_INFO = (
     "The composition of a clip (the Fusion page): the graph of nodes that makes its picture in "
     "place of its source, before its grade and transform. Tells its nodes (id, kind, label, "
     "pass_through, what each input is linked from, free inputs, every setting; a keyed one with "
-    "its keys at timeline frames; a tracker's patterns with the frames tracked, not the paths), "
+    "its keys at timeline frames; a tracker's patterns or a planar_tracker's path by the frames "
+    "tracked, not the paths), "
     "links (from -> to.input), output (the node MediaOut reads; "
     "none: the clip is transparent), unread and unused nodes, and each setting's range and unit. "
     "A clip without one shows its source. Without clip: the clips that have one."
@@ -1601,8 +1631,12 @@ _FUSION_NODE = (
     "background; center, size, angle place the foreground); transform (move, size, turn, flip); "
     "background (one colour); rectangle, ellipse, polygon (masks); blur; mosaic (pixelate); "
     "delta_keyer (a green or blue screen made transparent); tracker (patterns tracked through "
-    "the clip). Inputs: merge background, foreground; transform, blur, mosaic, delta_keyer, "
-    "tracker input; delta_keyer also garbage_matte, solid_matte; tracker also foreground; all "
+    "the clip); planar_tracker (a plane tracked: steady holds it still, corner_pin lays the "
+    "foreground on its corners); text_plus (words: text, font, size, fill.color; outline, "
+    "border, follower: {} adds one, null takes it away; video_text_animate lays it over and "
+    "animates it). Inputs: merge background, foreground; transform, blur, mosaic, delta_keyer, "
+    "tracker, planar_tracker input; delta_keyer also garbage_matte, solid_matte; tracker, "
+    "planar_tracker also foreground; all "
     "but media_in and media_out mask, which limits a node's work to where the mask linked into "
     "it is. Coordinates: center {x, y} are shares of the picture from its "
     "LOWER LEFT, y up, the middle 0.5, 0.5; widths, soft edges and points are in widths of the "
@@ -1637,7 +1671,19 @@ _FUSION_TRACK = (
     "tracked and where a pattern was lost. Place a pattern first with video_fusion_node: "
     '{"trackers.+": {"pattern": {"x": 0.4, "y": 0.6}}}, shares of the picture from its lower '
     "left, on a feature with texture. Then operation match_move with merge bg_only stabilizes, "
-    "and a mask's center.follow follows a pattern."
+    "and a mask's center.follow follows a pattern. A planar_tracker is tracked whole, from its "
+    "reference frame by default; then operation steady or corner_pin."
+)
+
+_TEXT_ANIMATE = (
+    "Animate text over a clip's picture (Fusion's Text+), one undo step. Without node, adds a "
+    "text_plus of text: a merge takes what MediaOut read as its background and the text as its "
+    "foreground. Presets, from at for length frames: typewriter (the letters appear in order); "
+    "fade_in (each fades in, left to right); rise (each rises 0.05 into place as it fades in); "
+    "pop (each grows past its size and settles, from the middle out); fade_out (each fades "
+    "out, by default ending at the clip's last frame). The letters start one after another, "
+    "the last ending at at + length. font, size, color and outline style it. The result tells "
+    "the keys at timeline frames; video_fusion_keys changes one, video_look shows frames."
 )
 
 _LOOK = (

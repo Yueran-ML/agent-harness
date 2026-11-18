@@ -2023,9 +2023,10 @@ class Engine:
     ) -> Tracking:
         """Have the engine track in the background, and follow what it tells of the track.
 
-        ``track.start`` (PROTOCOL.md, Window tracking): a window of a grade, or with ``fusion``
-        the patterns of a Tracker of a composition, followed through the frames of its clip and
-        written into the project as it goes, one step of its history in all. Or
+        ``track.start`` (PROTOCOL.md, Window tracking): a window of a grade, with ``fusion``
+        the patterns of a Tracker of a composition, or with ``planar`` the region of a Planar
+        Tracker, followed through the frames of its clip and written into the project as it
+        goes, one step of its history in all. Or
         ``track.stabilize`` (The stabilizer): the motion of the whole picture of a clip measured
         through its frames and written at the end as the analysis of its stabilizer, one step.
         The engine answers at once, and runs one track at a time, of either kind; what it tells
@@ -2033,9 +2034,9 @@ class Engine:
         returned. A caller that gives up before the answer has the track stopped.
 
         Args:
-            params: The params of ``method``, as the protocol says (``fusion``, ``revision``,
-                ``frame``, ``direction``, ...; or ``timeline``, ``clip``, ``revision`` and
-                ``method``).
+            params: The params of ``method``, as the protocol says (``fusion`` or ``planar``,
+                ``revision``, ``frame``, ``direction``, ...; or ``timeline``, ``clip``,
+                ``revision`` and ``method``).
             session: The :attr:`session` that the revision of ``params`` was read in; as with
                 :meth:`apply`, a new engine refuses the request before it is sent.
             method: What the engine is asked: ``track.start`` or ``track.stabilize``.
@@ -2044,7 +2045,7 @@ class Engine:
             EngineError: The engine refused: another track is going on (``busy``), the revision
                 is not the project's (``stale_revision``), or what is asked cannot be tracked
                 (``target``, ``wrong_node``, ``tracker``, ``no_trackers``, ``untrackable``,
-                ``frame``).
+                ``frame``, ``region``).
         """
         heard = self.changes()
         try:

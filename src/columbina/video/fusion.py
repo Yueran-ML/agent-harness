@@ -22,10 +22,15 @@ What is here:
 - **Checks**: a patch of the settings of a node and the links of a change, checked before they
   are sent, so that what is wrong is told in words that a model can act on, with the name that
   the engine would refuse it by.
+- **A planar tracker and a Text+**: the region of a planar tracker is a list set whole, and its
+  path, a homography at each frame tracked, is left to tracking; a Text+ may be without its
+  outline, its border and its follower (:attr:`Kind.parts`), and one of them is given whole
+  where it has it not (:func:`new_part`).
 - **What the tools do**: :func:`info`, :func:`node` and :func:`keys`, each change one
-  transaction of the engine and one step of its history; and :func:`track`, which has the
-  engine follow the patterns of a tracker through the frames of its clip and write their paths,
-  one step of the history too, and waits for the end.
+  transaction of the engine and one step of its history; :func:`track`, which has the
+  engine follow the patterns of a tracker, or the region of a planar tracker, through the
+  frames of its clip and write their paths, one step of the history too, and waits for the
+  end; and :func:`animate`, which puts a ready-made animation on a Text+, one step.
 
 A model thinks in frames of the timeline, and the engine keeps a key at a frame of the clip's
 source (PROTOCOL, Frames of keys): :func:`keys` is given a frame of the timeline and finds the
@@ -37,6 +42,7 @@ at frames of the timeline.
 import copy
 import difflib
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
@@ -66,19 +72,26 @@ __all__ = [
     "MASKS",
     "PATTERN",
     "POINT",
+    "PRESETS",
     "Follows",
     "FusionError",
+    "Homographies",
     "Kind",
     "NodeAction",
     "PatternList",
+    "Places",
     "Plain",
     "PointList",
+    "Preset",
     "Setting",
     "TrackDirection",
+    "Words",
+    "animate",
     "hint_of",
     "info",
     "keys",
     "new_params",
+    "new_part",
     "new_pattern",
     "node",
     "reference",
@@ -92,6 +105,12 @@ NodeAction = Literal["add", "remove", "connect", "disconnect", "set", "reset"]
 TrackDirection = Literal["forward", "reverse", "forward_and_back", "one_forward", "one_reverse"]
 """Which way a track goes on the timeline from its frame: to the end of the clip, back to its
 start, both, or one frame either way."""
+
+Preset = Literal["typewriter", "fade_in", "rise", "pop", "fade_out"]
+"""A ready-made animation of a Text+ (:func:`animate`)."""
+
+PRESETS: tuple[Preset, ...] = ("typewriter", "fade_in", "rise", "pop", "fade_out")
+"""The animations of a Text+ that :func:`animate` puts, in the order that they are told."""
 
 _MOST_NODES = 256
 _MOST_POINTS = 128
@@ -193,7 +212,60 @@ class Follows:
     name: str
 
 
-FusionSpec = Setting | Plain | Flag | Choice | PointList | PatternList | Follows
+@dataclass(frozen=True)
+class Words:
+    """A setting that is words, which takes no keys: the text of a Text+, or its font.
+
+    Attributes:
+        most: How long it may be: characters (Unicode scalars), or bytes of its UTF-8 where
+            ``in_bytes``.
+    """
+
+    name: str
+    default: str
+    most: int
+    in_bytes: bool = False
+
+
+@dataclass(frozen=True)
+class Places:
+    """The region of a Planar Tracker: places ``{x, y}`` from the lower left, set whole.
+
+    Attributes:
+        least: How few places it has at least.
+        most: How many it has at most.
+        default: The places of a new node.
+    """
+
+    name: str
+    least: int
+    most: int
+    default: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class Homographies:
+    """The path of a Planar Tracker: a homography at each frame tracked, filled by tracking.
+
+    It is ``{"<frame>": [h11, h12, h13, h21, h22, h23, h31, h32]}`` at frames of the clip's
+    keys, ``{}`` in a new node; a frame given ``null`` is taken away.
+    """
+
+    name: str
+
+
+FusionSpec = (
+    Setting
+    | Plain
+    | Flag
+    | Choice
+    | PointList
+    | PatternList
+    | Follows
+    | Words
+    | Places
+    | Homographies
+)
 
 
 @dataclass(frozen=True)
@@ -208,6 +280,9 @@ class Kind:
         hands_on: The input whose picture it hands on as it is when it is passed through, which
             is the one that it is joined across by when it is taken away; ``None`` where it
             makes its picture of nothing.
+        parts: The groups of its settings that a node may be without (the outline of a Text+),
+            each by the first name of the paths of its settings: a new node has none of them,
+            and one is given whole where the node has it not (:func:`new_part`).
     """
 
     told: str
@@ -215,6 +290,7 @@ class Kind:
     output: bool
     settings: dict[str, FusionSpec]
     hands_on: str | None
+    parts: tuple[str, ...] = ()
 
 
 _DEGREES = "degrees_counterclockwise"
@@ -292,6 +368,49 @@ _ONE_PATTERN = (
     "and trackers.- takes the one at N away"
 )
 _PATTERN_FIELDS = f"a pattern has name, enabled, {', '.join(PATTERN)} and path"
+
+_PLACE = Plain("a place, across or up from the lower left corner", 0.5, -15.5, 16.5)
+"""A number of a place of a Planar Tracker: of a place of its region, or of a corner."""
+
+_REGION = ((0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75))
+"""The region of a new Planar Tracker: the box from 0.25 to 0.75 across and up."""
+
+_CORNERS = {
+    "tl": ("upper left", 0.25, 0.75),
+    "tr": ("upper right", 0.75, 0.75),
+    "br": ("lower right", 0.75, 0.25),
+    "bl": ("lower left", 0.25, 0.25),
+}
+"""The corners of the Corner Pin of a Planar Tracker, with where they are in a new one."""
+
+
+def _corners() -> dict[str, FusionSpec]:
+    """The numbers of the corners of a Planar Tracker, which take no keys."""
+    specs: dict[str, FusionSpec] = {}
+    for corner, (said, x, y) in _CORNERS.items():
+        specs[f"corners.{corner}.x"] = Plain(
+            f"Corner Pin, where the {said} corner of the foreground goes", x, -15.5, 16.5, "widths"
+        )
+        specs[f"corners.{corner}.y"] = Plain(
+            f"Corner Pin, the {said} corner, up", y, -15.5, 16.5, "heights"
+        )
+    return specs
+
+
+def _rgba(path: str, name: str, first: tuple[float, float, float, float]) -> dict[str, FusionSpec]:
+    """The red, the green, the blue and the alpha of a colour of a Text+, each from 0 to 1."""
+    channels = zip(("r", "g", "b", "a"), ("red", "green", "blue", "alpha"), first, strict=True)
+    return {
+        f"{path}.{letter}": Setting(f"{name}, {word}", value, 0, 1)
+        for letter, word, value in channels
+    }
+
+
+_TEXT = Words("Styled Text, what is written; \\n begins a line", "", 4096)
+_FONT = Words("Font, a family; empty, the engine's own", "", 256, in_bytes=True)
+_TEXT_SIZE = Setting("Size of the letters", 0.08, 0, 1, "heights")
+_OFFSET = (-10, 10)
+_SCALE = (0, 100)
 
 KINDS: dict[str, Kind] = {
     "media_in": Kind(
@@ -524,6 +643,113 @@ KINDS: dict[str, Kind] = {
         },
         hands_on="input",
     ),
+    "planar_tracker": Kind(
+        told=(
+            "a region of the picture followed as a plane, its path filled by tracking "
+            "(video_fusion_track): operation steady holds the plane still, corner_pin lays the "
+            "foreground on it (a screen or a sign replaced)"
+        ),
+        inputs=("input", "foreground", "mask"),
+        output=True,
+        settings={
+            "operation": Choice(
+                "Operation: steady holds the plane still, corner_pin lays the foreground on its "
+                "corners; none hands input on",
+                "none",
+                ("none", "steady", "corner_pin"),
+            ),
+            "motion": Choice(
+                "Motion Type, what a track keeps of the motion of the plane (read as it tracks)",
+                "perspective",
+                (
+                    "translation",
+                    "translation_rotation",
+                    "translation_rotation_scale",
+                    "perspective",
+                ),
+            ),
+            "reference": Plain(
+                "Reference Frame, where the region was drawn and nothing moves",
+                0,
+                -_LARGEST_FRAME,
+                _LARGEST_FRAME,
+                "frame",
+                whole=True,
+            ),
+            "region": Places(
+                "Region, the polygon of the plane at the reference frame", 3, 64, _REGION
+            ),
+            **_corners(),
+            "path": Homographies(
+                "Path, the homography of the plane from the reference frame at each frame tracked"
+            ),
+        },
+        hands_on="input",
+    ),
+    "text_plus": Kind(
+        told=(
+            "text drawn over nothing (a title, a caption, a lower third), laid over the picture "
+            "by a merge; write_on, transform and follower animate it, character by character"
+        ),
+        inputs=("mask",),
+        output=True,
+        settings={
+            "text": _TEXT,
+            "font": _FONT,
+            "size": _TEXT_SIZE,
+            "center.x": Setting(
+                "Center X, the middle of the text from the left edge", 0.5, -15.5, 16.5, "widths"
+            ),
+            "center.y": Setting("Center Y, from the lower edge, up", 0.5, -15.5, 16.5, "heights"),
+            "justify": Choice("Horizontal Justification", "center", ("left", "center", "right")),
+            "vertical": Choice("Vertical Justification", "center", ("top", "center", "bottom")),
+            "line_spacing": Setting("Line Spacing, a factor", 1, 0, 10),
+            "tracking": Setting("Tracking, room between the letters", 0, -1, 10),
+            "angle": Setting("Angle of the text", 0, -3600, 3600, _DEGREES),
+            "write_on.start": Setting(
+                "Write On, start: the share of the text not yet shown", 0, 0, 1
+            ),
+            "write_on.end": Setting("Write On, end: the share of the text shown", 1, 0, 1),
+            "transform.select": Choice(
+                "Transform Select, what it moves each of: characters, words or lines",
+                "characters",
+                ("characters", "words", "lines"),
+            ),
+            "transform.offset.x": Setting("Transform Offset X", 0, *_OFFSET, "heights"),
+            "transform.offset.y": Setting("Transform Offset Y, up", 0, *_OFFSET, "heights"),
+            "transform.angle": Setting("Transform Angle", 0, -3600, 3600, _DEGREES),
+            "transform.scale": Setting("Transform Size, a factor", 1, *_SCALE),
+            **_rgba("fill.color", "Fill Color", (1, 1, 1, 1)),
+            "outline.thickness": Setting("Outline Thickness", 0.02, 0, 0.5),
+            **_rgba("outline.color", "Outline Color", (0, 0, 0, 1)),
+            "border.extend": Setting(
+                "Border Extend, how far beyond the text", 0.02, 0, 1, "heights"
+            ),
+            "border.round": Setting("Border Round, of its corners", 0, 0, 1),
+            **_rgba("border.color", "Border Color", (0, 0, 0, 0.6)),
+            "follower.order": Choice(
+                "Follower Order, which character goes first",
+                "left_to_right",
+                ("left_to_right", "right_to_left", "inside_out", "outside_in"),
+            ),
+            "follower.delay": Plain(
+                "Follower Delay, in frames: how long each character waits", 2, 0, 10000
+            ),
+            "follower.delay_type": Choice(
+                "Follower Delay Type: each waits delay after the one before, or first_to_last "
+                "spreads delay over them all",
+                "each",
+                ("each", "first_to_last"),
+            ),
+            "follower.opacity": Setting("Follower Opacity of each character", 1, 0, 1),
+            "follower.offset.x": Setting("Follower Offset X", 0, *_OFFSET, "heights"),
+            "follower.offset.y": Setting("Follower Offset Y, up", 0, *_OFFSET, "heights"),
+            "follower.angle": Setting("Follower Angle", 0, -3600, 3600, _DEGREES),
+            "follower.scale": Setting("Follower Size, a factor", 1, *_SCALE),
+        },
+        hands_on=None,
+        parts=("outline", "border", "follower"),
+    ),
 }
 """The kinds of node, as PROTOCOL.md's Compositions gives them: a ``kind`` that is not here is
 one that the engine cannot read."""
@@ -546,7 +772,8 @@ _LINKS = (
 _KEYS = (
     "A number takes keys: video_fusion_keys puts one at a frame of the timeline by the path "
     "<node>.<setting>, as n4.center.x or n9.points.2.x. A word, a true or false and anything of "
-    "a tracker take none."
+    "a tracker or a planar_tracker take none. A number of a part of a text_plus that it has not "
+    "(outline, border, follower) takes none until the part is added."
 )
 _TRACKING = (
     "Each pattern of a tracker has a path, where its middle was found at each frame that was "
@@ -560,8 +787,17 @@ _TRACKING = (
     "mask may follow a tracker by center.follow: output tracker is where its pattern tracker "
     "(from 0) is, with its offset; steady_position and unsteady_position follow its motion. "
     "While it follows, center.x and center.y are read only where nothing is published; null "
-    "lets go, and a tracker that a center follows is not removed."
+    "lets go, and a tracker that a center follows is not removed. The region of a "
+    "planar_tracker is followed as a plane by video_fusion_track too, from its reference frame "
+    "where the clip shows it: its path is the homography of the plane from the reference frame "
+    "at each frame tracked, which operation steady takes back (the plane held still) and "
+    "corner_pin lays the corners of the foreground along (its corners, at the reference frame)."
 )
+_PARTS = (
+    '{parts} are not there at first: {{"{first}": {{}}}} adds one as a new one is, a setting '
+    'of one adds it with the rest as a new one has them, and {{"{first}": null}} takes it away'
+)
+"""How the parts of a kind are added and taken away, for :func:`reference`."""
 _NONE = (
     "the clip has no composition and shows its source; the first action of video_fusion_node "
     "gives it MediaIn1 -> MediaOut1.input, which shows the same"
@@ -589,12 +825,47 @@ def new_params(kind: str) -> dict[str, Any]:
     Raises:
         KeyError: There is no such kind.
     """
+    known = KINDS[kind]
     params: dict[str, Any] = {}
-    for path, spec in KINDS[kind].settings.items():
+    for path, spec in known.settings.items():
         if isinstance(spec, Follows):
             continue  # Written only where the center follows a tracker.
-        _put(params, path, [] if isinstance(spec, PointList | PatternList) else spec.default)
+        if path.split(".")[0] in known.parts:
+            continue  # A part that a new node has not.
+        _put(params, path, _first_value(spec))
     return params
+
+
+def new_part(kind: str, part: str) -> dict[str, Any]:
+    """A part of a node that it may be without, whole, as a new one is.
+
+    The ``outline`` of a ``text_plus`` is black and 0.02 thick at first.
+
+    Raises:
+        KeyError: The kind has no such part.
+    """
+    known = KINDS[kind]
+    if part not in known.parts:
+        raise KeyError(part)
+    whole: dict[str, Any] = {}
+    for path, spec in known.settings.items():
+        head, _, rest = path.partition(".")
+        if head == part:
+            _put(whole, rest, _first_value(spec))
+    return whole
+
+
+def _first_value(spec: FusionSpec) -> Any:
+    """What a setting is in a new node."""
+    if isinstance(spec, PointList | PatternList):
+        return []
+    if isinstance(spec, Places):
+        return [{"x": x, "y": y} for x, y in spec.default]
+    if isinstance(spec, Homographies):
+        return {}
+    if isinstance(spec, Follows):
+        return None
+    return spec.default
 
 
 def new_pattern() -> dict[str, Any]:
@@ -631,6 +902,20 @@ def _spec_told(spec: FusionSpec) -> str:
             "clears it); "
             f"{_ONE_PATTERN}"
         )
+    if isinstance(spec, Words):
+        counted = "bytes of UTF-8" if spec.in_bytes else "characters"
+        return f'{spec.name}: words, {spec.most} {counted} at most, "" at first; no keys'
+    if isinstance(spec, Places):
+        return (
+            f"{spec.name}: a list of {spec.least} to {spec.most} places {{x, y}} (or [x, y]), "
+            f"each {_PLACE.low:g} to {_PLACE.high:g} from the lower left, set whole (the box from "
+            "0.25 to 0.75 at first); no keys"
+        )
+    if isinstance(spec, Homographies):
+        return (
+            f'{spec.name}: {{"<frame>": [h11, h12, h13, h21, h22, h23, h31, h32]}} at frames of '
+            "the clip's keys, filled by video_fusion_track ({} clears it); no keys"
+        )
     return (
         f"{spec.name}: a list of {{x, y}}, {spec.most} at most, set whole ([] at first, and "
         f"fewer than three are a mask of nothing); {POINT['x'].told()}; {POINT['y'].told()}; "
@@ -643,7 +928,8 @@ def reference() -> dict[str, Any]:
 
     A setting is told by its path with its name, its range, its value in a new node and its
     unit; with them, how places are counted, what a link does, which settings take keys, and
-    what a tracker does and how a center follows one.
+    what a tracker does and how a center follows one. A kind whose node may be without some of
+    its settings tells how they are added and taken away (``parts``).
     """
     kinds: dict[str, Any] = {}
     for name, kind in KINDS.items():
@@ -653,6 +939,8 @@ def reference() -> dict[str, Any]:
             "output": kind.output,
             "settings": {path: _spec_told(spec) for path, spec in kind.settings.items()},
         }
+        if kind.parts:
+            kinds[name]["parts"] = _PARTS.format(parts=", ".join(kind.parts), first=kind.parts[0])
     return {
         "kinds": kinds,
         "coordinates": _COORDINATES,
@@ -833,13 +1121,61 @@ def _pattern_told(place: int, pattern: Mapping[str, Any], clock: KeyClock) -> di
     return told
 
 
+_LONGEST_TOLD = 160
+"""How many characters of the text of a Text+ are told."""
+
+
+def _homographies_told(value: object, clock: KeyClock) -> Any:
+    """The path of a Planar Tracker as it is told, which is not the path itself.
+
+    How many frames it has, and its first and its last with the frames of the timeline that
+    show them; or that it has none.
+    """
+    frames = sorted(int(one) for one in _object(value) if one.removeprefix("-").isdecimal())
+    if not frames:
+        return "none: not tracked"
+    first, last = frames[0], frames[-1]
+    return {
+        "frames": len(frames),
+        "first": {"timeline_frame": clock.shown(first), "frame": first},
+        "last": {"timeline_frame": clock.shown(last), "frame": last},
+    }
+
+
+def _as_new(spec: FusionSpec, now: object) -> bool:
+    """Whether a setting is as a new node has it, a number without keys."""
+    if isinstance(spec, Setting | Plain | Flag | Choice | Words):
+        return not _is_map(now) and now == spec.default
+    return False
+
+
 def _settings_told(kind: Kind, params: Mapping[str, Any], clock: KeyClock) -> dict[str, Any]:
+    """Every setting of a node by its path, with what it is now.
+
+    Of a kind that has parts (a Text+), only what is not as a new node has it, and the text,
+    are told, and a part that the node has not is told as ``None``: so is a text kept short.
+    """
     told: dict[str, Any] = {}
     for path, spec in kind.settings.items():
         now = _at(params, path)
+        head = path.split(".")[0]
+        if head in kind.parts:
+            if not _is_map(params.get(head)):
+                told[head] = None
+                continue
+        elif kind.parts and path != "text" and _as_new(spec, now):
+            continue
         if isinstance(spec, Follows) and not _is_map(now):
             continue  # A center that follows nothing is told as its x and y alone.
-        if isinstance(spec, PointList):
+        if isinstance(spec, Words):
+            words = now if isinstance(now, str) else ""
+            cut = len(words) > _LONGEST_TOLD
+            told[path] = f"{words[:_LONGEST_TOLD]}... ({len(words)} characters)" if cut else words
+        elif isinstance(spec, Places):
+            told[path] = {"places": len(_items(now))}
+        elif isinstance(spec, Homographies):
+            told[path] = _homographies_told(now, clock)
+        elif isinstance(spec, PointList):
             told[path] = [
                 {axis: _keys_told(_object(point).get(axis), clock) for axis in POINT}
                 for point in _items(now)
@@ -867,6 +1203,15 @@ def _notes(kind: str, params: Mapping[str, Any]) -> list[str]:
     if kind == "tracker" and not _tracked(params):
         notes.append(
             "no pattern has a path yet: video_fusion_track fills them, and until then nothing moves"
+        )
+    if kind == "planar_tracker" and not _object(params.get("path")):
+        notes.append(
+            "not tracked yet: video_fusion_track follows its region, and until then nothing moves"
+        )
+    if kind == "text_plus":
+        notes.append(
+            "settings as a new node has them are left out (settings_of tells them); a part that "
+            'is null is not there: {"outline": {}} adds one'
         )
     follow = _object(_at(params, "center.follow"))
     if follow:
@@ -1045,6 +1390,9 @@ def _unknown(kind: str, path: str) -> FusionError:
         has += "; a number of a point is points.N.x or points.N.y, N from 0"
     if kind == "tracker":
         has += f"; {_ONE_PATTERN}"
+    parts = KINDS[kind].parts
+    if parts:
+        has += f"; {', '.join(parts)} as a whole: {{}} adds one, null takes it away"
     return FusionError(f"{_a(kind)} has no setting {path!r}{maybe}; it has {has}")
 
 
@@ -1099,6 +1447,106 @@ def _points(spec: PointList, value: Any) -> list[dict[str, Any]]:
             }
         )
     return points
+
+
+def _words(spec: Words, path: str, value: Any, what: str) -> str:
+    """Words of a setting, no longer than it takes.
+
+    Raises:
+        FusionError: They are no words, or too long, said with the name that the engine
+            refuses them by.
+    """
+    if not isinstance(value, str):
+        raise FusionError(f"{path} is words, a string ({_spec_told(spec)})")
+    length = len(value.encode("utf-8")) if spec.in_bytes else len(value)
+    if length > spec.most:
+        counted = "bytes of UTF-8" if spec.in_bytes else "characters"
+        raise FusionError(
+            f"{path} is {length} {counted} long, and {spec.most} at most (the engine refuses it "
+            f"as out_of_range {what})"
+        )
+    return value
+
+
+def _places(spec: Places, path: str, value: Any, what: str) -> list[dict[str, Any]]:
+    """The places of a region as the engine takes them, from ``{x, y}`` or ``[x, y]`` each.
+
+    Raises:
+        FusionError: It is no list of places, has too few or too many, or a place is out of
+            range; said with the name that the engine refuses it by.
+    """
+    told = (
+        f'{path} is a list of {spec.least} to {spec.most} places {{"x": ..., "y": ...}} (or '
+        f"[x, y]) from the lower left, set whole (the engine refuses others as out_of_range "
+        f"{what})"
+    )
+    given = _items(value)
+    if not _is_list(value) or not spec.least <= len(given) <= spec.most:
+        raise FusionError(told)
+    places: list[dict[str, Any]] = []
+    for place, point in enumerate(given):
+        pair = _items(point)
+        named = _object(point)
+        if _is_list(point) and len(pair) == 2:
+            x, y = pair
+        elif _is_map(point) and set(named) == {"x", "y"}:
+            x, y = named["x"], named["y"]
+        else:
+            raise FusionError(told)
+        places.append(
+            {
+                "x": _number(_PLACE, f"{path}.{place}.x", x, what),
+                "y": _number(_PLACE, f"{path}.{place}.y", y, what),
+            }
+        )
+    return places
+
+
+def _part_given(part: str, value: Any) -> dict[str, Any] | None:
+    """A part of a node given whole: ``{}`` to add it, or ``None`` to take it away.
+
+    ``true`` adds it too, and ``false`` takes it away.
+
+    Raises:
+        FusionError: It is given as something else.
+    """
+    if value is None or value is False:
+        return None
+    if value is True or (_is_map(value) and not _object(value)):
+        return {}
+    raise FusionError(
+        f'{part} is given by its settings, {{"{part}": {{...}}}}; {{}} or true adds one as a new '
+        "one is, and null or false takes it away"
+    )
+
+
+def _parts_put(kind: str, now: Mapping[str, Any], patch: dict[str, Any]) -> None:
+    """Put each part of a node that a patch adds whole into the patch, as the engine takes it.
+
+    A setting of a part that the node has stays a path of the patch, which the engine puts into
+    the part. A part that it has not is put whole, what is not given as a new one has it
+    (:func:`new_part`); one that is added (``{}``) and that it has is left as it is; one that is
+    taken away (``None``) is taken away where it has it. (A part is not given both ways at once:
+    :func:`columbina.video.grading.expanded` refuses that as given twice.)
+    """
+    for part in KINDS[kind].parts:
+        fields = {path: patch.pop(path) for path in list(patch) if path.startswith(f"{part}.")}
+        had = _is_map(now.get(part))
+        if part in patch and patch[part] is None:
+            if not had:
+                del patch[part]  # It has none to take away.
+            continue
+        if part in patch:
+            del patch[part]  # Added: as it is, or as a new one, with the fields given.
+            if not had:
+                patch[part] = new_part(kind, part)
+        elif fields and not had:
+            patch[part] = new_part(kind, part)
+        if part in patch:
+            for path, value in fields.items():
+                _put(patch[part], path.removeprefix(f"{part}."), value)
+        else:
+            patch.update(fields)
 
 
 def _whole(path: str) -> bool:
@@ -1318,6 +1766,9 @@ def _checked(
             if kind == "tracker" and path.startswith("trackers."):
                 patterns[path] = value
                 continue
+            if path in KINDS[kind].parts:
+                patch[path] = _part_given(path, value)
+                continue
             point = _point_of(kind, path)
             if point is None:
                 raise _unknown(kind, path)
@@ -1331,8 +1782,22 @@ def _checked(
         elif isinstance(spec, Setting):
             patch[path] = _number(spec, path, value, f"{kind}.{path}")
         elif isinstance(spec, Plain):
-            # The engine names a place of a tracker whole: tracker.pivot_point.
-            patch[path] = _number(spec, path, value, f"{kind}.{path.split('.')[0]}")
+            # The engine names a place of a tracker whole, tracker.pivot_point, and the corners
+            # of a planar tracker, planar_tracker.corners.
+            whole = kind in ("tracker", "planar_tracker")
+            what = f"{kind}.{path.split('.')[0]}" if whole else f"{kind}.{path}"
+            patch[path] = _number(spec, path, value, what)
+        elif isinstance(spec, Words):
+            patch[path] = _words(spec, path, value, f"{kind}.{path}")
+        elif isinstance(spec, Places):
+            patch[path] = _places(spec, path, value, f"{kind}.{path}")
+        elif isinstance(spec, Homographies):
+            if not _is_map(value) or _object(value):
+                raise FusionError(
+                    f"{path} is filled by tracking (video_fusion_track): {{}} clears it, and "
+                    "nothing else is taken"
+                )
+            patch[path] = {}
         elif isinstance(spec, Flag):
             if not isinstance(value, bool):
                 raise FusionError(f"{path} ({spec.name}) is true or false")
@@ -1613,6 +2078,7 @@ def _added(
     params = new_params(kind)
     if settings:
         patch, _, patterns = _checked(kind, "the new node", params, settings)
+        _parts_put(kind, params, patch)
         if patterns:
             patch["trackers"] = _edited([], patterns, "the new node")[0]
         _framed(patch, clock)
@@ -1708,6 +2174,26 @@ def _disconnected(
     return [edits.disconnect_fusion(at[0], at[1], to, name)]
 
 
+def _planar_changed(
+    id: str, now: Mapping[str, Any], changed: dict[str, Any], said: list[str]
+) -> None:
+    """Make what changes of a Planar Tracker as the engine takes it, and say what it means.
+
+    Its path is put into its path frame by frame: it is cleared by each frame that it has given
+    ``null``. A path that is kept was tracked with the region, the motion and the reference as
+    they were.
+    """
+    path = _object(now.get("path"))
+    if "path" in changed:
+        changed["path"] = dict.fromkeys(path)
+        said.append(f"the path of node {id} is cleared: video_fusion_track tracks it again")
+    elif path and {"region", "motion", "reference"} & set(changed):
+        said.append(
+            f"the path of node {id} was tracked with the region, motion and reference as they "
+            "were: video_fusion_track tracks it again, or video_undo takes this back"
+        )
+
+
 def _set(
     at: At,
     composition: Mapping[str, Any],
@@ -1742,6 +2228,7 @@ def _set(
     if settings:
         known = _kind_of(target).settings
         patch, points, patterns = _checked(kind, f"node {id}", now, settings)
+        _parts_put(kind, now, patch)
         keyed = [
             path
             for path in patch
@@ -1786,6 +2273,8 @@ def _set(
                 "only where nothing is published"
             )
     changed = {path: value for path, value in patch.items() if _at(now, path) != value}
+    if kind == "planar_tracker":
+        _planar_changed(id, now, changed, said)
     moved = {f"{id}.{path}": value for path, value in points.items() if _at(now, path) != value}
     named = label if label is not None and label != str(target.get("label", "")) else None
     passes = bool(target.get("pass_through", False))
@@ -2039,15 +2528,23 @@ def _keyed(node: Mapping[str, Any], setting: str) -> tuple[Setting, Any, str]:
         FusionError: The node has no such setting, or it is one that takes no keys.
     """
     kind = str(node.get("kind"))
-    known = _kind_of(node).settings
-    if kind == "tracker":
+    of = _kind_of(node)
+    known = of.settings
+    if kind in ("tracker", "planar_tracker"):
+        paths = "paths" if kind == "tracker" else "path"
         raise FusionError(
-            f"{setting} of a tracker takes no keys: nothing of a tracker does, its paths, filled "
-            "by tracking on the Fusion page, being what moves; video_fusion_node with action set "
-            "sets its settings"
+            f"{setting} of {_a(kind)} takes no keys: nothing of {_a(kind)} does, its {paths}, "
+            "filled by tracking on the Fusion page, being what moves; video_fusion_node with "
+            "action set sets its settings"
         )
     params = _object(node.get("params"))
     spec = known.get(setting)
+    part = setting.split(".")[0]
+    if isinstance(spec, Setting) and part in of.parts and not _is_map(params.get(part)):
+        raise FusionError(
+            f"node {node.get('id')} has no {part}: video_fusion_node with action set and "
+            f'settings {{"{part}": {{}}}} adds one as a new one is, and then its keys are put'
+        )
     if isinstance(spec, Setting):
         return spec, _at(params, setting), f"{kind}.{setting}"
     if isinstance(spec, PointList):
@@ -2227,8 +2724,26 @@ _ENDED = {
     "tracker": "a pattern that it followed was taken away while it tracked",
     "cannot_read": "the media of the clip cannot be read",
     "missing_frame": "a frame of the media could not be decoded: what was found before it is kept",
+    "no_features": (
+        "the region holds nothing that can be followed at the frame that it started from, and "
+        "nothing was written: draw it over a flat surface with texture (settings region)"
+    ),
 }
 """Why a track ended before its end, in words, by the reason that the engine gives."""
+
+_PLANE_LOST = (
+    "the plane was lost at some frames, which were not written, and the track went on: a region "
+    "on a flat surface with texture, away from what passes over it, holds better"
+)
+_PLANE_NOTHING = (
+    "nothing was written: the path had each frame as it was found, or none was found beyond the "
+    "frame that it started from"
+)
+_PLANE_NEXT = (
+    "video_undo takes the whole track back. To hold the plane still: settings operation steady. "
+    "To lay a picture on it: link the picture into its foreground, operation corner_pin, and "
+    "corners where the picture's corners go at the reference frame"
+)
 
 _LOST = (
     "a pattern lost is followed no further that way: a larger search area "
@@ -2359,15 +2874,14 @@ def _patterns_told(
     return told
 
 
-def _ended_told(
-    end: Mapping[str, Any],
-    patterns: Sequence[Mapping[str, Any]],
-    clock: KeyClock,
-    late: float | None,
-) -> dict[str, Any]:
-    """How a track ended, as ``track.state`` tells it, at frames of the timeline.
+def _end_told(
+    end: Mapping[str, Any], clock: KeyClock, late: float | None
+) -> tuple[dict[str, Any], list[str]]:
+    """What any track tells of how it ended, at frames of the timeline, and why it ended early.
 
-    ``late`` is how long it was waited for, where it was stopped for taking longer.
+    Its ``phase``, its ``reason`` (``timeout`` where it was stopped for taking longer than
+    ``late`` seconds), its ``message``, the first and the last frame of the timeline that show
+    a frame written (``tracked``) and how many frames it went through (``frames``).
     """
     phase = str(end.get("phase"))
     reason = "timeout" if late is not None else end.get("reason")
@@ -2380,8 +2894,6 @@ def _ended_told(
     span = [one for one in map(_int_of, _items(end.get("tracked"))) if one is not None]
     told["tracked"] = sorted(_shown_near(clock, one) for one in span) or None
     told["frames"] = _int_of(end.get("frames"))
-    followed = _patterns_told(end, patterns, clock)
-    told["patterns"] = followed
     notes: list[str] = []
     reached = _int_of(end.get("frame"))
     if late is not None:
@@ -2392,15 +2904,74 @@ def _ended_told(
         )
     elif phase != "done" and str(reason) in _ENDED:
         notes.append(_ENDED[str(reason)])
+    return told, notes
+
+
+def _ended_told(
+    end: Mapping[str, Any],
+    patterns: Sequence[Mapping[str, Any]],
+    clock: KeyClock,
+    late: float | None,
+) -> dict[str, Any]:
+    """How a track of a tracker ended, as ``track.state`` tells it, at frames of the timeline.
+
+    ``late`` is how long it was waited for, where it was stopped for taking longer.
+    """
+    told, notes = _end_told(end, clock, late)
+    followed = _patterns_told(end, patterns, clock)
+    told["patterns"] = followed
     if any("lost_at" in item for item in followed):
         notes.append(_LOST)
     if any((item["frames_found"] or 0) > 0 for item in followed):
         notes.append(_NEXT)
-    elif phase == "done":
+    elif told["phase"] == "done":
         notes.append(_NOTHING)
     if notes:
         told["notes"] = notes
     return told
+
+
+def _plane_told(end: Mapping[str, Any], clock: KeyClock, late: float | None) -> dict[str, Any]:
+    """How a track of a planar tracker ended, as ``track.state`` tells it.
+
+    As any track's end, with the frames at which the plane was lost (``lost``), which were not
+    written.
+    """
+    told, notes = _end_told(end, clock, late)
+    told["lost"] = _int_of(end.get("lost")) or 0
+    if told["lost"]:
+        notes.append(_PLANE_LOST)
+    if told["tracked"] is not None:
+        notes.append(_PLANE_NEXT)
+    elif told["phase"] == "done":
+        notes.append(_PLANE_NOTHING)
+    if notes:
+        told["notes"] = notes
+    return told
+
+
+def _region_checked(node: str, params: Mapping[str, Any]) -> None:
+    """Check that a planar tracker has a region to follow, as far as the project tells it.
+
+    Raises:
+        FusionError: Its region has fewer than three places.
+    """
+    count = len(_items(params.get("region")))
+    if count < 3:
+        raise FusionError(
+            f"the region of node {node} has {count} places, and a plane is followed within three "
+            "at least: video_fusion_node set region (the engine refuses it as region)"
+        )
+
+
+def _planar_start(params: Mapping[str, Any], clock: KeyClock) -> int | None:
+    """The frame of the timeline that a track of a planar tracker starts from by default.
+
+    The first that shows its reference frame, where the region was drawn; ``None`` where the
+    clip shows it nowhere.
+    """
+    reference = _int_of(params.get("reference"))
+    return None if reference is None else clock.shown(reference)
 
 
 async def _waited(tracking: Tracking, seconds: float) -> tuple[dict[str, Any] | None, bool]:
@@ -2427,16 +2998,19 @@ async def track(
     frame: int | None = None,
     direction: TrackDirection = "forward",
 ) -> dict[str, Any]:
-    """Track the patterns of a tracker of a clip's composition through the frames of the clip.
+    """Track a tracker or a planar tracker of a clip's composition through the frames of the clip.
 
-    The engine follows each pattern from where it is at ``frame``, a frame of the timeline
-    within the clip (its first by default, its last for a track that goes in reverse), the way
-    that ``direction`` goes on the timeline, and writes the places that it finds into the paths
-    of the patterns as it goes, one step of the history in all (PROTOCOL, The patterns of a
-    Tracker). ``trackers`` names the patterns to follow by their places from 0: every one that
-    is enabled, where it is left out. The frame is sent as the frame of the clip's keys that
-    the clip is at there (:class:`columbina.video.clip_keys.KeyClock`). What can be told from
-    the project is checked before anything is sent.
+    Of a tracker, the engine follows each pattern from where it is at ``frame``, a frame of the
+    timeline within the clip (its first by default, its last for a track that goes in reverse),
+    the way that ``direction`` goes on the timeline, and writes the places that it finds into
+    the paths of the patterns as it goes, one step of the history in all (PROTOCOL, The
+    patterns of a Tracker). ``trackers`` names the patterns to follow by their places from 0:
+    every one that is enabled, where it is left out. Of a planar tracker, it follows the region
+    as a plane, and writes the homography of the plane at each frame into its path (The region
+    of a Planar Tracker); a track starts by default at the frame that shows its reference frame,
+    where the region was drawn, if the clip shows it. The frame is sent as the frame of the
+    clip's keys that the clip is at there (:class:`columbina.video.clip_keys.KeyClock`). What
+    can be told from the project is checked before anything is sent.
 
     The track is waited for as long as :data:`_TRACK_SECONDS` gives for the frames that it goes
     through; one that takes longer is stopped, and what it tracked is kept.
@@ -2446,8 +3020,9 @@ async def track(
         how it ended (``phase``: ``done``, ``stopped`` or ``failed``, with a ``reason`` but
         where it is done, ``timeout`` where it took too long); the first and the last frame of
         the timeline that show a frame written into a path (``tracked``); how many frames it
-        went through (``frames``); each pattern followed with its name, at how many frames it
-        was found and the frames of the timeline at which it was lost; and what may be done
+        went through (``frames``); of a tracker, each pattern followed with its name, at how
+        many frames it was found and the frames of the timeline at which it was lost; of a
+        planar tracker, at how many frames the plane was lost (``lost``); and what may be done
         next (``notes``).
 
     Raises:
@@ -2467,13 +3042,14 @@ async def track(
     if not _is_map(own):
         raise FusionError(
             f"clip {clip} has no composition, and so no tracker: video_fusion_node adds one "
-            "(action add, kind tracker, after MediaIn1, with its patterns)"
+            "(action add, kind tracker or planar_tracker, after MediaIn1)"
         )
     target = _node_of(_object(own), node)
-    if target.get("kind") != "tracker":
+    kind = str(target.get("kind"))
+    if kind not in ("tracker", "planar_tracker"):
         raise FusionError(
-            f"node {node} is {_a(target.get('kind'))}: video_fusion_track follows the patterns "
-            "of a tracker (the engine refuses it as wrong_node)"
+            f"node {node} is {_a(kind)}: video_fusion_track follows the patterns of a tracker, "
+            "or the region of a planar_tracker (the engine refuses it as wrong_node)"
         )
     what = _untrackable(project, found)
     if what is not None:
@@ -2481,12 +3057,26 @@ async def track(
             f"clip {clip} is {what}: a title, a colour or a still has no frames to track (the "
             "engine refuses it as untrackable)"
         )
-    patterns = [_object(one) for one in _items(_object(target.get("params")).get("trackers"))]
-    _followed_checked(node, patterns, trackers)
+    params = _object(target.get("params"))
+    planar = kind == "planar_tracker"
+    patterns: list[dict[str, Any]] = []
+    if planar:
+        if trackers is not None:
+            raise FusionError(
+                f"node {node} is a planar_tracker, which follows its region whole: trackers names "
+                "the patterns of a tracker; leave it out"
+            )
+        _region_checked(node, params)
+    else:
+        patterns = [_object(one) for one in _items(params.get("trackers"))]
+        _followed_checked(node, patterns, trackers)
     clock = _clock(project, on, found)
     last = clock.start + clock.length - 1
     if frame is None:
-        frame = last if direction in _BACKWARD else clock.start
+        start = _planar_start(params, clock) if planar else None
+        if start is None:
+            start = last if direction in _BACKWARD else clock.start
+        frame = start
     if not clock.start <= frame <= last:
         raise FusionError(
             f"frame {frame} is not in clip {clip}, which is at frames {clock.start} to {last} "
@@ -2497,7 +3087,7 @@ async def track(
     if trackers is not None:
         aim["trackers"] = sorted(set(trackers))
     asked: dict[str, Any] = {
-        "fusion": aim,
+        "planar" if planar else "fusion": aim,
         "revision": revision,
         "frame": key,
         "direction": direction,
@@ -2536,7 +3126,398 @@ async def track(
             "more: video_fusion_info shows the frames of the paths"
         ]
         return told
-    told.update(_ended_told(end, patterns, clock, seconds if late else None))
+    waited = seconds if late else None
+    told.update(
+        _plane_told(end, clock, waited) if planar else _ended_told(end, patterns, clock, waited)
+    )
+    return told
+
+
+# ---------------------------------------------------------------------------------------------
+# Animations of a Text+
+# ---------------------------------------------------------------------------------------------
+
+_RISE = -0.05
+"""How far below its place a character of ``rise`` begins, in heights of the picture."""
+
+_OVERSHOOT = 1.15
+"""How large a character of ``pop`` grows before it settles at its own size."""
+
+_ORDERS: dict[Preset, str] = {
+    "fade_in": "left_to_right",
+    "rise": "left_to_right",
+    "pop": "inside_out",
+    "fade_out": "left_to_right",
+}
+"""The order in which the characters go, of each preset that moves them by the follower."""
+
+_MOST_DELAY = 10000
+"""The longest delay of a follower, in frames."""
+
+_HEX = re.compile(r"#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?")
+
+_ANIMATED = (
+    "video_look shows frames of it; video_fusion_keys moves or changes one of its keys by the "
+    "path <node>.<setting>, and video_undo takes the whole of it back"
+)
+
+
+@dataclass(frozen=True)
+class _Animation:
+    """What a preset puts on a Text+, worked out for its clip.
+
+    Attributes:
+        first: Its first frame, counted from the first frame of the clip, 0.
+        frames: How many frames it lasts, to its last key.
+        keys: The keys of each setting that it animates by its path, at frames of the clip's
+            keys, in order.
+        follower: The settings of the follower that it moves the characters by, or ``None``.
+    """
+
+    first: int
+    frames: int
+    keys: dict[str, list[dict[str, Any]]]
+    follower: dict[str, Any] | None
+
+
+def _clocked(clock: KeyClock, points: Sequence[tuple[int, float]]) -> list[dict[str, Any]]:
+    """The keys at frames of the clip, from its first, put at the frames of the clip's keys.
+
+    Raises:
+        FusionError: Two fall on one frame of the keys, as on a clip slower than its media.
+    """
+    placed = sorted((clock.at(clock.start + offset), value) for offset, value in points)
+    frames = [frame for frame, _ in placed]
+    if len(set(frames)) < len(frames):
+        raise FusionError(
+            "two keys of the animation fall on one frame of the clip's keys, as on a clip slower "
+            "than its media, which shows one picture for several frames: give a longer length"
+        )
+    return [{"frame": frame, "value": value, "interp": "linear"} for frame, value in placed]
+
+
+def _animation(
+    preset: Preset, clip: str, clock: KeyClock, rate: Rate, at: int | None, length: int | None
+) -> _Animation:
+    """The keys and the follower of a preset on a clip, from ``at`` for ``length`` frames.
+
+    ``at`` is counted from the first frame of the clip; left out, the animation begins there, or
+    ends at the last frame of the clip for ``fade_out``. ``length`` is a second of the timeline
+    where it is left out, or as much of it as the clip has. A preset that moves the characters
+    one by one (all but ``typewriter``) spreads their starts over the length, first to last,
+    each character moving for half of it: so the last ends at the end, however long the text.
+
+    Raises:
+        FusionError: The animation does not fit in the clip, or is too short for the preset.
+    """
+    last = clock.length - 1
+    frames = length if length is not None else min(max(2, round(rate.num / rate.den)), last)
+    if frames < 1:
+        raise FusionError(f"clip {clip} has {clock.length} frame: an animation needs 2 at least")
+    first = at if at is not None else (last - frames if preset == "fade_out" else 0)
+    if first < 0 or first + frames > last:
+        raise FusionError(
+            f"an animation of {frames} frames from frame {first} of clip {clip} does not fit in "
+            f"it: the clip has frames 0 to {last}, and at + length is {last} at most"
+        )
+    each = max(1, frames // 2)
+    settle = first + each
+    if preset == "pop" and each < 2:
+        raise FusionError("pop grows past its size and settles back: length is 4 frames at least")
+    points: dict[str, list[tuple[int, float]]]
+    if preset == "typewriter":
+        points = {"write_on.end": [(first, 0.0), (first + frames, 1.0)]}
+    elif preset == "fade_in":
+        points = {"follower.opacity": [(first, 0.0), (settle, 1.0)]}
+    elif preset == "rise":
+        points = {
+            "follower.opacity": [(first, 0.0), (settle, 1.0)],
+            "follower.offset.y": [(first, _RISE), (settle, 0.0)],
+        }
+    elif preset == "pop":
+        top = first + max(1, round(each * 0.7))
+        points = {"follower.scale": [(first, 0.0), (top, _OVERSHOOT), (settle, 1.0)]}
+    else:
+        points = {"follower.opacity": [(first, 1.0), (settle, 0.0)]}
+    keys = {path: _clocked(clock, one) for path, one in points.items()}
+    follower: dict[str, Any] | None = None
+    if preset != "typewriter":
+        # The last character starts this many frames of the keys after the first.
+        delay = abs(clock.at(clock.start + first + frames) - clock.at(clock.start + settle))
+        if delay > _MOST_DELAY:
+            raise FusionError(
+                f"the characters start over {_MOST_DELAY} frames at most: give a shorter length"
+            )
+        follower = {"order": _ORDERS[preset], "delay": delay, "delay_type": "first_to_last"}
+    return _Animation(first, frames, keys, follower)
+
+
+def _rgba_of(color: str) -> list[float]:
+    """The red, the green, the blue and the alpha of a colour ``#rrggbb[aa]``, each 0 to 1.
+
+    Raises:
+        FusionError: It is not written so.
+    """
+    match = _HEX.fullmatch(color)
+    if match is None:
+        raise FusionError(
+            f"color is #rrggbb or #rrggbbaa, alpha last, as #ffcc00 for a yellow; {color!r} is not"
+        )
+    digits = match.group(1) + (match.group(2) or "ff")
+    return [round(int(digits[at : at + 2], 16) / 255, 4) for at in range(0, 8, 2)]
+
+
+def _style(font: str | None, size: float | None, color: str | None) -> dict[str, Any]:
+    """The settings of a Text+ that a style given makes, by their paths, checked.
+
+    Raises:
+        FusionError: One is not one that a Text+ takes, said with the engine's refusal.
+    """
+    style: dict[str, Any] = {}
+    if font is not None:
+        style["font"] = _words(_FONT, "font", font, "text_plus.font")
+    if size is not None:
+        style["size"] = _number(_TEXT_SIZE, "size", size, "text_plus.size")
+    if color is not None:
+        channels = zip("rgba", _rgba_of(color), strict=True)
+        style.update({f"fill.color.{channel}": value for channel, value in channels})
+    return style
+
+
+def _frame_of(key: Mapping[str, Any]) -> int:
+    return int(key["frame"])
+
+
+def _spliced(now: object, keys: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The keys of a setting with ``keys`` put in among those that it had.
+
+    Those that it had between the first frame of ``keys`` and their last are taken away, and
+    the others are kept.
+    """
+    low, high = _frame_of(keys[0]), _frame_of(keys[-1])
+    kept = [key for key in _keys_of(now) if not low <= _frame_of(key) <= high]
+    return sorted([*kept, *(dict(key) for key in keys)], key=_frame_of)
+
+
+def _text_added(
+    at: At,
+    composition: Mapping[str, Any],
+    text: str,
+    style: Mapping[str, Any],
+    outline: bool,
+    animation: _Animation,
+) -> list[dict[str, Any]]:
+    """The operations that lay a new Text+, animated, over the picture of a composition.
+
+    A Merge is added in the place of what the MediaOut reads: what it read into the Merge's
+    background, the Text+ into its foreground, and the Merge into the MediaOut. The Text+ is
+    added whole, its text, its style and the keys of the animation within it.
+    """
+    nodes = _nodes(composition)
+    if len(nodes) + 2 > _MOST_NODES:
+        raise FusionError(
+            f"a composition has {_MOST_NODES} nodes at most, and a text adds two (the engine "
+            "refuses more as out_of_range fusion_nodes)"
+        )
+    out = next((str(one.get("id")) for one in nodes if one.get("kind") == "media_out"), None)
+    if out is None:
+        raise FusionError("the composition has no media_out to lay the text over the picture by")
+    under = _into(composition).get((out, "input"))
+    params = new_params("text_plus")
+    params["text"] = text
+    for path, value in style.items():
+        _put(params, path, value)
+    if outline:
+        params["outline"] = new_part("text_plus", "outline")
+    if animation.follower is not None:
+        params["follower"] = {**new_part("text_plus", "follower"), **animation.follower}
+    for path, keys in animation.keys.items():
+        _put(params, path, {"keys": keys})
+    over = [edits.fusion_link("", out, "input")]
+    if under is not None:
+        over.insert(0, edits.fusion_link(under, "", "background"))
+    merge = edits.fusion_node("merge", new_params("merge"), id="$over")
+    words = edits.fusion_node("text_plus", params, id="$text")
+    into = [edits.fusion_link("", "$over", "foreground")]
+    return [
+        edits.add_fusion_node(at[0], at[1], merge, links=over),
+        edits.add_fusion_node(at[0], at[1], words, links=into),
+    ]
+
+
+def _text_animated(
+    at: At,
+    composition: Mapping[str, Any],
+    id: str,
+    text: str | None,
+    style: Mapping[str, Any],
+    outline: bool | None,
+    animation: _Animation,
+    said: list[str],
+) -> list[dict[str, Any]]:
+    """The operation that puts an animation on a Text+ that the composition has.
+
+    Its text and style are changed where they are given; a follower that it has not is added
+    whole, and one that it has is given the order and the delay of the animation; the keys of
+    each setting animated are put in among those that it has, those between their first and
+    their last frame taken away. What is to be said of it is put in ``said``.
+
+    Raises:
+        FusionError: The node is not a Text+, a setting of the style has keys, or nothing would
+            change.
+    """
+    target = _node_of(composition, id)
+    if target.get("kind") != "text_plus":
+        raise FusionError(
+            f"node {id} is {_a(target.get('kind'))}: video_text_animate animates a text_plus; "
+            "leave node out to add one over the picture"
+        )
+    now = _object(target.get("params"))
+    patch: dict[str, Any] = dict(style)
+    if text is not None:
+        patch["text"] = text
+    keyed = [path for path in patch if _is_map(_at(now, path))]
+    if keyed:
+        raise FusionError(
+            f"{', '.join(keyed)} of node {id} {'has' if len(keyed) == 1 else 'have'} keys, which "
+            "a style would take away: video_fusion_keys changes them"
+        )
+    lined = _is_map(now.get("outline"))
+    if outline is not None and outline != lined:
+        patch["outline"] = new_part("text_plus", "outline") if outline else None
+    had = now.get("follower")
+    if animation.follower is not None and not _is_map(had):
+        patch["follower"] = {**new_part("text_plus", "follower"), **animation.follower}
+    elif animation.follower is not None:
+        was = _object(had)
+        moved = {key: value for key, value in animation.follower.items() if was.get(key) != value}
+        patch.update({f"follower.{key}": value for key, value in moved.items()})
+        if moved:
+            before = ", ".join(f"{key} {was.get(key)}" for key in moved)
+            after = ", ".join(f"{key} {value}" for key, value in moved.items())
+            said.append(
+                f"the follower of node {id} had {before}, and now {after}: whatever else of it "
+                "has keys goes in that order too"
+            )
+    for path, keys in animation.keys.items():
+        if path.startswith("follower.") and "follower" in patch:
+            _put(patch["follower"], path.removeprefix("follower."), {"keys": keys})
+        else:
+            patch[path] = {"keys": _spliced(_at(now, path), keys)}
+    changed = {path: value for path, value in patch.items() if _at(now, path) != value}
+    if not changed:
+        raise FusionError(
+            f"node {id} has this animation already: nothing changes (the engine refuses it as "
+            "empty)"
+        )
+    nested: dict[str, Any] = {}
+    for path, value in changed.items():
+        _put(nested, path, value)
+    return [edits.set_fusion_node(at[0], at[1], id, params=nested)]
+
+
+async def animate(
+    engine: Engine,
+    timeline: str | None,
+    clip: str,
+    preset: Preset,
+    *,
+    node: str | None = None,
+    text: str | None = None,
+    at: int | None = None,
+    length: int | None = None,
+    font: str | None = None,
+    size: float | None = None,
+    color: str | None = None,
+    outline: bool | None = None,
+) -> dict[str, Any]:
+    """Put a ready-made animation on a Text+ of a clip's composition, one transaction and step.
+
+    Without ``node``, a Text+ of ``text`` is added over the picture with a Merge (see
+    :func:`_text_added`); with it, that Text+ is animated, and its ``text`` changed where it is
+    given. ``font``, ``size`` (a share of the picture) and ``color`` (``#rrggbb[aa]``) style it,
+    and ``outline`` gives it a black outline or takes it away. The preset (:data:`PRESETS`):
+
+    - ``typewriter``: ``write_on.end`` from 0 to 1, the characters shown one after another.
+    - ``fade_in``: each character fades in, from the left (the follower's opacity, 0 to 1).
+    - ``rise``: each rises into its place from 0.05 of the picture below as it fades in.
+    - ``pop``: each grows from nothing past its size (1.15) and settles, from the middle out.
+    - ``fade_out``: each fades out, from the left, to the last frame of the clip by default.
+
+    ``at`` is the frame where it begins, counted from the first of the clip; ``length`` how many
+    frames it lasts (:func:`_animation`). The keys are put at the frames of the clip's keys that
+    the clip shows there (:class:`columbina.video.clip_keys.KeyClock`).
+
+    Returns:
+        The revision made, how many operations it was, the node animated (``node``) and the
+        Merge added with it (``merge``), the frames of the timeline that the animation goes
+        from and to (``frames``), the keys put of each setting with the first frame of the
+        timeline that shows each (``keys``), the follower's order and delay (``follower``) and
+        what is to be said of it (``notes``).
+
+    Raises:
+        FusionError: What is asked is wrong, said before anything is sent.
+        EngineError: The engine refused the change.
+    """
+    if text is not None:
+        _words(_TEXT, "text", text, "text_plus.text")
+    if node is None and not text:
+        raise FusionError(
+            "a new text_plus needs text, the words to animate; or give node, a text_plus of the "
+            "composition"
+        )
+    if length is not None and length < 1:
+        raise FusionError("length is how many frames the animation lasts, 1 at least")
+    if at is not None and at < 0:
+        raise FusionError("at is a frame of the clip, counted from its first, 0")
+    style = _style(font, size, color)
+    worked: list[tuple[str, KeyClock, _Animation]] = []
+    said: list[str] = []
+
+    def build(project: Mapping[str, Any]) -> list[dict[str, Any]]:
+        on = _timeline(project, timeline)
+        found = _picture_clip(on, clip)
+        place = (str(on["id"]), clip)
+        own = found.get("fusion")
+        composition = _object(own) if _is_map(own) else edits.first_composition()
+        clock = _clock(project, on, found)
+        rate = Rate.model_validate(on["rate"])
+        animation = _animation(preset, clip, clock, rate, at, length)
+        said.clear()
+        if node is None:
+            ops = _text_added(place, composition, text or "", style, bool(outline), animation)
+        else:
+            ops = _text_animated(place, composition, node, text, style, outline, animation, said)
+        worked[:] = [(place[0], clock, animation)]
+        # A clip without a composition is given the first one before, as video_fusion_node does.
+        return ops if _is_map(own) else [edits.set_fusion(place[0], place[1], composition), *ops]
+
+    done, _ = await _sent(engine, build)
+    ((on, clock, animation),) = worked
+    added = [
+        str(_object(op.get("node")).get("id"))
+        for op in done.done
+        if op.get("op") == "add_fusion_node"
+    ]
+    told: dict[str, Any] = {
+        "revision": done.revision,
+        "operations": len(done.done),
+        "timeline": on,
+        "clip": clip,
+        "preset": preset,
+        "node": added[-1] if added else node,
+    }
+    if len(added) > 1:
+        told["merge"] = added[0]
+    start = clock.start + animation.first
+    told["frames"] = {"from": start, "to": start + animation.frames}
+    told["keys"] = {
+        path: [{"timeline_frame": clock.shown(_frame_of(key)), **key} for key in keys]
+        for path, keys in animation.keys.items()
+    }
+    if animation.follower is not None:
+        told["follower"] = dict(animation.follower)
+    told["notes"] = [*said, _ANIMATED]
     return told
 
 
@@ -2563,6 +3544,11 @@ _RANGES = {
     "tracker.trackers.path": "a path is filled by tracking: video_fusion_track",
     "tracker.pivot_point": "pivot_point.x and pivot_point.y are -15.5 to 16.5",
     "center.follow.tracker": f"a center follows a pattern from 0 to {_MOST_TRACKERS - 1}",
+    "planar_tracker.region": "a region is 3 to 64 places, each x and y -15.5 to 16.5",
+    "planar_tracker.corners": "the x and y of each corner of a planar_tracker are -15.5 to 16.5",
+    "planar_tracker.path": "a path is filled by tracking: video_fusion_track",
+    "text_plus.text": f"the text of a text_plus is {_TEXT.most} characters at most",
+    "text_plus.font": f"the font of a text_plus is {_FONT.most} bytes of UTF-8 at most",
 }
 """What is out of range where the engine names no setting of a node by its kind and path."""
 
@@ -2604,8 +3590,12 @@ def hint_of(error: EngineError) -> str | None:
 _TRACK_HINTS = {
     "target": "video_fusion_info shows the clips that have a composition, and their nodes",
     "wrong_node": (
-        "video_fusion_track follows the patterns of a tracker: video_fusion_info shows the kind "
-        "of each node"
+        "video_fusion_track follows the patterns of a tracker or the region of a planar_tracker: "
+        "video_fusion_info shows the kind of each node"
+    ),
+    "region": (
+        "the region cannot be followed from there: three places at least, larger than a pixel "
+        "and within the picture, at a frame where the path can be undone (settings region)"
     ),
     "tracker": "video_fusion_info lists the patterns of the tracker, from 0, and which are on",
     "no_trackers": (

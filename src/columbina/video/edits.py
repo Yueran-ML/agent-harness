@@ -200,7 +200,7 @@ Edge = Literal["in", "out"]
 
 FusionKind = Literal[
     "media_in", "media_out", "merge", "transform", "background", "rectangle", "ellipse",
-    "polygon", "blur", "mosaic", "delta_keyer", "tracker",
+    "polygon", "blur", "mosaic", "delta_keyer", "tracker", "planar_tracker", "text_plus",
 ]  # fmt: skip
 """A kind of node of a composition, the graph of the Fusion page that makes a clip's picture."""
 

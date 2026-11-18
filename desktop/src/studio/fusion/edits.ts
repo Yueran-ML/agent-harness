@@ -177,7 +177,7 @@ export function newNode(kind: FusionKind, pos: NodePos | null = null, id = ''): 
 }
 
 /** The kinds of node that have a centre, which may follow a Tracker (PROTOCOL.md, "Following a Tracker"). */
-export const CENTER_KINDS = ['merge', 'transform', 'rectangle', 'ellipse', 'polygon'] as const;
+export const CENTER_KINDS = ['merge', 'transform', 'rectangle', 'ellipse', 'polygon', 'text_plus'] as const;
 export type CenterKind = (typeof CENTER_KINDS)[number];
 /** Whether a kind of node has a centre. */
 export const hasCenter = (kind: FusionKind): kind is CenterKind => (CENTER_KINDS as readonly FusionKind[]).includes(kind);
@@ -185,7 +185,7 @@ export const hasCenter = (kind: FusionKind): kind is CenterKind => (CENTER_KINDS
 /** What the centre of a node follows, or null: a node of a kind that has no centre follows nothing. */
 export function followOf(node: FusionNode): FusionFollow | null {
   switch (node.kind) {
-    case 'merge': case 'transform': case 'rectangle': case 'ellipse': case 'polygon': return node.params.center?.follow ?? null;
+    case 'merge': case 'transform': case 'rectangle': case 'ellipse': case 'polygon': case 'text_plus': return node.params.center?.follow ?? null;
     default: return null;
   }
 }

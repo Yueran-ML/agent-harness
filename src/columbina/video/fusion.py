@@ -701,6 +701,7 @@ KINDS: dict[str, Kind] = {
                 "Center X, the middle of the text from the left edge", 0.5, -15.5, 16.5, "widths"
             ),
             "center.y": Setting("Center Y, from the lower edge, up", 0.5, -15.5, 16.5, "heights"),
+            "center.follow": Follows("Center follows a tracker, the place that it publishes"),
             "justify": Choice("Horizontal Justification", "center", ("left", "center", "right")),
             "vertical": Choice("Vertical Justification", "center", ("top", "center", "bottom")),
             "line_spacing": Setting("Line Spacing, a factor", 1, 0, 10),

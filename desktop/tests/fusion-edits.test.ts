@@ -1270,7 +1270,7 @@ describe('a Tracker', () => {
     expect((free.params as FusionRectangle).center).toStrictEqual({ x: 0.5, y: 0.5 });
     expect([followOf(free), followOps(AT, free, null)]).toEqual([null, []]);
     // Five kinds have a centre; a Tracker has none, and so follows nothing.
-    expect(CENTER_KINDS).toEqual(['merge', 'transform', 'rectangle', 'ellipse', 'polygon']);
+    expect(CENTER_KINDS).toEqual(['merge', 'transform', 'rectangle', 'ellipse', 'polygon', 'text_plus']);
     expect((['blur', 'tracker', 'background', 'media_in', 'delta_keyer'] as const).map(hasCenter)).toEqual([false, false, false, false, false]);
     expect([followOps(AT, trackerNode([]), follow), followOf(trackerNode([]))]).toEqual([[], null]);
     expect(withFollow(trackerNode([]), follow)).toEqual(trackerNode([]));

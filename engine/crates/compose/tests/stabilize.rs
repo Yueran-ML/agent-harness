@@ -1,10 +1,12 @@
 //! The stabilizer of a clip drawn on the card (`columbina_compose::fusion`, The stabilizer):
-//! the picture of the source put where the matrix of the stabilizer says, before the layer of
-//! the clip is laid on the canvas. A shift by whole pixels moves the picture by those pixels
-//! exactly, and what it is not moved over is transparent; an enlargement about the middle is
-//! the Transform of that size, to the bit; and a stabilizer that moves nothing draws the layer
-//! as one without it, to the bit, by the same passes. Without an adapter the tests are skipped,
-//! unless `COLUMBINA_REQUIRE_GPU` is 1.
+//! what comes out of the composition of the clip (its source, where it has none of its own)
+//! put where the matrix of the stabilizer says, before the layer of the clip is laid on the
+//! canvas. A shift by whole pixels moves the picture by those pixels exactly, and what it is
+//! not moved over is transparent; it moves what a composition made of the source, not the
+//! source before the composition; an enlargement about the middle is the Transform of that
+//! size, to the bit; and a stabilizer that moves nothing draws the layer as one without it, to
+//! the bit, by the same passes. Without an adapter the tests are skipped, unless
+//! `COLUMBINA_REQUIRE_GPU` is 1.
 
 use std::sync::Arc;
 
@@ -123,16 +125,47 @@ fn composed(nodes: Vec<FusedKind>, output: usize) -> Source {
 /// The picture of the tests stabilized by `matrix`, as the model gives a clip without a
 /// composition of its own: its `MediaIn`, and the stabilizer after it.
 fn stabilized(matrix: Matrix) -> Source {
-    let first = Fused {
-        nodes: vec![FusedNode {
-            id: "MediaIn1".into(),
-            kind: FusedKind::MediaIn,
-        }],
-        output: Some(0),
+    stabilized_after(vec![FusedKind::MediaIn], 0, matrix)
+}
+
+/// The picture of the tests in a composition of `nodes`, the `MediaOut` reading the one at
+/// `output`, stabilized by `matrix` as the model gives it: the stabilizer between that node
+/// and the `MediaOut`.
+fn stabilized_after(nodes: Vec<FusedKind>, output: usize, matrix: Matrix) -> Source {
+    let nodes = nodes
+        .into_iter()
+        .enumerate()
+        .map(|(at, kind)| FusedNode {
+            id: format!("n{at}"),
+            kind,
+        })
+        .collect();
+    let composition = Fused {
+        nodes,
+        output: Some(output),
     };
-    let steady = first.stabilized(matrix);
+    let steady = composition.stabilized(matrix);
     let nodes = steady.nodes.into_iter().map(|node| node.kind).collect();
     composed(nodes, steady.output.unwrap())
+}
+
+/// A composition of the picture of the tests flipped left for right by a Transform: each pixel
+/// is exactly that of the other side of the picture.
+fn flipped() -> Vec<FusedKind> {
+    vec![
+        FusedKind::MediaIn,
+        FusedKind::Transform {
+            input: Some(0),
+            mask: None,
+            settings: Transformed {
+                center: [0.5, 0.5],
+                size: 1.0,
+                angle: 0.0,
+                flip_horizontal: true,
+                flip_vertical: false,
+            },
+        },
+    ]
 }
 
 /// A shift by `x` and `y` pixels of the picture of the tests, as a matrix of shares of it.
@@ -192,6 +225,46 @@ fn a_shift_by_whole_pixels_moves_the_picture_by_those_pixels_and_uncovers_nothin
                         seen.abs_diff(source) <= 1,
                         "({x}, {y}) of a shift of ({dx}, {dy}), channel {channel}: \
                          {seen:#06x}, not {source:#06x}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(gpu.uncaught_errors(), (0, None));
+}
+
+#[test]
+fn the_stabilizer_moves_what_the_composition_made_of_the_source() {
+    let Some(gpu) = card_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    // The picture flipped by its composition, not stabilized.
+    let wanted = halves(&gpu, &mut compositor, &scene(composed(flipped(), 1)));
+    for (dx, dy) in [(2_u32, 0_u32), (3, 1)] {
+        let passes = compositor.fusion_passes();
+        let matrix = shift(f64::from(dx), f64::from(dy));
+        let shown = halves(
+            &gpu,
+            &mut compositor,
+            &scene(stabilized_after(flipped(), 1, matrix)),
+        );
+        // The source drawn alone, the pass of the Transform, and that of the stabilizer.
+        assert_eq!(compositor.fusion_passes(), passes + 3);
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let seen = pixel(&shown, x, y);
+                // The flipped picture is moved right and down: what it is not moved over is at
+                // the left and the top. (Stabilized before the flip, the source would be moved
+                // right and then flipped, and that would be at the right.)
+                if x < dx || y < dy {
+                    assert_eq!(seen, NOTHING, "({x}, {y}) of a shift of ({dx}, {dy})");
+                    continue;
+                }
+                let made = pixel(&wanted, x - dx, y - dy);
+                for (channel, (seen, made)) in seen.iter().zip(made).enumerate() {
+                    assert!(
+                        seen.abs_diff(made) <= 1,
+                        "({x}, {y}) of a shift of ({dx}, {dy}), channel {channel}: \
+                         {seen:#06x}, not {made:#06x}"
                     );
                 }
             }

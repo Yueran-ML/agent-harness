@@ -111,9 +111,10 @@
 //! loop; and each setting of its nodes is within its bounds.
 //!
 //! A clip of a track of picture may have a stabilizer ([`crate::stabilize`]), set whole by
-//! [`Op::SetStabilize`], its analysis with it. A clip of sound has none. Its Cropping Ratio and
-//! its Smooth are from 0 to 1 and its Strength from −1 to 1; its analysis is of frames of a
-//! size, at frames within [`LARGEST`] of 0, of motions of finite numbers.
+//! [`Op::SetStabilize`], its analysis with it, or its controls alone by
+//! [`Op::SetStabilizeSettings`], its analysis kept. A clip of sound has none. Its Cropping
+//! Ratio and its Smooth are from 0 to 1 and its Strength from −1 to 1; its analysis is of
+//! frames of a size, at frames within [`LARGEST`] of 0, of motions of finite numbers.
 //!
 //! Moving a set of clips together with `shift_clips` keeps the transitions whose two ends
 //! are in that set: their adjacency and media handles do not change.
@@ -159,7 +160,7 @@ use crate::project::{
 };
 use crate::retime::{Retime, RetimeProcess};
 use crate::span;
-use crate::stabilize::Stabilize;
+use crate::stabilize::{Controls, Stabilize};
 use crate::time::{Rate, Speed, Time};
 
 mod automation;
@@ -915,6 +916,24 @@ pub enum Op {
         /// What its stabilizer becomes; or `null`, which must be written, for none.
         #[serde(deserialize_with = "nullable_required")]
         value: Option<Stabilize>,
+    },
+    /// Set the controls of the stabilizer of a clip of a track of picture that are given, and
+    /// keep the others and its analysis as they are, so that a change of a control does not
+    /// carry the whole analysis. A change of the Method keeps the analysis too, which is then
+    /// one of another Method ([`Stabilize::needs_analysis`]). A clip that has no stabilizer is
+    /// given the one that a clip has at first ([`Stabilize::default`]) with the controls given,
+    /// and no analysis. Its inverse sets the controls given back to what they were, or, of a
+    /// clip that had no stabilizer, takes it away ([`Op::SetStabilize`] of none). A clip of
+    /// sound takes none (`wrong_track`, `stabilize`); controls out of their ranges are refused
+    /// (`out_of_range`, with `stabilize.cropping_ratio`, `stabilize.smooth` or
+    /// `stabilize.strength`).
+    SetStabilizeSettings {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The controls that change; those that are left out are kept.
+        settings: Controls,
     },
     /// Put a grade in place of a grade, whole, as copying a grade does.
     SetGrade {
@@ -2410,6 +2429,11 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             clip,
             value,
         } => stabilizing::set_stabilize(project, &timeline, &clip, value),
+        Op::SetStabilizeSettings {
+            timeline,
+            clip,
+            settings,
+        } => stabilizing::set_stabilize_settings(project, &timeline, &clip, &settings),
         Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
         Op::AddGroup { group, index } => grade::add_group(project, group, index),
         Op::RemoveGroup { id } => grade::remove_group(project, &id),

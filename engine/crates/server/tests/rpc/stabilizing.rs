@@ -1,7 +1,8 @@
 //! T18a: the stabilizer of a clip through the engine, by a client that is not the desktop, on a
 //! clip of a textured picture shaken by known shifts of whole pixels: the motion measured and
 //! written as the analysis of its stabilizer, one step to undo; the picture held still where
-//! the frames are drawn off screen; a measure stopped, which writes nothing; and the measures
+//! the frames are drawn off screen, while the Fusion view shows it as it was shot; a control
+//! set alone, the analysis kept; a measure stopped, which writes nothing; and the measures
 //! refused.
 
 use std::path::{Path, PathBuf};
@@ -196,6 +197,39 @@ impl Fixture {
         let rgb = slow(&mut self.client, "view.sample", params).await["rgb"].clone();
         [0_usize, 1, 2].map(|channel| rgb[channel].as_f64().unwrap())
     }
+
+    /// The colour about `(x, y)` of the Fusion view of the shaken clip at frame `frame`, of its
+    /// node `node` (none: what comes out of its composition), drawn off screen.
+    async fn viewed(&mut self, frame: i64, at: (f64, f64), node: Option<&str>) -> [f64; 3] {
+        let mut fusion = json!({"clip": self.clip});
+        if let Some(node) = node {
+            fusion["node"] = json!(node);
+        }
+        let params = json!({"timeline": self.timeline, "frame": frame, "x": at.0, "y": at.1,
+            "size": 3, "fusion": fusion});
+        let answer = slow(&mut self.client, "view.sample", params).await;
+        assert_eq!(answer["fusion"]["shown"], true, "{answer}");
+        let rgb = answer["rgb"].clone();
+        [0_usize, 1, 2].map(|channel| rgb[channel].as_f64().unwrap())
+    }
+}
+
+/// How far apart two colours are: the most of the three channels.
+fn apart(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0, f64::max)
+}
+
+/// The analysis of the clip of `frames` frames as a measure of it writes it, but for the
+/// rounding of what it measures: at each frame, the picture moved by its shake alone.
+fn shaken_analysis(frames: i64) -> Value {
+    let path: serde_json::Map<String, Value> = (0..frames)
+        .map(|k| {
+            let [across, down] = shake(k);
+            let motion = json!([to_f64(across), to_f64(down), 1.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+            (k.to_string(), motion)
+        })
+        .collect();
+    json!({"method": "translation", "size": [W, H], "path": path})
 }
 
 /// How long a first frame of a new shader may take in a build for tests.
@@ -353,6 +387,52 @@ async fn a_shaken_picture_is_measured_held_still_and_its_analysis_is_one_step_to
         .map(|c| (moved[c] - still[c]).abs())
         .fold(0.0, f64::max);
     assert!(off > 0.08, "{moved:?} and {still:?}");
+}
+
+#[tokio::test]
+async fn the_fusion_view_shows_the_picture_as_it_was_shot_and_the_timeline_holds_it_still() {
+    let Some(mut f) = fixture(8).await else {
+        return;
+    };
+    let mut stabilizer = locked();
+    stabilizer["analysis"] = shaken_analysis(8);
+    let measured = json!([{"op": "set_stabilize", "timeline": f.timeline, "clip": f.clip,
+        "value": stabilizer}]);
+    f.client.apply(measured).await;
+    assert_eq!(f.stabilizer().await, stabilizer);
+    // A control set alone keeps the analysis as it was written, and is one step to undo.
+    let smoother = json!([{"op": "set_stabilize_settings", "timeline": f.timeline,
+        "clip": f.clip, "settings": {"smooth": 0.5}}]);
+    f.client.apply(smoother).await;
+    let changed = f.stabilizer().await;
+    assert_eq!(changed["analysis"], stabilizer["analysis"]);
+    assert_eq!(changed["smooth"], json!(0.5));
+    f.client.result("history.undo", None).await;
+    assert_eq!(f.stabilizer().await, stabilizer);
+
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    // At frame 3 the picture was moved 5 pixels right: the timeline holds it where it was at
+    // the first frame, about the left of the square.
+    let [left, ..] = within_the_square();
+    let first = f.sampled(0, left).await;
+    let held = f.sampled(3, left).await;
+    assert!(apart(held, first) < 0.03, "{held:?} and {first:?}");
+    // The Fusion view, of what comes out of the composition and of each of its nodes, shows it
+    // as it was shot, moved; and at the first frame, which was not moved, as the timeline does.
+    for node in [None, Some("MediaIn1"), Some("MediaOut1")] {
+        let shot = f.viewed(3, left, node).await;
+        assert!(
+            apart(shot, first) > 0.08,
+            "{node:?}: {shot:?} and {first:?}"
+        );
+        let still = f.viewed(0, left, node).await;
+        assert!(
+            apart(still, first) < 0.03,
+            "{node:?}: {still:?} and {first:?}"
+        );
+    }
 }
 
 #[tokio::test]

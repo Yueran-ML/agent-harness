@@ -1248,7 +1248,8 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             visit_clip(timeline, clip, f)?;
             visit_setting(path, f)
         }
-        Op::SetStabilize { timeline, clip, .. } => visit_clip(timeline, clip, f),
+        Op::SetStabilize { timeline, clip, .. }
+        | Op::SetStabilizeSettings { timeline, clip, .. } => visit_clip(timeline, clip, f),
         Op::AddGroup { group, .. } => {
             visit_grade(&mut group.pre, f)?;
             visit_grade(&mut group.post, f)?;
@@ -2049,5 +2050,27 @@ mod tests {
             (error.index, error.name.as_str(), error.reason),
             (0, "$nowhere", "unknown_name")
         );
+    }
+
+    #[test]
+    fn the_controls_of_the_stabilizer_of_a_clip_named_in_a_transaction_are_set_by_its_name() {
+        use columbina_model::Stabilize;
+        let mut history = History::new(Project::sample());
+        let (_, ids) = apply(&mut history, ops(json!([
+            {"edit": "append", "timeline": "t1", "source": {"kind": "color", "color": "#000000ff", "length": 30}, "name": "$steady"},
+            {"op": "set_stabilize_settings", "timeline": "t1", "clip": "$steady", "settings": {"smooth": 0.5}},
+        ]))).unwrap();
+        let id = &ids["$steady"];
+        let steady = history.project().timelines[0]
+            .tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .find(|clip| clip.id == *id)
+            .unwrap();
+        let wanted = Stabilize {
+            smooth: 0.5,
+            ..Stabilize::default()
+        };
+        assert_eq!(steady.stabilize, Some(wanted));
     }
 }

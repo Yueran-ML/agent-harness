@@ -2172,8 +2172,8 @@ pub(crate) fn run_change(project: &mut Project, change: Change) -> Result<Expans
         Change::Op(op) => {
             let (done, inverse) = apply_done(project, op).map_err(ChangeError::Op)?;
             // Setting media, the colour settings, the composition of a clip, a link, a node or
-            // the keys of a setting of it, or the stabilizer of a clip, to what they are already
-            // changes nothing, and makes no step.
+            // the keys of a setting of it, or the stabilizer of a clip or some of its controls
+            // (none among them), to what they are already changes nothing, and makes no step.
             if matches!(
                 done,
                 Op::SetMedia { .. }
@@ -2186,6 +2186,7 @@ pub(crate) fn run_change(project: &mut Project, change: Change) -> Result<Expans
                     | Op::SetFusionKeys { .. }
                     | Op::SpliceFusionKeys { .. }
                     | Op::SetStabilize { .. }
+                    | Op::SetStabilizeSettings { .. }
             ) && done == inverse
             {
                 return Ok(Expansion {

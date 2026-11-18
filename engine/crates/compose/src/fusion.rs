@@ -284,18 +284,21 @@
 //! # The stabilizer
 //!
 //! The stabilizer of a clip ([`columbina_model::stabilize`]) is given in the composition of its
-//! layer as a node that the model puts after its `MediaIn` ([`FusedKind::Stabilize`], see
+//! layer as a node that the model puts after its last node, between the node that the
+//! `MediaOut` read and the `MediaOut` ([`FusedKind::Stabilize`], see
 //! [`columbina_model::fusion::Fused::stabilized`]): a clip that is stabilized and has no
-//! composition of its own has the one that a clip has at first. It is the pass of a Transform
-//! of the picture of the source, laid over nothing, by the inverse of its matrix made a map of
-//! the pixels that the pictures are drawn at (`steadied`): so a pixel that the picture is not
-//! moved over is transparent, and the picture is cut at the edges of the frame, as a Transform
-//! cuts it. The map of a Similarity or a Translation is affine, and is drawn as the map of a
-//! Transform is, to the bit where it is that map; that of Perspective may be projective, and
-//! the place that the affine part gives is then divided by the third row of the map in the
-//! shader (`row0.w` and `row1.w` of its uniform, which are 0 of every other pass). Where a pixel
-//! is made of several points, they lie as the affine part puts them. A matrix that moves no
-//! point is no pass, and so is one that cannot be undone: the node is then its input.
+//! composition of its own has the one that a clip has at first. So it is done to what comes out
+//! of the composition, and before the grade of the layer. It is the pass of a Transform of that
+//! picture (of the source, drawn alone, where the composition is the source alone), laid over
+//! nothing, by the inverse of its matrix made a map of the pixels that the pictures are drawn
+//! at (`steadied`): so a pixel that the picture is not moved over is transparent, and the
+//! picture is cut at the edges of the frame, as a Transform cuts it. The map of a Similarity or
+//! a Translation is affine, and is drawn as the map of a Transform is, to the bit where it is
+//! that map; that of Perspective may be projective, and the place that the affine part gives is
+//! then divided by the third row of the map in the shader (`row0.w` and `row1.w` of its
+//! uniform, which are 0 of every other pass). Where a pixel is made of several points, they lie
+//! as the affine part puts them. A matrix that moves no point is no pass, and so is one that
+//! cannot be undone: the node is then its input.
 
 use columbina_model::fusion::{
     self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, Tracked, Transformed,
@@ -1330,8 +1333,8 @@ fn tracked(
 }
 
 /// The picture of the stabilizer of a clip, `node`, `read` giving the picture that its input
-/// reads, drawn `size` pixels large: the picture of the source put where the matrix of the
-/// node says, laid over nothing as a Transform lays its picture, by a pass whose map may be
+/// reads, drawn `size` pixels large: what comes out of the composition put where the matrix of
+/// the node says, laid over nothing as a Transform lays its picture, by a pass whose map may be
 /// projective (see The stabilizer of the [module](self)). None where its input gives no
 /// picture; its input where the matrix moves no point, or cannot be undone. None of a node
 /// that is not the stabilizer.
@@ -1371,8 +1374,8 @@ fn stabilized(
     )
 }
 
-/// How a pixel of the picture that the stabilizer draws reads the picture of the source, both
-/// drawn `size` pixels large, in pixels from their top left corners: the affine part of the
+/// How a pixel of the picture that the stabilizer draws reads the picture that comes into it,
+/// both drawn `size` pixels large, in pixels from their top left corners: the affine part of the
 /// map, and the two numbers of its third row by which the place that the affine part gives is
 /// divided (`across · x + down · y + 1`; both 0 of an affine map).
 #[derive(Clone, Copy, Debug, PartialEq)]

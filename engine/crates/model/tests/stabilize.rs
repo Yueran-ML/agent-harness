@@ -1,9 +1,11 @@
 //! The stabilizer of a clip (T18a; `crates/model/src/stabilize.rs`): written with every field and
 //! read back as it was, a project without one written to the byte as before, set whole by its
-//! operation and taken back by the inverse, kept by the clips that an edit makes of a clip, its
-//! frames moved with the source of a clip that is replaced, and what a layer of the clip is at a
-//! frame: the transform of the mathematics of the stabilizer at the frame of its source, through
-//! which the picture of its `media_in` is drawn.
+//! operation and taken back by the inverse, its controls set alone by the other operation, its
+//! analysis kept to the byte, kept by the clips that an edit makes of a clip, its frames moved
+//! with the source of a clip that is replaced, and what a layer of the clip is at a frame: the
+//! transform of the mathematics of the stabilizer at the frame of its source, through which what
+//! comes out of its composition is drawn, while the composition made for the Fusion page shows
+//! the source as it is.
 
 #![allow(
     clippy::float_cmp,
@@ -12,13 +14,19 @@
 
 use std::collections::BTreeMap;
 
-use columbina_model::fusion::{Composition, FusedKind, FusedNode, MEDIA_IN, STABILIZER};
+use columbina_model::fusion::{
+    Composition, Fused, FusedKind, FusedNode, Input, Kind, Link, Node, MEDIA_IN, MEDIA_OUT,
+    STABILIZER,
+};
 use columbina_model::keyframes::{aligned_stabilize, Align, KeyBase};
 use columbina_model::resolve::{fused_for, video_at};
 use columbina_model::stabilize::{
-    motion_of, numbers_of, transform_of, Analysis, Matrix, Method, IDENTITY,
+    motion_of, moves, numbers_of, transform_of, Analysis, Matrix, Method, IDENTITY,
 };
-use columbina_model::{apply_done, expand, Clip, Edit, Op, Project, Rate, Speed, Stabilize, Time};
+use columbina_model::{
+    apply_done, expand, Change, Clip, Edit, History, Op, Project, Rate, Speed, Stabilize, Time,
+    TransactionError,
+};
 use columbina_track::stabilize::{path, stabilized};
 use columbina_track::{Mat3, Motion};
 use serde_json::{json, Value};
@@ -191,6 +199,144 @@ fn the_operation_sets_a_stabilizer_whole_as_a_client_writes_it_and_its_inverse_t
     assert!(serde_json::from_value::<Op>(unwritten).is_err());
 }
 
+/// `set_stabilize_settings` of c1 with `settings`, as a client writes it.
+fn settings_op(settings: &Value) -> Op {
+    let written = json!({"op": "set_stabilize_settings", "timeline": "t1", "clip": "c1",
+        "settings": settings});
+    serde_json::from_value(written).unwrap()
+}
+
+/// The analysis of the stabilizer of c1 as it is written.
+fn written_analysis(project: &Project) -> String {
+    let stabilize = project.timelines[0].tracks[0].clips[0].stabilize.as_ref();
+    serde_json::to_string(&stabilize.unwrap().analysis).unwrap()
+}
+
+#[test]
+fn the_controls_are_set_alone_as_a_client_writes_them_and_the_analysis_is_kept_to_the_byte() {
+    let mut project = steadied(measured());
+    let analysis = written_analysis(&project);
+    let before = project.clone();
+    let op = settings_op(&json!({"smooth": 0.75, "strength": 0.5}));
+    let (done, inverse) = apply_done(&mut project, op.clone()).unwrap();
+    assert_eq!(done, op);
+    // The old values of exactly the controls given.
+    assert_eq!(
+        serde_json::to_value(&inverse).unwrap(),
+        json!({"op": "set_stabilize_settings", "timeline": "t1", "clip": "c1",
+            "settings": {"smooth": 0.5, "strength": 1.0}})
+    );
+    let stabilize = project.timelines[0].tracks[0].clips[0].stabilize.clone();
+    let wanted = Stabilize {
+        smooth: 0.75,
+        strength: 0.5,
+        ..measured()
+    };
+    assert_eq!(stabilize, Some(wanted));
+    assert_eq!(written_analysis(&project), analysis);
+    // A change of the controls is drawn from the analysis at once, as a new one would be.
+    let layer = video_at(&project.timelines[0], &project, 30).remove(0);
+    let changed = by_the_mathematics(stabilize.as_ref().unwrap());
+    assert_eq!(layer.stabilize, Some(changed[30]));
+    // A change of the Method keeps the analysis, which asks to be measured again.
+    let method = settings_op(&json!({"method": "translation"}));
+    let (_, back) = apply_done(&mut project, method).unwrap();
+    assert_eq!(written_analysis(&project), analysis);
+    let clip = &project.timelines[0].tracks[0].clips[0];
+    assert!(clip.stabilize.as_ref().unwrap().needs_analysis());
+    assert_eq!(back, settings_op(&json!({"method": "similarity"})));
+    // The inverses put the project back to the bit.
+    apply_done(&mut project, back).unwrap();
+    apply_done(&mut project, inverse).unwrap();
+    assert_eq!(project, before);
+    assert_eq!(
+        serde_json::to_string(&project).unwrap(),
+        serde_json::to_string(&before).unwrap()
+    );
+}
+
+#[test]
+fn a_clip_without_a_stabilizer_is_given_one_and_unknown_or_wild_controls_are_refused() {
+    let mut project = Project::sample();
+    let before = project.clone();
+    let op = settings_op(&json!({"camera_lock": true}));
+    let (done, inverse) = apply_done(&mut project, op.clone()).unwrap();
+    assert_eq!(done, op);
+    assert_eq!(
+        serde_json::to_value(&inverse).unwrap(),
+        json!({"op": "set_stabilize", "timeline": "t1", "clip": "c1", "value": null})
+    );
+    let given = Stabilize {
+        camera_lock: true,
+        ..Stabilize::default()
+    };
+    assert_eq!(
+        project.timelines[0].tracks[0].clips[0].stabilize,
+        Some(given)
+    );
+    apply_done(&mut project, inverse).unwrap();
+    assert_eq!(project, before);
+    // A field that is not a control, and a Method that is none, are the reader's refusal; a
+    // control out of its range is the operation's.
+    for settings in [
+        json!({"smooth": 0.5, "analysis": null}),
+        json!({"shake": true}),
+        json!({"method": "affine"}),
+        json!({"smooth": "much"}),
+    ] {
+        let written = json!({"op": "set_stabilize_settings", "timeline": "t1", "clip": "c1",
+            "settings": settings});
+        assert!(serde_json::from_value::<Op>(written).is_err(), "{settings}");
+    }
+    let unwritten = json!({"op": "set_stabilize_settings", "timeline": "t1", "clip": "c1"});
+    assert!(serde_json::from_value::<Op>(unwritten).is_err());
+    let wild = settings_op(&json!({"cropping_ratio": -0.5}));
+    assert_eq!(
+        apply_done(&mut project, wild).map(|_| ()),
+        Err(columbina_model::OpError::OutOfRange {
+            what: "stabilize.cropping_ratio"
+        })
+    );
+    assert_eq!(project, before);
+}
+
+#[test]
+fn controls_set_to_what_they_are_or_none_given_make_no_step() {
+    let mut history = History::new(steadied(measured()));
+    let revision = history.revision();
+    let ops_of = |settings: &Value| vec![Change::Op(settings_op(settings))];
+    for settings in [
+        json!({}),
+        json!({"method": "similarity", "smooth": 0.5}),
+        json!({"camera_lock": false, "zoom": true, "cropping_ratio": 0.5, "strength": 1}),
+    ] {
+        let nothing = history.change(ops_of(&settings), "desktop", |change, _| change);
+        assert_eq!(nothing.err(), Some(TransactionError::Empty), "{settings}");
+    }
+    assert_eq!(history.revision(), revision);
+    assert!(!history.can_undo());
+    // One that changes a control is a step, and is undone.
+    let before = history.project().clone();
+    let unzoomed = json!({"smooth": 0.5, "zoom": false});
+    history
+        .change(ops_of(&unzoomed), "desktop", |change, _| change)
+        .unwrap();
+    assert_ne!(history.project(), &before);
+    history.undo("desktop").unwrap().unwrap();
+    assert_eq!(history.project(), &before);
+    // Given nothing, a clip without a stabilizer is given the one that a clip has at first:
+    // a change, and a step.
+    let mut plain = History::new(Project::sample());
+    plain
+        .change(ops_of(&json!({})), "desktop", |change, _| change)
+        .unwrap();
+    assert_eq!(
+        plain.project().timelines[0].tracks[0].clips[0].stabilize,
+        Some(Stabilize::default())
+    );
+    assert!(plain.can_undo());
+}
+
 #[test]
 fn a_layer_is_given_the_transform_of_the_mathematics_at_the_frame_of_its_source() {
     let stabilize = measured();
@@ -206,8 +352,8 @@ fn a_layer_is_given_the_transform_of_the_mathematics_at_the_frame_of_its_source(
             transform_of(clip, &project, timeline.rate, frame),
             Some(wanted[at])
         );
-        // The picture of the `media_in` of the composition that a clip has at first is drawn
-        // through it.
+        // Of the clip, which has no composition of its own, the composition that a clip has at
+        // first: its `media_in`, which the stabilizer reads, and which the `media_out` read.
         let fused = layer.fusion.unwrap();
         assert_eq!(fused.output, Some(1), "frame {frame}");
         assert_eq!(fused.nodes[0].kind, FusedKind::MediaIn);
@@ -221,21 +367,110 @@ fn a_layer_is_given_the_transform_of_the_mathematics_at_the_frame_of_its_source(
                 },
             }
         );
-        // And so the Fusion view of the `media_in` shows it.
-        let shown = fused_for(timeline, &project, clip, frame, Some(MEDIA_IN)).unwrap();
-        assert_eq!(shown, fused);
+        // The Fusion page sees the source as it is: the `media_in`, and what comes out.
+        let source = Fused {
+            nodes: vec![FusedNode {
+                id: MEDIA_IN.into(),
+                kind: FusedKind::MediaIn,
+            }],
+            output: Some(0),
+        };
+        for node in [None, Some(MEDIA_IN), Some(MEDIA_OUT)] {
+            let shown = fused_for(timeline, &project, clip, frame, node);
+            assert_eq!(shown.as_ref(), Some(&source), "frame {frame}, {node:?}");
+        }
+    }
+}
+
+/// A composition of several nodes: the picture of the `media_in` moved by a Transform and laid
+/// over a Background by a Merge, which the `media_out` reads.
+fn several() -> Composition {
+    let mut composition = Composition {
+        nodes: vec![
+            Node::new("in", Kind::MediaIn),
+            Node::new("bg", Kind::Background),
+            Node::new("move", Kind::Transform),
+            Node::new("over", Kind::Merge),
+            Node::new("out", Kind::MediaOut),
+        ],
+        links: vec![
+            Link::new("in", "move", Input::Input),
+            Link::new("bg", "over", Input::Background),
+            Link::new("move", "over", Input::Foreground),
+            Link::new("over", "out", Input::Input),
+        ],
+    };
+    composition.sort_links();
+    composition
+}
+
+/// Whether the composition `fused` has the node of the stabilizer.
+fn has_stabilizer(fused: &Fused) -> bool {
+    fused
+        .nodes
+        .iter()
+        .any(|node| matches!(node.kind, FusedKind::Stabilize { .. }))
+}
+
+#[test]
+fn a_composition_is_stabilized_after_what_comes_out_of_it_and_the_fusion_page_sees_none_of_it() {
+    let mut project = steadied(measured());
+    let composition = several();
+    project.timelines[0].tracks[0].clips[0].fusion = Some(composition.clone());
+    project.validate().unwrap();
+    let timeline = &project.timelines[0];
+    let clip = &timeline.tracks[0].clips[0];
+    let layer = video_at(timeline, &project, 20).remove(0);
+    let matrix = layer.stabilize.unwrap();
+    assert!(moves(&matrix));
+    // The nodes of the composition as they are, and after them the stabilizer, which reads
+    // what the `media_out` read (the Merge) and is read by the `media_out` alone.
+    let plain = composition.at_size(0.0, (1920, 1080));
+    let read = plain.output.unwrap();
+    assert_eq!(plain.nodes[read].id, "over");
+    let fused = layer.fusion.unwrap();
+    let last = plain.nodes.len();
+    assert_eq!(fused.nodes.len(), last + 1);
+    assert_eq!(fused.nodes[..last], plain.nodes[..]);
+    assert_eq!(
+        fused.nodes[last],
+        FusedNode {
+            id: STABILIZER.into(),
+            kind: FusedKind::Stabilize {
+                input: Some(read),
+                matrix,
+            },
+        }
+    );
+    assert_eq!(fused.output, Some(last));
+    assert_eq!(fused, plain.stabilized(matrix));
+    // The `media_in` is the source as it is: no node of the composition reads the stabilizer.
+    for node in &fused.nodes[..last] {
+        assert!(!node.kind.reads().contains(&last), "{}", node.id);
+    }
+    // The Fusion page sees none of it, whichever node it views.
+    for node in [
+        None,
+        Some("in"),
+        Some("bg"),
+        Some("move"),
+        Some("over"),
+        Some("out"),
+    ] {
+        let shown = fused_for(timeline, &project, clip, 20, node).unwrap();
+        assert!(!has_stabilizer(&shown), "{node:?}");
+        let wanted = match node {
+            Some(node) => composition.at_node_size(node, 0.0, (1920, 1080)).unwrap(),
+            None => plain.clone(),
+        };
+        assert_eq!(shown, wanted, "{node:?}");
     }
 }
 
 #[test]
-fn a_composition_reads_the_picture_stabilized_where_it_read_the_media_in() {
-    let mut project = steadied(measured());
-    let composition = Composition::default();
-    project.timelines[0].tracks[0].clips[0].fusion = Some(composition.clone());
-    let layer = video_at(&project.timelines[0], &project, 20).remove(0);
-    let at = composition.at_size(0.0, (1920, 1080));
-    assert_eq!(layer.fusion, Some(at.stabilized(layer.stabilize.unwrap())));
-    // A stabilizer that moves nothing leaves the composition, and a clip without one has none.
+fn a_stabilizer_that_moves_nothing_or_is_not_there_puts_no_node() {
+    // Of a clip without a composition, none is given; of one with a composition, it is as it
+    // is.
     let mut still = measured();
     still.strength = 0.0;
     still.zoom = false;
@@ -243,9 +478,33 @@ fn a_composition_reads_the_picture_stabilized_where_it_read_the_media_in() {
     let layer = video_at(&project.timelines[0], &project, 20).remove(0);
     assert_eq!(layer.stabilize, Some(IDENTITY));
     assert_eq!(layer.fusion, None);
-    project.timelines[0].tracks[0].clips[0].stabilize = Some(Stabilize::default());
+    project.timelines[0].tracks[0].clips[0].fusion = Some(several());
     let layer = video_at(&project.timelines[0], &project, 20).remove(0);
-    assert_eq!((layer.stabilize, layer.fusion), (None, None));
+    assert_eq!(layer.stabilize, Some(IDENTITY));
+    let plain = several().at_size(0.0, (1920, 1080));
+    assert_eq!(layer.fusion.as_ref(), Some(&plain));
+    // A stabilizer that is not measured yet, and none at all.
+    for stabilize in [Some(Stabilize::default()), None] {
+        project.timelines[0].tracks[0].clips[0].stabilize = stabilize.clone();
+        let layer = video_at(&project.timelines[0], &project, 20).remove(0);
+        assert_eq!(layer.stabilize, None, "{stabilize:?}");
+        assert_eq!(layer.fusion.as_ref(), Some(&plain), "{stabilize:?}");
+        project.timelines[0].tracks[0].clips[0].fusion = None;
+        let layer = video_at(&project.timelines[0], &project, 20).remove(0);
+        assert_eq!(layer.stabilize, None, "{stabilize:?}");
+        assert_eq!(layer.fusion, None, "{stabilize:?}");
+        project.timelines[0].tracks[0].clips[0].fusion = Some(several());
+    }
+    // A composition out of which no picture comes is left as it is.
+    let nothing = Fused {
+        nodes: vec![FusedNode {
+            id: MEDIA_IN.into(),
+            kind: FusedKind::MediaIn,
+        }],
+        output: None,
+    };
+    let shift = [[1.0, 0.0, 0.1], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    assert_eq!(nothing.stabilized(shift), nothing);
 }
 
 #[test]

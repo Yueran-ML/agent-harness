@@ -869,6 +869,30 @@ fn stabilize_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 "op": "set_stabilize", "timeline": "t1", "clip": "c1", "value": null,
             })),
         ),
+        (
+            "set_stabilize_settings of a clip without a stabilizer, which is given one",
+            vec![],
+            written_op(serde_json::json!({
+                "op": "set_stabilize_settings", "timeline": "t1", "clip": "c1",
+                "settings": {"camera_lock": true, "zoom": false},
+            })),
+        ),
+        (
+            "set_stabilize_settings of the Smooth and the Strength, the analysis kept",
+            vec![measured_stabilizer()],
+            written_op(serde_json::json!({
+                "op": "set_stabilize_settings", "timeline": "t1", "clip": "c1",
+                "settings": {"smooth": 0.6, "strength": 0.8},
+            })),
+        ),
+        (
+            "set_stabilize_settings of the Method, the analysis kept for another Method",
+            vec![measured_stabilizer()],
+            written_op(serde_json::json!({
+                "op": "set_stabilize_settings", "timeline": "t1", "clip": "c1",
+                "settings": {"method": "perspective"},
+            })),
+        ),
     ]
 }
 
@@ -2682,6 +2706,7 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "set_fusion_keys",
         "splice_fusion_keys",
         "set_stabilize",
+        "set_stabilize_settings",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

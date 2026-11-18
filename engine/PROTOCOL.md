@@ -747,8 +747,9 @@ clients; a client must not write `project.json` itself.
   the Inspector of the Edit and Cut pages): its Method, its controls and what its analysis
   measured (see The stabilizer). It is written only on a clip that has one, so a clip without
   it is written as it always was; `set_stabilize` gives a clip one, puts another in its place
-  or takes it away, and `track.stabilize` measures the clip and writes its analysis. A clip of
-  sound has none (`wrong_track`, `what` `stabilize`).
+  or takes it away, `set_stabilize_settings` sets some of its controls and keeps its analysis,
+  and `track.stabilize` measures the clip and writes its analysis. A clip of sound has none
+  (`wrong_track`, `what` `stabilize`).
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
   `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
   Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; `x`/`y`
@@ -1940,9 +1941,11 @@ least, frames within ±(2^53−1), and finite numbers with `zoom` and `aspect` a
 **What needs a new analysis.** The analysis holds the motion as it was measured, not what the
 controls make of it: a change of Camera Lock, Zoom, the Cropping Ratio, Smooth or Strength is
 drawn at once from the analysis that the clip has (the stabilizer works the whole clip out anew
-from it, and nothing is measured again for them). The Method is the one control that asks for
-a new one, as the manual has it chosen before
-Stabilize is pressed: the motion is measured as a homography for Perspective and as a
+from it, and nothing is measured again for them). A client sets such a change by
+`set_stabilize_settings`, which sends the controls that change alone and keeps the analysis as
+it is, rather than by `set_stabilize`, which sends the whole analysis again (a long clip's is
+megabytes). The Method is the one control that asks for a new one, as the manual has it chosen
+before Stabilize is pressed: the motion is measured as a homography for Perspective and as a
 similarity for Similarity and Translation. An analysis measured for another Method than the
 clip's is kept and still drawn, by the part of its motion that the clip's Method corrects
 (Translation of a Similarity analysis is exact; Perspective of a Similarity analysis corrects
@@ -1959,27 +1962,35 @@ it moves the keys of the grade (Keyframes Aligning Source Timecode): the same fr
 same media, and the frames of another rate for media of another rate. A title, a colour and a
 still have no frames of a source, and are not stabilized whatever they keep.
 
-**Where it is drawn.** The stabilizer belongs to the source of the clip. At a frame, `resolve`
-works out from the analysis, for the Method and the controls of the clip (its whole path at once,
-kept until they change), the transform of the frame of the source that the frame shows: a 3×3
-matrix acting on `[x, y, 1]`, row by row, in shares of the picture (x of its width and y of its
-height from its top left corner, y down), which puts each point of the picture where the
-stabilizer puts it (`Layer::stabilize`, none of a clip that has no analysis). Where it moves the
-picture, the layer has a composition (`Layer::fusion`): the clip's own, or the one that a clip
-has at first, with a node put after its first `media_in`, `media_in.stabilized` (an id with a
-dot, which no node has), that draws the picture of the source through the transform, and every
-input that read a `media_in` reads it. So the picture of every `media_in` is the picture
-stabilized: the nodes of the composition and the Fusion view (`viewer.fusion`, `view.sample`
-with `fusion`) see it, and the composition, the grade, the `transform`, the `crop` and the
-`composite` mode of the clip are done to it, in that order. What a track reads is still the
-media as it is: the patterns of a Tracker (`track.start` with `fusion`) and the windows of the
-Color page are followed through the source unstabilized. The node is drawn as a
-Transform of the source is, by one pass more (Compositions in the picture): what the picture is
-not moved over is transparent and shows the tracks below, and what is moved beyond the frame is
-cut away. The map of Similarity and Translation is affine; that of Perspective is projective,
-the place of each pixel divided by the third row of the map on the card. A frame where it moves
-nothing (a Strength of 0, a still camera) is drawn as the clip without it, to the bit, by the
-same passes.
+**Where it is drawn.** The stabilizer is done after the composition of the clip and before its
+grade, as Resolve does the Fusion page before the stabilization of the Inspector: what it
+stabilizes is what comes out of the composition (the source, of a clip without one). At a
+frame, `resolve` works out from the analysis, for the Method and the controls of the clip (its
+whole path at once, kept until they change), the transform of the frame of the source that the
+frame shows: a 3×3 matrix acting on `[x, y, 1]`, row by row, in shares of the picture (x of its
+width and y of its height from its top left corner, y down), which puts each point of the
+picture where the stabilizer puts it (`Layer::stabilize`, none of a clip that has no analysis).
+Where it moves the picture, the layer has a composition (`Layer::fusion`): the clip's own, or
+the one that a clip has at first, with a node put after its last node, `media_out.stabilized`
+(an id with a dot, which no node has), that reads what the `media_out` read and draws it
+through the transform, and the `media_out` reads that node. So the grade, the `transform`, the
+`crop` and the `composite` mode of the clip are done to the picture stabilized, in that order;
+but every `media_in` is the source as it is, and no node of the composition reads the picture
+stabilized. The Fusion page sees the picture as it was shot: the Fusion view (`viewer.fusion`,
+and `view.sample` and `scopes.statistics` with `fusion`) shows the composition, and what comes
+out of it, unstabilized, and the patterns of a Tracker (`track.start` with `fusion`) are
+followed through the source as the view shows it. The windows of the Color page are drawn on
+the picture stabilized, as the grade is done to it, while a track of a window reads the source
+unstabilized: a window tracked on a clip that is stabilized does not follow the picture that
+it is drawn on (a known limit, left as it is). `track.stabilize` measures the frames of the
+source, so the analysis of a clip whose composition moves the whole picture (a `transform`, a
+`tracker`) is not the motion of what is stabilized. The node is drawn as a `transform` of the
+picture that comes out of the composition would be, by one pass more (Compositions in the
+picture): what the picture is not moved over is transparent and shows the tracks below, and
+what is moved beyond the frame is cut away. The map of Similarity and Translation is affine; that of Perspective is
+projective, the place of each pixel divided by the third row of the map on the card. A frame
+where it moves nothing (a Strength of 0, a still camera) is drawn as the clip without it, to
+the bit, by the same passes.
 
 **`track.stabilize`** `{timeline, clip, revision, method?}` measures the motion of the whole
 picture of the clip and writes it as the analysis of its stabilizer. It goes as a track does
@@ -2368,6 +2379,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`, and `size` or `position` for the style of a title). |
 | `set_retime` | `timeline`, `id`, `retime` (the speed points `{points: [...]}`, or `null`, which must be written, for the speed of the source, forward), `length?` (the new length of the clip in frames, for a change that makes it longer or shorter): sets how the clip plays its source, whole, so a drag may send it again and again. Speed points of one speed are written as the `speed` and `reverse` of the clip. `start` and `source.in` stay: `trim_clip` moves them. Refused for a title, a colour or a still (`out_of_range`, `retime_source`), for speed points that are not those of a clip of that length (`out_of_range`: `retime`, `speed`, `retime_unit`), where the clip would show what is not in its media (`out_of_source`), and where it would cover frames of another clip of its track (`overlap`): nothing is moved out of its way. A clip with speed points refuses the `speed` and `reverse` of `set_clip` (`out_of_range`, `retimed`). Inverse: `set_retime` of how the clip played before, and of its length. |
 | `set_stabilize` | `timeline`, `clip`, `value` (the clip's stabilizer whole, `{method, camera_lock, zoom, cropping_ratio, smooth, strength, analysis?}`, or `null`, which must be written, to take it away): sets the stabilizer of a clip of a track of picture, its analysis with it, as the page sets a control or as `track.stabilize` writes what it measured. Refused for a clip of sound (`wrong_track`, `what` `stabilize`) and for controls or an analysis out of their ranges (`out_of_range`, with `what` `stabilize.cropping_ratio`, `stabilize.smooth`, `stabilize.strength` or `stabilize.analysis`; see The stabilizer). One that sets what is there already changes nothing, and makes no step. Inverse: `set_stabilize` of what the clip had. |
+| `set_stabilize_settings` | `timeline`, `clip`, `settings` (some of the controls of the stabilizer, each left out where it does not change: `{"method"?: "perspective" \| "similarity" \| "translation", "camera_lock"?: bool, "zoom"?: bool, "cropping_ratio"?: number, "smooth"?: number, "strength"?: number}`): sets the controls given of the stabilizer of a clip of a track of picture and keeps the others and its analysis as they are, so that a change of a control in the Inspector does not send the whole analysis again. A change of `method` keeps the analysis too, which is then one of another Method (see The stabilizer). A clip without a stabilizer is given the one that a clip has at first with the controls given, and no analysis. Refused for a clip of sound (`wrong_track`, `what` `stabilize`) and for controls out of their ranges (`out_of_range`, with `what` `stabilize.cropping_ratio`, `stabilize.smooth` or `stabilize.strength`); a field that is not a control is refused as the reader refuses an unknown field. Controls set to what they are, and `settings` `{}` on a clip that has a stabilizer, change nothing and make no step. Inverse: `set_stabilize_settings` of the old values of exactly the controls given, or, where the clip had no stabilizer, `set_stabilize` of `null`. |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |
@@ -3963,8 +3975,9 @@ without compositions is read and written to the byte as before. `set_fusion` giv
 puts another in its place, or takes it away.
 
 What comes out of the composition is taken for the source of the clip: it is made before the
-clip's grade and before its `transform`, `crop`, `composite` and opacity, which are done to it
-as they are to a source ("MediaOut's alpha returns to the Edit page", p. 1266). The pictures
+clip's stabilizer (The stabilizer), its grade and its `transform`, `crop`, `composite` and
+opacity, which are done to it as they are to a source ("MediaOut's alpha returns to the Edit
+page", p. 1266). The pictures
 of a composition are of the size of the source of its clip (p. 1265): of media, its picture as
 it is shown upright (a picture turned a quarter has its width for its height); of a title or a
 colour, the picture of the timeline.
@@ -3996,7 +4009,7 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 
 | kind | inputs, the first first | output | `params` |
 |---|---|---|---|
-| `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, mixed of two pictures where its `retime_process` is `frame_blend`, and drawn through its stabilizer where it has one, see The stabilizer). A composition may have several: they are the same picture; it need not have one |
+| `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, mixed of two pictures where its `retime_process` is `frame_blend`; not stabilized: the stabilizer of the clip is done to what comes out of the composition, see The stabilizer). A composition may have several: they are the same picture; it need not have one |
 | `media_out` | `input` | — | `{}`: the picture that goes back to the timeline. A composition has **exactly one** (`one_media_out`). Where its input is not linked the clip is transparent |
 | `merge` | `background`, `foreground`, `mask` | yes | the foreground laid over the background, below |
 | `transform` | `input`, `mask` | yes | its picture moved, made larger or smaller, turned and flipped, below |
@@ -4481,9 +4494,10 @@ size about a pivot and then a shift is the same map. With no motion, and with `o
 `none`, they are `[0.5, 0.5]`, 1 and 0. The composition is made at a frame for the size of
 its pictures (`Composition::at_size`), which the motion of a `tracker` is counted in; a
 composition with keys or with a path is another at another frame. Of a clip whose stabilizer
-moves the picture at the frame, a node `media_in.stabilized` is put after the first
-`media_in`, and every input that read a `media_in` reads it (see The stabilizer): it is drawn
-as a `transform` of the source laid over nothing, by a map that may be projective.
+moves the picture at the frame, the composition of its layer has a node more after its last,
+`media_out.stabilized`, which reads what the `media_out` read and is what the `media_out` shows
+(see The stabilizer): it is drawn as a `transform` of that picture laid over nothing, by a map
+that may be projective. The composition made for the picture of one node, below, has none.
 
 **The picture of one node.** The composition is made the same way for the picture of any one
 of its nodes in place of what comes into the `media_out`
@@ -4978,9 +4992,10 @@ engine answers `-32601`: it has no monitor (a frame off screen is drawn there, s
   had the one that a clip has at first, a `media_in` `MediaIn1` linked to a `media_out`
   `MediaOut1`: it shows its source, and those are the ids that it may be given.
 - **What is not drawn.** Nothing of the timeline but that picture: not the other layers, not
-  the subtitles; not the `transform`, the `crop`, the `composite` mode or the opacity of the
-  clip, nor its fades or the transition that it is in; and no grade: not the clip's, not its
-  group's, not the timeline's. The source of the clip goes through its input transform before
+  the subtitles; not the stabilizer of the clip (see The stabilizer), nor its `transform`, its
+  `crop`, its `composite` mode or its opacity, its fades or the transition that it is in; and
+  no grade: not the clip's, not its group's, not the timeline's. The source of the clip goes
+  through its input transform before
   the composition, as it always does, and the frame through the output transform of the
   project (with its Output LUT) after it, and the view shows the Color Viewer LUT where
   `viewer.lut` has it on: the colour is that of the timeline's picture without its grades.

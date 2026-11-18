@@ -20,7 +20,8 @@
 //!
 //! The analysis holds the motion as it was measured, not what the controls make of it: so a
 //! change of Camera Lock, Zoom, the Cropping Ratio, Smooth or Strength is drawn at once from the
-//! analysis that the clip has, as the whole clip is worked out anew from it. The Method is
+//! analysis that the clip has, as the whole clip is worked out anew from it, and a client that
+//! changes them sends them alone ([`Controls`]), not the analysis with them. The Method is
 //! another matter. The motion is measured as a homography for Perspective and as a similarity
 //! for Similarity and Translation, so an analysis says which Method it was measured for
 //! ([`Analysis::method`]). One measured for another Method than the clip's is kept, and is
@@ -47,6 +48,16 @@
 //! `yaw` and `pitch`. What the stabilizer makes of it ([`Stabilize::transform_at`]) is a 3×3
 //! matrix in shares of the picture, x of its width and y of its height from its top left
 //! corner: the same at whatever size the picture is drawn.
+//!
+//! # Where it is drawn
+//!
+//! The stabilizer is done to the picture that the composition of the clip makes
+//! ([`crate::fusion`]), or to its source where it has none: after the composition and before
+//! the grade, the transform, the crop and the composite mode of the clip, as Resolve does the
+//! Fusion page before the stabilization of the Inspector. So the Fusion page sees the picture
+//! as it was shot (see [`crate::resolve`]). The analysis is measured on the frames of the
+//! source: of a composition that moves the whole picture, it is not the motion of what is
+//! stabilized.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -172,6 +183,32 @@ impl Stabilize {
         }
     }
 
+    /// Its own values of the controls that `given` gives, and none of the others: what puts
+    /// those controls back as they are once `given` has been set ([`Stabilize::set_controls`]).
+    #[must_use]
+    pub fn controls(&self, given: &Controls) -> Controls {
+        Controls {
+            method: given.method.map(|_| self.method),
+            camera_lock: given.camera_lock.map(|_| self.camera_lock),
+            zoom: given.zoom.map(|_| self.zoom),
+            cropping_ratio: given.cropping_ratio.map(|_| self.cropping_ratio),
+            smooth: given.smooth.map(|_| self.smooth),
+            strength: given.strength.map(|_| self.strength),
+        }
+    }
+
+    /// Put each control that `given` gives in place of its own, and keep the others and its
+    /// analysis as they are. A change of the Method keeps the analysis too, which is then one
+    /// of another Method ([`Stabilize::needs_analysis`]).
+    pub fn set_controls(&mut self, given: &Controls) {
+        self.method = given.method.unwrap_or(self.method);
+        self.camera_lock = given.camera_lock.unwrap_or(self.camera_lock);
+        self.zoom = given.zoom.unwrap_or(self.zoom);
+        self.cropping_ratio = given.cropping_ratio.unwrap_or(self.cropping_ratio);
+        self.smooth = given.smooth.unwrap_or(self.smooth);
+        self.strength = given.strength.unwrap_or(self.strength);
+    }
+
     /// Check its controls and its analysis: the Cropping Ratio and Smooth from 0 to 1, the
     /// Strength from −1 to 1; and of the analysis, frames of 1 to [`MOST_SIDE`] pixels a side,
     /// one frame at least, each within [`LARGEST`] of 0, and motions of finite numbers whose
@@ -194,6 +231,34 @@ impl Stabilize {
             None => Ok(()),
         }
     }
+}
+
+/// Some of the controls of a stabilizer, each given or not: those that an operation changes
+/// alone, its analysis kept as it is ([`crate::ops::Op::SetStabilizeSettings`]), so that a
+/// change of a control does not carry the whole analysis. It is written as the controls of a
+/// [`Stabilize`] are, each left out where it is not given: `{"smooth": 0.5, "strength": 1.0}`.
+/// Each is within the range of the control that it is ([`Stabilize`]'s check).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Controls {
+    /// The Method ([`Stabilize::method`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<Method>,
+    /// Camera Lock ([`Stabilize::camera_lock`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_lock: Option<bool>,
+    /// Zoom ([`Stabilize::zoom`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<bool>,
+    /// The Cropping Ratio, from 0 to 1 ([`Stabilize::cropping_ratio`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cropping_ratio: Option<f64>,
+    /// Smooth, from 0 to 1 ([`Stabilize::smooth`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth: Option<f64>,
+    /// Strength, from −1 to 1 ([`Stabilize::strength`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f64>,
 }
 
 /// What the analysis of a clip measured (see the module): the frames that were measured, the
@@ -593,6 +658,58 @@ mod tests {
             [0.0, 0.0, 1.0]
         ]));
         assert!(!moves(&IDENTITY));
+    }
+
+    #[test]
+    fn controls_are_set_alone_and_give_back_what_they_were() {
+        let mut stabilize = stabilizer(shaking(3));
+        let analysis = stabilize.analysis.clone();
+        let given = Controls {
+            method: Some(Method::Translation),
+            smooth: Some(0.75),
+            ..Controls::default()
+        };
+        let old = stabilize.controls(&given);
+        assert_eq!(
+            old,
+            Controls {
+                method: Some(Method::Similarity),
+                smooth: Some(0.25),
+                ..Controls::default()
+            }
+        );
+        stabilize.set_controls(&given);
+        assert_eq!(
+            (stabilize.method, stabilize.smooth),
+            (Method::Translation, 0.75)
+        );
+        // The analysis is kept, and is now of another Method.
+        assert_eq!(stabilize.analysis, analysis);
+        assert!(stabilize.needs_analysis());
+        stabilize.set_controls(&old);
+        assert_eq!(stabilize, stabilizer(shaking(3)));
+        // Nothing given changes nothing.
+        let none = Controls::default();
+        stabilize.set_controls(&none);
+        assert_eq!(stabilize, stabilizer(shaking(3)));
+        assert_eq!(stabilize.controls(&none), none);
+        // Written with what is given alone; a field that is not a control is refused.
+        assert_eq!(
+            serde_json::to_value(given).unwrap(),
+            serde_json::json!({"method": "translation", "smooth": 0.75})
+        );
+        let written = serde_json::json!({"camera_lock": true, "strength": -1});
+        let read: Controls = serde_json::from_value(written).unwrap();
+        assert_eq!(
+            read,
+            Controls {
+                camera_lock: Some(true),
+                strength: Some(-1.0),
+                ..Controls::default()
+            }
+        );
+        let unknown = serde_json::json!({"smooth": 0.5, "analysis": null});
+        assert!(serde_json::from_value::<Controls>(unknown).is_err());
     }
 
     #[test]

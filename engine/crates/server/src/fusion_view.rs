@@ -12,12 +12,14 @@
 //! the composition. A clip that has no composition is taken to have the one that a clip has
 //! at first, a `media_in` linked to a `media_out`, so that it shows its source.
 //!
-//! The layer is not what the timeline shows of the clip: it is not moved, cut, blended or
-//! faded (the transform, the crop, the composite mode and the opacity of the Edit page are
-//! left out, with the fades and the transition that the clip is in), and it is not graded
-//! (the grade of the clip, those of its group and that of the timeline are left out). No
-//! other layer is drawn, and no subtitle. The picture is of the size of the composition (the
-//! model's `fusion::size_of`), fitted whole into the frame of the timeline, in its middle
+//! The layer is not what the timeline shows of the clip: it is not stabilized (the stabilizer
+//! of the clip is done after the composition, and the Fusion page sees the picture as it was
+//! shot), it is not moved, cut, blended or faded (the transform, the crop, the composite mode
+//! and the opacity of the Edit page are left out, with the fades and the transition that the
+//! clip is in), and it is not graded (the grade of the clip, those of its group and that of
+//! the timeline are left out). No other layer is drawn, and no subtitle. The picture is of the
+//! size of the composition (the model's `fusion::size_of`), fitted whole into the frame of the
+//! timeline, in its middle
 //! (`columbina_compose::geometry::fitted`), over black: where the two are not of one shape
 //! there is black at its sides, or above and below it, and what is transparent in it shows
 //! black. The source of the clip goes through its input transform before the composition, as
@@ -206,7 +208,8 @@ impl View {
 
     /// The one layer that the view draws at frame `frame` of `timeline`, of `layers`, those
     /// that the timeline shows there (`resolve::video_at`): that of its clip, showing what the
-    /// composition of the clip gives for the node, not moved, whole, laid as it is and opaque.
+    /// composition of the clip gives for the node, not stabilized, not moved, whole, laid as it
+    /// is and opaque.
     /// None where the clip is not seen at the frame, or its composition has no such node.
     pub fn layer(
         &self,
@@ -219,6 +222,7 @@ impl View {
         let mut layer = layers.into_iter().find(|layer| layer.clip == self.clip)?;
         let fused = resolve::fused_for(timeline, project, clip, frame, self.node.as_deref())?;
         layer.fusion = Some(fused);
+        layer.stabilize = None;
         layer.transform = Placed::NONE;
         layer.crop = Cropped::NONE;
         layer.composite = Composite::Normal;

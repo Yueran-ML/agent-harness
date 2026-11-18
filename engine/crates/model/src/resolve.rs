@@ -33,10 +33,13 @@
 //! where the stabilizer puts each point of its picture at the frame ([`Layer::stabilize`]),
 //! worked out from the frame of its source that the frame shows. Where that moves the picture,
 //! the layer has a composition: the clip's own, or the one that a clip has at first, in which
-//! the picture of the `media_in` is drawn through the stabilizer ([`Fused::stabilized`]), so
-//! that the stabilized picture is the source of the clip, before its composition, its grade,
-//! its transform, its crop and its composite mode. Where it moves nothing, as at every frame of
-//! a clip at no Strength, the composition of the layer is as it would be without it.
+//! what comes out of the composition is drawn through the stabilizer ([`Fused::stabilized`]):
+//! the stabilizer reads what the `media_out` read, and the `media_out` reads the stabilizer. So
+//! the picture is stabilized after the composition, and before the grade, the transform, the
+//! crop and the composite mode of the clip; the `media_in` shows the source as it is, and so
+//! does the composition of the clip made for the Fusion page ([`fused_for`]). Where the
+//! stabilizer moves nothing, as at every frame of a clip at no Strength, the composition of the
+//! layer is as it would be without it.
 //!
 //! A transition lies over the frames that [`Transition::handles`] gives about its cut, and there
 //! both of its clips are shown, each going on beyond its end with frames of its media. Over a
@@ -138,14 +141,14 @@ pub struct Layer {
     /// The composition of its clip at the frame, where the clip has one: the picture of the
     /// layer is then what comes out of it, made of its content. Where the stabilizer moves the
     /// picture ([`Layer::stabilize`]) it is that composition, or the one that a clip has at
-    /// first, with the picture of its `media_in` drawn through the stabilizer
-    /// ([`Fused::stabilized`]). None of a clip that has neither, and of the colour of a
-    /// transition.
+    /// first, with what comes out of it drawn through the stabilizer ([`Fused::stabilized`]).
+    /// None of a clip that has neither, and of the colour of a transition.
     pub fusion: Option<Fused>,
-    /// Where the stabilizer of its clip puts each point of the picture of its content at the
-    /// frame ([`crate::stabilize::transform_of`]), in shares of the picture. None of a clip that
-    /// has no stabilizer or no analysis, of a title, a colour and a still, and of the colour of
-    /// a transition.
+    /// Where the stabilizer of its clip puts each point of the picture that its composition
+    /// makes (of its content, where it has none) at the frame
+    /// ([`crate::stabilize::transform_of`]), in shares of the picture. None of a clip that has
+    /// no stabilizer or no analysis, of a title, a colour and a still, and of the colour of a
+    /// transition.
     pub stabilize: Option<Matrix>,
 }
 
@@ -189,14 +192,15 @@ pub fn video_of_track_at(t: &Timeline, project: &Project, track: &Track, frame: 
 
 /// The composition of `clip`, a clip of timeline `t` of `project`, as it is at frame `frame`
 /// of the timeline, made for the picture of its node `node`: what a viewer of that node shows
-/// ([`Composition::at_node`]). With no node, or with its `media_out`, it is the composition as
-/// the layer of the clip has it ([`Layer::fusion`]): what comes out of it.
+/// ([`Composition::at_node`]). With no node, or with its `media_out`, it is what comes out of
+/// the composition, as the layer of a clip without a stabilizer has it ([`Layer::fusion`]).
 ///
 /// It is at the frame of the keys of the clip, as the layer has it. A clip that has no
 /// composition is taken to have the one that a clip has at first, a `media_in` linked to a
 /// `media_out` (by their ids there, [`crate::fusion::MEDIA_IN`] and
-/// [`crate::fusion::MEDIA_OUT`]), which shows its source. Its `media_in` shows the picture
-/// drawn through the stabilizer of the clip where that moves it, as [`Layer::fusion`] has it.
+/// [`crate::fusion::MEDIA_OUT`]), which shows its source. It is not stabilized: the stabilizer
+/// of the clip is done after the composition ([`Layer::fusion`]), and the Fusion page shows
+/// the picture as it was shot, its source and each node as the composition makes it of that.
 /// None where the composition has no such node.
 #[must_use]
 pub fn fused_for(
@@ -221,16 +225,10 @@ pub fn fused_for(
     let at = at as f64;
     // The size of its pictures, which a Tracker and a centre that follows one read.
     let size = size_of(clip, project, t);
-    let fused = match node {
+    match node {
         Some(node) => composition.at_node_size(node, at, size),
         None => Some(composition.at_size(at, size)),
-    }?;
-    // The `media_in` shows the picture stabilized, as the layer of the clip has it.
-    let moved = stabilize::transform_of(clip, project, t.rate, frame).filter(stabilize::moves);
-    Some(match moved {
-        Some(matrix) => fused.stabilized(matrix),
-        None => fused,
-    })
+    }
 }
 
 /// The layers of a track at a frame.
@@ -355,7 +353,7 @@ fn layer(
 
 /// The composition of `clip` at `at`, a frame of its keys, its pictures of `size` pixels:
 /// the clip's own, or, where `stabilize` moves the picture and the clip has none, the one that
-/// a clip has at first; and in either, the picture of its `media_in` drawn through `stabilize`
+/// a clip has at first; and in either, what comes out of it drawn through `stabilize`
 /// ([`Fused::stabilized`]). None of a clip that has no composition and is not moved.
 fn composed(clip: &Clip, at: f64, size: (u32, u32), stabilize: Option<Matrix>) -> Option<Fused> {
     let moved = stabilize.filter(stabilize::moves);

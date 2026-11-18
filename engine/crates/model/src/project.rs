@@ -649,17 +649,19 @@ pub struct Clip {
     pub group: Option<Id>,
     /// Its composition, the graph of nodes that makes its picture (see [`crate::fusion`]), or
     /// none, for its source as it is. What comes out of it is taken for the source of the
-    /// clip: before its grade, and before its transform, its crop and its composite mode.
+    /// clip: before its stabilizer, its grade, and its transform, its crop and its composite
+    /// mode.
     /// Only a clip of a track of picture has one. It is written only where it is there, and
     /// may be left out, as none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fusion: Option<Composition>,
     /// Its stabilizer (see [`crate::stabilize`]): the Method and the controls of the stabilizer
     /// of the Edit and Cut pages, and what its analysis measured; or none, for its source as it
-    /// is. What it makes of the picture is done to the source of the clip: before its
-    /// composition, whose `media_in` shows the picture stabilized, and before its grade, its
-    /// transform, its crop and its composite mode. Only a clip of a track of picture has one.
-    /// It is written only where it is there, and may be left out, as none.
+    /// is. What it makes of the picture is done to what its composition makes (to its source,
+    /// where it has none): after the composition, whose `media_in` shows the source as it is,
+    /// and before its grade, its transform, its crop and its composite mode. Only a clip of a
+    /// track of picture has one. It is written only where it is there, and may be left out, as
+    /// none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stabilize: Option<Stabilize>,
 }

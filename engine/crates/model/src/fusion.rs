@@ -9,11 +9,12 @@
 //! # Where it is in the picture
 //!
 //! The composition makes the picture of its clip: what comes out of its `MediaOut` is taken
-//! for the source of the clip, before the grade of the clip and before the transform, the crop
-//! and the composite mode of the Edit page, which are done to it as they are to a source
-//! ("`MediaOut`'s alpha returns to the Edit page", p. 1266). Its pictures are of the size of
-//! the source of the clip (p. 1265): of media, its picture as it is shown upright; of a title
-//! or a colour, the picture of the timeline ([`size_of`]).
+//! for the source of the clip, before the stabilizer of the clip ([`crate::stabilize`],
+//! [`Fused::stabilized`]), the grade of the clip and the transform, the crop and the composite
+//! mode of the Edit page, which are done to it as they are to a source ("`MediaOut`'s alpha
+//! returns to the Edit page", p. 1266). Its pictures are of the size of the source of the clip
+//! (p. 1265): of media, its picture as it is shown upright; of a title or a colour, the
+//! picture of the timeline ([`size_of`]).
 //!
 //! # Nodes and links
 //!
@@ -29,9 +30,9 @@
 //!
 //! - `media_in`, no inputs: the picture of the clip's own source at the frame, as the engine
 //!   reads it for a clip without a composition (along its speed points, and mixed of two
-//!   pictures where its Retime Process says so), and drawn through the stabilizer of the clip
-//!   where it has one ([`crate::stabilize`], [`Fused::stabilized`]). A composition may have
-//!   several: they are the same picture.
+//!   pictures where its Retime Process says so). It is not stabilized: the stabilizer of the
+//!   clip is done to what comes out of the composition. A composition may have several: they
+//!   are the same picture.
 //! - `media_out`, one input, `input`: the picture that goes back to the timeline. A
 //!   composition has exactly one. Where its input is not linked the clip shows nothing: it is
 //!   transparent.
@@ -2951,12 +2952,13 @@ pub enum FusedKind {
         /// What it draws, and how the picture that is moved is put.
         settings: Tracked,
     },
-    /// The picture of the clip's source drawn through its stabilizer
+    /// What comes out of the composition drawn through the stabilizer of its clip
     /// ([`crate::stabilize`]): no node of the composition, but what [`Fused::stabilized`] puts
-    /// after its first `MediaIn`, in place of every `MediaIn` that a node reads, so that each
-    /// shows the picture stabilized. Where the picture is not moved over, it is transparent.
+    /// after its last node, between the node that the `MediaOut` read and the `MediaOut`.
+    /// Where the picture is not moved over, it is transparent.
     Stabilize {
-        /// The picture of the source: that of the `MediaIn`.
+        /// The picture that comes out of the composition: that of the node that the `MediaOut`
+        /// read.
         input: Option<usize>,
         /// Where each point of the picture is put, in shares of the picture, x of its width and
         /// y of its height from its top left corner, y down: a 3×3 matrix acting on `[x, y, 1]`,
@@ -2965,63 +2967,35 @@ pub enum FusedKind {
     },
 }
 
-/// The id of the node that [`Fused::stabilized`] puts after the first `MediaIn` of a
-/// composition: it has a dot in it, which the id of no node of a composition has, so that it is
-/// never that of one.
-pub const STABILIZER: &str = "media_in.stabilized";
+/// The id of the node that [`Fused::stabilized`] puts before the `MediaOut` of a composition:
+/// it has a dot in it, which the id of no node of a composition has, so that it is never that
+/// of one.
+pub const STABILIZER: &str = "media_out.stabilized";
 
 impl Fused {
-    /// It with the picture of its `MediaIn` drawn through the stabilizer of its clip, `matrix`
-    /// ([`FusedKind::Stabilize`]): a node that draws it so is put after the first `MediaIn`,
-    /// and every input that read a `MediaIn` reads that node, and so does `output` where it was
-    /// a `MediaIn`. A composition that has no `MediaIn`, and a matrix that moves no point of the
-    /// picture ([`crate::stabilize::moves`]), leave it as it is.
+    /// It with what comes out of it drawn through the stabilizer of its clip, `matrix`
+    /// ([`FusedKind::Stabilize`]): a node that draws it so is put after its last node, reading
+    /// the node that `output` named, and `output` is that node. The nodes before it are as they
+    /// were, and none of them reads it. A composition out of which no picture comes, and a
+    /// matrix that moves no point of the picture ([`crate::stabilize::moves`]), leave it as it
+    /// is.
     #[must_use]
     pub fn stabilized(&self, matrix: Matrix) -> Fused {
-        let is_source = |at: usize| {
-            self.nodes
-                .get(at)
-                .is_some_and(|node| matches!(node.kind, FusedKind::MediaIn))
-        };
-        let first = (0..self.nodes.len()).find(|&at| is_source(at));
-        let Some(first) = first.filter(|_| crate::stabilize::moves(&matrix)) else {
+        let Some(output) = self.output.filter(|_| crate::stabilize::moves(&matrix)) else {
             return self.clone();
         };
-        // The places after the first `MediaIn` are one further on, and a `MediaIn` is the node
-        // that stabilizes it.
-        let renumbered = |at: usize| {
-            if is_source(at) {
-                first + 1
-            } else if at > first {
-                at + 1
-            } else {
-                at
-            }
-        };
         let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
-        for (at, node) in self.nodes.iter().enumerate() {
-            let kind = if at > first {
-                node.kind.with_reads(&renumbered)
-            } else {
-                node.kind.clone()
-            };
-            nodes.push(FusedNode {
-                id: node.id.clone(),
-                kind,
-            });
-            if at == first {
-                nodes.push(FusedNode {
-                    id: STABILIZER.into(),
-                    kind: FusedKind::Stabilize {
-                        input: Some(first),
-                        matrix,
-                    },
-                });
-            }
-        }
+        nodes.extend_from_slice(&self.nodes);
+        nodes.push(FusedNode {
+            id: STABILIZER.into(),
+            kind: FusedKind::Stabilize {
+                input: Some(output),
+                matrix,
+            },
+        });
         Fused {
+            output: Some(nodes.len() - 1),
             nodes,
-            output: self.output.map(renumbered),
         }
     }
 }
@@ -3075,10 +3049,11 @@ impl FusedKind {
 
     /// The picture that the first input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur, a Mosaic, a Delta
-    /// Keyer and a Tracker their picture, of the stabilizer the picture of the source, and of a
-    /// mask node the mask that comes into it. None of a kind that has no such input, and where
-    /// the input reads no picture. It is the picture that a node that is passed through hands
-    /// on ([`Kind::through`]), and that what cannot draw a kind may hand on in its place.
+    /// Keyer and a Tracker their picture, of the stabilizer what comes out of the composition,
+    /// and of a mask node the mask that comes into it. None of a kind that has no such input,
+    /// and where the input reads no picture. It is the picture that a node that is passed
+    /// through hands on ([`Kind::through`]), and that what cannot draw a kind may hand on in
+    /// its place.
     #[must_use]
     pub fn first_input(&self) -> Option<usize> {
         match self {

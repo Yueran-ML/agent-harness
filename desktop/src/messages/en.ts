@@ -1168,6 +1168,13 @@ export const en = {
         fadeIn: 'Fade in (frames)', fadeOut: 'Fade out (frames)', volume: 'Volume', pan: 'Pan',
         text: 'Text', size: 'Size', color: 'Color', align: 'Alignment', alignLeft: 'Align left', alignCenter: 'Align center', alignRight: 'Align right',
         titleSize: 'Text size', titleX: 'Text position X', titleY: 'Text position Y',
+        /** The font of a title, and the bar over its text that styles the characters chosen in it. */
+        font: 'Font', defaultFont: 'Default font', textStyle: 'Style of the selected text', bold: 'Bold', italic: 'Italic',
+        textColor: 'Color of the selected text', sizeFactor: 'Size factor', clearStyle: 'Clear style',
+        /** The Stroke, Drop Shadow and Background of a title, as DaVinci Resolve's Text inspector names them. */
+        stroke: 'Stroke', strokeColor: 'Stroke color', strokeWidth: 'Stroke width',
+        shadow: 'Drop Shadow', shadowColor: 'Shadow color', shadowX: 'Shadow offset X', shadowY: 'Shadow offset Y', shadowBlur: 'Shadow blur',
+        background: 'Background', backgroundColor: 'Background color', backgroundPadding: 'Background padding', backgroundRadius: 'Corner radius',
         kind: 'Type', length: 'Duration (frames)', start: 'Start on edit', middle: 'Center on edit', end: 'End on edit', removeTransition: 'Delete transition',
         name: 'Name', resolution: 'Resolution', width: 'Width', height: 'Height', custom: 'Custom', frameRate: 'Frame rate', sampleRate: 'Audio sample rate',
         changeSpeed: 'Change clip speed', titleText: 'Title', useLongest: (frames: number) => `Use ${frames} frames`,
@@ -1826,6 +1833,9 @@ export const en = {
         effectsOne: 'Select one clip to see its effects.',
         noEffects: 'This clip has no effects yet.',
         effectsComposition: 'This clip has a composition with more nodes than these effects. The Fusion page shows all of it.',
+        /** The bar over the text of a title: what it works on, and why a change of it was not sent. */
+        spans: 'Select characters in the text to style them.',
+        spansFull: 'A title can have at most 256 styled parts of its text.',
         /**
          * The analysis of the stabilizer of a clip: how far it went (`{done}` frames of `{total}`), how it ended, where the picture
          * was lost (`{lost}` frames), a Method that needs a new analysis (`{method}`), and why the engine would not measure.

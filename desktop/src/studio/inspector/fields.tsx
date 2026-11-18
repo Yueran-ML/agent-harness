@@ -23,7 +23,7 @@ export function KeyDiamond() {
 export const FieldsLocked = createContext(false);
 
 /** What a field shows where the clips it sets differ. */
-const MIXED = '—';
+export const MIXED = '—';
 /** How long a value that was sent is shown, at most, until the engine tells of it: it does in a moment, or refused it. */
 export const HOLD_MS = 1500;
 
@@ -31,7 +31,7 @@ export const HOLD_MS = 1500;
  * What was sent, shown until the value of the clips changes (the engine told of the change) or a
  * while has passed, so that a field does not jump back to the value before for a moment.
  */
-function useHeld<T extends string | number | null>(value: T) {
+export function useHeld<T extends string | number | null>(value: T) {
   const [held, setHeld] = useState<{ value: T } | null>(null);
   useEffect(() => { setHeld(null); }, [value]);
   useEffect(() => {

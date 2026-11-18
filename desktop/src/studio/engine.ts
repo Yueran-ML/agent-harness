@@ -178,7 +178,44 @@ export const NO_CROP: Crop = { left: 0, right: 0, top: 0, bottom: 0, softness: 0
  * the keys of a title count its own frames from its first, 0. The font, the colour and the side of the
  * anchor are one value on every frame.
  */
-export interface TitleStyle { font: string; size: Param; color: string; x: Param; y: Param; align: 'left' | 'center' | 'right' }
+export interface TitleStyle {
+  font: string; size: Param; color: string; x: Param; y: Param; align: 'left' | 'center' | 'right';
+  /** An outline around the glyphs. Left out, none. */
+  stroke?: TitleStroke;
+  /** A shadow cast by the text, outline and all. Left out, none. */
+  shadow?: TitleShadow;
+  /** A box behind the whole text. Left out, none. */
+  background?: TitleBackground;
+  /** Runs of the text drawn otherwise than the style says, in order and apart. Left out, none. */
+  spans?: TitleSpan[];
+}
+/** The outline of a title: `#rrggbbaa`, and its width in pixels of the timeline from 0 to 256, a number or keys (`title.stroke.width`). */
+export interface TitleStroke { color: string; width: Param }
+/**
+ * The shadow of a title: `#rrggbbaa`, how far it falls right and down in pixels of the timeline from -1024 to 1024, and its
+ * blur, a Gaussian of that sigma in pixels from 0 to 256; each a number or keys (`title.shadow.x`, `.y`, `.blur`).
+ */
+export interface TitleShadow { color: string; x: Param; y: Param; blur: Param }
+/**
+ * The box behind a title: `#rrggbbaa`, how far it reaches past the text in pixels of the timeline from 0 to 1024, and the
+ * radius of its corners from 0 to 512; each a number or keys (`title.background.padding`, `.radius`).
+ */
+export interface TitleBackground { color: string; padding: Param; radius: Param }
+/**
+ * A run of the text of a title, from the character `from` to the one before `to`, counted in Unicode scalar values
+ * (`from < to ≤` the length of the text), drawn in its own colour, at its own share of the size of the title (0.1 to 10), bold,
+ * italic or in its own family, where it says so; what it leaves out is as the style says. Up to 256, in order, none over
+ * another; none takes keys. The engine refuses a text that ends before one of them.
+ */
+export interface TitleSpan { from: number; to: number; color?: string; scale?: number; bold?: boolean; italic?: boolean; font?: string }
+/** The parts of the style of a title that it may have or not, each with settings that take keys. */
+export type TitlePart = 'stroke' | 'shadow' | 'background';
+/** Each part of the style of a title as the Inspector gives it, where it is turned on: black, the shadow at half and the box at 60%. */
+export const DEFAULT_TITLE_PARTS: Readonly<{ stroke: TitleStroke; shadow: TitleShadow; background: TitleBackground }> = {
+  stroke: { color: '#000000ff', width: 4 },
+  shadow: { color: '#00000080', x: 4, y: 4, blur: 4 },
+  background: { color: '#00000099', padding: 16, radius: 8 },
+};
 export type ClipSource =
   | { kind: 'media'; media: string; in: Time }
   | { kind: 'title'; text: string; style: TitleStyle }
@@ -2305,15 +2342,41 @@ export const CLIP_KEYED = [
   'transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity',
   'crop.left', 'crop.right', 'crop.top', 'crop.bottom', 'crop.softness',
   'title.size', 'title.x', 'title.y',
+  'title.stroke.width', 'title.shadow.x', 'title.shadow.y', 'title.shadow.blur', 'title.background.padding', 'title.background.radius',
 ] as const;
 export type ClipKeyed = (typeof CLIP_KEYED)[number];
-/** The settings of the style of a title that take keys, named after `title.` as a path names them: no clip but a title has them. */
-export const TITLE_KEYED = ['size', 'x', 'y'] as const;
+/**
+ * The settings of the style of a title that take keys, named after `title.` as a path names them: no clip but a title has them,
+ * and those of a part of the style (`stroke.width`) only a title that has that part.
+ */
+export const TITLE_KEYED = [
+  'size', 'x', 'y', 'stroke.width', 'shadow.x', 'shadow.y', 'shadow.blur', 'background.padding', 'background.radius',
+] as const;
 export type TitleKeyed = (typeof TITLE_KEYED)[number];
 /** The setting of the style of a title that a path of `CLIP_KEYED` names, or null for a path of the transform or of the crop. */
 export function titleSetting(path: string): TitleKeyed | null {
   const name = path.startsWith('title.') ? path.slice('title.'.length) : '';
   return (TITLE_KEYED as readonly string[]).includes(name) ? (name as TitleKeyed) : null;
+}
+/** The part of the style of a title that holds a setting of it, or null for one of the style itself: the size and the anchor. */
+export function titlePartOf(name: TitleKeyed): TitlePart | null {
+  const dot = name.indexOf('.');
+  return dot < 0 ? null : (name.slice(0, dot) as TitlePart);
+}
+/** A setting of the style of a title, or undefined where the style has not got the part that holds it. */
+export function titleParam(style: TitleStyle, name: TitleKeyed): Param | undefined {
+  const part = titlePartOf(name);
+  if (part === null) return style[name as 'size' | 'x' | 'y'];
+  const holder = style[part] as unknown as Record<string, Param> | undefined;
+  return holder === undefined ? undefined : holder[name.slice(part.length + 1)];
+}
+/** The style of a title with a setting of it given, the rest as it is: null where the style has not got the part that holds it. */
+export function withTitleParam(style: TitleStyle, name: TitleKeyed, param: Param): TitleStyle | null {
+  const part = titlePartOf(name);
+  if (part === null) return { ...style, [name]: param } as TitleStyle;
+  const holder = style[part];
+  if (holder === undefined) return null;
+  return { ...style, [part]: { ...holder, [name.slice(part.length + 1)]: param } } as TitleStyle;
 }
 
 /** A clip as the engine keeps its Retime Process: written only where it mixes two pictures, so that a clip set to `nearest` has none. */
@@ -2342,10 +2405,15 @@ function withClipSetting(clip: Clip, path: string, change: (before: Param) => Pa
   if (!(CLIP_KEYED as readonly string[]).includes(path)) throw missing();
   const styled = titleSetting(path);
   if (styled) {
-    // The style of a title is in its source: a clip of media or a colour has no such setting, as the engine refuses it.
+    // The style of a title is in its source: a clip of media or a colour has no such setting, as the engine refuses it, and
+    // a title without the part of its style that holds a setting (`title.stroke.width` of one with no outline) has not got it.
     const source = clip.source;
     if (source.kind !== 'title') throw missing();
-    return { ...clip, source: { ...source, style: { ...source.style, [styled]: change(source.style[styled]) } } };
+    const before = titleParam(source.style, styled);
+    if (before === undefined) throw missing();
+    const style = withTitleParam(source.style, styled, change(before));
+    if (style === null) throw missing();
+    return { ...clip, source: { ...source, style } };
   }
   // A clip that a client built may say nothing of its crop: it has none.
   return settingPut({ ...clip, crop: clip.crop ?? NO_CROP }, path, change, `clip ${clip.id}`) as Clip;

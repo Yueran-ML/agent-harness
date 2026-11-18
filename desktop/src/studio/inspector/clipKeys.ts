@@ -15,7 +15,9 @@
 import { firstShowing, keyClockOf, keyRangeOf, keyRunsOf } from '../color/keyFrames';
 import type { Bounds } from '../color/corrector';
 import type { Messages } from '../../messages/en';
-import { NO_CROP, titleSetting, type Clip, type ClipKeyed, type Keyframe, type Media, type Op, type Param, type Timeline } from '../engine';
+import {
+  NO_CROP, TITLE_KEYED, titleParam, titlePartOf, titleSetting, withTitleParam, type Clip, type ClipKeyed, type Keyframe, type Media, type Op, type Param, type Timeline,
+} from '../engine';
 import { spliceOf } from '../keyframes/curveGeometry';
 import { valueAt } from '../keyframes/value';
 
@@ -41,23 +43,43 @@ export const CLIP_BOUNDS: Record<ClipKeyed, Bounds> = {
   'title.size': b(72, 1, 4096),
   'title.x': b(0.5, -16, 16),
   'title.y': b(0.5, -16, 16),
+  // The parts of the style that a title may have: their neutral values are those that the Inspector turns them on with.
+  'title.stroke.width': b(4, 0, 256),
+  'title.shadow.x': b(4, -1024, 1024),
+  'title.shadow.y': b(4, -1024, 1024),
+  'title.shadow.blur': b(4, 0, 256),
+  'title.background.padding': b(16, 0, 1024),
+  'title.background.radius': b(8, 0, 512),
 };
 
 /**
  * The settings of a clip that take keys, in the order of the Inspector: those of its Video tab,
- * and after them those of the Title tab, which only a title has (`settingsOf`).
+ * and after them those of the Title tab, which only a title has (`settingsOf`): of its style, and
+ * of the outline, the shadow and the box behind it, which only a title that has them has.
  */
 export const CLIP_SETTINGS: readonly ClipKeyed[] = [
   'transform.scale', 'transform.x', 'transform.y', 'transform.rotation', 'transform.opacity',
   'crop.left', 'crop.right', 'crop.top', 'crop.bottom', 'crop.softness',
   'title.size', 'title.x', 'title.y',
+  'title.stroke.width', 'title.shadow.x', 'title.shadow.y', 'title.shadow.blur', 'title.background.padding', 'title.background.radius',
 ];
 /** The settings that every clip of picture has: those of `CLIP_SETTINGS` that are not of the style of a title. */
 const PICTURE_SETTINGS: readonly ClipKeyed[] = CLIP_SETTINGS.filter(path => titleSetting(path) === null);
+/** The settings that every title has: those of `CLIP_SETTINGS` but those of a part of its style that it may not have. */
+const TITLE_SETTINGS: readonly ClipKeyed[] = CLIP_SETTINGS.filter((path) => {
+  const styled = titleSetting(path);
+  return styled === null || titlePartOf(styled) === null;
+});
 
-/** The settings of a clip that take keys, in the order of the Inspector: those of the style of a title for a title only. */
+/**
+ * The settings of a clip that take keys, in the order of the Inspector: those of the style of a
+ * title for a title only, and those of a part of the style for a title that has that part.
+ */
 export function settingsOf(clip: Clip): readonly ClipKeyed[] {
-  return clip.source.kind === 'title' ? CLIP_SETTINGS : PICTURE_SETTINGS;
+  const source = clip.source;
+  if (source.kind !== 'title') return PICTURE_SETTINGS;
+  const { stroke, shadow, background } = source.style;
+  return stroke === undefined && shadow === undefined && background === undefined ? TITLE_SETTINGS : CLIP_SETTINGS.filter(path => hasSetting(clip, path));
 }
 
 /**
@@ -71,6 +93,8 @@ export function settingNames(labels: Messages['label']['studio']['inspector']): 
     'transform.opacity': labels.opacity, 'crop.left': labels.cropLeft, 'crop.right': labels.cropRight, 'crop.top': labels.cropTop,
     'crop.bottom': labels.cropBottom, 'crop.softness': labels.softness,
     'title.size': labels.titleSize, 'title.x': labels.titleX, 'title.y': labels.titleY,
+    'title.stroke.width': labels.strokeWidth, 'title.shadow.x': labels.shadowX, 'title.shadow.y': labels.shadowY,
+    'title.shadow.blur': labels.shadowBlur, 'title.background.padding': labels.backgroundPadding, 'title.background.radius': labels.backgroundRadius,
   };
 }
 
@@ -86,7 +110,7 @@ export function hasKeys(clip: Clip): boolean {
   if (transform && (keyed(transform.x) || keyed(transform.y) || keyed(transform.scale) || keyed(transform.rotation) || keyed(transform.opacity))) return true;
   if (crop && (keyed(crop.left) || keyed(crop.right) || keyed(crop.top) || keyed(crop.bottom) || keyed(crop.softness))) return true;
   const source = clip.source;
-  return source.kind === 'title' && (keyed(source.style.size) || keyed(source.style.x) || keyed(source.style.y));
+  return source.kind === 'title' && TITLE_KEYED.some(name => keyed(titleParam(source.style, name)));
 }
 
 /** Whether a setting is keys: a number is not, nor one that is left out. */
@@ -100,11 +124,12 @@ const parts = (path: ClipKeyed) => path.split('.') as ['transform' | 'crop', str
 /**
  * The setting of a clip at a path: a number, or keys. A clip that says nothing of its crop has
  * none. A clip that is no title has no setting of the style of one: it is read as the number that
- * a new title has there, which has no keys, so that nothing takes the clip for keyed.
+ * a new title has there, which has no keys, so that nothing takes the clip for keyed; and so is a
+ * title without the part of its style that holds the setting, as its outline.
  */
 export function paramOf(clip: Clip, path: ClipKeyed): Param {
   const styled = titleSetting(path);
-  if (styled) return clip.source.kind === 'title' ? clip.source.style[styled] : CLIP_BOUNDS[path].neutral;
+  if (styled) return (clip.source.kind === 'title' ? titleParam(clip.source.style, styled) : undefined) ?? CLIP_BOUNDS[path].neutral;
   const [of, name] = parts(path);
   const holder = of === 'transform' ? clip.transform : clip.crop ?? NO_CROP;
   return (holder as unknown as Record<string, Param>)[name];
@@ -145,8 +170,15 @@ const placeOf = (keys: readonly Keyframe[], keyFrame: number) => {
   return at < 0 ? keys.length : at;
 };
 
-/** Whether a clip has the setting of a path: every clip those of the transform and of the crop, a title alone those of its style. */
-export const hasSetting = (clip: Clip, path: ClipKeyed): boolean => titleSetting(path) === null || clip.source.kind === 'title';
+/**
+ * Whether a clip has the setting of a path: every clip those of the transform and of the crop, a title alone those of its style,
+ * and those of a part of the style only a title that has that part.
+ */
+export function hasSetting(clip: Clip, path: ClipKeyed): boolean {
+  const styled = titleSetting(path);
+  if (styled === null) return true;
+  return clip.source.kind === 'title' && titleParam(clip.source.style, styled) !== undefined;
+}
 
 /**
  * Give a setting a value at a frame of its keys. A setting with no keys is set with what holds it
@@ -161,7 +193,10 @@ export function putValue(timeline: string, clip: Clip, path: ClipKeyed, value: n
     if (param === value) return [];
     const styled = titleSetting(path);
     // The other settings of the style go along as they are, keys and all.
-    if (styled) return clip.source.kind === 'title' ? [{ op: 'set_clip', timeline, id: clip.id, source: { ...clip.source, style: { ...clip.source.style, [styled]: value } } }] : [];
+    if (styled) {
+      const style = clip.source.kind === 'title' ? withTitleParam(clip.source.style, styled, value) : null;
+      return style && clip.source.kind === 'title' ? [{ op: 'set_clip', timeline, id: clip.id, source: { ...clip.source, style } }] : [];
+    }
     const [of, name] = parts(path);
     return of === 'transform'
       ? [{ op: 'set_clip', timeline, id: clip.id, transform: { ...clip.transform, [name]: value } }]

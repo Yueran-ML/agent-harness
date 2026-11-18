@@ -35,9 +35,12 @@ const splice = (path: string, at: number, remove: number, keys: Keyframe[]) => (
 describe('the keys of the style of a title', () => {
   it('are of a title only: any other clip has no such setting, and is sent nothing for one', () => {
     const shot = clip('c1', 10, 60);
-    expect(CLIP_KEYED.slice(-3)).toEqual(['title.size', 'title.x', 'title.y']);
-    expect(CLIP_KEYED.map(titleSetting)).toEqual([...Array<null>(10).fill(null), 'size', 'x', 'y']);
-    expect(settingsOf(title())).toEqual(CLIP_SETTINGS);
+    expect(CLIP_KEYED.slice(10, 13)).toEqual(['title.size', 'title.x', 'title.y']);
+    // After them, those of the outline, the shadow and the box behind a title, which a title without them has not got.
+    expect(CLIP_KEYED.map(titleSetting)).toEqual([
+      ...Array<null>(10).fill(null), 'size', 'x', 'y', 'stroke.width', 'shadow.x', 'shadow.y', 'shadow.blur', 'background.padding', 'background.radius',
+    ]);
+    expect(settingsOf(title())).toEqual(CLIP_SETTINGS.slice(0, 13));
     expect(settingsOf(title()).slice(-3)).toEqual(['title.size', 'title.x', 'title.y']);
     expect(settingsOf(shot)).toEqual(CLIP_SETTINGS.slice(0, 10));
     expect([hasSetting(title(), 'title.size'), hasSetting(shot, 'title.size'), hasSetting(shot, 'transform.x')]).toEqual([true, false, true]);

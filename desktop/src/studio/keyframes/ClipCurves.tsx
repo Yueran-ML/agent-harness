@@ -20,7 +20,8 @@ import { CurveEditor, NO_SELECTION, type Curve, type CurveChange, type CurveCloc
 
 /**
  * The settings of a clip that take keys, in the order of the Inspector, its Video tab and then the Title tab: the keyframe track of the
- * timeline lists them so too. A clip that is no title has none of the last three, and no curve of them (`settingsOf`).
+ * timeline lists them so too. A clip that is no title has none of those of the Title tab, and a title none of a part of its style that it has
+ * not got, as its outline, and no curve of them (`settingsOf`).
  */
 export const CLIP_CURVES: readonly ClipKeyed[] = CLIP_SETTINGS;
 /** The colour of the curve of each setting, as each track of DaVinci Resolve's Keyframe Editor has one (Reference Manual 20, p. 1113). */
@@ -28,6 +29,8 @@ const COLORS: Record<ClipKeyed, string> = {
   'transform.scale': '#e9b949', 'transform.x': '#e5534b', 'transform.y': '#57ab5a', 'transform.rotation': '#539bf5', 'transform.opacity': '#c9d1d9',
   'crop.left': '#b083f0', 'crop.right': '#f69d50', 'crop.top': '#39c5cf', 'crop.bottom': '#e275ad', 'crop.softness': '#8ddb8c',
   'title.size': '#f0883e', 'title.x': '#ff938a', 'title.y': '#6bc46d',
+  'title.stroke.width': '#a5d6ff', 'title.shadow.x': '#d2a8ff', 'title.shadow.y': '#7ee787', 'title.shadow.blur': '#ffa198',
+  'title.background.padding': '#f2cc60', 'title.background.radius': '#56d4dd',
 };
 /** The colours of the curves, in the order of the settings: another editor of curves (the Spline Editor of the Fusion page) draws its own with them. */
 export const CURVE_COLORS: readonly string[] = Object.values(COLORS);
@@ -166,6 +169,10 @@ function Curves({ bridge, session, revision, timeline, media, clip, locked, fram
     'title.size': { factor: 1, unit: 'px', digits: 1 },
     'title.x': { factor: timeline.width, unit: 'px', digits: 1 },
     'title.y': { factor: timeline.height, unit: 'px', digits: 1 },
+    // The outline, the shadow and the box behind a title are in pixels of the timeline as they are kept.
+    'title.stroke.width': { factor: 1, unit: 'px', digits: 1 },
+    'title.shadow.x': { factor: 1, unit: 'px', digits: 1 }, 'title.shadow.y': { factor: 1, unit: 'px', digits: 1 }, 'title.shadow.blur': { factor: 1, unit: 'px', digits: 1 },
+    'title.background.padding': { factor: 1, unit: 'px', digits: 1 }, 'title.background.radius': { factor: 1, unit: 'px', digits: 1 },
   };
   const settings: Curve[] = settingsOf(clip).map(path => ({
     id: path, label: names[path], color: COLORS[path], param: paramOf(clip, path), bounds: CLIP_BOUNDS[path], display: displays[path],

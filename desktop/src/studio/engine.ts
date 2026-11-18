@@ -110,12 +110,14 @@ export interface SpeedPoint { frame: number; speed: Speed }
 export interface Retime { points: SpeedPoint[] }
 /**
  * What a clip shows at a frame whose place in its source lies between two pictures of its media, its
- * Retime Process: the one picture that the place is in (`nearest`), or that picture mixed with the one
- * after it by how far between them the place lies (`frame_blend`).
+ * Retime Process: the one picture that the place is in (`nearest`), that picture mixed with the one
+ * after it by how far between them the place lies (`frame_blend`), or the same two each moved along the
+ * motion between them before they are mixed so (`optical_flow`). Frame Blend and Optical Flow show two
+ * pictures at the same frames, and one where Nearest shows one.
  */
-export type RetimeProcess = 'nearest' | 'frame_blend';
+export type RetimeProcess = 'nearest' | 'frame_blend' | 'optical_flow';
 /** The Retime Processes, in the order of DaVinci's menu. */
-export const RETIME_PROCESSES: readonly RetimeProcess[] = ['nearest', 'frame_blend'];
+export const RETIME_PROCESSES: readonly RetimeProcess[] = ['nearest', 'frame_blend', 'optical_flow'];
 /**
  * The Method of the stabilizer of a clip (Stabilization of the Inspector, Reference Manual 20, pp. 633–634 and 1064–1065):
  * how much of the motion of the picture is taken to be the camera's, all of a homography (`perspective`), a shift with a turn

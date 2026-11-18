@@ -806,6 +806,15 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 "op": "set_clip", "timeline": "t1", "id": "c1", "retime_process": "nearest",
             })),
         ),
+        (
+            "set_clip of a retime process that follows the motion between two pictures, at half \
+             the speed",
+            vec![],
+            written_op(serde_json::json!({
+                "op": "set_clip", "timeline": "t1", "id": "c1",
+                "speed": { "num": 1, "den": 2 }, "retime_process": "optical_flow",
+            })),
+        ),
     ];
     all.extend(grade_examples());
     all.extend(sound_examples());

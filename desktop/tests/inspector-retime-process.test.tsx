@@ -45,7 +45,7 @@ describe('the Retime Process of the Video tab', () => {
     const { call } = mount([clip('c1', 10, 60)]);
     const process = select()!;
     expect(process.value).toBe('nearest');
-    expect([...process.options].map(option => [option.value, option.textContent])).toEqual([['nearest', 'Nearest'], ['frame_blend', 'Frame Blend']]);
+    expect([...process.options].map(option => [option.value, option.textContent])).toEqual([['nearest', 'Nearest'], ['frame_blend', 'Frame Blend'], ['optical_flow', 'Optical Flow']]);
     expect([...process.options].map(option => option.textContent)).toEqual(RETIME_PROCESSES.map(each => en.label.studio.inspector.retimeProcesses[each]));
     // Under the heading that DaVinci Resolve gives it.
     const headings = [...document.querySelectorAll('h3.inspector-section')].map(heading => heading.textContent);
@@ -61,6 +61,21 @@ describe('the Retime Process of the Video tab', () => {
     fireEvent.change(select()!, { target: { value: 'nearest' } });
     await settle();
     expect(applied(call)).toEqual([{ revision: 17, ops: [set('c1', 'nearest')] }]);
+  });
+
+  it('sets Optical Flow as it is chosen, and shows a clip that has it', async () => {
+    const { call } = mount([clip('c1', 10, 60, { retime_process: 'frame_blend' }), clip('c2', 70, 60, { retime_process: 'optical_flow' })], ['c1']);
+    expect(select()!.value).toBe('frame_blend');
+    fireEvent.change(select()!, { target: { value: 'optical_flow' } });
+    await settle();
+    expect(applied(call)).toEqual([{ revision: 17, ops: [set('c1', 'optical_flow')] }]);
+    cleanup();
+    const shown = mount([clip('c2', 70, 60, { retime_process: 'optical_flow' })]);
+    expect(select()!.value).toBe('optical_flow');
+    // Back to Frame Blend by its name.
+    fireEvent.change(select()!, { target: { value: 'frame_blend' } });
+    await settle();
+    expect(applied(shown.call)).toEqual([{ revision: 17, ops: [set('c2', 'frame_blend')] }]);
   });
 
   it('sets every chosen clip of media that is not so already, in one transaction, and no title', async () => {
@@ -123,5 +138,9 @@ describe('the Retime Process in the copy of the project', () => {
     // An operation that sets something else leaves it as it is.
     const faded = applyOp(blended, { op: 'set_clip', timeline: 't1', id: 'c1', fade_in: 5 });
     expect(first(faded)).toMatchObject({ retime_process: 'frame_blend', fade_in: 5 });
+    // Optical Flow by its name, in place of Frame Blend, and back to the one picture.
+    const flowing = applyOp(blended, { op: 'set_clip', timeline: 't1', id: 'c1', retime_process: 'optical_flow' });
+    expect(first(flowing).retime_process).toBe('optical_flow');
+    expect(applyOp(flowing, { op: 'set_clip', timeline: 't1', id: 'c1', retime_process: 'nearest' })).toStrictEqual(project);
   });
 });

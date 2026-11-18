@@ -568,11 +568,13 @@ Composite = Literal[
 ]  # fmt: skip
 """How the picture of a clip is laid over the tracks below it: DaVinci's composite modes."""
 
-RetimeProcess = Literal["nearest", "frame_blend"]
+RetimeProcess = Literal["nearest", "frame_blend", "optical_flow"]
 """What a clip shows at a frame whose place in its source lies between two pictures of its media:
 DaVinci's Retime Process. ``nearest`` is the one picture that the place is in, which a clip
 shows where it says nothing; ``frame_blend`` mixes that picture with the one after it by how far
-between them the place lies."""
+between them the place lies; ``optical_flow`` moves each of the two along the motion between them
+to where it would be at the place before it mixes them so, and shows what moves once, not twice.
+Frame Blend and Optical Flow show two pictures at the same frames, and one where Nearest does."""
 
 
 class MediaSource(Data):
@@ -1414,7 +1416,8 @@ def set_clip(
     speed is set with :func:`set_speed`, which keeps the stretch of its source. Its
     ``transform`` and its ``crop`` are each given whole; ``composite`` is its composite mode.
     ``retime_process`` is what it shows between two pictures of its media, as where it plays
-    slower than its media: ``"nearest"``, the one picture, or ``"frame_blend"``, the two mixed.
+    slower than its media: ``"nearest"``, the one picture; ``"frame_blend"``, the two mixed; or
+    ``"optical_flow"``, the two moved along the motion between them and mixed.
 
     Of its sound (schema 4): ``audio_fade_in`` and ``audio_fade_out`` (an ``AudioFade``
     ``{"length", "curve", "skew"}``, or ``None`` for a straight fade over the frames), ``eq``

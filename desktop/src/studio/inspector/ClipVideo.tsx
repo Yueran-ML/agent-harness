@@ -40,7 +40,8 @@ export function Fades({ clips, timeline, commit, fineModifiers = false }: { clip
  * Retime Process and the fades. Each change sets every clip chosen, in one transaction.
  *
  * The Retime Process (Retime and Scaling, Reference Manual 20, pp. 1081–1082) is what a clip shows at
- * a frame whose place in its source lies between two pictures: the nearest one, or the two blended.
+ * a frame whose place in its source lies between two pictures: the nearest one, the two blended (Frame
+ * Blend), or the two moved along the motion between them and blended (Optical Flow).
  * It is of the clips of media whose picture lasts, which alone it is shown for and set on: a title,
  * a colour and a still show one picture however they are played.
  *

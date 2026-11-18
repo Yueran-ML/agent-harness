@@ -1461,8 +1461,9 @@ of one. add_track/remove_track and
 add_cue/set_cue/remove_cue/cues_from manage tracks/subtitles. Basic add_timeline/add_bin and
 set_timeline/set_track/set_clip/set_media edit settings. set_clip includes transform, gain_db,
 pan and fade_in/out, crop {left,right,top,bottom,softness} (shares 0-1), composite (a
-blend mode: normal, multiply, screen, overlay...) and retime_process (nearest|frame_blend:
-what a slowed clip shows between two source frames). A transform or crop setting may be
+blend mode: normal, multiply, screen, overlay...) and retime_process
+(nearest|frame_blend|optical_flow: what a slowed clip shows between two source frames; optical_flow
+moves both along the motion between them). A transform or crop setting may be
 {keys:[{frame,value,interp}]}, frames counted as grade keyframes are; set_clip_keys
 {id,path:"transform.x"|"crop.left",param} and splice_clip_keys {id,path,at,remove,keys}
 set one setting's keys; a title's style.size, x and y take keys too, by the paths

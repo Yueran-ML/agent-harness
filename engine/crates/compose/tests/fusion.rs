@@ -297,6 +297,7 @@ fn sources() -> Vec<Kind> {
         second: flat([60, 150, 110]),
         weight: 0.25,
         rotation: 0,
+        flow: None,
     };
     vec![
         (

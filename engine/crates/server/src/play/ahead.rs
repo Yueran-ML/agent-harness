@@ -1,10 +1,10 @@
 //! One read-ahead worker per video track. Requests replace older requests; stale work is
 //! never published into a newer project generation.
 //!
-//! A clip that mixes two pictures of its media (Frame Blend) reads a second place at each frame
-//! that lies between two: it is planned, read ahead and kept as the first is, a want of its
-//! own for the same frame, so that the frames to come have both pictures ready. A second
-//! picture is as a rule the first of a frame soon after, and is read once for both.
+//! A clip that shows two pictures of its media (Frame Blend, Optical Flow) reads a second place
+//! at each frame that lies between two: it is planned, read ahead and kept as the first is, a
+//! want of its own for the same frame, so that the frames to come have both pictures ready. A
+//! second picture is as a rule the first of a frame soon after, and is read once for both.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -380,8 +380,8 @@ fn trim(state: &mut State, budget: usize) {
     let mut total: usize = state.ready.iter().map(bytes).sum();
     // Keep at least the two layers of the current dissolve, even when one frame alone is
     // larger than the per-track budget. Extra future frames are discarded furthest first.
-    // Layers that mix two pictures each (Frame Blend) need up to four at the current frame:
-    // all that are read for it are kept.
+    // Layers that show two pictures each (Frame Blend, Optical Flow) need up to four at the
+    // current frame: all that are read for it are kept.
     let current = state
         .ready
         .iter()
@@ -730,6 +730,11 @@ mod tests {
         for want in both.iter().filter(|want| want.frame == 4) {
             assert!(plain.contains(want), "{want:?}");
         }
+        // Optical Flow reads the two pictures that Frame Blend reads, at the same frames.
+        let mut flowing = Arc::clone(&mixed);
+        Arc::make_mut(&mut flowing).timelines[0].tracks[0].clips[0].retime_process =
+            columbina_model::retime::RetimeProcess::OpticalFlow;
+        assert_eq!(plan(&request(Arc::clone(&flowing), 4)), both);
         // Scrubbing reads the one picture, as it does with Nearest.
         let scrubbing = |project: Arc<Project>| {
             let mut request = request(project, 5);

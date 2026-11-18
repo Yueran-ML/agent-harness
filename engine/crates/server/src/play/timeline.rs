@@ -2118,15 +2118,15 @@ impl Worker {
                         })
                     };
                     let read = fetch(&want);
-                    // The second picture of a clip that mixes two (Frame Blend), where the
-                    // first is the one of this frame: read as the first is, and mixed with it
-                    // where it is the very picture asked for. While scrubbing, which shows
-                    // what is quick to read, the first is shown alone; and so it is until the
-                    // second is read, the frame then being late and not exact.
+                    // The second picture of a clip that shows two (Frame Blend, Optical Flow),
+                    // where the first is the one of this frame: read as the first is, and put
+                    // together with it where it is the very picture asked for. While scrubbing,
+                    // which shows what is quick to read, the first is shown alone; and so it is
+                    // until the second is read, the frame then being late and not exact.
                     let mut second = None;
                     if let (Some(blend), Some(Ok(_)), false) = (layer.blend, &read, scrubbing) {
                         match fetch(&want.second(blend.tick)) {
-                            Some(Ok(read)) if read.exact => second = Some((read, blend.weight)),
+                            Some(Ok(read)) if read.exact => second = Some((read, blend)),
                             // A picture that cannot be read, as where the media says that it
                             // lasts longer than its picture does, is not mixed in: the first
                             // is what there is to show, as Nearest shows it.
@@ -2183,10 +2183,10 @@ impl Worker {
                     proxy |= read.source == Source::Proxy;
                     previous.insert((layer.track, layer.clip), previous_read);
                     let color = crate::render::layer_color(&read.picture);
-                    let second = second.map(|(second, weight)| {
+                    let second = second.map(|(second, blend)| {
                         original |= second.source == Source::Original;
                         proxy |= second.source == Source::Proxy;
-                        (second.picture, weight)
+                        crate::render::Second::of(&read, second, blend)
                     });
                     let source = crate::render::picture_source(read.picture, second, read.rotation);
                     (source, color)

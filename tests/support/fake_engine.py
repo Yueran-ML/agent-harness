@@ -2125,7 +2125,8 @@ class Fake:
                         _spans_checked(cast("dict[str, Any]", op["source"]), index)
                     clip.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
                     # A clip that shows the nearest picture is written without its Retime
-                    # Process, as the engine writes it.
+                    # Process, as the engine writes it; Frame Blend and Optical Flow are kept by
+                    # their names.
                     if clip.get("retime_process") == "nearest":
                         del clip["retime_process"]
                 for one in timeline["tracks"]:

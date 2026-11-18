@@ -310,11 +310,24 @@ async fn a_clip_with_speed_points_shows_the_pictures_of_its_path_frame_by_frame(
 /// Two frames of a decoder, `frame` and the one after it, as the layer of a clip that mixes the
 /// two (Frame Blend): `weight` of the second, mixed as the engine composes them.
 fn mixed_layer(decoder: &mut VideoDecoder, frame: i64, weight: f32) -> SceneLayer {
+    shown_layer(decoder, frame, weight, false)
+}
+
+/// Two frames of a decoder, `frame` and the one after it, as the layer of a clip that shows the
+/// two: `weight` of the second, mixed as the engine composes them, and first moved along the
+/// flows between them where `flow` (Optical Flow). What the two are known by keeps the flows of
+/// the compositor that draws them, and says nothing of how they are drawn.
+fn shown_layer(decoder: &mut VideoDecoder, frame: i64, weight: f32, flow: bool) -> SceneLayer {
     let [first, second] = [frame, frame + 1].map(|frame| {
         let picture = Converter::new()
             .native(&decoder.decoded_at(frame).unwrap())
             .unwrap();
         Arc::new(picture)
+    });
+    let flow = flow.then(|| columbina_compose::flow::Pair {
+        media: "the decoder of the test".into(),
+        first: frame,
+        second: frame + 1,
     });
     SceneLayer {
         color: LayerColor {
@@ -326,6 +339,7 @@ fn mixed_layer(decoder: &mut VideoDecoder, frame: i64, weight: f32) -> SceneLaye
             second,
             weight,
             rotation: 0,
+            flow,
         },
         transform: Transform::NONE,
         opacity: 1.0,
@@ -334,10 +348,29 @@ fn mixed_layer(decoder: &mut VideoDecoder, frame: i64, weight: f32) -> SceneLaye
     }
 }
 
+/// Set the Retime Process of clip `id` of `timeline` to `process`, and check that the engine
+/// writes it so.
+async fn set_process(client: &mut Client, timeline: &Value, id: &Value, process: &str) {
+    client
+        .apply(json!([{"op":"set_clip","timeline":timeline,"id":id,"retime_process":process}]))
+        .await;
+    let got = project(client).await;
+    let made = got["project"]["timelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["id"] == *timeline)
+        .unwrap()["tracks"][0]["clips"][0]
+        .clone();
+    assert_eq!(made["retime_process"], process, "{made}");
+}
+
 /// A clip at half its speed, which lies halfway between two pictures of its media at every
 /// second frame. With Nearest the timeline monitor shows one picture at each frame; once its
 /// Retime Process is Frame Blend, it shows at each frame on a picture that picture, as Nearest
-/// does, and at each frame between two the two mixed by halves.
+/// does, and at each frame between two the two mixed by halves; and once it is Optical Flow,
+/// the same two moved along the flows between them before they are mixed, each pair of
+/// pictures found once by a compositor that draws them.
 #[tokio::test]
 async fn a_clip_that_mixes_two_pictures_shows_them_mixed_at_the_frames_between_them() {
     let Some(gpu) = columbina_compose::gpu_for_tests() else {
@@ -391,19 +424,7 @@ async fn a_clip_that_mixes_two_pictures_shows_them_mixed_at_the_frames_between_t
         );
         alone[usize::try_from(frame).unwrap()] = expected;
     }
-    client
-        .apply(json!([{"op":"set_clip","timeline":timeline,"id":id,
-            "retime_process":"frame_blend"}]))
-        .await;
-    let got = project(&mut client).await;
-    let made = got["project"]["timelines"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|each| each["id"] == timeline)
-        .unwrap()["tracks"][0]["clips"][0]
-        .clone();
-    assert_eq!(made["retime_process"], "frame_blend", "{made}");
+    set_process(&mut client, &timeline, &id, "frame_blend").await;
     // From the first frame: the monitor shows the last one, mixed now that the clip is set so.
     for (frame, alone) in (0..12).zip(&alone) {
         let picture = 10 + frame / 2;
@@ -421,6 +442,32 @@ async fn a_clip_that_mixes_two_pictures_shows_them_mixed_at_the_frames_between_t
             "with Frame Blend, frame {frame} shows picture {picture}: {drawn}"
         );
     }
+    // Optical Flow: the same two pictures at the same frames, moved along the flows between
+    // them before they are mixed, as the compositor draws them; one picture where Nearest shows
+    // one. From the first frame again: the monitor shows the last one.
+    set_process(&mut client, &timeline, &id, "optical_flow").await;
+    for frame in 0..12 {
+        let picture = 10 + frame / 2;
+        let between = frame % 2 == 1;
+        let expected = if between {
+            hash(shown_layer(&mut decoder, picture, 0.5, true))
+        } else {
+            hash(decoded_layer(&mut decoder, picture, 1.0))
+        };
+        let alone = &alone[usize::try_from(frame).unwrap()];
+        assert_eq!(&expected != alone, between, "frame {frame}");
+        let drawn = sought(&mut client, frame).await;
+        assert_eq!(
+            drawn["hash"], expected,
+            "with Optical Flow, frame {frame} shows picture {picture}: {drawn}"
+        );
+    }
+    assert_eq!(
+        compose.flows_computed(),
+        6,
+        "once for each pair of pictures"
+    );
+    assert_eq!(compose.flow_failure(), None);
 }
 
 #[tokio::test]

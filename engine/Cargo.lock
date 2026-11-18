@@ -302,6 +302,7 @@ dependencies = [
  "columbina-model",
  "columbina-ocio",
  "cosmic-text",
+ "naga",
  "pollster",
  "thiserror 2.0.21",
  "wgpu",

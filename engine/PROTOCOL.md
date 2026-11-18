@@ -733,11 +733,16 @@ clients; a client must not write `project.json` itself.
   away. With `"frame_blend"` it shows that picture mixed with the one after it, `(1 − w)` of
   the first and `w` of the second, `w` being how far from the one to the other the place lies
   (see Grades in the picture); a frame whose place is where a picture begins shows that
-  picture alone, exactly as `"nearest"` does, and so does every frame of a freeze. It is of a
-  clip at one speed and of a clip with speed points alike, forward and backward. Any clip
-  takes it, as any clip takes a `speed`: on a title, a colour, a still and a clip of sound it
-  is kept as it was set and says nothing. Optical Flow is not there yet, and any other word
-  is refused.
+  picture alone, exactly as `"nearest"` does, and so does every frame of a freeze. With
+  `retime_process: "optical_flow"` (Optical Flow) it shows the same two pictures at the same
+  frames by the same `w`, each first moved along the motion between them to where it would be
+  at the place, so that what moves is shown once, between where it was and where it goes, and
+  not twice; where the motion of a point cannot be followed the two are mixed there as
+  `"frame_blend"` mixes them, and where the frame lies on a picture, or in a freeze, it shows
+  that picture alone. It is of a clip at one speed and of a clip with speed points alike,
+  forward and backward. Any clip takes either, as any clip takes a `speed`: on a title, a
+  colour, a still and a clip of sound it is kept as it was set and says nothing. Any other
+  word is refused.
 - A clip of a track of picture may have `fusion` as well, its composition: the graph of
   nodes that makes its picture, as the Fusion page builds one for a clip (see Compositions).
   It is written only on a clip that has one, so a clip without it is written as it always
@@ -2461,7 +2466,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
 | `set_track` | `timeline`, `id`, `name?`, `color?` (`#rrggbbaa`, null restores the unspecified default), `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (the last three of a track of sound only; on another `wrong_track` with `what` of the setting) |
 | `move_track` | `timeline`, `id`, `index`: zero-based index in the final complete track list, including video, audio and subtitle tracks; preserves the existing object and every ID/reference. Out-of-range or unchanged indexes are refused as `out_of_range` (`what: "track index"`). Like other basic track operations it can be undone while locked. |
-| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `crop?` (whole), `composite?`, `retime_process?` (`nearest` or `frame_blend`), `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
+| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `crop?` (whole), `composite?`, `retime_process?` (`nearest`, `frame_blend` or `optical_flow`), `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
 | `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness`, and, of a clip whose source is a title, `title.size`, `title.x`, `title.y` of its style, and `title.stroke.width`, `title.shadow.x`, `title.shadow.y`, `title.shadow.blur`, `title.background.padding`, `title.background.radius` of a title whose style has that part (all listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`, whose `default` for the parts of a style is what a client gives a new one: a stroke of 4, a shadow of 4, 4 and 4, a box of 16 with corners of 8; those of `title.x` and `title.y`, as those of `transform.x` and `transform.y`, are what a control offers, and the model takes any finite number). Any other path is `missing` with `what` `setting`, and so is a path under `title` on a clip that is not a title, or of a part that its style does not have. Its inverse is the `set_clip_keys` of the setting as it was. |
 | `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`, and `size`, `position`, `stroke`, `shadow` or `background` for the style of a title). |
 | `set_retime` | `timeline`, `id`, `retime` (the speed points `{points: [...]}`, or `null`, which must be written, for the speed of the source, forward), `length?` (the new length of the clip in frames, for a change that makes it longer or shorter): sets how the clip plays its source, whole, so a drag may send it again and again. Speed points of one speed are written as the `speed` and `reverse` of the clip. `start` and `source.in` stay: `trim_clip` moves them. Refused for a title, a colour or a still (`out_of_range`, `retime_source`), for speed points that are not those of a clip of that length (`out_of_range`: `retime`, `speed`, `retime_unit`), where the clip would show what is not in its media (`out_of_source`), and where it would cover frames of another clip of its track (`overlap`): nothing is moved out of its way. A clip with speed points refuses the `speed` and `reverse` of `set_clip` (`out_of_range`, `retimed`). Inverse: `set_retime` of how the clip played before, and of its length. |
@@ -3928,6 +3933,25 @@ alone, and so it is until the second is read, the frame then not being `exact`. 
 so the picture read for a frame may be the one before the picture that the place has come to
 exactly (see `crates/model/src/span.rs`); the frame then shows that next picture, alone.
 
+A layer of a clip whose `retime_process` is `optical_flow` is made of the same two pictures at
+the same frames, read, kept and mixed by the same `w` as of `frame_blend`, and as the media has
+them; but each is first moved along the motion between the two (`crates/compose/src/flow.rs`).
+The motion is found on the card, by Dense Inverse Search (Kroeger et al., ECCV 2016) over a
+pyramid of the luma of the two, both ways: how far each point of the first moves to be in the
+second, and each point of the second to be in the first. Pictures up to 2K are searched at
+their own size and larger ones halved until they are no larger, from a coarsest level 32 to 63
+pixels long; each level is searched in patches of 8 × 8 of its pixels, every 4 pixels, each
+patch and the other picture taken less their means, so that a change of brightness alone moves
+nothing. A point of the frame is shown from the point of the first picture that the motion
+brings there `w` of the way, and from that of the second that it brings there `1 − w` of the
+way back; each counts by its share of the mix times how far the motion back from where it
+goes ends where it began, and a point that comes from beyond the edges of a picture counts for
+nothing. Where neither counts, as where something is uncovered or hidden between the two, the
+two are mixed there as `frame_blend` mixes them. The motion between two pictures is found once
+and kept for the frames that lie between the same two, as those of a clip at a quarter of its
+speed, for the last few pairs that are shown. The monitor, an export, a still, the scopes and
+a thumbnail show the picture so made alike; nothing of the motion is read back from the card.
+
 - **What is graded**: every clip of a track of picture, titles and colours as much as media (the
   model lets any clip carry a grade; DaVinci grades a Text+ title "like any other clip", p. 1047).
   The colour that a dip transition goes through is no clip and has no clip grade; the timeline
@@ -4098,7 +4122,7 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 
 | kind | inputs, the first first | output | `params` |
 |---|---|---|---|
-| `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, mixed of two pictures where its `retime_process` is `frame_blend`; not stabilized: the stabilizer of the clip is done to what comes out of the composition, see The stabilizer). A composition may have several: they are the same picture; it need not have one |
+| `media_in` | — | yes | `{}`: the picture of the clip's own source at the frame, as a clip without a composition shows it (along its speed points, of two pictures where its `retime_process` is `frame_blend` or `optical_flow`; not stabilized: the stabilizer of the clip is done to what comes out of the composition, see The stabilizer). A composition may have several: they are the same picture; it need not have one |
 | `media_out` | `input` | — | `{}`: the picture that goes back to the timeline. A composition has **exactly one** (`one_media_out`). Where its input is not linked the clip is transparent |
 | `merge` | `background`, `foreground`, `mask` | yes | the foreground laid over the background, below |
 | `transform` | `input`, `mask` | yes | its picture moved, made larger or smaller, turned and flipped, below |

@@ -2,7 +2,7 @@
 
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
@@ -1069,6 +1069,10 @@ def test_a_retime_process_is_written_as_the_engine_reads_it() -> None:
     # Nearest is set by its name, and a clip that is not asked about it is told nothing of it.
     assert edits.set_clip("t1", "c2", retime_process="nearest")["retime_process"] == "nearest"
     assert "retime_process" not in edits.set_clip("t1", "c2", composite="screen")
+    # So is Optical Flow, the third process of DaVinci's menu.
+    flow = edits.set_clip("t1", "c2", retime_process="optical_flow")
+    assert flow["retime_process"] == "optical_flow"
+    assert get_args(edits.RetimeProcess) == ("nearest", "frame_blend", "optical_flow")
 
 
 async def test_the_retime_process_of_a_clip_is_kept_where_it_mixes_two_pictures(
@@ -1091,6 +1095,9 @@ async def test_the_retime_process_of_a_clip_is_kept_where_it_mixes_two_pictures(
             # Another setting leaves it as it is.
             await one.apply([edits.set_clip("t1", id, fade_in=5)])
             assert clip(fake)["retime_process"] == "frame_blend"
+            # Optical Flow is kept by its name in its place.
+            await one.apply([edits.set_clip("t1", id, retime_process="optical_flow")])
+            assert clip(fake)["retime_process"] == "optical_flow"
             # A clip that shows the nearest picture is written without it, as it always was.
             await one.apply([edits.set_clip("t1", id, retime_process="nearest")])
 

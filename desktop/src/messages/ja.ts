@@ -1046,7 +1046,7 @@ export const ja: Messages = {
         video: 'ビデオ', audio: 'オーディオ', title: 'タイトル', generator: 'ジェネレーター', transition: 'トランジション', settings: 'タイムライン設定',
         transform: 'トランスフォーム', composite: 'コンポジット', fades: 'フェード', compositeMode: 'コンポジットモード',
         cropping: 'クロップ', cropLeft: '左をクロップ', cropRight: '右をクロップ', cropTop: '上をクロップ', cropBottom: '下をクロップ', softness: 'ソフトネス',
-        retimeAndScaling: 'リタイムとスケーリング', retimeProcess: 'リタイム処理', retimeProcesses: { nearest: 'ニアレスト', frame_blend: 'フレームブレンド' },
+        retimeAndScaling: 'リタイムとスケーリング', retimeProcess: 'リタイム処理', retimeProcesses: { nearest: 'ニアレスト', frame_blend: 'フレームブレンド', optical_flow: 'オプティカルフロー' },
         stabilization: 'スタビライゼーション', stabilizeMethod: '方式',
         stabilizeMethods: { perspective: 'パースペクティブ', similarity: '相似', translation: '平行移動' },
         cameraLock: 'カメラロック', croppingRatio: 'クロップ率', smooth: 'スムーズ', strength: '強度',

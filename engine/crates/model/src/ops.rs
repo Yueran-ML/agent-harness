@@ -99,7 +99,7 @@
 //!
 //! A clip has a Retime Process ([`crate::retime::RetimeProcess`]), set by [`Op::SetClip`]: what
 //! it shows at a frame whose place in its source lies between two pictures of its media. Any
-//! clip takes either, as any clip takes a speed: it is kept as it was set on a title, a
+//! clip takes any of them, as any clip takes a speed: it is kept as it was set on a title, a
 //! colour, a still and a clip of sound, where it says nothing, and nothing is refused.
 //!
 //! A clip of a track of picture may have a composition ([`crate::fusion`]), the graph of nodes
@@ -7763,6 +7763,46 @@ mod tests {
         assert_eq!(
             (clip.speed, clip.retime_process),
             (Speed { num: 1, den: 2 }, RetimeProcess::FrameBlend)
+        );
+    }
+
+    #[test]
+    fn optical_flow_is_set_and_set_back_as_frame_blend_is() {
+        let process = |id: &str, to: RetimeProcess| {
+            setting(id, move |op| {
+                if let Op::SetClip { retime_process, .. } = op {
+                    *retime_process = Some(to);
+                }
+            })
+        };
+        let flow = process("c1", RetimeProcess::OpticalFlow);
+        let written = serde_json::to_value(&flow).unwrap();
+        assert_eq!(written["retime_process"], "optical_flow");
+        assert_eq!(serde_json::from_value::<Op>(written).unwrap(), flow);
+        // From the one picture, and back to it.
+        let mut project = Project::sample();
+        let inverse = apply(&mut project, flow.clone()).unwrap();
+        assert_eq!(inverse, process("c1", RetimeProcess::Nearest));
+        let done = round_trip(&Project::sample(), flow.clone());
+        assert_eq!(done, project);
+        let clip = &done.timelines[0].tracks[0].clips[0];
+        assert_eq!(clip.retime_process, RetimeProcess::OpticalFlow);
+        let mut back = clip.clone();
+        back.retime_process = RetimeProcess::Nearest;
+        assert_eq!(back, Project::sample().timelines[0].tracks[0].clips[0]);
+        // From Frame Blend: its inverse sets Frame Blend back.
+        let mut changed = round_trip(&Project::sample(), process("c1", RetimeProcess::FrameBlend));
+        let inverse = apply(&mut changed, flow).unwrap();
+        assert_eq!(inverse, process("c1", RetimeProcess::FrameBlend));
+        assert_eq!(
+            changed.timelines[0].tracks[0].clips[0].retime_process,
+            RetimeProcess::OpticalFlow
+        );
+        // A clip of sound keeps it as it is set: it says nothing there.
+        let sound = round_trip(&done, process("c2", RetimeProcess::OpticalFlow));
+        assert_eq!(
+            sound.timelines[0].tracks[1].clips[0].retime_process,
+            RetimeProcess::OpticalFlow
         );
     }
 

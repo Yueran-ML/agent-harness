@@ -15,11 +15,12 @@
 //! than its media, or whose media has another rate of frames than the timeline. A clip shows
 //! there what its Retime Process says ([`crate::retime::RetimeProcess`]): the picture that the
 //! place is in, alone, or, with Frame Blend, that picture mixed with the one after it by how
-//! far between them the place lies ([`Blend`], counted by [`span::Reading::between`]). The two
-//! are mixed as the media has them, before the transform, the crop and the grade of the clip,
-//! which are done to the mixed picture as they are to one. A frame whose place is where a
-//! picture begins, a frame of a freeze, and a clip of a still give the layer that they always
-//! gave, with nothing to mix.
+//! far between them the place lies ([`Blend`], counted by [`span::Reading::between`]); with
+//! Optical Flow, the same two pictures by the same weight, each moved along the motion between
+//! them before they are mixed ([`Blend::flow`]). The two are mixed as the media has them, before
+//! the transform, the crop and the grade of the clip, which are done to the mixed picture as
+//! they are to one. A frame whose place is where a picture begins, a frame of a freeze, and a
+//! clip of a still give the layer that they always gave, with nothing to mix.
 //!
 //! A clip that has a composition ([`crate::fusion`]) gives it with its layer, as it is at the
 //! frame ([`Fused`]): the nodes that its picture is made of, each with its settings as numbers,
@@ -136,7 +137,8 @@ pub struct Layer {
     /// transition that it is in.
     pub opacity: f32,
     /// The picture of its media that the one of its content is mixed with, where its clip
-    /// mixes two (Frame Blend) and the frame lies between them; none of any other layer.
+    /// shows two (Frame Blend, Optical Flow) and the frame lies between them; none of any
+    /// other layer.
     pub blend: Option<Blend>,
     /// The composition of its clip at the frame, where the clip has one: the picture of the
     /// layer is then what comes out of it, made of its content. Where the stabilizer moves the
@@ -153,9 +155,10 @@ pub struct Layer {
 }
 
 /// The second picture of a layer of media whose clip is retimed by Frame Blend
-/// ([`RetimeProcess::FrameBlend`]), at a frame whose place lies between two pictures: the layer
-/// shows `(1 - weight)` of the picture of its content and `weight` of this one, mixed as the
-/// media has them, before anything else is done to the layer.
+/// ([`RetimeProcess::FrameBlend`]) or Optical Flow ([`RetimeProcess::OpticalFlow`]), at a frame
+/// whose place lies between two pictures: the layer shows `(1 - weight)` of the picture of its
+/// content and `weight` of this one, mixed as the media has them, before anything else is done
+/// to the layer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blend {
     /// The place of the second picture in the media, in ticks of the scale of its duration:
@@ -163,6 +166,10 @@ pub struct Blend {
     pub tick: i64,
     /// How much of the second picture is shown: above 0 and below 1.
     pub weight: f32,
+    /// Whether the two are put together along the motion between them (Optical Flow): each
+    /// moved to where it would be at the place, `weight` of the way from the first to the
+    /// second, before they are mixed. Else they are mixed as they are (Frame Blend).
+    pub flow: bool,
 }
 
 /// What is seen at frame `frame` of a timeline of `project`: the layers of its tracks of picture
@@ -317,8 +324,9 @@ fn layer(
             // The place that the frame shows, as `span::source_tick` counts it.
             let reading = Reading::of(clip);
             let mut tick = reading.tick(k, t.rate, source_in.scale);
-            if clip.retime_process == RetimeProcess::FrameBlend {
-                match second_picture(&reading, found, k, t.rate, source_in.scale) {
+            if clip.retime_process.shows_two() {
+                let flow = clip.retime_process == RetimeProcess::OpticalFlow;
+                match second_picture(&reading, found, k, t.rate, source_in.scale, flow) {
                     // The place is where the picture after begins: that one is shown, alone.
                     Some(second) if second.weight >= 1.0 => tick = second.tick,
                     second => blend = second,
@@ -371,16 +379,18 @@ fn composed(clip: &Clip, at: f64, size: (u32, u32), stabilize: Option<Matrix>) -
 }
 
 /// The picture of `media` after the one that frame `k` of a clip shows, and how much of it a
-/// clip that mixes two pictures shows there ([`RetimeProcess::FrameBlend`]), on a timeline of
-/// `rate`: none where the place of the frame lies between no two pictures of the media
-/// ([`Reading::between`]), and none of media whose picture is a still, or whose places are not
-/// counted in `scale`, that of where the clip begins. A weight of 1 is the picture after alone.
+/// clip that shows two pictures shows there ([`RetimeProcess::FrameBlend`],
+/// [`RetimeProcess::OpticalFlow`] where `flow`), on a timeline of `rate`: none where the place
+/// of the frame lies between no two pictures of the media ([`Reading::between`]), and none of
+/// media whose picture is a still, or whose places are not counted in `scale`, that of where
+/// the clip begins. A weight of 1 is the picture after alone.
 fn second_picture(
     reading: &Reading,
     media: &Media,
     k: i64,
     rate: Rate,
     scale: u32,
+    flow: bool,
 ) -> Option<Blend> {
     let video = media.facts.video.as_ref().filter(|video| !video.still)?;
     let duration = media.facts.duration;
@@ -392,6 +402,7 @@ fn second_picture(
     Some(Blend {
         tick: between.tick,
         weight: single(ratio(num.into(), den.into())),
+        flow,
     })
 }
 
@@ -1861,7 +1872,49 @@ mod tests {
         Some(Blend {
             tick: PAL.ticks_of(picture, 15360),
             weight: 0.5,
+            flow: false,
         })
+    }
+
+    #[test]
+    fn optical_flow_shows_the_two_pictures_that_frame_blend_mixes_and_one_where_it_shows_one() {
+        use crate::time::Speed;
+        // c3 at half its speed; held and turned backward; and from where the tick of a place is
+        // rounded down twice: every way that a clip comes between two pictures, or does not.
+        let changes: [fn(&mut Clip); 3] = [
+            |c3| c3.speed = Speed { num: 1, den: 2 },
+            |c3| {
+                c3.length = 30;
+                c3.set_mapping(Some(speed_points(&[(0, 1, 2), (11, 0, 1), (20, -1, 2)])));
+            },
+            |c3| *c3.source_in_mut().unwrap() = at(1843),
+        ];
+        let mut between = 0;
+        for change in changes {
+            let (_, mixed) = nearest_and_mixed(change);
+            let mut flowing = mixed.clone();
+            flowing.timelines[0].tracks[0].clips[2].retime_process = RetimeProcess::OpticalFlow;
+            flowing.validate().unwrap();
+            let c3 = &mixed.timelines[0].tracks[0].clips[2];
+            for frame in c3.start..c3.end() {
+                let (blended, flowed) = (one_layer(&mixed, frame), one_layer(&flowing, frame));
+                // The same layer, its second picture and its weight, put together by flow.
+                let blend = blended.blend.map(|blend| Blend {
+                    flow: true,
+                    ..blend
+                });
+                between += usize::from(blend.is_some());
+                assert_eq!(flowed, Layer { blend, ..blended }, "frame {frame}");
+            }
+        }
+        assert!(between > 0, "no frame lies between two pictures");
+        // A still shows one picture with Optical Flow too.
+        let (_, mut still) = nearest_and_mixed(|c3| c3.speed = Speed { num: 1, den: 2 });
+        still.timelines[0].tracks[0].clips[2].retime_process = RetimeProcess::OpticalFlow;
+        still.media[0].facts.video.as_mut().unwrap().still = true;
+        for frame in 100..150 {
+            assert_eq!(one_layer(&still, frame).blend, None, "frame {frame}");
+        }
     }
 
     #[test]

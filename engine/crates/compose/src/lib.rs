@@ -9,6 +9,8 @@
 //! - [`color`]: the stages of colour of a frame, in the order of `DaVinci Resolve`: how a picture
 //!   is decoded ([`YuvCoding`]), and the input transform, grade, timeline grade and output
 //!   transform ([`Stage`]), with how later work plugs into them.
+//! - [`flow`]: the flows between two pictures of one media, found on the card, along which a
+//!   clip that is retimed by Optical Flow moves them before it mixes them.
 //! - [`fusion`]: the composition of a clip, the graph of nodes that makes its picture, drawn
 //!   into textures of its own before the layer of the clip is laid on the canvas; and
 //!   [`merge`], the mathematics of its Merge node, on the processor.
@@ -26,6 +28,7 @@
 
 pub mod color;
 mod compose;
+pub mod flow;
 pub mod fusion;
 pub mod geometry;
 mod gpu;

@@ -105,7 +105,9 @@
 //! has another rate of frames than its timeline. What such a frame shows is the Retime Process
 //! of the clip ([`RetimeProcess`], pp. 1081–1082): the picture that the place is in, alone, or
 //! that picture and the one after it, mixed by how far between them the place lies
-//! ([`crate::span::Reading::between`]). A frame of a freeze shows one picture either way.
+//! ([`crate::span::Reading::between`]), or each of the two moved along the motion between
+//! them to where it would be at the place, and then mixed so. A frame of a freeze shows one
+//! picture whatever the process.
 
 use std::cmp::Ordering;
 
@@ -295,11 +297,14 @@ pub struct Trimmed {
 }
 
 /// How a clip shows a frame whose place in its source lies between two pictures of its media:
-/// its Retime Process (pp. 1081–1082). It is written `"nearest"` or `"frame_blend"`.
+/// its Retime Process (pp. 1081–1082). It is written `"nearest"`, `"frame_blend"` or
+/// `"optical_flow"`.
 ///
 /// A clip of one speed and a clip with speed points take it alike, forward and backward, and so
 /// does a clip that plays as its source is where its media has another rate of frames than its
-/// timeline. Optical Flow, the third process of the manual, is not one of these yet.
+/// timeline. Frame Blend and Optical Flow show the same two pictures at the same frames, by the
+/// same weight, and one picture wherever Nearest shows one: they differ only in how the two
+/// are put together ([`crate::resolve::Blend`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetimeProcess {
@@ -311,6 +316,13 @@ pub enum RetimeProcess {
     /// the place lies. A frame whose place is where a picture begins shows that picture alone,
     /// as [`RetimeProcess::Nearest`] does, and so does every frame of a freeze.
     FrameBlend,
+    /// The picture that the place is in and the one after it, each moved along the motion
+    /// between the two to where it would be at the place, and mixed then as Frame Blend mixes
+    /// them: what moves is shown once, between where it was and where it goes, and not twice.
+    /// Where the motion of a point cannot be followed, the two are mixed there as they are. A
+    /// frame whose place is where a picture begins shows that picture alone, as
+    /// [`RetimeProcess::Nearest`] does, and so does every frame of a freeze.
+    OpticalFlow,
 }
 
 impl RetimeProcess {
@@ -322,6 +334,13 @@ impl RetimeProcess {
     #[must_use]
     pub fn is_nearest(&self) -> bool {
         *self == Self::Nearest
+    }
+
+    /// Whether it shows two pictures at a frame whose place lies between them: Frame Blend and
+    /// Optical Flow do.
+    #[must_use]
+    pub fn shows_two(self) -> bool {
+        self != Self::Nearest
     }
 }
 

@@ -1201,7 +1201,7 @@ export const en = {
         video: 'Video', audio: 'Audio', title: 'Title', generator: 'Generator', transition: 'Transition', settings: 'Timeline settings',
         transform: 'Transform', composite: 'Composite', fades: 'Fades', compositeMode: 'Composite mode',
         cropping: 'Cropping', cropLeft: 'Crop left', cropRight: 'Crop right', cropTop: 'Crop top', cropBottom: 'Crop bottom', softness: 'Softness',
-        retimeAndScaling: 'Retime and Scaling', retimeProcess: 'Retime process', retimeProcesses: { nearest: 'Nearest', frame_blend: 'Frame Blend' },
+        retimeAndScaling: 'Retime and Scaling', retimeProcess: 'Retime process', retimeProcesses: { nearest: 'Nearest', frame_blend: 'Frame Blend', optical_flow: 'Optical Flow' },
         /** Stabilization of the Video tab (Reference Manual 20, pp. 633–634 and 1064–1065). Its Zoom is `zoom`. */
         stabilization: 'Stabilization', stabilizeMethod: 'Method',
         stabilizeMethods: { perspective: 'Perspective', similarity: 'Similarity', translation: 'Translation' },

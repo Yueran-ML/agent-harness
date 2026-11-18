@@ -994,7 +994,7 @@ export const zhCN: Messages = {
         video: '视频', audio: '音频', title: '标题', generator: '生成器', transition: '转场', settings: '时间线设置',
         transform: '变换', composite: '合成', fades: '淡入淡出', compositeMode: '合成模式',
         cropping: '裁切', cropLeft: '左侧裁切', cropRight: '右侧裁切', cropTop: '顶部裁切', cropBottom: '底部裁切', softness: '柔化',
-        retimeAndScaling: '变速与缩放', retimeProcess: '变速处理', retimeProcesses: { nearest: '最近的', frame_blend: '帧混合' },
+        retimeAndScaling: '变速与缩放', retimeProcess: '变速处理', retimeProcesses: { nearest: '最近的', frame_blend: '帧混合', optical_flow: '光流' },
         stabilization: '稳定', stabilizeMethod: '方式',
         stabilizeMethods: { perspective: '透视', similarity: '相似', translation: '平移' },
         cameraLock: '摄影机锁定', croppingRatio: '裁切比例', smooth: '平滑', strength: '强度',

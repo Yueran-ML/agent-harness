@@ -288,6 +288,9 @@ def test_the_retime_process_that_a_builder_writes_is_one_that_the_engine_takes()
 
     taken = _fields_of(OPERATIONS["set_clip"]) | {"op", "timeline"}
     assert [key for key in written if key not in taken] == []
-    # And the protocol names both processes where it says what a clip is.
+    # And the protocol names every process where it says what a clip is.
     assert '`retime_process: "frame_blend"`' in PROTOCOL
+    assert '`retime_process: "optical_flow"`' in PROTOCOL
     assert '`"nearest"`' in PROTOCOL
+    flow = edits.set_clip("t1", "c1", retime_process="optical_flow")
+    assert [key for key in flow if key not in taken] == []

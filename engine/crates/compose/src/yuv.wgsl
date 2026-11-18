@@ -49,7 +49,10 @@ struct Params {
     // Where a sample of chroma lies, in luma texels from the luma sample at its own place
     // (twice its place, where chroma is halved): x across, y down (0 and 0.5, "left" of 4:2:0).
     // Then z, how much of a second picture is mixed into this one, from 0 to 1: read by the
-    // shader of a layer of two pictures alone (`between.wgsl`), and 0 of any other.
+    // shader of a layer of two pictures alone (`between.wgsl`), and 0 of any other. And w, of
+    // two pictures moved along the flows between them before they are mixed, how many pixels
+    // of them a texel of the flows is across and down: read by that shader alone
+    // (`flow_between.wgsl`), and 0 of any other.
     siting: vec4<f32>,
     // What the picture is: x 0 of Y'CbCr, 1 of R'G'B'A of integers, 2 of R'G'B'A of floats; y
     // its alpha: 0 none, 1 straight, 2 premultiplied; z what a texel of R'G'B'A, or of the plane

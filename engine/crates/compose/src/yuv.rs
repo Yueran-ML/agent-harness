@@ -463,6 +463,19 @@ pub fn set_between(params: &mut [f32], weight: f32) {
     params[BETWEEN_PARAM] = weight;
 }
 
+/// Where [`picture_params`] says how many pixels of two pictures that are moved along the
+/// flows between them a texel of the flows is (`siting.w`): 0, of any other picture.
+pub const FLOW_PARAM: usize = 23;
+
+/// Say in the parameters of a picture how many of its pixels, across and down, a texel of the
+/// flows between it and a second picture is: read by the shader of a layer of two pictures that
+/// are moved along those before they are mixed (`flow_between.wgsl`, which the compositor puts
+/// into the shader of two for a clip that is retimed by Optical Flow, see [`crate::flow`]), and
+/// left at 0 for every other.
+pub fn set_flow(params: &mut [f32], scale: u16) {
+    params[FLOW_PARAM] = f32::from(scale);
+}
+
 /// The black and the range from black to white of R'G'B' of `bits` bits at full scale, from 0
 /// to 1: 0 and 1 of full range; of limited range, `16 · 2^(bits − 8)` and `219 · 2^(bits − 8)`
 /// of the most, `2^bits − 1` (16/255 and 219/255 of 8 bits). Of floats, always 0 and 1.

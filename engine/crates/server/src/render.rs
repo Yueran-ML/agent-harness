@@ -16,6 +16,7 @@ use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use columbina_compose::flow::Pair;
 use columbina_compose::{
     Compositor, Fusion, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform, YuvCoding,
 };
@@ -31,7 +32,10 @@ use serde_json::json;
 use crate::gpu::Graphics;
 use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::managed::{self, Output};
-use crate::play::{sources::Sources, Notify};
+use crate::play::{
+    sources::{Read, Sources},
+    Notify,
+};
 use crate::rpc::{self, Fault};
 use crate::srt;
 
@@ -979,14 +983,14 @@ pub(crate) fn scene_of(
                     .picture(media, &layer.clip, tick, false, false)
                     .map_err(|error| error.to_string())?
                     .ok_or(busy)?;
-                // The second picture of a clip that mixes two (Frame Blend), read after the
-                // first by the same decoder, which goes on from it. One that cannot be read,
-                // as where the media says that it lasts longer than its picture does, is not
-                // mixed in: the first is shown alone, as Nearest shows it.
+                // The second picture of a clip that shows two (Frame Blend, Optical Flow),
+                // read after the first by the same decoder, which goes on from it. One that
+                // cannot be read, as where the media says that it lasts longer than its picture
+                // does, is not mixed in: the first is shown alone, as Nearest shows it.
                 let second = match layer.blend {
                     Some(blend) => {
                         match sources.picture(media, &layer.clip, blend.tick, false, false) {
-                            Ok(Some(second)) => Some((second.picture, blend.weight)),
+                            Ok(Some(second)) => Some(Second::of(&read, second, blend)),
                             Ok(None) => return Err(busy.into()),
                             Err(_) => None,
                         }
@@ -1057,23 +1061,61 @@ pub(crate) fn composed(
     Source::Fused(Box::new(fused))
 }
 
+/// The second picture of a layer of a clip that shows two of its media (Frame Blend, Optical
+/// Flow) at a frame that lies between them: the picture, how much of it is shown, and, of
+/// Optical Flow, what the two are known by, by which the flows between them are kept.
+pub(crate) struct Second {
+    pub(crate) picture: Arc<NativePicture>,
+    pub(crate) weight: f32,
+    pub(crate) flow: Option<Pair>,
+}
+
+impl Second {
+    /// The picture `second` of a layer whose first picture is `first`, shown as `blend` says.
+    /// The two are known, for the flows between them, by the file that each is read from (its
+    /// media, the file of that, and its original or which proxy) and the frame of each there:
+    /// what the reads decoded, so that flows found of a picture that stood in for another are
+    /// not taken for those of the other.
+    pub(crate) fn of(first: &Read, second: Read, blend: resolve::Blend) -> Second {
+        let file = |read: &Read| {
+            let of = &read.provenance;
+            format!(
+                "{} {} {:?} {}",
+                of.media, of.identity.digest, of.source, of.proxy_version
+            )
+        };
+        let flow = blend.flow.then(|| Pair {
+            media: format!("{} / {}", file(first), file(&second)),
+            first: first.provenance.decoded_frame,
+            second: second.provenance.decoded_frame,
+        });
+        Second {
+            picture: second.picture,
+            weight: blend.weight,
+            flow,
+        }
+    }
+}
+
 /// What a layer of media shows, for the preview and the export alike: its picture, turned
-/// `rotation` degrees; or, of a clip that mixes two pictures of its media (Frame Blend) at a
-/// frame that lies between them, that picture and the `second` one, by the weight beside it.
-/// Two pictures that are not laid out alike are not mixed, and the first is shown alone: a
-/// proxy that fails on the way is read on from its original, which is of another size.
+/// `rotation` degrees; or, of a clip that shows two pictures of its media (Frame Blend,
+/// Optical Flow) at a frame that lies between them, that picture and the `second` one, by the
+/// weight beside it, moved along the flows between them where the second says what they are
+/// known by. Two pictures that are not laid out alike are not mixed, and the first is shown
+/// alone: a proxy that fails on the way is read on from its original, which is of another size.
 pub(crate) fn picture_source(
     first: Arc<NativePicture>,
-    second: Option<(Arc<NativePicture>, f32)>,
+    second: Option<Second>,
     rotation: i16,
 ) -> Source {
     use columbina_compose::yuv::Layout;
     match second {
-        Some((second, weight)) if Layout::of(&second) == Layout::of(&first) => Source::Between {
+        Some(second) if Layout::of(&second.picture) == Layout::of(&first) => Source::Between {
             first,
-            second,
-            weight,
+            second: second.picture,
+            weight: second.weight,
             rotation,
+            flow: second.flow,
         },
         _ => Source::Picture(first, rotation),
     }
@@ -1826,6 +1868,117 @@ mod tests {
             assert!(near(digit(now, 1), 0.0) && near(digit(now, 2), 0.0));
         }
         assert_eq!((nearest.len(), mixed.len()), (12, 12));
+    }
+
+    /// The sample with the numbered media of `Sample::Fhd` from its picture 4, 12 frames of c1
+    /// at half the speed on a timeline of 1920 × 1080 of picture alone, retimed by `process`:
+    /// the places 4, 4.5, 5 and so on to 9.5. None where the media cannot be made.
+    fn slowed(process: columbina_model::retime::RetimeProcess) -> Option<Project> {
+        use columbina_model::{Clip, Speed, Time};
+        let made = test_media::media(Sample::Fhd)?;
+        let facts = columbina_media::probe(&made.path).unwrap();
+        let mut project = Project::sample();
+        project.media[0].path = made.path.to_string_lossy().into_owned();
+        project.media[0].facts = facts.clone();
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (1920, 1080);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        let rate = facts.video.as_ref().unwrap().rate;
+        let from = Time {
+            ticks: rate.ticks_of(4, facts.duration.scale),
+            scale: facts.duration.scale,
+        };
+        let mut clip = Clip::of_media("c1", "m1", from, 0, 12);
+        clip.speed = Speed { num: 1, den: 2 };
+        clip.retime_process = process;
+        timeline.tracks[0].clips = vec![clip];
+        Some(project)
+    }
+
+    /// A clip retimed by Optical Flow hands the compositor, at a frame between two pictures,
+    /// the two with what they are known by, for the flows between them: the frames of the
+    /// media decoded for them, of one file. With Frame Blend the same two are handed with
+    /// nothing to know them by, and are mixed as they are; a frame on a picture is that picture
+    /// alone either way.
+    #[test]
+    fn a_clip_retimed_by_optical_flow_hands_the_compositor_two_pictures_known_by_their_frames() {
+        use columbina_model::retime::RetimeProcess;
+        let Some(mut project) = slowed(RetimeProcess::OpticalFlow) else {
+            return;
+        };
+        let sources = Sources::new(Hardware::Off, Arc::new(|_, _| {}));
+        let source_at = |project: &Project, frame: i64| {
+            let (mut shown, _) = scene(project, &project.timelines[0], frame, &sources).unwrap();
+            shown.layers.remove(0).source
+        };
+        // Halfway from picture 4 to picture 5.
+        let Source::Between { weight, flow, .. } = source_at(&project, 1) else {
+            panic!("one picture at a frame between two");
+        };
+        assert!((weight - 0.5).abs() < 1e-6, "{weight}");
+        let pair = flow.expect("what the two pictures are known by");
+        assert_eq!((pair.first, pair.second), (4, 5));
+        assert!(pair.media.contains("m1"), "{}", pair.media);
+        // The next frame between two: the next two pictures, of the same file.
+        let Source::Between {
+            flow: Some(next), ..
+        } = source_at(&project, 3)
+        else {
+            panic!("no flow at the next frame between two pictures");
+        };
+        assert_eq!((next.first, next.second), (5, 6));
+        assert_eq!(next.media, pair.media);
+        // On a picture: that picture alone.
+        assert!(matches!(source_at(&project, 2), Source::Picture(..)));
+        // Frame Blend: the same two, mixed as they are.
+        project.timelines[0].tracks[0].clips[0].retime_process = RetimeProcess::FrameBlend;
+        let Source::Between { weight, flow, .. } = source_at(&project, 1) else {
+            panic!("one picture at a frame between two, mixed");
+        };
+        assert!((weight - 0.5).abs() < 1e-6, "{weight}");
+        assert_eq!(flow, None);
+    }
+
+    /// A clip at half its speed whose Retime Process is Optical Flow is exported so: a frame
+    /// whose place is where a picture begins shows that picture, to the bit as Nearest shows
+    /// it, and a frame between two shows the two moved along the flows between them. The
+    /// pictures of the numbered media differ in the brightness of their blocks alone, along
+    /// which nothing moves: the frame between two is the two mixed by halves there.
+    #[test]
+    fn an_export_moves_the_two_pictures_that_a_frame_lies_between_along_their_flows() {
+        use columbina_model::retime::RetimeProcess;
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let Some(mut project) = slowed(RetimeProcess::Nearest) else {
+            return;
+        };
+        let (width, height) = (1920, 1080);
+        let nearest = exported(&project, 12, width, height);
+        project.timelines[0].tracks[0].clips[0].retime_process = RetimeProcess::OpticalFlow;
+        let flowed = exported(&project, 12, width, height);
+        // The digit of a block of the number of a picture, from its luma 16 + 14·d.
+        let digit = |rgba: &[u8], block: u32| {
+            let [r, ..] = rgba.as_chunks::<4>().0[(32 * width + 64 * block + 32) as usize];
+            f64::from(r) * 219.0 / 255.0 / 14.0
+        };
+        let near = |digit: f64, wanted: f64| (digit - wanted).abs() < 0.2;
+        for (k, (was, now)) in (0_u32..).zip(nearest.iter().zip(&flowed)) {
+            let picture = f64::from(4 + k / 2);
+            if k % 2 == 0 {
+                assert!(now == was, "frame {k} is not as Nearest shows it");
+            } else {
+                let between = digit(now, 0);
+                assert!(
+                    near(between, picture + 0.5),
+                    "frame {k} shows {between}, not halfway from {picture} to the next"
+                );
+            }
+            assert!(near(digit(now, 1), 0.0) && near(digit(now, 2), 0.0));
+        }
+        assert_eq!((nearest.len(), flowed.len()), (12, 12));
     }
 
     fn no_hardware(

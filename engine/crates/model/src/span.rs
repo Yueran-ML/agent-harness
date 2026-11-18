@@ -32,7 +32,8 @@
 //! one that the tick is in ([`media_frame`]). The place itself may lie between two pictures of
 //! the media: [`Reading::between`] gives the picture after the one that is read, and how far
 //! from the one to the other the place lies, as an exact fraction ([`Share`]), for a clip whose
-//! Retime Process mixes the two ([`crate::retime::RetimeProcess::FrameBlend`]).
+//! Retime Process shows the two ([`crate::retime::RetimeProcess::FrameBlend`],
+//! [`crate::retime::RetimeProcess::OpticalFlow`]).
 //!
 //! The place is counted in frames of the media from the picture that the clip begins in: a
 //! clip begins at a tick, which is where a picture begins as nearly as ticks say it
@@ -200,7 +201,8 @@ impl Reading {
     /// The picture after the one that frame `k` of the clip shows, and how far from the one to
     /// the other the place of the frame lies (see the module), on a timeline of `rate`, for
     /// media whose picture is of `pictures` frames a second and lasts `duration`: what a clip
-    /// that mixes the two shows ([`crate::retime::RetimeProcess::FrameBlend`]).
+    /// that shows the two shows ([`crate::retime::RetimeProcess::FrameBlend`],
+    /// [`crate::retime::RetimeProcess::OpticalFlow`]).
     ///
     /// The first of the two is always the picture that the frame shows alone, the one that the
     /// tick of [`Reading::tick`] is in ([`media_frame`]), so that a frame which lies between no

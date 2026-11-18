@@ -32,13 +32,13 @@
 //! speed is written as it was before them, and a project without them is read as it was. So is
 //! its Retime Process (`retime_process`, see [`crate::retime::RetimeProcess`]), what it shows
 //! where its place in its source lies between two pictures: it is written only on a clip that
-//! mixes the two, and a clip that is written without it shows the one picture that it always
-//! showed. And so is the composition of a clip of a track of picture (`fusion`, see
-//! [`crate::fusion`]), the graph of nodes that makes its picture: it is written only on a clip
-//! that has one, and a clip that is written without it shows its source as it always did. So is
-//! the stabilizer of such a clip (`stabilize`, see [`crate::stabilize`]), its controls and what
-//! its analysis measured: written only on a clip that has one, and a clip without it shows its
-//! source as it always did.
+//! shows the two, mixed or along the motion between them, and a clip that is written without it
+//! shows the one picture that it always showed. And so is the composition of a clip of a track
+//! of picture (`fusion`, see [`crate::fusion`]), the graph of nodes that makes its picture: it
+//! is written only on a clip that has one, and a clip that is written without it shows its
+//! source as it always did. So is the stabilizer of such a clip (`stabilize`, see
+//! [`crate::stabilize`]), its controls and what its analysis measured: written only on a clip
+//! that has one, and a clip without it shows its source as it always did.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -582,10 +582,11 @@ pub struct Clip {
     pub retime: Option<Retime>,
     /// What it shows at a frame whose place in its source lies between two pictures of its
     /// media, its Retime Process (see [`crate::retime`]): the one picture that the place is in,
-    /// or that one and the next, mixed. It is of a clip of media whose picture lasts, at one
-    /// speed or along speed points, and is kept on any other clip as it was set, where it says
-    /// nothing: a title, a colour and a still show one picture, and sound has none. It is
-    /// written only where it is not the one picture, and may be left out, as that.
+    /// or that one and the next, mixed as they are or along the motion between them. It is of a
+    /// clip of media whose picture lasts, at one speed or along speed points, and is kept on any
+    /// other clip as it was set, where it says nothing: a title, a colour and a still show one
+    /// picture, and sound has none. It is written only where it is not the one picture, and may
+    /// be left out, as that.
     #[serde(default, skip_serializing_if = "RetimeProcess::is_nearest")]
     pub retime_process: RetimeProcess,
     /// The group of linked clips that it is in, if any: the clips of a group, picture and sound
@@ -2350,8 +2351,16 @@ mod tests {
         assert_eq!(read, plain);
         assert_eq!(serde_json::to_string_pretty(&read).unwrap(), before);
         assert!(!before.contains("retime_process"));
-        // Any other word is refused, Optical Flow among them, which is not done yet.
-        value["timelines"][0]["tracks"][0]["clips"][0]["retime_process"] = "optical_flow".into();
+        // Optical Flow is written and read by its name, as Frame Blend is.
+        let mut flowing = plain.clone();
+        flowing.timelines[0].tracks[0].clips[0].retime_process = RetimeProcess::OpticalFlow;
+        let written = serde_json::to_value(&flowing).unwrap();
+        let clip = &written["timelines"][0]["tracks"][0]["clips"][0];
+        assert_eq!(clip["retime_process"], "optical_flow");
+        assert_eq!(Project::from_value(written).unwrap(), flowing);
+        // Any other word is refused: Speed Warp, which is a way of estimating motion in the
+        // manual and not a process of its own, among them.
+        value["timelines"][0]["tracks"][0]["clips"][0]["retime_process"] = "speed_warp".into();
         assert!(Project::from_value(value).is_err());
     }
 }

@@ -18,6 +18,11 @@ pollster.workspace = true
 thiserror.workspace = true
 wgpu.workspace = true
 
+[dev-dependencies]
+# The shaders of the compositor read and validated as wgpu reads them, without a card: the
+# version of wgpu's own naga, with its reader of WGSL.
+naga = { version = "=30.0.1", features = ["wgsl-in"] }
+
 [target.'cfg(windows)'.dependencies]
 wgpu = { workspace = true, features = ["dx12"] }
 

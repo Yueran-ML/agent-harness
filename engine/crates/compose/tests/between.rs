@@ -175,6 +175,7 @@ fn between(first: &Arc<NativePicture>, second: &Arc<NativePicture>, weight: f32)
         second: Arc::clone(second),
         weight,
         rotation: 0,
+        flow: None,
     }
 }
 

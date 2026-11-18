@@ -54,16 +54,19 @@
 //! - `tracker`, the inputs `input` and `foreground`, and its effect mask, `mask`: the picture
 //!   that was tracked held still, or another made to follow it ([`Tracker`]; see The Tracker
 //!   below).
+//! - `planar_tracker`, the inputs `input` and `foreground`, and its effect mask, `mask`: the
+//!   plane that was tracked held still, or another picture laid on it ([`PlanarTracker`]; see
+//!   The Planar Tracker below).
 //!
 //! An input that is not linked gives no picture: a transparent one of the size of the
 //! composition; but a `mask` that is not linked is no mask at all (see Masks), and a
 //! `garbage_matte` or a `solid_matte` that is not linked is no matte. A node that is
 //! passed through (Fusion's Pass Through, Ctrl-P) hands on the picture of its first input as
 //! it is ([`Kind::through`]): a Merge its background, a Transform, a Blur, a Mosaic, a Delta
-//! Keyer and a Tracker their picture, and a mask node the mask that comes into it. A node
-//! that has no such input, a `media_in` or a `background`, then gives none: the effect mask
-//! of a node is not a picture that it hands on, and neither are the mattes of a Delta Keyer
-//! nor the foreground of a Tracker.
+//! Keyer, a Tracker and a Planar Tracker their picture, and a mask node the mask that comes
+//! into it. A node that has no such input, a `media_in` or a `background`, then gives none:
+//! the effect mask of a node is not a picture that it hands on, and neither are the mattes of
+//! a Delta Keyer nor the foreground of a Tracker or of a Planar Tracker.
 //!
 //! # Masks
 //!
@@ -89,7 +92,8 @@
 //! What a mask does to the node whose `mask` it comes into, which the compositor is held to:
 //!
 //! - A node that has a picture to hand on (a `transform`, a `blur`, a `mosaic`, a
-//!   `delta_keyer` and a `tracker`, their `input`; a `merge`, its `background`): where the
+//!   `delta_keyer`, a `tracker` and a `planar_tracker`, their `input`; a `merge`, its
+//!   `background`): where the
 //!   mask is 1 its result is its own, where
 //!   it is 0 it is the picture of that first input as it came in (transparent where that is
 //!   not linked), and between them the two are mixed by the value of the mask, channel by
@@ -242,6 +246,37 @@
 //! composition, and a Tracker that is followed is not taken away: the centres that follow it
 //! are to let go of it first.
 //!
+//! # The Planar Tracker
+//!
+//! A Planar Tracker is Fusion's Planar Tracker node (Reference Manual 20, Chapter 83,
+//! pp. 1760–1766, and pp. 2749–2758): a region of the picture taken to be a plane, followed
+//! through the frames as a homography, and what the node draws with it ([`PlanarTracker`]).
+//!
+//! **Its region and its path.** The region is a polygon of places, drawn at the reference
+//! frame, where the plane is at rest. The path has, for frames of the keys of the clip, the
+//! homography from the reference frame to that frame, which acts on places as a [`Center`]
+//! counts them. Following the region through the pictures of a clip, which writes the path, is
+//! not done by the model: the path is a setting like another. Between two frames of the path the
+//! homography is the one that puts the corners of the box that bounds the region on the lines
+//! between where the two frames put them; before its first frame it is that one's, after its
+//! last that one's, and the identity where it has none ([`PlanarTracker::homography`]). The
+//! motion of the plane at a frame is that homography counted from the one at the reference
+//! frame, so that nothing moves there ([`PlanarTracker::motion_at`]).
+//!
+//! **What it draws** ([`PlanarTracked`]), by its operation:
+//!
+//! - `none`: the picture of its `input`, as it is.
+//! - `steady`: its `input` held still, drawn through the inverse of the motion at the frame,
+//!   which brings the plane back to where it was at the reference frame.
+//! - `corner_pin`: its `foreground`, its corners put on `corners` and that moved by the motion
+//!   at the frame, laid over its `input` (Normal, Over).
+//!
+//! The effect mask limits the node as it limits every node that hands a picture on, the picture
+//! of its `input` being the first. The picture that is moved is given to the compositor as the
+//! stabilizer gives its own, a matrix of shares of the picture from its top left corner, which
+//! may be projective: so the picture of a Planar Tracker does not depend on the size of the
+//! pictures of the composition.
+//!
 //! # Coordinates
 //!
 //! The settings are kept in Fusion's own units, so that a number is what `DaVinci` shows for
@@ -266,7 +301,8 @@
 //!
 //! No number of a Tracker takes keys: the paths of its patterns are what moves it. Their
 //! frames, and its reference, are frames of the same count, and are moved with the keys
-//! where the keys are moved ([`Composition::with_key_frames`]).
+//! where the keys are moved ([`Composition::with_key_frames`]). So it is with a Planar
+//! Tracker, its path and its reference.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -279,8 +315,13 @@ use crate::ops::OpError;
 use crate::project::{Clip, Id, Project, Source, Timeline};
 use crate::stabilize::Matrix;
 
+mod planar;
 mod tracker;
 
+pub use planar::{
+    homography_of, matrix_of, Corners, Homography, PlanarMotion, PlanarOperation, PlanarTracked,
+    PlanarTracker, LEAST_REGION_POINTS, MOST_REGION_POINTS, STILL,
+};
 pub use tracker::{
     Follow, FollowOutput, Pattern, PatternArea, Place, SearchArea, Tracked, Tracker, TrackerMerge,
     TrackerOperation, TrackerPivot, MOST_TRACKERS,
@@ -410,6 +451,9 @@ pub mod bounds {
     /// X Offset and Y Offset of a pattern of a Tracker (pp. 1741, 2777), in widths and in
     /// heights of the picture, right and up: none at first; as far as 16 pictures either way.
     pub const TRACKER_OFFSET: Bounds = Bounds::new(0.0, -16.0, 16.0);
+    /// A place of a Planar Tracker, across and up: a point of its region and a corner of its
+    /// Corner Pin. As far as a place of a Tracker may be.
+    pub const PLANAR_PLACE: Bounds = Bounds::new(0.5, -15.5, 16.5);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -445,6 +489,8 @@ pub enum Kind {
     DeltaKeyer,
     /// The picture that was tracked held still, or another made to follow it.
     Tracker,
+    /// The plane that was tracked held still, or another picture laid on it.
+    PlanarTracker,
 }
 
 impl Kind {
@@ -464,13 +510,14 @@ impl Kind {
             Self::Mosaic => "mosaic",
             Self::DeltaKeyer => "delta_keyer",
             Self::Tracker => "tracker",
+            Self::PlanarTracker => "planar_tracker",
         }
     }
 
     /// The inputs that a node of the kind has: its pictures, and after them its effect mask,
     /// `mask`, which every kind has but `media_in` and `media_out`. A mask node has that one
     /// alone: the mask that comes into it. A Delta Keyer has its two mattes between its
-    /// picture and its mask, and a Tracker its foreground.
+    /// picture and its mask, and a Tracker and a Planar Tracker their foreground.
     #[must_use]
     pub fn inputs(self) -> &'static [Input] {
         match self {
@@ -485,7 +532,7 @@ impl Kind {
                 Input::SolidMatte,
                 Input::Mask,
             ],
-            Self::Tracker => &[Input::Input, Input::Foreground, Input::Mask],
+            Self::Tracker | Self::PlanarTracker => &[Input::Input, Input::Foreground, Input::Mask],
         }
     }
 
@@ -502,7 +549,8 @@ impl Kind {
             | Self::Blur
             | Self::Mosaic
             | Self::DeltaKeyer
-            | Self::Tracker => Some(Input::Input),
+            | Self::Tracker
+            | Self::PlanarTracker => Some(Input::Input),
             Self::Merge => Some(Input::Background),
             Self::Rectangle | Self::Ellipse | Self::Polygon => Some(Input::Mask),
         }
@@ -528,12 +576,12 @@ impl Kind {
 pub enum Input {
     /// The one input of a node that has one picture: of `media_out`, of `transform`, of
     /// `blur` and of `mosaic`; the picture that a `delta_keyer` keys; and the picture that a
-    /// `tracker` was tracked in (Fusion's Background of a Tracker).
+    /// `tracker` or a `planar_tracker` was tracked in (Fusion's Background of a Tracker).
     Input,
     /// The background of a Merge (the orange input of an editor).
     Background,
-    /// The foreground of a Merge (the green one); and the picture that a `tracker` makes
-    /// follow its patterns.
+    /// The foreground of a Merge (the green one); the picture that a `tracker` makes follow
+    /// its patterns; and the picture that a `planar_tracker` lays on its plane.
     Foreground,
     /// The garbage matte of a `delta_keyer`: where it is 1 the matte is made transparent. It
     /// reads the alpha of the picture that is linked to it; not linked, it is not there.
@@ -542,9 +590,9 @@ pub enum Input {
     /// the alpha of the picture that is linked to it; not linked, it is not there.
     SolidMatte,
     /// The effect mask of a node (the blue input of an editor): the mask that limits a
-    /// `merge`, a `transform`, a `background`, a `blur`, a `mosaic`, a `delta_keyer` or a
-    /// `tracker`, and the mask that comes into a mask node. It reads the alpha of the picture
-    /// that is linked to it; not linked, it is no mask.
+    /// `merge`, a `transform`, a `background`, a `blur`, a `mosaic`, a `delta_keyer`, a
+    /// `tracker` or a `planar_tracker`, and the mask that comes into a mask node. It reads the
+    /// alpha of the picture that is linked to it; not linked, it is no mask.
     Mask,
 }
 
@@ -1947,6 +1995,8 @@ pub enum NodeKind {
     DeltaKeyer(DeltaKeyer),
     /// The picture that was tracked held still, or another made to follow it.
     Tracker(Tracker),
+    /// The plane that was tracked held still, or another picture laid on it.
+    PlanarTracker(PlanarTracker),
 }
 
 /// The settings of a kind that has none, as they are written: `{}`.
@@ -1971,6 +2021,7 @@ impl NodeKind {
             Self::Mosaic(_) => Kind::Mosaic,
             Self::DeltaKeyer(_) => Kind::DeltaKeyer,
             Self::Tracker(_) => Kind::Tracker,
+            Self::PlanarTracker(_) => Kind::PlanarTracker,
         }
     }
 
@@ -1990,6 +2041,7 @@ impl NodeKind {
             Kind::Mosaic => Self::Mosaic(Mosaic::default()),
             Kind::DeltaKeyer => Self::DeltaKeyer(DeltaKeyer::default()),
             Kind::Tracker => Self::Tracker(Tracker::default()),
+            Kind::PlanarTracker => Self::PlanarTracker(PlanarTracker::default()),
         }
     }
 
@@ -2017,6 +2069,7 @@ impl NodeKind {
             Kind::Mosaic => Self::Mosaic(serde_json::from_value(params)?),
             Kind::DeltaKeyer => Self::DeltaKeyer(serde_json::from_value(params)?),
             Kind::Tracker => Self::Tracker(serde_json::from_value(params)?),
+            Kind::PlanarTracker => Self::PlanarTracker(serde_json::from_value(params)?),
         })
     }
 
@@ -2039,6 +2092,7 @@ impl NodeKind {
             Self::Mosaic(params) => serde_json::to_value(params),
             Self::DeltaKeyer(params) => serde_json::to_value(params),
             Self::Tracker(params) => serde_json::to_value(params),
+            Self::PlanarTracker(params) => serde_json::to_value(params),
         };
         value.expect("the settings of a node are written as JSON")
     }
@@ -2046,9 +2100,10 @@ impl NodeKind {
     /// Check its settings: each within its bounds, as a number or at each key; of a Polygon,
     /// that it has no more points than it may; of a Delta Keyer, that its thresholds are in
     /// order and its screen colour has a channel above its other two, where they have no
-    /// keys; and of a Tracker, that it has no more patterns than it may, each with its
-    /// numbers and the places and frames of its path within their bounds. That the node
-    /// which a centre follows is a Tracker is checked of the composition, whole.
+    /// keys; of a Tracker, that it has no more patterns than it may, each with its
+    /// numbers and the places and frames of its path within their bounds; and of a Planar
+    /// Tracker, its region, its corners, its path and its reference. That the node which a
+    /// centre follows is a Tracker is checked of the composition, whole.
     pub(crate) fn check(&self) -> Result<(), OpError> {
         match self {
             Self::MediaIn | Self::MediaOut => Ok(()),
@@ -2062,13 +2117,15 @@ impl NodeKind {
             Self::Mosaic(mosaic) => mosaic.check(),
             Self::DeltaKeyer(keyer) => keyer.check(),
             Self::Tracker(tracker) => tracker.check(),
+            Self::PlanarTracker(planar) => planar.check(),
         }
     }
 
-    /// Its settings that take keys, each with its path in `params`. A Tracker has none.
+    /// Its settings that take keys, each with its path in `params`. A Tracker and a Planar
+    /// Tracker have none.
     fn keyed(&self) -> Vec<(Cow<'static, str>, &Param)> {
         match self {
-            Self::MediaIn | Self::MediaOut | Self::Tracker(_) => vec![],
+            Self::MediaIn | Self::MediaOut | Self::Tracker(_) | Self::PlanarTracker(_) => vec![],
             Self::Merge(merge) => named(merge.settings()),
             Self::Transform(transform) => named(transform.settings()),
             Self::Background(background) => named(background.settings()),
@@ -2084,7 +2141,7 @@ impl NodeKind {
     /// Its settings that take keys, each with its path in `params`, to be changed.
     fn settings_mut(&mut self) -> Vec<(Cow<'static, str>, &mut Param)> {
         match self {
-            Self::MediaIn | Self::MediaOut | Self::Tracker(_) => vec![],
+            Self::MediaIn | Self::MediaOut | Self::Tracker(_) | Self::PlanarTracker(_) => vec![],
             Self::Merge(merge) => named(merge.settings_mut()),
             Self::Transform(transform) => named(transform.settings_mut()),
             Self::Background(background) => named(background.settings_mut()),
@@ -2106,7 +2163,8 @@ impl NodeKind {
     }
 
     /// The paths of its settings that take keys, in the order of its `params`: of a
-    /// Polygon, those of the points that it has, by their places. A Tracker has none.
+    /// Polygon, those of the points that it has, by their places. A Tracker and a Planar
+    /// Tracker have none.
     #[must_use]
     pub fn settings(&self) -> Vec<String> {
         self.keyed()
@@ -2129,7 +2187,8 @@ impl NodeKind {
             | Self::Blur(_)
             | Self::Mosaic(_)
             | Self::DeltaKeyer(_)
-            | Self::Tracker(_) => None,
+            | Self::Tracker(_)
+            | Self::PlanarTracker(_) => None,
         }
     }
 
@@ -2155,19 +2214,22 @@ impl NodeKind {
             | Self::Blur(_)
             | Self::Mosaic(_)
             | Self::DeltaKeyer(_)
-            | Self::Tracker(_) => return None,
+            | Self::Tracker(_)
+            | Self::PlanarTracker(_) => return None,
         };
         center.follow.as_mut()
     }
 
     /// Whether what it is changes with the frame of its own accord: one of its settings has
-    /// keys, or, of a Tracker, one of its patterns has a path. A node whose centre follows
-    /// such a Tracker changes with it too, which its composition tells
-    /// ([`Composition::node_is_animated`]).
+    /// keys, or, of a Tracker, one of its patterns has a path, or, of a Planar Tracker, its
+    /// path has a frame. A node whose centre follows such a Tracker changes with it too, which
+    /// its composition tells ([`Composition::node_is_animated`]).
     #[must_use]
     pub fn is_animated(&self) -> bool {
-        if let Self::Tracker(tracker) = self {
-            return tracker.has_paths();
+        match self {
+            Self::Tracker(tracker) => return tracker.has_paths(),
+            Self::PlanarTracker(planar) => return planar.has_path(),
+            _ => {}
         }
         self.keyed()
             .into_iter()
@@ -2176,11 +2238,16 @@ impl NodeKind {
 
     /// It with each key of its settings at the frame `to` of its frame
     /// ([`Param::with_key_frames`]); and, of a Tracker, each frame of the paths of its
-    /// patterns and its reference.
+    /// patterns and its reference, and of a Planar Tracker, each frame of its path and its
+    /// reference.
     #[must_use]
     pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> NodeKind {
-        if let Self::Tracker(tracker) = self {
-            return Self::Tracker(tracker.with_key_frames(to));
+        match self {
+            Self::Tracker(tracker) => return Self::Tracker(tracker.with_key_frames(to)),
+            Self::PlanarTracker(planar) => {
+                return Self::PlanarTracker(planar.with_key_frames(to));
+            }
+            _ => {}
         }
         let mut moved = self.clone();
         for (_, setting) in moved.settings_mut() {
@@ -2194,8 +2261,9 @@ impl NodeKind {
 ///
 /// It is written `{"id", "kind", "label", "pass_through", "pos", "params"}`, where `params` is
 /// what a node of its kind is set by: a [`Merge`], a [`Transform`], a [`Background`], a
-/// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`], a [`Mosaic`], a [`DeltaKeyer`]
-/// or a [`Tracker`], and an object with no fields for `media_in` and `media_out`.
+/// [`Rectangle`], an [`Ellipse`], a [`Polygon`], a [`Blur`], a [`Mosaic`], a [`DeltaKeyer`],
+/// a [`Tracker`] or a [`PlanarTracker`], and an object with no fields for `media_in` and
+/// `media_out`.
 /// `pass_through` and `pos` are always written, and may be left out where a node is read:
 /// they are then `false` and `null`.
 #[derive(Clone, Debug, PartialEq)]
@@ -2266,6 +2334,7 @@ impl Serialize for Node {
             NodeKind::Mosaic(params) => node.serialize_field("params", params)?,
             NodeKind::DeltaKeyer(params) => node.serialize_field("params", params)?,
             NodeKind::Tracker(params) => node.serialize_field("params", params)?,
+            NodeKind::PlanarTracker(params) => node.serialize_field("params", params)?,
         }
         node.end()
     }
@@ -2763,6 +2832,12 @@ impl Composition {
                 mask: read(Input::Mask),
                 settings: tracker.at(frame, moment.size),
             },
+            NodeKind::PlanarTracker(planar) => FusedKind::PlanarTracker {
+                input: read(Input::Input),
+                foreground: read(Input::Foreground),
+                mask: read(Input::Mask),
+                settings: planar.at(frame),
+            },
         };
         let at = nodes.len();
         nodes.push(FusedNode {
@@ -2952,6 +3027,20 @@ pub enum FusedKind {
         /// What it draws, and how the picture that is moved is put.
         settings: Tracked,
     },
+    /// The plane that was tracked held still, or another picture laid on it (see The Planar
+    /// Tracker of the [module](self)).
+    PlanarTracker {
+        /// The picture that was tracked: what the node is with an operation of None, what is
+        /// held still with Steady, and what the foreground is laid over with Corner Pin.
+        input: Option<usize>,
+        /// The picture that is laid on the plane with Corner Pin.
+        foreground: Option<usize>,
+        /// Its effect mask: what the node draws where it is 1, the picture of its `input` as
+        /// it came in where it is 0. None where it has none.
+        mask: Option<usize>,
+        /// What it draws, and where the picture that is moved is put.
+        settings: PlanarTracked,
+    },
     /// What comes out of the composition drawn through the stabilizer of its clip
     /// ([`crate::stabilize`]): no node of the composition, but what [`Fused::stabilized`] puts
     /// after its last node, between the node that the `MediaOut` read and the `MediaOut`.
@@ -3032,6 +3121,12 @@ impl FusedKind {
                 foreground,
                 mask,
                 ..
+            }
+            | Self::PlanarTracker {
+                input,
+                foreground,
+                mask,
+                ..
             } => vec![input, foreground, mask],
             Self::Transform { input, mask, .. }
             | Self::Blur { input, mask, .. }
@@ -3049,7 +3144,8 @@ impl FusedKind {
 
     /// The picture that the first input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: of a Merge its background, of a Transform, a Blur, a Mosaic, a Delta
-    /// Keyer and a Tracker their picture, of the stabilizer what comes out of the composition,
+    /// Keyer, a Tracker and a Planar Tracker their picture, of the stabilizer what comes out of
+    /// the composition,
     /// and of a mask node the mask that comes into it. None of a kind that has no such input,
     /// and where the input reads no picture. It is the picture that a node that is passed
     /// through hands on ([`Kind::through`]), and that what cannot draw a kind may hand on in
@@ -3064,6 +3160,7 @@ impl FusedKind {
             | Self::Mosaic { input, .. }
             | Self::DeltaKeyer { input, .. }
             | Self::Tracker { input, .. }
+            | Self::PlanarTracker { input, .. }
             | Self::Stabilize { input, .. } => *input,
             Self::Rectangle { mask, .. }
             | Self::Ellipse { mask, .. }
@@ -3073,8 +3170,8 @@ impl FusedKind {
 
     /// The mask that the `mask` input of a node of the kind reads, by its place in
     /// [`Fused::nodes`]: the effect mask of a Merge, of a Transform, of a Background, of a
-    /// Blur, of a Mosaic, of a Delta Keyer and of a Tracker, and the mask that comes into a
-    /// mask node. None of a `MediaIn` and of the stabilizer, which have no such input, and
+    /// Blur, of a Mosaic, of a Delta Keyer, of a Tracker and of a Planar Tracker, and the mask
+    /// that comes into a mask node. None of a `MediaIn` and of the stabilizer, which have no such input, and
     /// where the input is not linked or brings no picture.
     #[must_use]
     pub fn mask(&self) -> Option<usize> {
@@ -3089,7 +3186,8 @@ impl FusedKind {
             | Self::Blur { mask, .. }
             | Self::Mosaic { mask, .. }
             | Self::DeltaKeyer { mask, .. }
-            | Self::Tracker { mask, .. } => *mask,
+            | Self::Tracker { mask, .. }
+            | Self::PlanarTracker { mask, .. } => *mask,
         }
     }
 
@@ -3114,6 +3212,12 @@ impl FusedKind {
                 ..
             } => vec![*background, *foreground, *mask],
             Self::Tracker {
+                input,
+                foreground,
+                mask,
+                ..
+            }
+            | Self::PlanarTracker {
                 input,
                 foreground,
                 mask,
@@ -3429,6 +3533,7 @@ mod tests {
             json!({"id": "a", "kind": "blur", "label": "", "params": {}}),
             json!({"id": "a", "kind": "delta_keyer", "label": "", "params": {}}),
             json!({"id": "a", "kind": "tracker", "label": "", "params": {}}),
+            json!({"id": "a", "kind": "planar_tracker", "label": "", "params": {}}),
             json!({"id": "a", "kind": "text_plus", "label": "", "params": {}}),
             json!({"id": "a", "kind": "media_in", "label": "", "params": {}, "enabled": true}),
         ] {
@@ -3486,6 +3591,12 @@ mod tests {
         );
         assert_eq!(Kind::Tracker.through(), Some(Input::Input));
         assert!(!Kind::Tracker.is_mask());
+        // So has a Planar Tracker: the picture that was tracked, the one that it lays on the
+        // plane and its effect mask.
+        assert_eq!(Kind::PlanarTracker.inputs(), Kind::Tracker.inputs());
+        assert_eq!(Kind::PlanarTracker.through(), Some(Input::Input));
+        assert!(!Kind::PlanarTracker.is_mask());
+        assert_eq!(Kind::PlanarTracker.name(), "planar_tracker");
         assert_eq!(Kind::MediaIn.through(), None);
         assert_eq!(Kind::Background.through(), None);
         assert_eq!(Kind::MediaOut.through(), Some(Input::Input));
@@ -3504,6 +3615,7 @@ mod tests {
             Kind::Mosaic,
             Kind::DeltaKeyer,
             Kind::Tracker,
+            Kind::PlanarTracker,
         ] {
             // What is handed on is an input of the kind, and its mask comes after its pictures.
             let inputs = kind.inputs();
@@ -3856,6 +3968,17 @@ mod tests {
             "trackers.0.path",
         ] {
             assert!(tracked.setting_mut(path).is_none(), "{path}");
+        }
+        // Nor of a Planar Tracker: its path moves it.
+        assert_eq!(paths(Kind::PlanarTracker), [] as [&str; 0]);
+        let mut planar = NodeKind::PlanarTracker(PlanarTracker {
+            path: [(3, STILL)].into_iter().collect(),
+            ..PlanarTracker::default()
+        });
+        assert_eq!(planar.settings(), [] as [&str; 0]);
+        assert!(planar.is_animated());
+        for path in ["reference", "region.0.x", "corners.tl.y", "path.3.0"] {
+            assert!(planar.setting_mut(path).is_none(), "{path}");
         }
         assert_eq!(
             paths(Kind::Merge),

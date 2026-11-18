@@ -88,6 +88,19 @@ pub(crate) fn residual(h: &Mat3, src: Point, dst: Point) -> f64 {
     }
 }
 
+/// The transform of kind `model` that sends each point of `src` nearest to the point of `dst` at
+/// the same place, all weighed alike, by least squares: exactly, where there are as many pairs as
+/// fix it (four of a homography, which so puts four corners on four others). `None` where they
+/// do not fix it (too few, or all at one place or in a line), or where the two lists are not as
+/// long.
+#[must_use]
+pub fn fitted(model: Model, src: &[Point], dst: &[Point]) -> Option<Mat3> {
+    if src.len() != dst.len() {
+        return None;
+    }
+    least_squares(model, src, dst, &vec![1.0; src.len()])
+}
+
 /// The least-squares fit of `model` to the pairs `src[i] → dst[i]` weighed by `w[i]`, or `None`
 /// when they do not fix it (too few, all in a line, all weights 0).
 pub(crate) fn least_squares(model: Model, src: &[Point], dst: &[Point], w: &[f64]) -> Option<Mat3> {

@@ -64,6 +64,8 @@
 //!   pixels about each one: see The Delta Keyer below;
 //! - a Tracker is the passes of a Transform and of a Merge (`Pass::Lay`), one or two, or
 //!   none: see The Tracker below;
+//! - a Planar Tracker is one pass of `fusion.wgsl` (`Pass::Lay`) whose map may be projective,
+//!   or none: see The Planar Tracker below;
 //! - a node that changes nothing is no pass: its picture is that of its input. So is a
 //!   Transform as it is at first, a Merge whose foreground gives no picture or whose Blend is
 //!   0 (its background), and a Merge as it is at first over no background (its foreground):
@@ -281,6 +283,29 @@
 //! drawn by its sine and its cosine: a picture that is brought back by a quarter turn is
 //! read within a rounding of the middles of its texels.
 //!
+//! # The Planar Tracker
+//!
+//! What a Planar Tracker is is told with the model ([`columbina_model::fusion`], The Planar
+//! Tracker). The model hands it on as its operation and a matrix of shares of the picture from
+//! its top left corner, where each point of the picture that is moved is put
+//! ([`columbina_model::fusion::PlanarTracked`]), as the stabilizer hands on its own; and it is
+//! drawn as the stabilizer is, by one pass of `fusion.wgsl` that reads the picture through the
+//! inverse of that matrix made a map of the pixels that the pictures are drawn at (`steadied`),
+//! projective where it is, with no shader of its own:
+//!
+//! - with an operation of None it is its `input`, and no pass;
+//! - Steady is the pass of a Transform of its `input`, laid over nothing: a pixel that the
+//!   picture is not moved over is transparent. Where the matrix moves nothing (at the reference
+//!   frame, and with no path) or cannot be undone, it is its `input`, and no pass, whatever its
+//!   mask;
+//! - Corner Pin is the pass of a Merge as it is at first, the plain over, of its `foreground`
+//!   put so, on its `input`. With no `foreground` it is its `input`, and no pass.
+//!
+//! Its effect mask limits it as it limits every node that hands a picture on, the picture of
+//! its `input` being the first: that is the mask of the pass, as of a Transform and of a
+//! Merge. Where a pixel is made of several points, they lie as the affine part of the map puts
+//! them, as of the stabilizer.
+//!
 //! # The stabilizer
 //!
 //! The stabilizer of a clip ([`columbina_model::stabilize`]) is given in the composition of its
@@ -301,7 +326,8 @@
 //! cannot be undone: the node is then its input.
 
 use columbina_model::fusion::{
-    self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, Tracked, Transformed,
+    self as model, Blurred, DeltaKeyed, Fused, FusedKind, Merged, Mosaicked, PlanarTracked,
+    Tracked, Transformed,
 };
 
 use crate::color::Filter;
@@ -470,6 +496,7 @@ fn is_drawn(kind: &FusedKind) -> bool {
             | FusedKind::Mosaic { .. }
             | FusedKind::DeltaKeyer { .. }
             | FusedKind::Tracker { .. }
+            | FusedKind::PlanarTracker { .. }
             | FusedKind::Stabilize { .. }
     )
 }
@@ -1016,6 +1043,7 @@ pub(crate) fn plan(
                 &mut passes,
             ),
             tracker @ FusedKind::Tracker { .. } => tracked(tracker, read, size, luma, &mut passes),
+            node @ FusedKind::PlanarTracker { .. } => planar(node, read, size, luma, &mut passes),
             kind @ FusedKind::Stabilize { .. } => stabilized(kind, read, size, luma, &mut passes),
             other => match mask::of_node(other) {
                 // A mask node: a pass whatever its settings are, as a mask of nothing is a
@@ -1352,17 +1380,9 @@ fn stabilized(
     if input == Reads::Nothing || !columbina_model::stabilize::moves(matrix) {
         return input;
     }
-    let Some((map, scale)) = steadied(matrix, size) else {
+    let Some(params) = projective(matrix, size, &Settings::default(), luma) else {
         return input;
     };
-    let mut params = uniform(&map.affine, scale, &Settings::default(), luma);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a map, as the card takes it"
-    )]
-    let (across, down) = (map.across as f32, map.down as f32);
-    params[PROJECTIVE_ACROSS_AT] = across;
-    params[PROJECTIVE_DOWN_AT] = down;
     drawn(
         passes,
         Pass::Lay {
@@ -1372,6 +1392,99 @@ fn stabilized(
             uniform: params,
         },
     )
+}
+
+/// The uniform of `fusion.wgsl` of a pass that lays a picture put where `matrix` puts each of
+/// its points, in shares of the picture from its top left corner, both drawn `size` pixels
+/// large, merged by `settings`: the inverse of the matrix made a map of pixels ([`steadied`]),
+/// its affine part and the two numbers of its third row by which a place is divided. None where
+/// the matrix cannot be undone.
+fn projective(
+    matrix: &[[f64; 3]; 3],
+    size: (u32, u32),
+    settings: &Settings,
+    luma: [f32; 3],
+) -> Option<[f32; PARAMS]> {
+    let (map, scale) = steadied(matrix, size)?;
+    let mut params = uniform(&map.affine, scale, settings, luma);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a map, as the card takes it"
+    )]
+    let (across, down) = (map.across as f32, map.down as f32);
+    params[PROJECTIVE_ACROSS_AT] = across;
+    params[PROJECTIVE_DOWN_AT] = down;
+    Some(params)
+}
+
+/// The picture of the Planar Tracker `node`, `read` giving the picture that an input of it
+/// reads, drawn `size` pixels large: its `input` held still (Steady), or its `foreground` laid
+/// on the plane over its `input` (Corner Pin), the picture that is moved put where the matrix
+/// of the model puts it ([`projective`]); and that limited by its effect mask to its `input` as
+/// it came in. None of a node that is no Planar Tracker.
+///
+/// It is one pass, or none: see The Planar Tracker of the [module](self).
+fn planar(
+    node: &FusedKind,
+    read: impl Fn(Option<usize>) -> Reads,
+    size: (u32, u32),
+    luma: [f32; 3],
+    passes: &mut Vec<Pass>,
+) -> Reads {
+    let FusedKind::PlanarTracker {
+        input,
+        foreground,
+        mask,
+        settings,
+    } = node
+    else {
+        return Reads::Nothing;
+    };
+    let (input, foreground, limit) = (read(*input), read(*foreground), read(*mask));
+    let PlanarTracked { operation, matrix } = *settings;
+    let moves = columbina_model::stabilize::moves(&matrix);
+    match operation {
+        model::PlanarOperation::None => input,
+        model::PlanarOperation::Steady => {
+            if input == Reads::Nothing || !moves {
+                return input;
+            }
+            let Some(params) = projective(&matrix, size, &Settings::default(), luma) else {
+                return input;
+            };
+            drawn(
+                passes,
+                Pass::Lay {
+                    background: Reads::Nothing,
+                    foreground: input,
+                    mask: limit,
+                    uniform: limited(params, limit, LIMITED_TO_FOREGROUND),
+                },
+            )
+        }
+        model::PlanarOperation::CornerPin => {
+            if foreground == Reads::Nothing {
+                return input;
+            }
+            // Laid as it lies over nothing, with no mask, it is its foreground.
+            if !moves && input == Reads::Nothing && limit == Reads::Nothing {
+                return foreground;
+            }
+            let plain = held(&model::Merge::default().at(0.0));
+            let Some(params) = projective(&matrix, size, &plain, luma) else {
+                return input;
+            };
+            drawn(
+                passes,
+                Pass::Lay {
+                    background: input,
+                    foreground,
+                    mask: limit,
+                    uniform: limited(params, limit, LIMITED_TO_BACKGROUND),
+                },
+            )
+        }
+    }
 }
 
 /// How a pixel of the picture that the stabilizer draws reads the picture that comes into it,
@@ -1389,8 +1502,8 @@ pub(crate) struct Steadied {
 }
 
 /// The place in the uniform of `fusion.wgsl` of what the divisor of a projective map gains a
-/// pixel across (`row0.w`): 0 of every pass but those of the stabilizer whose map is
-/// projective.
+/// pixel across (`row0.w`): 0 of every pass but those of the stabilizer and of a Planar
+/// Tracker whose map is projective.
 const PROJECTIVE_ACROSS_AT: usize = 3;
 
 /// The place of what it gains a pixel down (`row1.w`).
@@ -4773,5 +4886,110 @@ mod tests {
         assert_eq!(shifted.affine.apply((8.5, 3.5)), (0.5, 3.5));
         assert_eq!(steadied(&[[0.0; 3]; 3], (64, 32)), None);
         assert_eq!(steadied(&matrix, (0, 32)), None);
+    }
+
+    /// A Planar Tracker that does `operation` and puts the picture that it moves by `matrix`,
+    /// in shares of the picture from its top left corner, its `input`, its `foreground` and its
+    /// `mask` reading `reads`.
+    fn planar_node(
+        operation: model::PlanarOperation,
+        matrix: [[f64; 3]; 3],
+        reads: [Option<usize>; 3],
+    ) -> FusedKind {
+        let [input, foreground, mask] = reads;
+        FusedKind::PlanarTracker {
+            input,
+            foreground,
+            mask,
+            settings: PlanarTracked { operation, matrix },
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each operation of a planar tracker, with a mask and without"
+    )]
+    fn a_planar_tracker_is_one_pass_that_reads_its_picture_through_its_matrix() {
+        use model::PlanarOperation::{CornerPin, None as Idle, Steady};
+        let identity = columbina_model::stabilize::IDENTITY;
+        // Two pixels of 16 to the right; and that, with a little perspective across.
+        let shift = [[1.0, 0.0, 0.125], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let tilted = [[1.0, 0.0, 0.125], [0.0, 1.0, 0.0], [0.05, 0.0, 1.0]];
+        let source = Plan {
+            passes: vec![],
+            output: Reads::Source,
+        };
+        // With an operation of None, and held still where the matrix moves nothing or cannot
+        // be undone, it is the picture that was tracked, whatever its mask; and so is a Corner
+        // Pin with no foreground.
+        for mask in [None, Some(2)] {
+            let reads = [Some(0), Some(1), mask];
+            assert_eq!(after_three(planar_node(Idle, shift, reads)), source);
+            assert_eq!(after_three(planar_node(Steady, identity, reads)), source);
+            let flat = [[0.0; 3]; 3];
+            assert_eq!(after_three(planar_node(Steady, flat, reads)), source);
+            let bare = [Some(0), None, mask];
+            assert_eq!(after_three(planar_node(CornerPin, shift, bare)), source);
+        }
+        // Held still of no picture, it is none.
+        let none = after_three(planar_node(Steady, shift, [None, Some(1), None]));
+        assert_eq!(none, Plan::default());
+        // Held still without a mask: the pass of the stabilizer of the picture, to the number.
+        for matrix in [shift, tilted] {
+            let still = after_three(planar_node(Steady, matrix, [Some(0), Some(1), None]));
+            let stabilizer = FusedKind::Stabilize {
+                input: Some(0),
+                matrix,
+            };
+            assert_eq!(still, after_three(stabilizer), "{matrix:?}");
+            assert_eq!(still.passes.len(), 1);
+        }
+        // With a mask, that pass limited to the picture as it came in.
+        let mut wanted = projective(&tilted, SIZE, &Settings::default(), REC709_LUMA).unwrap();
+        assert_ne!(wanted[PROJECTIVE_ACROSS_AT], 0.0);
+        wanted[LIMITED_AT] = LIMITED_TO_FOREGROUND;
+        let with_mask = after_three(planar_node(Steady, tilted, [Some(0), Some(1), Some(2)]));
+        assert_eq!(with_mask.passes.len(), 2);
+        assert!(matches!(with_mask.passes[0], Pass::Mask { .. }));
+        assert_eq!(
+            laid(&with_mask.passes[1]),
+            ([Reads::Nothing, Reads::Source, Reads::Pass(0)], wanted)
+        );
+        assert_eq!(with_mask.output, Reads::Pass(1));
+        // A Corner Pin: the foreground, put by the matrix, laid over the picture that was
+        // tracked by a Merge as it is at first; with a mask, limited to that picture.
+        let plain = held(&model::Merge::default().at(0.0));
+        let laid_by = projective(&tilted, SIZE, &plain, REC709_LUMA).unwrap();
+        let pinned = after_three(planar_node(CornerPin, tilted, [Some(0), Some(1), None]));
+        assert_eq!(pinned.passes.len(), 2);
+        assert_eq!(pinned.passes[0], Pass::Fill([0.2, 0.4, 0.6, 1.0]));
+        assert_eq!(
+            laid(&pinned.passes[1]),
+            ([Reads::Source, Reads::Pass(0), Reads::Nothing], laid_by)
+        );
+        let mut limited_by = laid_by;
+        limited_by[LIMITED_AT] = LIMITED_TO_BACKGROUND;
+        let pinned = after_three(planar_node(CornerPin, tilted, [Some(0), Some(1), Some(2)]));
+        assert_eq!(pinned.passes.len(), 3);
+        assert_eq!(
+            laid(&pinned.passes[2]),
+            ([Reads::Source, Reads::Pass(0), Reads::Pass(1)], limited_by)
+        );
+        // Laid as it lies over nothing, with no mask, it is its foreground; over a picture, a
+        // pass all the same.
+        let lying = after_three(planar_node(CornerPin, identity, [None, Some(1), None]));
+        assert_eq!(lying.passes, vec![Pass::Fill([0.2, 0.4, 0.6, 1.0])]);
+        assert_eq!(lying.output, Reads::Pass(0));
+        let over = after_three(planar_node(CornerPin, identity, [Some(0), Some(1), None]));
+        assert_eq!(over.passes.len(), 2);
+        // Every one of them is drawn as what it is.
+        for operation in [Idle, Steady, CornerPin] {
+            assert!(is_drawn(&planar_node(
+                operation,
+                shift,
+                [Some(0), Some(1), None]
+            )));
+        }
     }
 }

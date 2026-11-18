@@ -726,6 +726,10 @@ impl Clip {
 /// What a clip shows or plays.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a source is kept once in its clip; a title's style is what it is made of"
+)]
 pub enum Source {
     /// Media, from a place in it.
     Media {
@@ -758,6 +762,11 @@ pub enum Source {
 /// transform are at, which for a title are its own frames from its first, 0
 /// ([`crate::keyframes::KeyClock`]). Its font, its colour and the side of its anchor take no
 /// keys.
+///
+/// It may have a stroke about its letters, a shadow of them and a box behind them, whose
+/// lengths take keys as its size does, and runs of its text in a colour, a size, a weight, a
+/// slant or a family of their own, which take none. Each is written only where it is there, so
+/// a title without them is written as it was before them, to the byte, and drawn as it was.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TitleStyle {
@@ -775,6 +784,202 @@ pub struct TitleStyle {
     pub y: Param,
     /// Which side of the text the anchor is on.
     pub align: TextAlign,
+    /// The stroke about its letters, if any. It may be left out, as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<TitleStroke>,
+    /// The shadow of its letters and of their stroke, if any. It may be left out, as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<TitleShadow>,
+    /// The box behind all of its lines, if any. It may be left out, as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<TitleBackground>,
+    /// Runs of its text that are drawn otherwise than the rest, in order and apart, at most
+    /// [`TitleSpan::MOST`]. It may be left out, as none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<TitleSpan>,
+}
+
+/// The stroke of a title: an outline about its letters, `width` pixels of the timeline beyond
+/// their edges, from 0 to [`TitleStroke::MOST_WIDTH`], in a colour. Its width is a [`Param`] in
+/// a [`TitleStyle`], and the number that it is at a frame in a [`Styled`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleStroke<V = Param> {
+    /// Its colour.
+    pub color: Rgba,
+    /// How far beyond the edges of the letters it reaches, in pixels of the timeline.
+    pub width: V,
+}
+
+/// The shadow of a title: its letters and their stroke again, under them, in a colour, moved
+/// `x` pixels of the timeline right and `y` down, each from -1024 to 1024, and blurred by a
+/// Gaussian whose standard deviation is `blur` pixels of the timeline, from 0 to 256. Its
+/// lengths are a [`Param`] each in a [`TitleStyle`], and numbers in a [`Styled`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleShadow<V = Param> {
+    /// Its colour, whose alpha is how opaque it is where the letters are whole.
+    pub color: Rgba,
+    /// How far right it is moved, in pixels of the timeline (left where below 0).
+    pub x: V,
+    /// How far down it is moved, in pixels of the timeline (up where below 0).
+    pub y: V,
+    /// The standard deviation of its blur, in pixels of the timeline.
+    pub blur: V,
+}
+
+/// The box behind a title: the block of all its lines, as wide as the widest, and `padding`
+/// pixels of the timeline about it, from 0 to 1024, its corners rounded by `radius`, from 0 to
+/// 512 (and at most half its width and half its height), in a colour. Its lengths are a
+/// [`Param`] each in a [`TitleStyle`], and numbers in a [`Styled`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleBackground<V = Param> {
+    /// Its colour.
+    pub color: Rgba,
+    /// How far it reaches beyond the block of the lines on every side, in pixels of the
+    /// timeline.
+    pub padding: V,
+    /// The radius of its corners, in pixels of the timeline.
+    pub radius: V,
+}
+
+/// A run of the text of a title that is drawn otherwise than the rest: the characters (Unicode
+/// scalar values) from `from` up to `to`, `from < to`, at most as many as the text has. Each of
+/// its settings, where it is there, takes the place of the title's for those characters: their
+/// colour, their size (as a share of the title's, from 0.1 to 10), their weight (bold), their
+/// slant (italic) and the family of their font. Each is written only where it is there; bold
+/// and italic only where they are set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleSpan {
+    /// The first character of the run.
+    pub from: usize,
+    /// The character after its last.
+    pub to: usize,
+    /// The colour of its letters, in place of the title's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Rgba>,
+    /// The size of its letters as a share of the title's size, from 0.1 to 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    /// Whether its letters are bold.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bold: bool,
+    /// Whether its letters are italic (slanted where the font has no italic face).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
+    /// The family of its font in place of the title's, or empty for the one that the engine
+    /// chooses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+}
+
+impl TitleStroke {
+    /// The widest that a stroke is, in pixels of the timeline.
+    pub const MOST_WIDTH: f64 = 256.0;
+
+    /// It at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> TitleStroke<f64> {
+        TitleStroke {
+            color: self.color,
+            width: self.width.value_at(frame),
+        }
+    }
+
+    /// It with each of its keys at the frame `to` of its frame.
+    #[must_use]
+    pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> TitleStroke {
+        TitleStroke {
+            color: self.color,
+            width: self.width.with_key_frames(to),
+        }
+    }
+}
+
+impl TitleShadow {
+    /// The farthest that a shadow is moved either way, in pixels of the timeline.
+    pub const MOST_OFFSET: f64 = 1024.0;
+    /// The most that a shadow is blurred, as a standard deviation in pixels of the timeline.
+    pub const MOST_BLUR: f64 = 256.0;
+
+    /// It at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> TitleShadow<f64> {
+        TitleShadow {
+            color: self.color,
+            x: self.x.value_at(frame),
+            y: self.y.value_at(frame),
+            blur: self.blur.value_at(frame),
+        }
+    }
+
+    /// It with each of its keys at the frame `to` of its frame.
+    #[must_use]
+    pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> TitleShadow {
+        TitleShadow {
+            color: self.color,
+            x: self.x.with_key_frames(to),
+            y: self.y.with_key_frames(to),
+            blur: self.blur.with_key_frames(to),
+        }
+    }
+}
+
+impl TitleBackground {
+    /// The most padding about the lines, in pixels of the timeline.
+    pub const MOST_PADDING: f64 = 1024.0;
+    /// The largest radius of the corners, in pixels of the timeline.
+    pub const MOST_RADIUS: f64 = 512.0;
+
+    /// It at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> TitleBackground<f64> {
+        TitleBackground {
+            color: self.color,
+            padding: self.padding.value_at(frame),
+            radius: self.radius.value_at(frame),
+        }
+    }
+
+    /// It with each of its keys at the frame `to` of its frame.
+    #[must_use]
+    pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> TitleBackground {
+        TitleBackground {
+            color: self.color,
+            padding: self.padding.with_key_frames(to),
+            radius: self.radius.with_key_frames(to),
+        }
+    }
+}
+
+impl TitleSpan {
+    /// The most runs that a title has.
+    pub const MOST: usize = 256;
+    /// The least share of the title's size that a run is drawn at.
+    pub const LEAST_SCALE: f64 = 0.1;
+    /// The most share of the title's size that a run is drawn at.
+    pub const MOST_SCALE: f64 = 10.0;
+
+    /// Check the runs of a text of `length` characters: at most [`TitleSpan::MOST`], each of
+    /// one character at least and within the text, in order and apart, each size within its
+    /// range.
+    fn check_all(spans: &[TitleSpan], length: usize) -> Result<(), crate::ops::OpError> {
+        let scaled = |scale: Option<f64>| {
+            scale.is_none_or(|scale| (Self::LEAST_SCALE..=Self::MOST_SCALE).contains(&scale))
+        };
+        let fits = spans.len() <= Self::MOST
+            && spans
+                .iter()
+                .all(|span| span.from < span.to && span.to <= length && scaled(span.scale))
+            && spans.windows(2).all(|pair| pair[0].to <= pair[1].from);
+        if fits {
+            Ok(())
+        } else {
+            Err(crate::ops::OpError::OutOfRange { what: "spans" })
+        }
+    }
 }
 
 /// Write a setting that was a whole number before it could have keys: one number that is whole
@@ -801,8 +1006,19 @@ impl TitleStyle {
     /// The most that the letters of a title are high, in pixels of the timeline.
     pub const MOST_SIZE: f64 = 4096.0;
 
-    /// The names of its settings that take keys, as a path names them after `title.`.
-    pub const SETTINGS: [&'static str; 3] = ["size", "x", "y"];
+    /// The names of its settings that take keys, as a path names them after `title.`: those of
+    /// its stroke, its shadow and its box only where it has them.
+    pub const SETTINGS: [&'static str; 9] = [
+        "size",
+        "x",
+        "y",
+        "stroke.width",
+        "shadow.x",
+        "shadow.y",
+        "shadow.blur",
+        "background.padding",
+        "background.radius",
+    ];
 
     /// How the title is drawn at a frame of its keys.
     #[must_use]
@@ -814,15 +1030,33 @@ impl TitleStyle {
             x: self.x.value_at(frame),
             y: self.y.value_at(frame),
             align: self.align,
+            stroke: self.stroke.as_ref().map(|stroke| stroke.at(frame)),
+            shadow: self.shadow.as_ref().map(|shadow| shadow.at(frame)),
+            background: self.background.as_ref().map(|back| back.at(frame)),
+            spans: self.spans.clone(),
         }
+    }
+
+    /// Its settings that take keys, those of its stroke, its shadow and its box where it has
+    /// them.
+    fn settings(&self) -> Vec<&Param> {
+        let mut all = vec![&self.size, &self.x, &self.y];
+        if let Some(stroke) = &self.stroke {
+            all.push(&stroke.width);
+        }
+        if let Some(shadow) = &self.shadow {
+            all.extend([&shadow.x, &shadow.y, &shadow.blur]);
+        }
+        if let Some(back) = &self.background {
+            all.extend([&back.padding, &back.radius]);
+        }
+        all
     }
 
     /// Whether any of its settings has keys.
     #[must_use]
     pub fn is_animated(&self) -> bool {
-        [&self.size, &self.x, &self.y]
-            .iter()
-            .any(|setting| setting.is_animated())
+        self.settings().iter().any(|setting| setting.is_animated())
     }
 
     /// It with each key of its settings at the frame `to` of its frame
@@ -836,31 +1070,69 @@ impl TitleStyle {
             x: self.x.with_key_frames(to),
             y: self.y.with_key_frames(to),
             align: self.align,
+            stroke: self
+                .stroke
+                .as_ref()
+                .map(|stroke| stroke.with_key_frames(to)),
+            shadow: self
+                .shadow
+                .as_ref()
+                .map(|shadow| shadow.with_key_frames(to)),
+            background: self
+                .background
+                .as_ref()
+                .map(|back| back.with_key_frames(to)),
+            spans: self.spans.clone(),
         }
     }
 
-    /// The setting of a name, one of [`TitleStyle::SETTINGS`].
+    /// The setting of a name, one of [`TitleStyle::SETTINGS`]: none for one of a stroke, a
+    /// shadow or a box that the title does not have.
     pub(crate) fn setting_mut(&mut self, name: &str) -> Option<&mut Param> {
         match name {
             "size" => Some(&mut self.size),
             "x" => Some(&mut self.x),
             "y" => Some(&mut self.y),
+            "stroke.width" => self.stroke.as_mut().map(|stroke| &mut stroke.width),
+            "shadow.x" => self.shadow.as_mut().map(|shadow| &mut shadow.x),
+            "shadow.y" => self.shadow.as_mut().map(|shadow| &mut shadow.y),
+            "shadow.blur" => self.shadow.as_mut().map(|shadow| &mut shadow.blur),
+            "background.padding" => self.background.as_mut().map(|back| &mut back.padding),
+            "background.radius" => self.background.as_mut().map(|back| &mut back.radius),
             _ => None,
         }
     }
 
-    /// Check its settings, each a number or keys: the size from 1 to
-    /// [`TitleStyle::MOST_SIZE`], and the place of the anchor finite.
-    pub(crate) fn check(&self) -> Result<(), crate::ops::OpError> {
+    /// Check its settings, each a number or keys, of a title that says `text`: the size from 1
+    /// to [`TitleStyle::MOST_SIZE`], the place of the anchor finite, the lengths of its stroke,
+    /// its shadow and its box within their ranges, and its runs within the text, in order and
+    /// apart ([`TitleSpan`]).
+    pub(crate) fn check(&self, text: &str) -> Result<(), crate::ops::OpError> {
         self.size.check("size", 1.0, Self::MOST_SIZE)?;
         self.x.check_with("position", |_| true)?;
-        self.y.check_with("position", |_| true)
+        self.y.check_with("position", |_| true)?;
+        if let Some(stroke) = &self.stroke {
+            stroke.width.check("stroke", 0.0, TitleStroke::MOST_WIDTH)?;
+        }
+        if let Some(shadow) = &self.shadow {
+            let most = TitleShadow::MOST_OFFSET;
+            shadow.x.check("shadow", -most, most)?;
+            shadow.y.check("shadow", -most, most)?;
+            shadow.blur.check("shadow", 0.0, TitleShadow::MOST_BLUR)?;
+        }
+        if let Some(back) = &self.background {
+            back.padding
+                .check("background", 0.0, TitleBackground::MOST_PADDING)?;
+            back.radius
+                .check("background", 0.0, TitleBackground::MOST_RADIUS)?;
+        }
+        TitleSpan::check_all(&self.spans, text.chars().count())
     }
 }
 
-/// How the text of a title is drawn at one moment: the font, the colour and the side of the
-/// anchor of a [`TitleStyle`], and each of its settings that take keys as the number that it
-/// is there.
+/// How the text of a title is drawn at one moment: the font, the colour, the side of the
+/// anchor and the runs of a [`TitleStyle`], and each of its settings that take keys as the
+/// number that it is there.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Styled {
     /// The family of the font, or empty for the one that the engine chooses.
@@ -875,6 +1147,14 @@ pub struct Styled {
     pub y: f64,
     /// Which side of the text the anchor is on.
     pub align: TextAlign,
+    /// The stroke about its letters, if any, its width in pixels of the timeline.
+    pub stroke: Option<TitleStroke<f64>>,
+    /// The shadow of its letters, if any, its lengths in pixels of the timeline.
+    pub shadow: Option<TitleShadow<f64>>,
+    /// The box behind its lines, if any, its lengths in pixels of the timeline.
+    pub background: Option<TitleBackground<f64>>,
+    /// The runs of its text that are drawn otherwise than the rest.
+    pub spans: Vec<TitleSpan>,
 }
 
 /// Which side of a text its anchor is on.
@@ -1936,6 +2216,10 @@ mod tests {
                 x: 0.5.into(),
                 y: 0.5.into(),
                 align: TextAlign::Center,
+                stroke: None,
+                shadow: None,
+                background: None,
+                spans: Vec::new(),
             },
         };
         let written = serde_json::to_value(&title).unwrap();

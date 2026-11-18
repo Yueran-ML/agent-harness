@@ -149,7 +149,9 @@ use crate::audio::{
     TrackGroup, Vca,
 };
 use crate::color_management::{Levels, LutPair};
-use crate::fusion::{Composition, MOST_NODES, MOST_POINTS, MOST_TRACKERS};
+use crate::fusion::{
+    Composition, LEAST_REGION_POINTS, MOST_NODES, MOST_POINTS, MOST_REGION_POINTS, MOST_TRACKERS,
+};
 use crate::grade::{
     Composite, Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL,
     LONGEST_PATH, MOST_INPUTS,
@@ -713,7 +715,9 @@ pub enum Op {
     /// what the setting was. The keys are at the frames that the keys of the clip's grade are
     /// at ([`crate::keyframes`]). The settings of the style of a title, `title.size`,
     /// `title.x` and `title.y`, are those of a clip that is a title: any other clip has no
-    /// such setting (`missing`, `setting`).
+    /// such setting (`missing`, `setting`); and those of its stroke, its shadow and its box,
+    /// `title.stroke.width`, `title.shadow.x`, `title.background.padding` and the others,
+    /// those of a title that has that part.
     SetClipKeys {
         /// The timeline.
         timeline: Id,
@@ -1379,8 +1383,11 @@ pub enum OpError {
     /// `tracker.trackers` (more patterns than it may have), `tracker.trackers.name`,
     /// `tracker.trackers.pattern`, `tracker.trackers.search`, `tracker.trackers.offset` and
     /// `tracker.trackers.path` (a number, or a frame of the path, of one of its patterns),
-    /// `tracker.pivot_tracker`, `tracker.pivot_point` and `tracker.reference`; and of a centre
-    /// that follows a Tracker, `center.follow.tracker` (a pattern that no Tracker may have).
+    /// `tracker.pivot_tracker`, `tracker.pivot_point` and `tracker.reference`; of a Planar
+    /// Tracker, `planar_tracker.region` (too few or too many places, or one out of its range),
+    /// `planar_tracker.corners`, `planar_tracker.path` (a number that is not finite, or a frame
+    /// beyond the largest) and `planar_tracker.reference`; and of a centre that follows a
+    /// Tracker, `center.follow.tracker` (a pattern that no Tracker may have).
     /// Of the stabilizer of a clip ([`crate::stabilize`]): `stabilize.cropping_ratio`,
     /// `stabilize.smooth`, `stabilize.strength` and `stabilize.analysis`.
     #[error("{}", range_message(.what))]
@@ -2009,6 +2016,20 @@ fn range_message(what: &str) -> String {
         "position" => {
             "the place of the title is not of finite numbers, as numbers or at each key".into()
         }
+        "stroke" => "the width of the stroke of the title is not from 0 to 256, as a number or at \
+                     each key"
+            .into(),
+        "shadow" => "the shadow of the title is not moved from -1024 to 1024 each way and \
+                     blurred from 0 to 256, as numbers or at each key"
+            .into(),
+        "background" => "the box of the title does not have a padding from 0 to 1024 and a \
+                         radius from 0 to 512, as numbers or at each key"
+            .into(),
+        "spans" => format!(
+            "the runs of the title are not at most {}, each of one character at least within \
+             the text, in order and apart, at a scale from 0.1 to 10",
+            crate::project::TitleSpan::MOST
+        ),
         "language" => "the language is not a short tag of BCP 47".into(),
         "by" => "it moves by no frame".into(),
         "clips" => "it names no clip".into(),
@@ -2030,6 +2051,13 @@ fn range_message(what: &str) -> String {
         "tracker.pivot_tracker" | "center.follow.tracker" => {
             format!("a Tracker has no pattern at that place: it has at most {MOST_TRACKERS}")
         }
+        "planar_tracker.region" => format!(
+            "the region of a Planar Tracker is not of {LEAST_REGION_POINTS} to \
+             {MOST_REGION_POINTS} places within their range"
+        ),
+        "planar_tracker.path" => "a path of a Planar Tracker is not of finite numbers at frames \
+                                  within 2^53 of 0"
+            .into(),
         "fusion_id" => "the id of a node of a composition has a dot in it, which ends the id \
                         in the path of a setting"
             .into(),
@@ -4206,7 +4234,7 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
             if text.chars().count() > LONGEST_TEXT {
                 return Err(range("text"));
             }
-            style.check()?;
+            style.check(text)?;
         }
         (Source::Color { .. }, _) => {
             if kind != TrackKind::Video {
@@ -6717,6 +6745,10 @@ mod tests {
                 x: 0.5.into(),
                 y: 0.5.into(),
                 align: TextAlign::Center,
+                stroke: None,
+                shadow: None,
+                background: None,
+                spans: Vec::new(),
             },
         }
     }
@@ -8568,6 +8600,10 @@ mod tests {
             "text",
             "size",
             "position",
+            "stroke",
+            "shadow",
+            "background",
+            "spans",
             "language",
             "by",
             "clips",

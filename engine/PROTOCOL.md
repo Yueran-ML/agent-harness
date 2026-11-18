@@ -237,7 +237,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Window controls of every shape (see Circular and Gradient Window controls, Linear and Polygon Window controls, Curve Window controls) |
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete"\|"clear_points"\|"delete_points",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}`; `clear_points` and `delete_points` (Esc and Backspace on a Curve's point selection) answer `{binding,phase:"cleared",cleared}` and `{binding,phase:"deleted",selected,points,revision}` (see Curve Window controls) |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
-| `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}`, or for the patterns of a Tracker of a composition `{fusion:{timeline,clip,node,trackers?},revision,frame,direction}` | `{job,first,last,frame_size,direction}` (and `trackers` with `fusion`) at once, then `track.progress` and `track.state` (see Window tracking, and The patterns of a Tracker there) |
+| `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}`, or for the patterns of a Tracker of a composition `{fusion:{timeline,clip,node,trackers?},revision,frame,direction}`, or for the region of a Planar Tracker `{planar:{timeline,clip,node},revision,frame,direction}` | `{job,first,last,frame_size,direction}` (and `trackers` with `fusion`) at once, then `track.progress` and `track.state` (see Window tracking, and The patterns of a Tracker and The region of a Planar Tracker there) |
 | `track.stop` | `{job}` | `{}`; the track ends between frames, keeping what it tracked (a measure of `track.stabilize` keeps nothing) |
 | `track.edit` | `{grade,node,window,revision?,edit:{kind,...}}` | `{revision}`; one step to undo (see Window tracking) |
 | `track.stabilize` | `{timeline,clip,revision,method?}` | `{job,first,last,frame_size,method}` at once, then `track.progress` and `track.state`; the motion of the whole picture of the clip measured over every frame that it shows, and written as the analysis of its stabilizer at the end, one step to undo (see The stabilizer) |
@@ -766,6 +766,36 @@ clients; a client must not write `project.json` itself.
   and writes as it did. `set_clip` with a `source` puts the style whole, keys and all;
   `set_clip_keys` and `splice_clip_keys` set one of the three, by `title.size`, `title.x` or
   `title.y`. `font`, `color` and `align` take no keys.
+- A title style may also have, each written only where it is there (so a title without them
+  reads, writes and draws exactly as before):
+  - `stroke: {color, width}`: an outline about the letters, `width` timeline pixels beyond
+    their edges, 0–256 (`out_of_range`, `what` `stroke`).
+  - `shadow: {color, x, y, blur}`: the letters and their stroke again under them, as opaque as
+    they are drawn, times the alpha of `color`, moved `x` right and `y` down (each −1024…1024
+    timeline pixels) and blurred by a Gaussian whose standard deviation is `blur` timeline
+    pixels, 0–256 (`out_of_range`, `what` `shadow`).
+  - `background: {color, padding, radius}`: a box behind the block of all the lines (as wide as
+    the widest, as high as all of them), `padding` timeline pixels beyond it on every side,
+    0–1024, its corners rounded by `radius`, 0–512 and at most half its width and height
+    (`out_of_range`, `what` `background`).
+  - `spans: [{from, to, color?, scale?, bold?, italic?, font?}, ...]`: runs of the text, by
+    indices of Unicode scalar values (characters, not bytes) of `text`, `from < to ≤` its
+    length, in order and not overlapping, at most 256. Each field given takes the place of the
+    title's for those characters: `color`, `scale` (the size as a share of the title's,
+    0.1–10; a line is as high as its largest letters need), `bold`, `italic` (slanted by the
+    engine where the font has no italic face; a font without a bold face draws regular) and
+    `font` (a family, `""` for the engine's). Anything else is `out_of_range` with `what`
+    `spans`, and so is a `set_clip` whose new `text` is shorter than a span reaches: the client
+    sends the spans with the text. Spans take no keys; `bold` and `italic` are written only
+    where true, the others only where given, and an empty list is left out.
+
+  `width`, `x`, `y`, `blur`, `padding` and `radius` are each a number or keys, as `size` is
+  (a number is written as a number, `4.0`), keyed by `set_clip_keys`/`splice_clip_keys` at
+  `title.stroke.width`, `title.shadow.x`, `title.shadow.y`, `title.shadow.blur`,
+  `title.background.padding` and `title.background.radius`; on a title that does not have that
+  part the path is `missing` with `what` `setting` (`set_clip` gives the part first). Colours
+  are as every colour (below). The title is drawn as box, shadow, stroke, letters; the stroke is
+  round about every corner at any width, and the shadow may be moved by a fraction of a pixel.
 - Colors accept exactly eight hexadecimal digits after `#`, with either letter case; returned
   operations and saved projects normalize them to lowercase `#rrggbbaa` (alpha last).
 - `transform` is `{x,y,scale,rotation,opacity}`: offsets as shares of timeline width/height,
@@ -984,9 +1014,14 @@ picture.
   `setMenuBarVisibility(false)`; it must also never show the menu (no `autoHideMenuBar` that
   Alt brings back; `Menu.setApplicationMenu(null)` or `removeMenu()` is surest). Width and
   height are 0 to 16384; a view of no pixels draws nothing.
-- **`view.attach`** makes the view in `parent` at the rectangle, shown and **black**, and makes
-  the graphics card ready to draw in it; it is answered once both are done (about 100–300 ms;
-  other connections are answered meanwhile). `adapter` and `backend` say what draws. There is
+- **`view.attach`** makes the view in `parent` at the rectangle, shown, and makes the graphics
+  card ready to draw in it; it is answered once both are done (about 100–300 ms; other
+  connections are answered meanwhile). `adapter` and `backend` say what draws. The view is
+  **black** while nothing is loaded in its monitor. Where something is (media in the source
+  monitor, a timeline in the timeline monitor), the engine draws into it at once the frame that
+  the monitor shows, as it shows it now (its Fusion view, Highlight, comparison, Viewer LUT),
+  with no other request: a view made in place of another, as for a page loaded again, shows the
+  paused frame without the playhead moving or the view being placed. There is
   **one view per monitor**: another `view.attach` for that monitor replaces only its view,
   in the same or another parent. Both share the engine's GPU. The view is the engine's, not the connection's: it stays when the
   connection that made it closes, until `view.detach`, another `view.attach`, or the end of the
@@ -1897,6 +1932,58 @@ own, written as the next change of one native gesture of the connection that ask
 Not yet: tracking the picture that comes into the Tracker through the nodes before it, and a
 pattern kept from its first frame (Fusion's Adaptive Mode None) or by its best match.
 
+**The region of a Planar Tracker** (T19). `track.start` `{planar: {timeline, clip, node},
+revision, frame, direction}` follows the region of the `planar_tracker` node `node` of the
+composition of the clip through the frames of the clip as a plane, and writes its `path` (see
+Compositions, The Planar Tracker). A request gives one of a window, `fusion` and `planar`, and
+`tracker` and `components` with a window alone; anything else is `-32602` with `reason:
+"fusion"`. The track goes as a track of a Tracker does: one at a time in an engine (`busy`),
+`revision` the project's (`stale_revision`), answered at once, run on a thread of its own,
+written as the next change of one native gesture of the connection that asked (any client),
+**one step to undo**; `track.stop`, the same events, and the same endings and reasons of
+`stopped`; `frame` and `direction` as a window's, and the same frames read: the clip's own
+media, the picture of its `media_in`, **not the picture that comes into the Planar Tracker**.
+
+- Refused: no such clip, a clip without a composition or a composition without that node
+  (`target`); a node of another kind (`wrong_node`, with `node` and its `kind`); a clip that
+  has no moving picture of media, a title, a colour or a still (`untrackable`); a `frame`
+  outside the frames the clip shows (`frame`); and a region that cannot be followed where the
+  track starts (`region`): fewer than three places, less than a pixel of the frames read in
+  area, none of it within the picture, or a plane that the path flattens at the reference frame,
+  which cannot be put back.
+- **Where it starts**: the region as it was drawn at the reference frame, moved by the motion of
+  the path at `frame`, between two of its frames as the path is read there (Compositions, The
+  Planar Tracker); where the path has no frame, the region as it was drawn.
+- **How it is followed**: by the cloud tracker of a window (Q7): the features within the region
+  are found and followed by pyramidal Lucas–Kanade, and the motion of the plane from `frame` is
+  fitted to those that agree (RANSAC, then least squares reweighted by Huber's weights), as a
+  homography with the `motion` `perspective` and as a shift, a turn and a size with the others;
+  of that, the parts that `motion` names are kept, about the middle of the region as it was
+  drawn: the shift alone with `translation`, the shift and the turn with
+  `translation_rotation`, all three with `translation_rotation_scale`. A frame at which too few
+  features agree is lost there: it is not written, and the track goes on, the features found
+  anew where the plane was last; a track ends `failed` with `no_features` where the region holds
+  nothing that can be followed at `frame`.
+- **What is written**: each frame at which the plane was found, and the frame that it started
+  from, become frames of the `path`: the motion from the reference frame, put after the
+  homography that the path has at the reference frame (so that a path tracked from the reference
+  frame has the motion itself), made a homography of places (the pixel `(i, j)` of the frames
+  read being the place `[(i + 0.5) / W, 1 − (j + 0.5) / H]`), written to the ninth decimal.
+  Those frames are overwritten and the other frames of the path are kept. The write is
+  `set_fusion_node` with `params: {"path": {...}}`, a patch of the path with the frames that it
+  has not as they were found (a frame already as it was found is not sent again): every client
+  sees the path grow, and the inverse of each write gives the frames that it put `null`, which
+  takes them away. A track that finds every frame as the path has it writes nothing.
+- The answer is `{job, first, last, frame_size, direction}`, as a window's. `track.progress`
+  is `{job, frame, timeline_frame, done, total, lost, revision}`, `lost` the frames at which the
+  plane was lost so far; `track.state` has `tracked`, the first and the last frame written into
+  the path, or `null`, `frames` the frames stepped through and `lost` those of them at which
+  the plane was lost.
+
+Not yet: tracking the picture that comes into the Planar Tracker through the nodes before it,
+Fusion's Hybrid Point/Area tracker and its Track Channel, the Affine motion, and a region that
+is not set whole (its points and the corners take no keys).
+
 ## The stabilizer
 
 T18a: the stabilizer of the Edit and Cut pages (Resolve 20, pp. 633–634 and 1064–1065), its
@@ -2375,8 +2462,8 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_track` | `timeline`, `id`, `name?`, `color?` (`#rrggbbaa`, null restores the unspecified default), `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (the last three of a track of sound only; on another `wrong_track` with `what` of the setting) |
 | `move_track` | `timeline`, `id`, `index`: zero-based index in the final complete track list, including video, audio and subtitle tracks; preserves the existing object and every ID/reference. Out-of-range or unchanged indexes are refused as `out_of_range` (`what: "track index"`). Like other basic track operations it can be undone while locked. |
 | `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `crop?` (whole), `composite?`, `retime_process?` (`nearest` or `frame_blend`), `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
-| `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness`, and, of a clip whose source is a title, `title.size`, `title.x`, `title.y` of its style (all listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`; those of `title.x` and `title.y`, as those of `transform.x` and `transform.y`, are what a control offers, and the model takes any finite number). Any other path is `missing` with `what` `setting`, and so is a path under `title` on a clip that is not a title. Its inverse is the `set_clip_keys` of the setting as it was. |
-| `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`, and `size` or `position` for the style of a title). |
+| `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness`, and, of a clip whose source is a title, `title.size`, `title.x`, `title.y` of its style, and `title.stroke.width`, `title.shadow.x`, `title.shadow.y`, `title.shadow.blur`, `title.background.padding`, `title.background.radius` of a title whose style has that part (all listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`, whose `default` for the parts of a style is what a client gives a new one: a stroke of 4, a shadow of 4, 4 and 4, a box of 16 with corners of 8; those of `title.x` and `title.y`, as those of `transform.x` and `transform.y`, are what a control offers, and the model takes any finite number). Any other path is `missing` with `what` `setting`, and so is a path under `title` on a clip that is not a title, or of a part that its style does not have. Its inverse is the `set_clip_keys` of the setting as it was. |
+| `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`, and `size`, `position`, `stroke`, `shadow` or `background` for the style of a title). |
 | `set_retime` | `timeline`, `id`, `retime` (the speed points `{points: [...]}`, or `null`, which must be written, for the speed of the source, forward), `length?` (the new length of the clip in frames, for a change that makes it longer or shorter): sets how the clip plays its source, whole, so a drag may send it again and again. Speed points of one speed are written as the `speed` and `reverse` of the clip. `start` and `source.in` stay: `trim_clip` moves them. Refused for a title, a colour or a still (`out_of_range`, `retime_source`), for speed points that are not those of a clip of that length (`out_of_range`: `retime`, `speed`, `retime_unit`), where the clip would show what is not in its media (`out_of_source`), and where it would cover frames of another clip of its track (`overlap`): nothing is moved out of its way. A clip with speed points refuses the `speed` and `reverse` of `set_clip` (`out_of_range`, `retimed`). Inverse: `set_retime` of how the clip played before, and of its length. |
 | `set_stabilize` | `timeline`, `clip`, `value` (the clip's stabilizer whole, `{method, camera_lock, zoom, cropping_ratio, smooth, strength, analysis?}`, or `null`, which must be written, to take it away): sets the stabilizer of a clip of a track of picture, its analysis with it, as the page sets a control or as `track.stabilize` writes what it measured. Refused for a clip of sound (`wrong_track`, `what` `stabilize`) and for controls or an analysis out of their ranges (`out_of_range`, with `what` `stabilize.cropping_ratio`, `stabilize.smooth`, `stabilize.strength` or `stabilize.analysis`; see The stabilizer). One that sets what is there already changes nothing, and makes no step. Inverse: `set_stabilize` of what the clip had. |
 | `set_stabilize_settings` | `timeline`, `clip`, `settings` (some of the controls of the stabilizer, each left out where it does not change: `{"method"?: "perspective" \| "similarity" \| "translation", "camera_lock"?: bool, "zoom"?: bool, "cropping_ratio"?: number, "smooth"?: number, "strength"?: number}`): sets the controls given of the stabilizer of a clip of a track of picture and keeps the others and its analysis as they are, so that a change of a control in the Inspector does not send the whole analysis again. A change of `method` keeps the analysis too, which is then one of another Method (see The stabilizer). A clip without a stabilizer is given the one that a clip has at first with the controls given, and no analysis. Refused for a clip of sound (`wrong_track`, `what` `stabilize`) and for controls out of their ranges (`out_of_range`, with `what` `stabilize.cropping_ratio`, `stabilize.smooth` or `stabilize.strength`); a field that is not a control is refused as the reader refuses an unknown field. Controls set to what they are, and `settings` `{}` on a clip that has a stabilizer, change nothing and make no step. Inverse: `set_stabilize_settings` of the old values of exactly the controls given, or, where the clip had no stabilizer, `set_stabilize` of `null`. |
@@ -3659,7 +3746,8 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
   would keep them at their frames of the timeline, is not offered.)
 - A **title**, a **colour** and a **still** (one picture held) have no frames of their own: the
   keys of their grades, transforms and crops, and those of the style of a title (its `size`,
-  `x` and `y`), count the frames of the clip from its first (0).
+  `x` and `y`, and the lengths of its stroke, shadow and box), count the frames of the clip
+  from its first (0).
   An edit that moves the head of such a clip (a `trim` of its start, with or without a ripple,
   a `roll`, a `slide`, a `blade`, and whatever else cuts it in two) moves its keys the other
   way by as many frames, with a `set_clip` (which carries the `source` of a title whose style
@@ -4000,10 +4088,11 @@ and is `n` + `next_id` where the engine makes it. `label` is at most 100 charact
 `{x, y}` or `null`, where the node lies in the node editor, as a node of a grade has it (see
 Grades). `pass_through` is Fusion's Pass Through (Ctrl-P): a node that is passed through hands
 on the picture of its **first** input as it is (a `merge` its `background`, a `transform`, a
-`blur`, a `mosaic`, a `delta_keyer` and a `tracker` their `input`, a mask node the mask that
-comes into it), and one that has no such input, a `media_in` or a `background`, then gives no
-picture: the effect mask of a node is not a picture that it hands on, and neither are the
-mattes of a `delta_keyer` nor the `foreground` of a `tracker`. The engine always writes `pass_through` and `pos`, and reads a node without
+`blur`, a `mosaic`, a `delta_keyer`, a `tracker` and a `planar_tracker` their `input`, a mask
+node the mask that comes into it), and one that has no such input, a `media_in` or a
+`background`, then gives no picture: the effect mask of a node is not a picture that it hands
+on, and neither are the mattes of a `delta_keyer` nor the `foreground` of a `tracker` or of a
+`planar_tracker`. The engine always writes `pass_through` and `pos`, and reads a node without
 them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 `fusion_nodes`).
 
@@ -4021,6 +4110,7 @@ them as `false` and `null`. A composition has at most 256 nodes (`out_of_range`
 | `mosaic` | `input`, `mask` | yes | its picture laid out in cells of one colour each, below (Blur and Mosaic) |
 | `delta_keyer` | `input`, `garbage_matte`, `solid_matte`, `mask` | yes | its picture keyed, the screen that it was shot against made transparent, below (The Delta Keyer) |
 | `tracker` | `input`, `foreground`, `mask` | yes | the picture that was tracked (`input`) held still, or the `foreground` made to follow it, by the paths of its patterns, below (The Tracker) |
+| `planar_tracker` | `input`, `foreground`, `mask` | yes | the plane that was tracked in its picture (`input`) held still, or the `foreground` laid on it, by the homographies of its path, below (The Planar Tracker) |
 
 An input that is not linked gives no picture: a transparent one of the size of the
 composition; but a `mask` that is not linked is **no mask** (Masks, below), and a
@@ -4078,8 +4168,8 @@ listed with the defaults and the units under `fusion_merge`, `fusion_transform`,
 `fusion_mosaic` and `fusion_delta_keyer` in `crates/model/tests/data/catalog.json` (page and
 palette `fusion`; an angle is in `degrees_counterclockwise`, a Blur Size and the lengths of a
 keyer in `pixels1080`, pixels of a picture 1080 high, and an offset of a mosaic in `pixels`,
-pixels of the picture of the composition). A `tracker` has no entry there: none of its numbers
-takes keys. Every field
+pixels of the picture of the composition). A `tracker` and a `planar_tracker` have no entry
+there: none of their numbers takes keys. Every field
 of the `params` of a node is written, and all of them must be there where a node is given whole
 (`add_fusion_node`, `set_fusion`).
 
@@ -4130,7 +4220,8 @@ of one channel):
 
 What a mask does to the node whose `mask` it comes into:
 
-- a `transform`, a `blur`, a `mosaic`, a `delta_keyer`, a `tracker` and a `merge`, which have a
+- a `transform`, a `blur`, a `mosaic`, a `delta_keyer`, a `tracker`, a `planar_tracker` and a
+  `merge`, which have a
   picture to hand on (`input`; of a `merge`, `background`): where the mask is 1 the result is
   the node's own, where it is 0
   it is the picture of that first input as it came in (transparent where that is not linked),
@@ -4371,12 +4462,57 @@ yet places that a setting may follow.
   it first, in the same transaction where that is wanted. So every operation is undone by its
   inverse.
 
+**The Planar Tracker.** A `planar_tracker` is Fusion's Planar Tracker node (Reference Manual
+20, Chapter 83, pp. 1760–1766, and pp. 2749–2758): a region of the picture taken to be a plane,
+the homography by which the plane moves from frame to frame (its path), and what the node draws
+with it. The node is `crates/model/src/fusion/planar.rs`. **Following the region through the
+pictures of a clip is not an operation of the model**: the path is a setting, set as any other,
+which the tracking writes (`track.start` with `planar`: The region of a Planar Tracker, in
+Window tracking). Its `params`, all of which are written:
+
+| field | default | meaning |
+|---|---|---|
+| `operation` | `none` | Operation Mode (p. 2750): `none` (the node is its `input`), `steady` (its `input` held still: the plane brought back to where it was at the reference frame; Fusion's Stabilize) or `corner_pin` (its `foreground` laid on the plane over its `input`). Fusion's Track is the engine's track of the node, which writes the path |
+| `motion` | `perspective` | Motion Type (p. 2752), which the track reads: `translation`, `translation_rotation`, `translation_rotation_scale` or `perspective`; a path is as it was tracked, and a change is seen once the region is tracked again. Fusion's Affine is not kept |
+| `reference` | 0 | Reference Frame (p. 2751): the frame, of the keys of the clip, at which the region was drawn and the plane is at rest, at which nothing moves; a whole number within ±(2^53−1) (`out_of_range` `planar_tracker.reference`) |
+| `region` | the box from 0.25 to 0.75 across and up, `[{x, y}, ...]` from its lower left corner round | the polygon of the plane at the reference frame: 3 to 64 places, each a place as a `center` is, −15.5…16.5 (`planar_tracker.region`). The list is set whole. The box is the engine's own: Fusion has none until one is drawn |
+| `corners` | the corners of that box | Corner Pin (p. 2754): `{tl, tr, br, bl}`, each `{x, y}`, a place as a `center` is, −15.5…16.5 (`planar_tracker.corners`): where the upper left, the upper right, the lower right and the lower left corner of the `foreground` go at the reference frame. A client that draws the region may set them with it, for example to the corners of its box: the engine does not |
+| `path` | `{}` | an object of the frames, each `"<frame>": [h11, h12, h13, h21, h22, h23, h31, h32]`: the homography that takes the plane from where it is at the reference frame to where it is at that frame, row by row but for `h33`, which is 1. It acts on places as a `center` counts them: `[x, y]` goes to `[(h11 x + h12 y + h13) / w, (h21 x + h22 y + h23) / w]`, `w = h31 x + h32 y + 1`. The frames are whole numbers written as the names of the fields, of the keys of the clip (Frames of keys, below), within ±(2^53−1), and the numbers are finite (`planar_tracker.path`); **a frame written `null` is not there**, so that `set_fusion_node` with `params` `{"path": {"12": null}}` takes frame 12 away, as the inverse of a write of a new frame does |
+
+None of these takes keys (`set_fusion_keys` of any of them is `missing` `setting`): the path is
+what moves the node. A `planar_tracker` publishes nothing for a centre to follow (a `follow` of
+it is `wrong_node`).
+
+**The path between its frames.** At a frame of the path the homography is the one written
+there, exactly. Between two frames of it, it is the homography that puts the four corners of the
+box that bounds the region (of the picture where that box is less than a millionth of the
+picture across or up) on the lines between where the homographies of the two frames put them,
+as far along as the frame is between them; where a corner is sent to infinity, that of the frame
+before. Before its first frame it is that of the first, after its last that of the last, and
+the identity where the path has no frame. **The motion** of the plane at a frame is that
+homography after the inverse of the one at the reference frame, so that nothing moves at the
+reference frame whatever the path has there: a path tracked from the reference frame has the
+identity there, and its motion is the path itself. Where the homography at the reference frame
+cannot be undone there is no motion, and the node is its `input`.
+
+What the node draws:
+
+| `operation` | the picture of the node |
+|---|---|
+| `none` | its `input`, as it is |
+| `steady` | its `input` **held still**: drawn through the inverse of the motion at the frame, which brings the plane back to where it was at the reference frame; what the picture is not moved over is transparent |
+| `corner_pin` | its `foreground`, its four corners put on `corners` and that moved by the motion at the frame, laid over its `input` (Normal, Over); no `foreground`, its `input`. Corners that make no quadrilateral (all at one place, or on one line) pin nothing |
+
+The effect mask limits it as it limits every node that hands a picture on, the picture of its
+`input` being the first: `input + (own − input) · mask`. Passed through, it is its `input`.
+
 **Frames of keys.** The keys of a composition count the frames that the other keys of its clip
 count (Frames of keys, in Grades): of media, the frames of the media, so that a key stays on
 its picture where the clip is trimmed, slipped, cut or played at another speed; of a title, a
 colour or a still, the frames of the clip from its first, 0. The frames of the paths of a
 `tracker`, and its `reference`, are frames of the same count, and are moved where the keys are
-moved, a place of a path with its frame; of places that come to one frame the last is kept. The edits carry a composition as
+moved, a place of a path with its frame; of places that come to one frame the last is kept. So
+are the frames of the `path` of a `planar_tracker` and its `reference`. The edits carry a composition as
 they carry the clip's transform: a trim of the head or a roll moves the keys of a clip that
 counts its own frames so that they stay at their frames of the timeline; `blade` leaves both
 halves the composition, each its keys where they were; a clip that is copied and pasted, or
@@ -4415,8 +4551,10 @@ They name the clip by `timeline` and `clip`; each is refused on a clip that has 
   not taken away (`in_use`: Following a Tracker, above).
 - The `params` of `set_fusion_node` are a patch: an object is put into an object, field by
   field, and anything else in the place of what was there, whole. So the `points` of a
-  `polygon` and the `trackers` of a `tracker`, which are lists, are set whole, the paths of
-  the patterns with them; and what a `center` follows is let go of by `"follow": null`.
+  `polygon`, the `trackers` of a `tracker` and the `region` of a `planar_tracker`, which are
+  lists, are set whole, the paths of the patterns with them; the `path` of a `planar_tracker`,
+  an object, is set frame by frame, the frames that a patch leaves out kept and those that it
+  gives `null` taken away; and what a `center` follows is let go of by `"follow": null`.
 - Every one of them is checked on the composition as it would be, whole: so taking the
   `media_out` away, or adding a second, is `one_media_out` (with `count`, how many there would
   be), and a link that would close a loop is `loop`.
@@ -4468,7 +4606,11 @@ above the upper one, too) and the settings of nodes by kind and path (of a point
 `tracker.trackers.search`, `tracker.trackers.offset` and `tracker.trackers.path` (a number of
 a pattern, or a place or a frame of its path, out of its range), `tracker.pivot_tracker`,
 `tracker.pivot_point` and `tracker.reference`; a path that is not written as frames and
-places is `params`. Of a `center` that follows: `missing` `node` (the composition has no such
+places is `params`. Of a `planar_tracker`: `out_of_range` `planar_tracker.region` (fewer than
+3 places or more than 64, or one out of its range), `planar_tracker.corners`,
+`planar_tracker.path` (a number that is not finite, or a frame beyond ±(2^53−1)) and
+`planar_tracker.reference`; a path that is not written as frames and homographies of eight
+numbers (or `null`) is `params`. Of a `center` that follows: `missing` `node` (the composition has no such
 node), `wrong_node` with `node` and `kind` (it is no `tracker`), `out_of_range`
 `center.follow.tracker`, `params` (a `follow` that is not written as one, or on a kind that
 has no `center`); and `in_use` with `what` `node`, `id` and `by` (a `tracker` that node `by`
@@ -4491,7 +4633,11 @@ A `tracker` is given as its `operation`, its `merge` and how the picture that is
 at the frame, in the numbers of a `transform`: where its middle is put (`center`), how large
 it is made about its middle (`size`) and how far it is turned there (`angle`); a turn and a
 size about a pivot and then a shift is the same map. With no motion, and with `operation`
-`none`, they are `[0.5, 0.5]`, 1 and 0. The composition is made at a frame for the size of
+`none`, they are `[0.5, 0.5]`, 1 and 0. A `planar_tracker` is given as its `operation` and a
+matrix of shares of the picture from its top left corner, `y` down, as the stabilizer's below:
+where each point of the picture that is moved (its `input` with `steady`, its `foreground` with
+`corner_pin`) is put; the identity where nothing moves, and `operation` `none` where there is
+no motion or the corners pin nothing. The composition is made at a frame for the size of
 its pictures (`Composition::at_size`), which the motion of a `tracker` is counted in; a
 composition with keys or with a path is another at another frame. Of a clip whose stabilizer
 moves the picture at the frame, the composition of its layer has a node more after its last,
@@ -4611,6 +4757,19 @@ comes out pixel for pixel; a turn that the fit of two patterns found is drawn by
 its cosine, within a rounding of a quarter turn where it is one. A composition without a
 `tracker` is drawn as it was before there were any, by the same passes and to the bit.
 
+**A Planar Tracker is drawn.** A `planar_tracker` is drawn by one pass of the shader that lays
+(Placing, Sampling and The merge, below), whose map may be projective as the stabilizer's is,
+and has no shader of its own. With `operation` `none` it is its `input`, at no cost. `steady` is
+the pass of a `transform` of its `input` read through the inverse of the matrix, laid over
+nothing; where the matrix moves nothing (at the reference frame, and with no path) or cannot
+be undone it is its `input`, at no cost, whatever its mask. `corner_pin` is the pass of a
+`merge` as it is at first (`normal`, the plain over) of its `foreground` read so, on its
+`input`; with no `foreground` it is its `input`, at no cost. Its effect mask is that of the pass,
+`input + (own − input) · mask`. A plane held still by a whole number of pixels comes out pixel
+for pixel; one in perspective is read between the pixels, and where a pixel is made of several
+points they lie as the affine part of the map puts them. A composition without a
+`planar_tracker` is drawn as it was before there were any, by the same passes and to the bit.
+
 The compositor draws it (`crates/compose/src/fusion.rs`): the monitor, an export, a still, the
 scopes, a thumbnail, a comparison and a frame drawn off screen show a clip that has a
 composition as what comes out of it. (The tracker of a window reads the media of the clip
@@ -4643,7 +4802,8 @@ transform of graphics.
 **Sizes.** Every picture of a composition is of one size, that of the composition (above):
 what a `media_in` shows fills it; a `background` covers it; a `transform` gives a picture of
 the size that came in, and what it moves beyond the edges is cut (a `blur`, a `mosaic`, a
-`delta_keyer` and a `tracker` give one of the size that came in too); a `merge` gives a picture of
+`delta_keyer`, a `tracker` and a `planar_tracker` give one of the size that came in too); a
+`merge` gives a picture of
 the size of its background, and one whose `background` is not linked lays its foreground over
 a transparent picture of the size of the composition. The settings are shares of the picture,
 and the engine draws the pictures at the pixels that are seen: at the size of the composition
@@ -4679,8 +4839,8 @@ foreground times the mask, and is drawn).
 
 **While a shader is being made.** A monitor draws its frames without waiting for the shaders
 of the card. Until the one that lays a foreground over a background is made (once for each
-card, the first time a composition with a `merge`, a `transform` or a `tracker` that is drawn
-is shown), and the one that draws masks (once for each card, the first time a composition with a mask node, or with a
+card, the first time a composition with a `merge`, a `transform`, a `tracker` or a
+`planar_tracker` that is drawn is shown), and the one that draws masks (once for each card, the first time a composition with a mask node, or with a
 `background` that has a mask, is shown), a clip is shown as its source, without its
 composition, and the frame is drawn again when they are made; an export, a still and a frame
 drawn off screen wait for them. So it is with the one that mixes a blurred picture, the one

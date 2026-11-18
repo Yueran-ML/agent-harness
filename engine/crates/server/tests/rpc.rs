@@ -95,6 +95,9 @@ mod tracking;
 #[path = "rpc/fusion_tracking.rs"]
 mod fusion_tracking;
 
+#[path = "rpc/planar_tracking.rs"]
+mod planar_tracking;
+
 #[path = "rpc/stabilizing.rs"]
 mod stabilizing;
 

@@ -12,6 +12,9 @@ use columbina_model::fusion::{
     Pattern, Place, Point, ReplaceMode, SpillMethod, Tracked, Tracker, TrackerMerge,
     TrackerOperation, TrackerPivot, MEDIA_IN, MEDIA_OUT, MOST_NODES, MOST_POINTS, MOST_TRACKERS,
 };
+use columbina_model::fusion::{
+    PlanarMotion, PlanarOperation, PlanarTracked, PlanarTracker, MOST_REGION_POINTS, STILL,
+};
 use columbina_model::grade::{Composite, Interp, Key, Param, Pos, LONGEST_LABEL};
 use columbina_model::resolve::{video_at, Layer};
 use columbina_model::{
@@ -4822,4 +4825,664 @@ fn a_change_of_a_tracker_that_changes_nothing_makes_no_step() {
         history.undo("desktop").unwrap().unwrap();
         assert_eq!(history.project(), &before);
     }
+}
+
+// The Planar Tracker.
+
+/// The sample of `merged` with a Planar Tracker, n5, of the picture of c1, which lays the
+/// Background n4 on its plane, and whose picture the Merge n3 lays over n4 in the place of the
+/// picture of the clip: `next_id` is 6.
+fn planar_tracked() -> Project {
+    let mut project = merged();
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::PlanarTracker),
+            vec![
+                Link::new(MEDIA_IN, "", Input::Input),
+                Link::new("n4", "", Input::Foreground),
+                Link::new("", "n3", Input::Foreground),
+            ],
+        ),
+    );
+    assert_eq!(project.next_id, 6);
+    project
+}
+
+/// The Planar Tracker n5 of c1.
+fn planar_of(project: &Project) -> &PlanarTracker {
+    match &composition(project, "c1").node("n5").unwrap().kind {
+        NodeKind::PlanarTracker(planar) => planar,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// What the Planar Tracker that the one layer of the timeline draws at `frame` draws there.
+fn planar_at(project: &Project, frame: i64) -> PlanarTracked {
+    let fused = layer_at(project, frame)
+        .fusion
+        .expect("the layer has its composition");
+    fused
+        .nodes
+        .iter()
+        .find_map(|node| match &node.kind {
+            FusedKind::PlanarTracker { settings, .. } => Some(*settings),
+            _ => None,
+        })
+        .expect("the layer draws its planar tracker")
+}
+
+/// A shift of `x` across and `y` up, in shares of the picture, as a path writes it.
+fn shift_of(x: f64, y: f64) -> [f64; 8] {
+    [1.0, 0.0, x, 0.0, 1.0, y, 0.0, 0.0]
+}
+
+/// A place as it is written.
+fn place_of(x: f64, y: f64) -> serde_json::Value {
+    json!({"x": x, "y": y})
+}
+
+/// Where `matrix`, of shares from the top left corner of the picture, puts `[x, y]`.
+fn put_by(matrix: &[[f64; 3]; 3], [x, y]: [f64; 2]) -> [f64; 2] {
+    let w = matrix[2][0] * x + matrix[2][1] * y + matrix[2][2];
+    [
+        (matrix[0][0] * x + matrix[0][1] * y + matrix[0][2]) / w,
+        (matrix[1][0] * x + matrix[1][1] * y + matrix[1][2]) / w,
+    ]
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a planar tracker as it is written, read, written by another program and taken away"
+)]
+fn a_planar_tracker_is_added_with_every_setting_written_and_is_read_back() {
+    let mut project = planar_tracked();
+    let written = serde_json::to_value(composition(&project, "c1")).unwrap();
+    assert_eq!(
+        written["nodes"][4],
+        json!({
+            "id": "n5", "kind": "planar_tracker", "label": "", "pass_through": false,
+            "pos": null,
+            "params": {
+                "operation": "none", "motion": "perspective", "reference": 0,
+                "region": [place_of(0.25, 0.25), place_of(0.75, 0.25), place_of(0.75, 0.75),
+                           place_of(0.25, 0.75)],
+                "corners": {"tl": place_of(0.25, 0.75), "tr": place_of(0.75, 0.75),
+                            "br": place_of(0.75, 0.25), "bl": place_of(0.25, 0.25)},
+                "path": {},
+            },
+        })
+    );
+    // The picture of the clip is its first input, the Background its foreground, and it is
+    // the foreground of the Merge.
+    assert_eq!(
+        written["links"],
+        json!([
+            {"from": "n3", "to": "MediaOut1", "input": "input"},
+            {"from": "n4", "to": "n3", "input": "background"},
+            {"from": "n5", "to": "n3", "input": "foreground"},
+            {"from": "n4", "to": "n5", "input": "foreground"},
+            {"from": "MediaIn1", "to": "n5", "input": "input"},
+        ])
+    );
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    assert_eq!(serde_json::to_string(&read).unwrap(), text);
+    // As another program writes one, with every setting, a region of three places and a path;
+    // the Planar Tracker before it its mask.
+    let op: Op = serde_json::from_value(json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {"id": "", "kind": "planar_tracker", "label": "Screen", "params": {
+            "operation": "corner_pin", "motion": "translation_rotation", "reference": 10,
+            "region": [place_of(0.2, 0.2), place_of(0.8, 0.3), place_of(0.5, 0.9)],
+            "corners": {"tl": place_of(0.3, 0.7), "tr": place_of(0.7, 0.7),
+                        "br": place_of(0.7, 0.3), "bl": place_of(0.3, 0.3)},
+            "path": {"10": STILL, "20": shift_of(0.125, 0.25), "30": null},
+        }},
+        "links": [
+            {"from": "MediaIn1", "to": "", "input": "input"},
+            {"from": "n4", "to": "", "input": "foreground"},
+            {"from": "n5", "to": "", "input": "mask"},
+        ],
+    }))
+    .unwrap();
+    let (done, inverse) = applied(&mut project, op);
+    assert_eq!(inverse, remove("n6", Some(vec![])));
+    let Op::AddFusionNode { node, .. } = done else {
+        panic!("a node was added")
+    };
+    assert_eq!(node.id, "n6");
+    let NodeKind::PlanarTracker(screen) = &node.kind else {
+        panic!("n6 is a planar tracker")
+    };
+    assert_eq!(
+        (screen.operation, screen.motion, screen.reference),
+        (
+            PlanarOperation::CornerPin,
+            PlanarMotion::TranslationRotation,
+            10
+        )
+    );
+    assert_eq!(screen.region.len(), 3);
+    assert_eq!(screen.corners.tl, Place { x: 0.3, y: 0.7 });
+    // A frame written null is not there.
+    assert_eq!(screen.path.keys().copied().collect::<Vec<_>>(), [10, 20]);
+    assert_eq!(screen.path[&20], shift_of(0.125, 0.25));
+    assert_eq!(
+        serde_json::to_string(&serde_json::to_value(screen).unwrap()["path"]).unwrap(),
+        r#"{"10":[1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0],"20":[1.0,0.0,0.125,0.0,1.0,0.25,0.0,0.0]}"#
+    );
+    let text = serde_json::to_string(&project).unwrap();
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(read, project);
+    let value = serde_json::to_value(&project).unwrap();
+    assert_eq!(Project::from_value(value).unwrap(), project);
+    // One whose settings are not all there, or that has one that a Planar Tracker has not,
+    // cannot be read.
+    let whole = serde_json::to_value(&node).unwrap()["params"].clone();
+    for setting in [
+        "operation",
+        "motion",
+        "reference",
+        "region",
+        "corners",
+        "path",
+    ] {
+        let mut params = whole.clone();
+        params.as_object_mut().unwrap().remove(setting);
+        let node = json!({"id": "", "kind": "planar_tracker", "label": "", "params": params});
+        assert!(serde_json::from_value::<Node>(node).is_err(), "{setting}");
+    }
+    let mut more = whole.clone();
+    more["trackers"] = json!([]);
+    let node = json!({"id": "", "kind": "planar_tracker", "label": "", "params": more});
+    assert!(serde_json::from_value::<Node>(node).is_err());
+    // Taken away again, the first with the link that takes its place, they leave the
+    // composition as it was before them.
+    applied(&mut project, remove("n6", None));
+    let bridge = vec![Link::new(MEDIA_IN, "n3", Input::Foreground)];
+    applied(&mut project, remove("n5", Some(bridge)));
+    let before = merged();
+    assert_eq!(composition(&project, "c1"), composition(&before, "c1"));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a refusal for each number of a planar tracker, and the ends of their ranges"
+)]
+fn the_settings_of_a_planar_tracker_are_those_of_its_kind_within_their_ranges() {
+    let mut project = planar_tracked();
+    let many: Vec<serde_json::Value> = (0..=MOST_REGION_POINTS)
+        .map(|_| place_of(0.5, 0.5))
+        .collect();
+    for (patch, what) in [
+        (
+            json!({"region": [place_of(0.1, 0.1), place_of(0.9, 0.9)]}),
+            "planar_tracker.region",
+        ),
+        (json!({ "region": many }), "planar_tracker.region"),
+        (
+            json!({"region": [place_of(0.1, 0.1), place_of(17.0, 0.9), place_of(0.5, 0.5)]}),
+            "planar_tracker.region",
+        ),
+        (
+            json!({"corners": {"tl": {"x": -16}}}),
+            "planar_tracker.corners",
+        ),
+        (
+            json!({"corners": {"br": {"y": 16.6}}}),
+            "planar_tracker.corners",
+        ),
+        (
+            json!({"path": {"9007199254740992": STILL}}),
+            "planar_tracker.path",
+        ),
+        (
+            json!({"path": {"-9007199254740992": STILL}}),
+            "planar_tracker.path",
+        ),
+        (
+            json!({"reference": 9_007_199_254_740_992_i64}),
+            "planar_tracker.reference",
+        ),
+    ] {
+        assert_eq!(
+            refused(&project, set_params("n5", patch)),
+            range(what),
+            "{what}"
+        );
+    }
+    // A number that is no number cannot be written: put in with a composition, whole, it is
+    // refused.
+    let mut broken = composition(&project, "c1").clone();
+    if let NodeKind::PlanarTracker(planar) = &mut broken.nodes[4].kind {
+        planar
+            .path
+            .insert(3, [f64::NAN, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+    assert_eq!(
+        refused(&project, set("c1", Some(broken))),
+        range("planar_tracker.path")
+    );
+    // What is not a setting of the kind, or not written as one, is refused: an operation and
+    // a motion that it has not, a frame that is no whole number, a homography that is not
+    // eight numbers, and keys, which no number of a Planar Tracker takes.
+    let keyed = json!({"keys": [{"frame": 0, "value": 0.5, "interp": "linear"}]});
+    for patch in [
+        json!({"operation": "track"}),
+        json!({"operation": "stabilize"}),
+        json!({"motion": "affine"}),
+        json!({"reference": 1.5}),
+        json!({ "reference": keyed }),
+        json!({"region": {"0": {"x": 0.5}}}),
+        json!({"region": [{"x": 0.5}, place_of(0.5, 0.5), place_of(0.5, 0.5)]}),
+        json!({"corners": {"tl": {"x": keyed}}}),
+        json!({"corners": {"middle": place_of(0.5, 0.5)}}),
+        json!({"path": {"1.5": STILL}}),
+        json!({"path": {"first": STILL}}),
+        json!({"path": {"3": [1.0, 0.0, 0.0]}}),
+        json!({"path": [STILL]}),
+        json!({"trackers": []}),
+    ] {
+        let error = refused(&project, set_params("n5", patch.clone()));
+        assert!(
+            matches!(&error, OpError::Params { node, .. } if node == "n5"),
+            "{patch}: {error:?}"
+        );
+    }
+    // What is given is set, and set back by the inverse; the region whole.
+    let triangle = json!([place_of(0.1, 0.2), place_of(0.9, 0.2), place_of(0.5, 0.8)]);
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({
+                "operation": "steady", "motion": "translation", "reference": 12,
+                "region": triangle, "corners": {"tl": {"x": 0.1}},
+            }),
+        ),
+    );
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({
+            "operation": "none", "motion": "perspective", "reference": 0,
+            "region": [place_of(0.25, 0.25), place_of(0.75, 0.25), place_of(0.75, 0.75),
+                       place_of(0.25, 0.75)],
+            "corners": {"tl": {"x": 0.25}},
+        }))
+    );
+    let planar = planar_of(&project);
+    assert_eq!(
+        (planar.operation, planar.motion, planar.reference),
+        (PlanarOperation::Steady, PlanarMotion::Translation, 12)
+    );
+    assert_eq!(planar.region.len(), 3);
+    assert_eq!(planar.corners.tl, Place { x: 0.1, y: 0.75 });
+    // The ends of each range are within it, and each way of each menu.
+    let edge = json!([
+        place_of(-15.5, 16.5),
+        place_of(16.5, -15.5),
+        place_of(0.5, 0.5)
+    ]);
+    let far = [1e12; 8];
+    for patch in [
+        json!({ "region": edge }),
+        json!({ "region": vec![place_of(0.5, 0.5); MOST_REGION_POINTS] }),
+        json!({"corners": {"tl": place_of(-15.5, 16.5), "br": place_of(16.5, -15.5)}}),
+        json!({"reference": -9_007_199_254_740_991_i64}),
+        json!({"path": {"9007199254740991": STILL, "-9007199254740991": far}}),
+        json!({"operation": "corner_pin", "motion": "translation_rotation_scale"}),
+        json!({"operation": "none", "motion": "translation_rotation"}),
+    ] {
+        applied(&mut project, set_params("n5", patch));
+    }
+    // No number of a Planar Tracker takes keys.
+    for path in [
+        "n5.reference",
+        "n5.operation",
+        "n5.region",
+        "n5.region.0.x",
+        "n5.corners.tl.x",
+        "n5.path",
+        "n5.path.9007199254740991.0",
+    ] {
+        assert_eq!(
+            refused(&project, set_keys("c1", path, Param::Fixed(0.5))),
+            missing("setting", path),
+            "{path}"
+        );
+        assert_eq!(
+            refused(&project, splice(path, 0, 0, vec![key(0, 0.5)])),
+            missing("setting", path),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_patch_of_the_path_of_a_planar_tracker_sets_its_frames_and_its_inverse_takes_them_away() {
+    let mut project = planar_tracked();
+    // Frames put into a path that has none: the inverse gives each null, which takes it away.
+    let first = json!({"path": {"10": STILL, "11": shift_of(0.01, 0.0)}});
+    let (done, inverse) = applied(&mut project, set_params("n5", first.clone()));
+    assert_eq!(patch_of(&done), Some(first));
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({"path": {"10": null, "11": null}}))
+    );
+    // More frames, one of them over one that was there: the others are kept, and the inverse
+    // gives that one back as it was.
+    let second = json!({"path": {"11": shift_of(0.02, 0.0), "12": shift_of(0.03, 0.0)}});
+    let (_, inverse) = applied(&mut project, set_params("n5", second));
+    assert_eq!(
+        patch_of(&inverse),
+        Some(json!({"path": {"11": shift_of(0.01, 0.0), "12": null}}))
+    );
+    assert_eq!(
+        planar_of(&project).path.keys().copied().collect::<Vec<_>>(),
+        [10, 11, 12]
+    );
+    assert_eq!(planar_of(&project).path[&11], shift_of(0.02, 0.0));
+    // A frame given null by a client is taken away, and its inverse puts it back.
+    let (_, inverse) = applied(
+        &mut project,
+        set_params("n5", json!({"path": {"10": null}})),
+    );
+    assert_eq!(patch_of(&inverse), Some(json!({"path": {"10": STILL}})));
+    assert_eq!(
+        planar_of(&project).path.keys().copied().collect::<Vec<_>>(),
+        [11, 12]
+    );
+    // As two changes of one gesture, they are undone in one step, last first.
+    let mut history = History::new(planar_tracked());
+    let before = history.project().clone();
+    for patch in [
+        json!({"path": {"10": STILL, "11": shift_of(0.01, 0.0)}}),
+        json!({"path": {"11": shift_of(0.02, 0.0), "12": shift_of(0.03, 0.0)}}),
+    ] {
+        history
+            .change_in_gesture(
+                vec![Change::Op(set_params("n5", patch))],
+                "agent",
+                &mut |change, _: &[Op]| change,
+                "track-1",
+                false,
+            )
+            .unwrap();
+    }
+    history.end_gesture();
+    assert_eq!(
+        planar_of(history.project())
+            .path
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        [10, 11, 12]
+    );
+    history.undo("agent").unwrap().unwrap();
+    assert_eq!(history.project(), &before);
+    // Set to what it is, it changes nothing and makes no step.
+    let nothing = history.change(
+        vec![Change::Op(set_params("n5", json!({"path": {}})))],
+        "agent",
+        |change, _| change,
+    );
+    assert_eq!(nothing.err(), Some(TransactionError::Empty));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "what a planar tracker draws at a frame, with each operation"
+)]
+fn a_planar_tracker_of_a_layer_is_the_motion_of_its_path_at_the_frame() {
+    let mut project = planar_tracked();
+    applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({
+                "operation": "steady", "reference": 10,
+                "path": {"10": STILL, "20": shift_of(0.25, 0.125)},
+            }),
+        ),
+    );
+    assert!(composition(&project, "c1").is_animated());
+    // c1 shows m1 from its start at the rate of the timeline: frame 20 shows picture 20. Held
+    // still, the picture is put back a quarter of the width to the left and an eighth of the
+    // height down, from the top left.
+    let held = planar_at(&project, 20);
+    assert_eq!(held.operation, PlanarOperation::Steady);
+    assert_eq!(
+        held.matrix,
+        [[1.0, 0.0, -0.25], [0.0, 1.0, 0.125], [0.0, 0.0, 1.0]]
+    );
+    // Between two frames of the path, half as far.
+    let half = planar_at(&project, 15).matrix;
+    let middle = put_by(&half, [0.5, 0.5]);
+    assert!(
+        (middle[0] - 0.375).abs() < 1e-9 && (middle[1] - 0.5625).abs() < 1e-9,
+        "{half:?}"
+    );
+    // At the reference frame, and before the path, where the plane is where it was first,
+    // nothing moves; after the last frame of the path, as at that one.
+    for frame in [10, 5, 0] {
+        assert_eq!(
+            planar_at(&project, frame).matrix,
+            columbina_model::stabilize::IDENTITY,
+            "{frame}"
+        );
+    }
+    assert_eq!(planar_at(&project, 30), held);
+    // Laid on the plane: the corners of the foreground, from the top left of the picture, go
+    // where the corners are put, moved as the plane moved.
+    applied(
+        &mut project,
+        set_params("n5", json!({"operation": "corner_pin"})),
+    );
+    let pinned = planar_at(&project, 20);
+    assert_eq!(pinned.operation, PlanarOperation::CornerPin);
+    for (corner, wanted) in [
+        ([0.0, 0.0], [0.5, 0.125]),
+        ([1.0, 0.0], [1.0, 0.125]),
+        ([1.0, 1.0], [1.0, 0.625]),
+        ([0.0, 1.0], [0.5, 0.625]),
+    ] {
+        let at = put_by(&pinned.matrix, corner);
+        assert!(
+            (at[0] - wanted[0]).abs() < 1e-9 && (at[1] - wanted[1]).abs() < 1e-9,
+            "{corner:?}: {at:?}"
+        );
+    }
+    // At the reference frame, where they are put.
+    let resting = planar_at(&project, 10);
+    let at = put_by(&resting.matrix, [0.0, 0.0]);
+    assert!((at[0] - 0.25).abs() < 1e-9 && (at[1] - 0.25).abs() < 1e-9);
+    // Corners that make no quadrilateral pin nothing: the node is its picture.
+    let one = place_of(0.5, 0.5);
+    let mut flat = project.clone();
+    applied(
+        &mut flat,
+        set_params(
+            "n5",
+            json!({"corners": {"tl": one, "tr": one, "br": one, "bl": one}}),
+        ),
+    );
+    assert_eq!(planar_at(&flat, 20).operation, PlanarOperation::None);
+    // With an operation of None it is its picture, whatever the path.
+    applied(&mut project, set_params("n5", json!({"operation": "none"})));
+    assert_eq!(
+        planar_at(&project, 20),
+        PlanarTracked {
+            operation: PlanarOperation::None,
+            matrix: columbina_model::stabilize::IDENTITY,
+        }
+    );
+    // With no path it is the same at every frame, and the composition does not change with
+    // the frame.
+    applied(
+        &mut project,
+        set_params(
+            "n5",
+            json!({"operation": "steady", "path": {"10": null, "20": null}}),
+        ),
+    );
+    assert!(!composition(&project, "c1").is_animated());
+    assert_eq!(
+        planar_at(&project, 20).matrix,
+        columbina_model::stabilize::IDENTITY
+    );
+}
+
+#[test]
+fn a_planar_tracker_takes_a_picture_a_foreground_and_a_mask() {
+    let mut project = planar_tracked();
+    applied(
+        &mut project,
+        add(
+            Node::new("", Kind::Ellipse),
+            vec![Link::new("", "n5", Input::Mask)],
+        ),
+    );
+    // It has no background and no matte.
+    for input in [Input::Background, Input::GarbageMatte, Input::SolidMatte] {
+        assert_eq!(
+            refused(&project, connect(Link::new(MEDIA_IN, "n5", input))),
+            OpError::NoInput {
+                node: "n5".into(),
+                input
+            }
+        );
+    }
+    // A loop through any of its inputs is a loop.
+    for input in [Input::Input, Input::Foreground, Input::Mask] {
+        assert!(
+            matches!(
+                refused(&project, connect(Link::new("n3", "n5", input))),
+                OpError::Loop { .. }
+            ),
+            "{input:?}"
+        );
+    }
+    // A centre does not follow it: it publishes nothing.
+    let follow = json!({"center": {"follow": {"node": "n5", "output": "tracker"}}});
+    assert_eq!(
+        refused(&project, set_params("n3", follow)),
+        OpError::WrongNode {
+            node: "n5".into(),
+            kind: "planar_tracker"
+        }
+    );
+    // The layer draws it after its picture, its foreground and its mask, which it names in
+    // the order of its inputs.
+    let fused = layer_at(&project, 20).fusion.unwrap();
+    let at = fused.nodes.iter().position(|node| node.id == "n5").unwrap();
+    let ids: Vec<&str> = fused.nodes[at]
+        .kind
+        .reads()
+        .iter()
+        .map(|&read| fused.nodes[read].id.as_str())
+        .collect();
+    assert_eq!(ids, [MEDIA_IN, "n4", "n6"]);
+    let first = fused.nodes[at].kind.first_input();
+    assert_eq!(
+        first.map(|read| fused.nodes[read].id.as_str()),
+        Some(MEDIA_IN)
+    );
+    assert!(matches!(
+        fused.nodes[at].kind,
+        FusedKind::PlanarTracker { mask: Some(_), .. }
+    ));
+    // Passed through, it hands on its picture, and neither its foreground nor its mask: the
+    // Merge lays the picture of the clip, as it did before the Planar Tracker.
+    applied(&mut project, passed_through("n5"));
+    assert_eq!(drawn(&project), drawn(&merged()));
+}
+
+/// A composition that holds the picture of its clip still: `in` through the Planar Tracker
+/// `plane`, whose path is `path` and whose reference is `reference`, into `out`.
+fn planar_holding(path: &[(i64, [f64; 8])], reference: i64) -> Composition {
+    let mut plane = Node::new("plane", Kind::PlanarTracker);
+    plane.kind = NodeKind::PlanarTracker(PlanarTracker {
+        operation: PlanarOperation::Steady,
+        reference,
+        path: path.iter().copied().collect(),
+        ..PlanarTracker::default()
+    });
+    let mut composition = Composition {
+        nodes: vec![
+            Node::new("in", Kind::MediaIn),
+            plane,
+            Node::new("out", Kind::MediaOut),
+        ],
+        links: vec![
+            Link::new("in", "plane", Input::Input),
+            Link::new("plane", "out", Input::Input),
+        ],
+    };
+    composition.sort_links();
+    composition
+}
+
+/// The frames of the path of the Planar Tracker `plane` of clip `id`, and its reference.
+fn planar_path_of(project: &Project, id: &str) -> (Vec<i64>, i64) {
+    let node = composition(project, id)
+        .node("plane")
+        .expect("the composition has the planar tracker");
+    let NodeKind::PlanarTracker(planar) = &node.kind else {
+        panic!("the node is a planar tracker")
+    };
+    (planar.path.keys().copied().collect(), planar.reference)
+}
+
+#[test]
+fn the_path_of_a_planar_tracker_is_moved_with_the_keys_of_its_clip() {
+    // A colour counts its own frames: where its head is trimmed, the frames of the path and
+    // the reference are moved as its keys are, so that each frame of the timeline shows what
+    // it showed.
+    let frames = [210, 215, 220, 230, 245];
+    let mut project = with_a_colour_that_moves();
+    let colour = project.timelines[0].tracks[0]
+        .clips
+        .iter_mut()
+        .find(|clip| clip.id == "k1")
+        .expect("the colour is there");
+    colour.fusion = Some(planar_holding(&[(0, STILL), (40, shift_of(0.5, 0.25))], 10));
+    project.validate().unwrap();
+    let seen = |project: &Project| frames.map(|frame| planar_at(project, frame));
+    let before = seen(&project);
+    assert_ne!(before[0], before[4]);
+    // At the reference frame, nothing moves.
+    assert_eq!(before[0].matrix, columbina_model::stabilize::IDENTITY);
+    edited(
+        &mut project,
+        edit(json!({"edit": "trim", "timeline": "t1", "clip": "k1", "edge": "in", "delta": 10})),
+    );
+    assert_eq!(planar_path_of(&project, "k1"), (vec![-10, 30], 0));
+    assert_eq!(seen(&project), before);
+    // Of media, a path is on its pictures: a trim of the head leaves it where it was.
+    let mut media = Project::sample();
+    applied(
+        &mut media,
+        set(
+            "c1",
+            Some(planar_holding(
+                &[(20, STILL), (60, shift_of(0.25, 0.0))],
+                20,
+            )),
+        ),
+    );
+    let before = [30, 40, 70].map(|frame| planar_at(&media, frame));
+    edited(
+        &mut media,
+        edit(
+            json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "in", "delta": 10,
+            "linked": false}),
+        ),
+    );
+    assert_eq!(planar_path_of(&media, "c1"), (vec![20, 60], 20));
+    assert_eq!([30, 40, 70].map(|frame| planar_at(&media, frame)), before);
 }

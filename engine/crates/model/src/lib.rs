@@ -49,8 +49,9 @@ pub use media_audio::MediaAudioTrack;
 pub use ops::{apply, apply_done, InsertsOf, Invalid, LanesOf, Op, OpError, LARGEST};
 pub use project::{
     Alignment, AudioFacts, AudioStream, Bin, Clip, Crop, Cropped, Cue, Facts, Id, Identity, Media,
-    Placed, Project, Proxy, ReadError, Rgba, Source, Styled, TextAlign, Timeline, TitleStyle,
-    Track, TrackKind, Transform, Transition, TransitionKind, VideoFacts, SCHEMA,
+    Placed, Project, Proxy, ReadError, Rgba, Source, Styled, TextAlign, Timeline, TitleBackground,
+    TitleShadow, TitleSpan, TitleStroke, TitleStyle, Track, TrackKind, Transform, Transition,
+    TransitionKind, VideoFacts, SCHEMA,
 };
 pub use stabilize::Stabilize;
 pub use time::{Rate, Speed, Time};

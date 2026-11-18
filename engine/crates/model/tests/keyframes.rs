@@ -335,6 +335,10 @@ fn a_title_a_colour_and_a_still_count_the_frames_of_the_clip() {
         x: 0.5.into(),
         y: 0.5.into(),
         align: columbina_model::TextAlign::Center,
+        stroke: None,
+        shadow: None,
+        background: None,
+        spans: Vec::new(),
     };
     let source = Source::Title {
         text: "Hi".into(),

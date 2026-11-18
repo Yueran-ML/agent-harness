@@ -345,6 +345,10 @@ fn title(text: &str, x: f64) -> SceneLayer {
             x,
             y: 0.5,
             align: TextAlign::Center,
+            stroke: None,
+            shadow: None,
+            background: None,
+            spans: Vec::new(),
         },
     }))
 }

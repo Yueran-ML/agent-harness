@@ -16,7 +16,8 @@
 //! The catalog lists what the nodes of the Color page hold: a corrector, and a Key Mixer,
 //! whose inputs and output each have a gain and an offset; and what a clip holds of the Edit
 //! page: the settings of its transform and of its crop, and, of a clip that is a title, the
-//! size of its letters and the place of its anchor ([`clip`]). The keys of all of them are
+//! size of its letters, the place of its anchor and the lengths of its stroke, its shadow and
+//! its box, where it has them ([`clip`]). The keys of all of them are
 //! counted in the
 //! frames of the source of the clip ([`crate::keyframes`]). The operations that set the keys of
 //! a setting by its path take the paths that are listed: [`crate::ops::Op::SetKeys`] those of a
@@ -27,7 +28,11 @@
 //! either way and ten turns, and for the scale the least that the Inspector sets, a hundredth.
 //! The anchor of a title may be anywhere too, and is given as far either way, so that a title
 //! may be keyed from beyond an edge of the picture to beyond the other. A title has no size
-//! that changes nothing: its entry gives the size that the clients give a new title, 72.
+//! that changes nothing: its entry gives the size that the clients give a new title, 72. Nor
+//! is there a stroke, a shadow or a box that changes nothing, since a title without one has
+//! none: their entries give the lengths that the clients give a new one, a stroke 4 pixels
+//! wide, a shadow moved 4 right and 4 down and blurred by 4, a box 16 beyond the lines with
+//! corners of 8.
 //!
 //! And it lists what the nodes of the composition of a clip hold, of the Fusion page
 //! ([`fusion`]): the settings of a Merge, of a Transform, of a Background, of the masks (a
@@ -357,6 +362,7 @@ pub fn key_mixer() -> &'static [Entry] {
 pub fn clip() -> &'static [Entry] {
     static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
+        use crate::project::{TitleBackground, TitleShadow, TitleStroke};
         let one = |path: &str, bounds: [f64; 3], unit, palette| Entry {
             path: path.to_owned(),
             default: bounds[0],
@@ -371,6 +377,10 @@ pub fn clip() -> &'static [Entry] {
         let largest = crate::project::TitleStyle::MOST_SIZE;
         let (place, share) = ([0.0, -16.0, 16.0], [0.0, 0.0, 1.0]);
         let anchor = [0.5, -16.0, 16.0];
+        let shifted = TitleShadow::MOST_OFFSET;
+        // A length of a stroke, a shadow or a box of a title, at first what the clients give a
+        // new one.
+        let title_part = |path: &str, bounds| one(path, bounds, Unit::Pixels, Palette::Title);
         vec![
             one("transform.x", place, Unit::Widths, Palette::Transform),
             one("transform.y", place, Unit::Heights, Palette::Transform),
@@ -405,6 +415,18 @@ pub fn clip() -> &'static [Entry] {
             ),
             one("title.x", anchor, Unit::Widths, Palette::Title),
             one("title.y", anchor, Unit::Heights, Palette::Title),
+            title_part("title.stroke.width", [4.0, 0.0, TitleStroke::MOST_WIDTH]),
+            title_part("title.shadow.x", [4.0, -shifted, shifted]),
+            title_part("title.shadow.y", [4.0, -shifted, shifted]),
+            title_part("title.shadow.blur", [4.0, 0.0, TitleShadow::MOST_BLUR]),
+            title_part(
+                "title.background.padding",
+                [16.0, 0.0, TitleBackground::MOST_PADDING],
+            ),
+            title_part(
+                "title.background.radius",
+                [8.0, 0.0, TitleBackground::MOST_RADIUS],
+            ),
         ]
     })
 }
@@ -487,7 +509,8 @@ fn mask(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Blur
         | Kind::Mosaic
         | Kind::DeltaKeyer
-        | Kind::Tracker => &[],
+        | Kind::Tracker
+        | Kind::PlanarTracker => &[],
     }
 }
 
@@ -525,7 +548,8 @@ fn filter(kind: crate::fusion::Kind) -> &'static [Entry] {
         | Kind::Ellipse
         | Kind::Polygon
         | Kind::DeltaKeyer
-        | Kind::Tracker => &[],
+        | Kind::Tracker
+        | Kind::PlanarTracker => &[],
     }
 }
 
@@ -561,9 +585,9 @@ fn keyer() -> &'static [Entry] {
 
 /// The settings of a node of a composition of a kind that take keys
 /// ([`crate::fusion`]), each named by its path in the `params` of the node: `center.x`. A
-/// `media_in` and a `media_out` have none, and neither has a `tracker`, whose numbers take
-/// no keys: the paths of its patterns are what moves it. A point of a Polygon is listed with
-/// a star for its place in the list of points: `points.*.x`.
+/// `media_in` and a `media_out` have none, and neither has a `tracker` nor a
+/// `planar_tracker`, whose numbers take no keys: their paths are what moves them. A point of
+/// a Polygon is listed with a star for its place in the list of points: `points.*.x`.
 #[must_use]
 pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
     use crate::fusion::bounds as f;
@@ -580,7 +604,7 @@ pub fn fusion(kind: crate::fusion::Kind) -> &'static [Entry] {
         ("angle", f::ANGLE, DegreesCounterclockwise),
     ];
     match kind {
-        Kind::MediaIn | Kind::MediaOut | Kind::Tracker => &[],
+        Kind::MediaIn | Kind::MediaOut | Kind::Tracker | Kind::PlanarTracker => &[],
         Kind::Merge => MERGE.get_or_init(|| {
             let mut all = fused(&[
                 ("subtractive_additive", f::SUBTRACTIVE_ADDITIVE, Number),
@@ -918,8 +942,9 @@ mod tests {
     }
 
     /// The kinds of node of a composition.
-    const FUSION_KINDS: [crate::fusion::Kind; 12] = [
+    const FUSION_KINDS: [crate::fusion::Kind; 13] = [
         crate::fusion::Kind::Tracker,
+        crate::fusion::Kind::PlanarTracker,
         crate::fusion::Kind::MediaIn,
         crate::fusion::Kind::MediaOut,
         crate::fusion::Kind::Merge,
@@ -936,10 +961,17 @@ mod tests {
     /// A node of a kind as a new one is set; but a Polygon, which has no points at first,
     /// with two, each at its centre, so that it has every setting that one may have; and a
     /// Tracker, which has no patterns at first, with one that has a path of two frames, so
-    /// that it has every number that one may have.
+    /// that it has every number that one may have; and so a Planar Tracker, with a path of two
+    /// frames.
     fn first_of(kind: crate::fusion::Kind) -> crate::fusion::NodeKind {
-        use crate::fusion::{NodeKind, Pattern, Point, Polygon, Tracker};
+        use crate::fusion::{NodeKind, Pattern, PlanarTracker, Point, Polygon, Tracker, STILL};
         match kind {
+            crate::fusion::Kind::PlanarTracker => NodeKind::PlanarTracker(PlanarTracker {
+                path: [(0, STILL), (12, [1.0, 0.0, 0.1, 0.0, 1.0, -0.05, 0.0, 0.0])]
+                    .into_iter()
+                    .collect(),
+                ..PlanarTracker::default()
+            }),
             crate::fusion::Kind::Polygon => NodeKind::Polygon(Polygon {
                 points: vec![Point::new(0.0, 0.0), Point::new(0.0, 0.0)],
                 ..Polygon::default()
@@ -1026,6 +1058,12 @@ mod tests {
             "trackers.0.path.12.0",
         ] {
             assert!(of_fusion(tracker, path).is_none(), "{path}");
+        }
+        // Nor does a number of a Planar Tracker: of its region, its corners or its path.
+        let planar = crate::fusion::Kind::PlanarTracker;
+        assert_eq!(fusion(planar), &[] as &[Entry]);
+        for path in ["reference", "region.0.x", "corners.tl.y", "path.12.2"] {
+            assert!(of_fusion(planar, path).is_none(), "{path}");
         }
         assert_eq!(fusion(crate::fusion::Kind::Merge).len(), 8);
         assert_eq!(fusion(crate::fusion::Kind::Transform).len(), 4);

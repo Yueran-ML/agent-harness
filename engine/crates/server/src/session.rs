@@ -1632,6 +1632,9 @@ async fn dispatch(
                 engine.viewer.frames.stop_input(Monitor::Timeline);
                 engine.state.lock().await.window_end("view_changed");
             }
+            // A view made, or made in place of another (as for a page loaded again), is given at
+            // once the frame that its monitor shows: nothing else asks for one while the monitor
+            // is paused. A monitor with nothing loaded draws nothing, and its view stays black.
             if method == "view.attach" {
                 let (monitor, _) = crate::play::monitor_params(method, params)?;
                 engine.transport.redraw(monitor);

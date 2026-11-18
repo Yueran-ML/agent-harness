@@ -35,6 +35,10 @@ fn title(text: &str) -> Source {
             x: 0.5.into(),
             y: 0.5.into(),
             align: TextAlign::Center,
+            stroke: None,
+            shadow: None,
+            background: None,
+            spans: Vec::new(),
         },
     }
 }
@@ -1284,6 +1288,23 @@ fn anchor_keys() -> Op {
     }
 }
 
+/// `set_clip` of the title c8 to one with a black stroke, a shadow, a box behind its lines and
+/// its last three letters red, larger, bold and italic.
+fn dressed_title() -> Op {
+    serde_json::from_value(serde_json::json!({
+        "op": "set_clip", "timeline": "t1", "id": "c8",
+        "source": {"kind": "title", "text": "Hello", "style": {
+            "font": "", "size": 96, "color": "#ffffffff", "x": 0.5, "y": 0.5, "align": "center",
+            "stroke": {"color": "#000000ff", "width": 4},
+            "shadow": {"color": "#00000080", "x": 4, "y": 4, "blur": 6},
+            "background": {"color": "#202020C0", "padding": 16, "radius": 8},
+            "spans": [{"from": 2, "to": 5, "color": "#ff0000ff", "scale": 1.5, "bold": true,
+                "italic": true}],
+        }},
+    }))
+    .unwrap()
+}
+
 fn set_n9(params: serde_json::Value) -> Op {
     Op::SetNode {
         grade: c1(),
@@ -1633,6 +1654,32 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 }},
             }))
             .unwrap(),
+        ),
+        (
+            "set_clip of a title with a stroke, a shadow, a box and runs",
+            vec![],
+            dressed_title(),
+        ),
+        (
+            "set_clip_keys of the width of the stroke of a title",
+            vec![dressed_title()],
+            Op::SetClipKeys {
+                timeline: "t1".into(),
+                id: "c8".into(),
+                path: "title.stroke.width".into(),
+                param: Param::Keys(vec![
+                    Key {
+                        frame: 0,
+                        value: 2.0,
+                        interp: Interp::Linear,
+                    },
+                    Key {
+                        frame: 24,
+                        value: 8.0,
+                        interp: Interp::Linear,
+                    },
+                ]),
+            },
         ),
         (
             "set_node with keyframes",
@@ -2443,7 +2490,64 @@ fn fusion_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             },
             follow_op(serde_json::Value::Null),
         ),
+        (
+            "add_fusion_node of a planar tracker with its region, its corners and its path",
+            masked(),
+            planar_node(),
+        ),
+        (
+            "set_fusion_node of frames of the path of a planar tracker, the others kept",
+            {
+                let mut setup = masked();
+                setup.push(planar_node());
+                setup
+            },
+            Op::SetFusionNode {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                id: "n12".into(),
+                label: None,
+                pass_through: None,
+                pos: None,
+                params: Some(serde_json::json!({
+                    "operation": "steady",
+                    "path": {
+                        "12": [1.0, 0.0, 0.03, 0.0, 1.0, 0.01, 0.0, 0.0],
+                        "13": [1.0, 0.0, 0.035, 0.0, 1.0, 0.012, 0.0, 0.0],
+                    },
+                })),
+            },
+        ),
     ]
+}
+
+/// Add a Planar Tracker, n12 after `masked`, as another program writes one: every setting, a
+/// region of four places, the corners of its Corner Pin, and a path of three frames; the picture
+/// of c1 what was tracked, the Background n10 laid on its plane, and the Merge n9 laying its
+/// picture in the place of that of the clip.
+fn planar_node() -> Op {
+    written_op(serde_json::json!({
+        "op": "add_fusion_node", "timeline": "t1", "clip": "c1",
+        "node": {
+            "id": "", "kind": "planar_tracker", "label": "Screen", "params": {
+                "operation": "corner_pin", "motion": "perspective", "reference": 0,
+                "region": [{"x": 0.3, "y": 0.3}, {"x": 0.7, "y": 0.32}, {"x": 0.68, "y": 0.7},
+                    {"x": 0.32, "y": 0.68}],
+                "corners": {"tl": {"x": 0.32, "y": 0.68}, "tr": {"x": 0.68, "y": 0.7},
+                    "br": {"x": 0.7, "y": 0.32}, "bl": {"x": 0.3, "y": 0.3}},
+                "path": {
+                    "0": [1, 0, 0, 0, 1, 0, 0, 0],
+                    "12": [1.01, -0.02, 0.025, 0.015, 0.99, 0.008, 0.04, -0.03],
+                    "24": [1.02, -0.04, 0.05, 0.03, 0.98, 0.016, 0.08, -0.06],
+                },
+            },
+        },
+        "links": [
+            {"from": "MediaIn1", "to": "", "input": "input"},
+            {"from": "n10", "to": "", "input": "foreground"},
+            {"from": "", "to": "n9", "input": "foreground"},
+        ],
+    }))
 }
 
 /// Add a Tracker, n12 after `masked`, as another program writes one: every setting, two

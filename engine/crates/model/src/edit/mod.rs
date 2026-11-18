@@ -1241,6 +1241,10 @@ pub enum Edit {
 /// colour lasts `length` frames, and goes on a track of picture.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "material is read, placed and let go, as an operation is"
+)]
 pub enum Material {
     /// Media.
     Media {

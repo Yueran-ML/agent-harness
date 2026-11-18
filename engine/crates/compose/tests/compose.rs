@@ -356,6 +356,10 @@ fn style(size: u32, x: f64, y: f64, align: TextAlign) -> Styled {
         x,
         y,
         align,
+        stroke: None,
+        shadow: None,
+        background: None,
+        spans: Vec::new(),
     }
 }
 
@@ -1109,6 +1113,92 @@ fn titles_are_sized_in_pixels_of_the_timeline() {
     );
 }
 
+/// The box behind a title and the shadow of its letters are said in pixels of the timeline, as
+/// its letters are: a picture of half as many pixels shows them half as large, where the title
+/// is anchored.
+#[test]
+fn the_box_and_the_shadow_of_a_title_are_sized_in_pixels_of_the_timeline() {
+    use columbina_model::project::{TitleBackground, TitleShadow};
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let boxed = || {
+        let mut boxed = style(40, 0.5, 0.5, TextAlign::Center);
+        boxed.background = Some(TitleBackground {
+            color: Rgba([255, 0, 0, 255]),
+            padding: 30.0,
+            radius: 0.0,
+        });
+        vec![title("Columbina", boxed, Transform::NONE)]
+    };
+    let full = preview(&gpu, &mut compositor, &scene(640, 360, boxed()));
+    let mut half = scene(320, 180, boxed());
+    half.units = 0.5;
+    let half = preview(&gpu, &mut compositor, &half);
+    let ([a0, b0, a1, b1], _) = lit(&full, 360, 128);
+    let ([c0, d0, c1, d1], _) = lit(&half, 180, 128);
+    assert!(
+        (a1 - a0).abs_diff(2 * (c1 - c0)) <= 4,
+        "{a0}..{a1}, {c0}..{c1}"
+    );
+    assert!(
+        (b1 - b0).abs_diff(2 * (d1 - d0)) <= 4,
+        "{b0}..{b1}, {d0}..{d1}"
+    );
+    // Where the title is anchored, and 30 beyond its letters on either side.
+    assert!((a0 + a1).abs_diff(640) <= 2, "{a0}..{a1}");
+    let letters = vec![title(
+        "Columbina",
+        style(40, 0.5, 0.5, TextAlign::Center),
+        Transform::NONE,
+    )];
+    let letters = preview(&gpu, &mut compositor, &scene(640, 360, letters));
+    let ([l0, _, l1, _], _) = lit(&letters, 360, 128);
+    assert!(l0 >= a0 + 30 && a1 >= l1 + 30, "{l0}..{l1} in {a0}..{a1}");
+    // Red letters with a green shadow moved 20 right and 10 down: where the shadow ends beyond
+    // where the letters end.
+    let shadowed = |compositor: &mut Compositor, halved: bool| {
+        let mut red = style(40, 0.5, 0.5, TextAlign::Center);
+        red.color = Rgba([255, 0, 0, 255]);
+        red.shadow = Some(TitleShadow {
+            color: Rgba([0, 255, 0, 255]),
+            x: 20.0,
+            y: 10.0,
+            blur: 0.0,
+        });
+        let (width, height) = if halved { (320, 180) } else { (640, 360) };
+        let mut shown = scene(width, height, vec![title("I", red, Transform::NONE)]);
+        if halved {
+            shown.units = 0.5;
+        }
+        let frame = preview(&gpu, compositor, &shown);
+        let mut ends = [[0, 0]; 2];
+        for y in 0..height {
+            for x in 0..width {
+                let pixel = frame.at(x, y);
+                let which = match (pixel[0] > 128, pixel[1] > 128) {
+                    (true, _) => 0,
+                    (false, true) => 1,
+                    (false, false) => continue,
+                };
+                ends[which] = [ends[which][0].max(x + 1), ends[which][1].max(y + 1)];
+            }
+        }
+        let [letter, shadow] = ends;
+        [shadow[0] - letter[0], shadow[1] - letter[1]]
+    };
+    let moved = shadowed(&mut compositor, false);
+    assert!(
+        moved[0].abs_diff(20) <= 1 && moved[1].abs_diff(10) <= 1,
+        "{moved:?}"
+    );
+    let moved = shadowed(&mut compositor, true);
+    assert!(
+        moved[0].abs_diff(10) <= 1 && moved[1].abs_diff(5) <= 1,
+        "{moved:?}"
+    );
+    assert_no_errors(&gpu);
+}
+
 /// A title whose size has keys is drawn at each frame at the size that its keys give there, as
 /// the same title is drawn with that size as one number: pixel for pixel, at a size that is a
 /// whole number of pixels and at one that is not.
@@ -1129,6 +1219,10 @@ fn a_title_at_a_size_between_two_keys_is_drawn_as_one_of_that_size_as_a_number()
         x: 0.5.into(),
         y: 0.5.into(),
         align: TextAlign::Center,
+        stroke: None,
+        shadow: None,
+        background: None,
+        spans: Vec::new(),
     };
     // Each is drawn by a compositor of its own, which has kept no text of the other.
     let drawn = |style: Styled| {

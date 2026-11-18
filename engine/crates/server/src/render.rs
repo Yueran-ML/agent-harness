@@ -1610,6 +1610,10 @@ mod tests {
                 x: 0.5.into(),
                 y: Param::Keys(vec![key(0, 0.25), key(4, 0.75)]),
                 align: TextAlign::Center,
+                stroke: None,
+                shadow: None,
+                background: None,
+                spans: Vec::new(),
             },
         };
         timeline.tracks[0].clips = vec![Clip::new("c1", title, 0, 5)];
@@ -1743,6 +1747,10 @@ mod tests {
                 x: 0.5.into(),
                 y: 0.5.into(),
                 align: TextAlign::Center,
+                stroke: None,
+                shadow: None,
+                background: None,
+                spans: Vec::new(),
             },
         };
         timeline.tracks[0].clips = vec![Clip::new("c1", title, 0, 2)];

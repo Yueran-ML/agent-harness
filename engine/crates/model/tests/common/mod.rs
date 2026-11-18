@@ -365,6 +365,10 @@ fn title_of(spec: &Spec) -> Source {
             x: 0.5.into(),
             y: 0.875.into(),
             align: TextAlign::Center,
+            stroke: None,
+            shadow: None,
+            background: None,
+            spans: Vec::new(),
         },
     }
 }

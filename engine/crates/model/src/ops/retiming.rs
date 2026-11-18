@@ -279,6 +279,10 @@ mod tests {
                 x: 0.5.into(),
                 y: 0.5.into(),
                 align: TextAlign::Center,
+                stroke: None,
+                shadow: None,
+                background: None,
+                spans: Vec::new(),
             },
         };
         titled.timelines[0].tracks[0].clips[0] = Clip::new("c1", title, 0, 100);

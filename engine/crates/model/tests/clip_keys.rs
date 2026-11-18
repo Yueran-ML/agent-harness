@@ -168,7 +168,13 @@ fn the_settings_that_take_keys_are_those_of_the_catalog_and_are_checked_as_the_c
             "crop.softness",
             "title.size",
             "title.x",
-            "title.y"
+            "title.y",
+            "title.stroke.width",
+            "title.shadow.x",
+            "title.shadow.y",
+            "title.shadow.blur",
+            "title.background.padding",
+            "title.background.radius"
         ]
     );
     for entry in catalog::clip() {
@@ -592,9 +598,15 @@ fn a_still_keeps_its_keys_at_their_frames_of_the_timeline_and_media_on_its_pictu
 
 /// Check that what a new clip has is what the catalog says it has at first, and that the
 /// setting is taken at both its bounds: on the clip of media of the sample, or, for a setting
-/// that only a title has, on a new title.
+/// that only a title has, on a new title, given a stroke, a shadow and a box as a client gives
+/// a title a new one where the setting is of one of them.
 fn starts_as_listed(entry: &catalog::Entry) {
-    let (mut probe, id) = if entry.path.starts_with("title.") {
+    let part = ["title.stroke.", "title.shadow.", "title.background."]
+        .iter()
+        .any(|part| entry.path.starts_with(part));
+    let (mut probe, id) = if part {
+        (with_a_dressed_title(), "k1")
+    } else if entry.path.starts_with("title.") {
         (with_a_title(), "k1")
     } else {
         (Project::sample(), "c1")
@@ -639,12 +651,46 @@ fn with_a_title() -> Project {
             x: 0.5.into(),
             y: 0.5.into(),
             align: TextAlign::Center,
+            stroke: None,
+            shadow: None,
+            background: None,
+            spans: Vec::new(),
         },
     };
     project.timelines[0].tracks[0]
         .clips
         .push(Clip::new("k1", title, 200, 50));
     project.next_id = 10;
+    project.validate().unwrap();
+    project
+}
+
+/// [`with_a_title`], whose title has a stroke, a shadow and a box as a client gives a title a
+/// new one: a stroke 4 pixels wide, a shadow moved 4 right and 4 down and blurred by 4, and a
+/// box 16 beyond its lines with corners of 8.
+fn with_a_dressed_title() -> Project {
+    use columbina_model::{TitleBackground, TitleShadow, TitleStroke};
+    let mut project = with_a_title();
+    let clip = &mut project.timelines[0].tracks[0].clips[1];
+    let Source::Title { style, .. } = &mut clip.source else {
+        panic!("k1 is a title")
+    };
+    let black = Rgba([0, 0, 0, 255]);
+    style.stroke = Some(TitleStroke {
+        color: black,
+        width: 4.0.into(),
+    });
+    style.shadow = Some(TitleShadow {
+        color: black,
+        x: 4.0.into(),
+        y: 4.0.into(),
+        blur: 4.0.into(),
+    });
+    style.background = Some(TitleBackground {
+        color: black,
+        padding: 16.0.into(),
+        radius: 8.0.into(),
+    });
     project.validate().unwrap();
     project
 }

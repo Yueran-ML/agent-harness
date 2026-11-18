@@ -70,7 +70,7 @@ pub mod stabilize;
 
 pub use cloud::{CloudOptions, CloudTracker};
 pub use data::{Adjusted, Mode, TrackData};
-pub use fit::Model;
+pub use fit::{fitted, Model};
 pub use image::{Luma, Pyramid};
 pub use linalg::{Mat3, Point};
 pub use motion::{Component, Components, Motion};

@@ -522,6 +522,10 @@ fn windows_gpu_title_uses_its_transparent_canvas_before_visible_texture_cropping
                     x: 0.5,
                     y: 0.5,
                     align: TextAlign::Center,
+                    stroke: None,
+                    shadow: None,
+                    background: None,
+                    spans: Vec::new(),
                 },
             });
             let transform = Transform {
@@ -593,6 +597,10 @@ fn windows_gpu_title_neighbourhood_keeps_window_canvas_mapping_when_cropped() {
             x: 0.5,
             y: 0.5,
             align: TextAlign::Center,
+            stroke: None,
+            shadow: None,
+            background: None,
+            spans: Vec::new(),
         },
     });
     let mut scene = whole_scene(

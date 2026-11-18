@@ -173,7 +173,13 @@
 {"path":"crop.softness","default":0.0,"low":0.0,"high":1.0,"unit":"heights","page":"edit","palette":"cropping","clock":"source_frame"},
 {"path":"title.size","default":72.0,"low":1.0,"high":4096.0,"unit":"pixels","page":"edit","palette":"title","clock":"source_frame"},
 {"path":"title.x","default":0.5,"low":-16.0,"high":16.0,"unit":"widths","page":"edit","palette":"title","clock":"source_frame"},
-{"path":"title.y","default":0.5,"low":-16.0,"high":16.0,"unit":"heights","page":"edit","palette":"title","clock":"source_frame"}
+{"path":"title.y","default":0.5,"low":-16.0,"high":16.0,"unit":"heights","page":"edit","palette":"title","clock":"source_frame"},
+{"path":"title.stroke.width","default":4.0,"low":0.0,"high":256.0,"unit":"pixels","page":"edit","palette":"title","clock":"source_frame"},
+{"path":"title.shadow.x","default":4.0,"low":-1024.0,"high":1024.0,"unit":"pixels","page":"edit","palette":"title","clock":"source_frame"},
+{"path":"title.shadow.y","default":4.0,"low":-1024.0,"high":1024.0,"unit":"pixels","page":"edit","palette":"title","clock":"source_frame"},
+{"path":"title.shadow.blur","default":4.0,"low":0.0,"high":256.0,"unit":"pixels","page":"edit","palette":"title","clock":"source_frame"},
+{"path":"title.background.padding","default":16.0,"low":0.0,"high":1024.0,"unit":"pixels","page":"edit","palette":"title","clock":"source_frame"},
+{"path":"title.background.radius","default":8.0,"low":0.0,"high":512.0,"unit":"pixels","page":"edit","palette":"title","clock":"source_frame"}
 ],
 "fusion_merge":[
 {"path":"subtractive_additive","default":1.0,"low":0.0,"high":1.0,"unit":"number","page":"fusion","palette":"fusion","clock":"source_frame"},

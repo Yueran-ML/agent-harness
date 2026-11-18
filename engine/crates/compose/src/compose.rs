@@ -45,7 +45,7 @@ use crate::geometry::{
 use crate::gpu::Gpu;
 use crate::neighbourhood::{self, Pass};
 use crate::pipelines::{Builder, Made, Make};
-use crate::text::{self, Laid, Raster, Spec, Text, MOST_PIXELS};
+use crate::text::{self, DressKey, Laid, Raster, Spec, Text, MOST_PIXELS};
 use crate::yuv::{self, Texel};
 
 /// The shader of layers of R'G'B'A.
@@ -1259,6 +1259,8 @@ struct TextKey {
     color: [u8; 4],
     align: TextAlign,
     outline: u32,
+    /// The stroke, the shadow, the box and the runs of a title.
+    dress: DressKey,
 }
 
 impl TextKey {
@@ -1270,6 +1272,7 @@ impl TextKey {
             color: spec.color,
             align: spec.align,
             outline: spec.outline,
+            dress: spec.dress.key(),
         }
     }
 }
@@ -3517,7 +3520,7 @@ impl Compositor {
                     let size =
                         |per: f64| (style.size.min(4096.0) * f64::from(scene.units) * per) as f32;
                     let put = self.put_fitted(
-                        |per| Spec::title(title, size(per).max(1.0)),
+                        |per| Spec::title(title, size(per).max(1.0), f64::from(scene.units) * per),
                         raster_scale(scale),
                         |block| {
                             title_origin(
@@ -4128,7 +4131,7 @@ impl Compositor {
                 #[allow(clippy::cast_possible_truncation, reason = "a size of letters")]
                 let letters = |by: f64| (style.size.min(4096.0) * per * by) as f32;
                 let put = self.put_fitted(
-                    |by| Spec::title(title, letters(by).max(1.0)),
+                    |by| Spec::title(title, letters(by).max(1.0), per * by),
                     1.0,
                     |block| title_origin(size, block, (style.x, style.y), style.align),
                     &place,
@@ -5344,6 +5347,7 @@ mod tests {
             align: TextAlign::Center,
             color: [255; 4],
             outline: 0,
+            dress: crate::text::Dress::default(),
         };
         let canvas = (1920.0, 1080.0);
         let place = placement(canvas, canvas, &Transform::NONE);

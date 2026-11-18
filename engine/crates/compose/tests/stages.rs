@@ -258,6 +258,10 @@ fn busy(color: &LayerColor, grade: &Stage, output: &Stage) -> Scene {
         x: 0.5,
         y: 0.3,
         align: TextAlign::Center,
+        stroke: None,
+        shadow: None,
+        background: None,
+        spans: Vec::new(),
     };
     let mut scene = scene(
         64,

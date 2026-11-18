@@ -257,6 +257,10 @@ fn style(size: u32) -> Styled {
         x: 0.5,
         y: 0.5,
         align: TextAlign::Center,
+        stroke: None,
+        shadow: None,
+        background: None,
+        spans: Vec::new(),
     }
 }
 

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use super::{clip, engine, project, project_dir, support, Client, WAIT};
 
 #[path = "../../../track/tests/support/mod.rs"]
-mod scene;
+pub(super) mod scene;
 
 const W: usize = 256;
 const H: usize = 192;

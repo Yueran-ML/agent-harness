@@ -135,6 +135,10 @@ fn project_of(plan: &Plan) -> Project {
                         x: 0.5.into(),
                         y: 0.5.into(),
                         align: columbina_model::TextAlign::Center,
+                        stroke: None,
+                        shadow: None,
+                        background: None,
+                        spans: Vec::new(),
                     },
                 },
                 _ => Source::Media {

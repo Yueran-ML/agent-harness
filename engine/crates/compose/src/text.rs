@@ -20,8 +20,18 @@
 //! read once for the process, on a thread of its own as the first compositor is made
 //! ([`warm_up`]), since that takes a moment.
 //!
+//! A title may have a stroke about its letters, a shadow of them, a box behind them and runs of
+//! its text drawn otherwise than the rest ([`Dress`]): one that has any of them is laid out and
+//! drawn as [`dress`] says, and one that has none is drawn as it always was.
+//!
 //! [cosmic-text]: https://github.com/pop-os/cosmic-text
 
+mod dress;
+mod planes;
+
+pub(crate) use dress::Dress;
+
+use std::ops::Range;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use columbina_model::project::{Styled, TextAlign};
@@ -67,7 +77,31 @@ struct Fonts {
     glyphs: SwashCache,
     /// The outlines of letters, as they were made, by letter and radius.
     outlines: HashMap<(CacheKey, usize), Option<Outline>>,
+    /// The strokes of letters of titles, as they were made ([`dress`]).
+    strokes: Strokes,
 }
+
+/// The strokes about letters, as they were made, by letter and width (its bits).
+type Strokes = HashMap<(CacheKey, u32), Option<Outline>>;
+
+/// What the stroke, the shadow, the box and the runs of a title are known by among the texts
+/// laid out and kept ([`Dress::key`]): all of them, their numbers by their bits.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct DressKey {
+    lengths: Vec<u32>,
+    runs: Vec<RunKey>,
+}
+
+/// What a run of a title is known by: its bytes, its colour, its scale (its bits), whether it
+/// is bold and italic, and its family.
+type RunKey = (
+    Range<usize>,
+    Option<[u8; 4]>,
+    u32,
+    bool,
+    bool,
+    Option<String>,
+);
 
 /// How many outlines of letters are kept, at most.
 const OUTLINES_KEPT: usize = 4096;
@@ -85,6 +119,19 @@ struct Outline {
 /// The outline, `radius` pixels about it, of the letter of `key`; none for a letter of no
 /// pixels.
 fn outline_of(
+    system: &mut FontSystem,
+    glyphs: &mut SwashCache,
+    key: CacheKey,
+    radius: usize,
+) -> Option<Outline> {
+    let mut made = covered(system, glyphs, key, radius)?;
+    made.mask = dilate(&made.mask, made.width, made.height, radius);
+    Some(made)
+}
+
+/// How much of each pixel the letter of `key` covers, with `radius` pixels of nothing about it
+/// (an outline of no width yet); none for a letter of no pixels.
+fn covered(
     system: &mut FontSystem,
     glyphs: &mut SwashCache,
     key: CacheKey,
@@ -114,7 +161,7 @@ fn outline_of(
         top: image.placement.top + radius_signed,
         width: columns,
         height: rows,
-        mask: dilate(&cover, columns, rows, radius),
+        mask: cover,
     })
 }
 
@@ -144,6 +191,7 @@ fn fonts() -> &'static Mutex<Fonts> {
             system,
             glyphs: SwashCache::new(),
             outlines: HashMap::new(),
+            strokes: HashMap::new(),
         })
     })
 }
@@ -167,7 +215,8 @@ fn line_height(size: f32) -> f32 {
 }
 
 /// What is drawn: the lines of a text, in a family (or the system's), of letters `size` pixels
-/// high, aligned, in a colour, with an outline of `outline` pixels about the letters, in black.
+/// high, aligned, in a colour, with an outline of `outline` pixels about the letters, in black;
+/// and, of a title, what it has about its letters (`dress`), none for subtitles.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Spec {
     pub text: String,
@@ -176,11 +225,13 @@ pub(crate) struct Spec {
     pub align: TextAlign,
     pub color: [u8; 4],
     pub outline: u32,
+    pub dress: Dress,
 }
 
 impl Spec {
-    /// A title, of letters `size` pixels high.
-    pub(crate) fn title(text: &Text, size: f32) -> Spec {
+    /// A title, of letters `size` pixels high, drawn `scale` pixels to a pixel of the timeline
+    /// (in which the lengths of its stroke, its shadow and its box are said).
+    pub(crate) fn title(text: &Text, size: f32, scale: f64) -> Spec {
         let style = &text.style;
         Spec {
             text: text.text.clone(),
@@ -189,6 +240,7 @@ impl Spec {
             align: style.align,
             color: style.color.0,
             outline: 0,
+            dress: Dress::of(&text.text, style, scale),
         }
     }
 
@@ -207,13 +259,14 @@ impl Spec {
             align: TextAlign::Center,
             color: [255, 255, 255, 255],
             outline: (size / 14.0).ceil().max(1.0) as u32,
+            dress: Dress::default(),
         }
     }
 }
 
 /// A text laid out: how large the block of its lines is (as wide as the widest, as high as all
 /// of them), and the pixels about it (`pad`) that the parts of letters that reach beyond it and
-/// an outline take.
+/// an outline take, and those that the stroke, the shadow and the box of a title take.
 pub(crate) struct Laid {
     buffer: Buffer,
     spec: Spec,
@@ -228,7 +281,8 @@ impl Laid {
     }
 }
 
-/// Lay out text as `spec` says, drawing nothing.
+/// Lay out text as `spec` says, drawing nothing. A text with runs of its own is laid out as rich
+/// text, each line as high as its highest letters need ([`dress::pieces`]).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -238,7 +292,8 @@ pub(crate) fn lay_out(spec: &Spec) -> Laid {
     let mut fonts = fonts().lock().unwrap_or_else(PoisonError::into_inner);
     let system = &mut fonts.system;
     let size = spec.size.max(1.0);
-    let mut buffer = Buffer::new(system, Metrics::new(size, line_height(size)));
+    let metrics = Metrics::new(size, line_height(size));
+    let mut buffer = Buffer::new(system, metrics);
     let attrs = match &spec.family {
         Some(family) => Attrs::new().family(Family::Name(family)),
         None => Attrs::new().family(Family::SansSerif),
@@ -249,7 +304,14 @@ pub(crate) fn lay_out(spec: &Spec) -> Laid {
         TextAlign::Right => Align::Right,
     };
     buffer.set_size(None, None);
-    buffer.set_text(&spec.text, &attrs, Shaping::Advanced, Some(align));
+    if spec.dress.runs.is_empty() {
+        buffer.set_text(&spec.text, &attrs, Shaping::Advanced, Some(align));
+    } else {
+        // Every letter with its size, so that a line is as high as the highest of them.
+        let whole = attrs.metrics(metrics);
+        let pieces = dress::pieces(&spec.text, &spec.dress.runs, &whole, size);
+        buffer.set_rich_text(pieces, &whole, Shaping::Advanced, Some(align));
+    }
     buffer.shape_until_scroll(system, false);
     let (width, height) = buffer
         .layout_runs()
@@ -262,16 +324,22 @@ pub(crate) fn lay_out(spec: &Spec) -> Laid {
     // Aligned within the widest line.
     buffer.set_size(Some(width.ceil()), None);
     buffer.shape_until_scroll(system, false);
+    let pad = if spec.dress.is_bare() {
+        (size / 4.0).ceil() as u32 + spec.outline
+    } else {
+        spec.dress.pad(size)
+    };
     Laid {
         buffer,
         spec: spec.clone(),
         block: (width.ceil() as u32, height.ceil() as u32),
-        pad: (size / 4.0).ceil() as u32 + spec.outline,
+        pad,
     }
 }
 
 /// Draw the part `window` of a text laid out: x0, y0, x1, y1 of its full pixels (see
-/// [`Laid::full`]), which the caller keeps within [`MOST_PIXELS`].
+/// [`Laid::full`]), which the caller keeps within [`MOST_PIXELS`]. A title that has a stroke, a
+/// shadow, a box or runs of its own is drawn as [`dress::draw`] draws it.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -282,6 +350,9 @@ pub(crate) fn lay_out(spec: &Spec) -> Laid {
     reason = "pixels of a block of text, far within the range of each; R, G, B; a part drawn               step by step"
 )]
 pub(crate) fn draw(laid: &mut Laid, window: [u32; 4]) -> Raster {
+    if !laid.spec.dress.is_bare() {
+        return dress::draw(laid, window);
+    }
     let [x0, y0, x1, y1] = window;
     let (width, height) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
     let (columns, rows) = (width as usize, height as usize);
@@ -303,6 +374,7 @@ pub(crate) fn draw(laid: &mut Laid, window: [u32; 4]) -> Raster {
         system,
         glyphs,
         outlines,
+        ..
     } = &mut *fonts;
     let mut put = |x: i32, y: i32, color: Color| {
         let py = i64::from(y) + origin.1;
@@ -653,13 +725,19 @@ mod tests {
                 x: 0.5,
                 y: 0.5,
                 align: TextAlign::Center,
+                stroke: None,
+                shadow: None,
+                background: None,
+                spans: Vec::new(),
             },
         };
-        assert_eq!(Spec::title(&title(""), 96.0).family, None);
-        let spec = Spec::title(&title("Arial"), 48.0);
+        assert_eq!(Spec::title(&title(""), 96.0, 1.0).family, None);
+        let spec = Spec::title(&title("Arial"), 48.0, 0.5);
         assert_eq!(spec.family.as_deref(), Some("Arial"));
         assert!((spec.size - 48.0).abs() < f32::EPSILON);
         assert_eq!(spec.outline, 0);
+        // A title of nothing more is drawn as titles always were.
+        assert_eq!(spec.dress, Dress::default());
     }
 
     #[test]

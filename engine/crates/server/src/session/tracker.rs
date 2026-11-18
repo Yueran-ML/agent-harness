@@ -30,7 +30,8 @@
 //!
 //! `track.start` with `fusion` in the place of a window follows the patterns of a Tracker of a
 //! composition through the frames of its clip instead (T17b): the same job, gesture, writes,
-//! events and endings (see `fusion`).
+//! events and endings (see `fusion`). With `planar`, it follows the region of a Planar Tracker
+//! as a plane and writes its path (T19, see `planar`).
 //!
 //! `track.stabilize` measures the motion of the whole picture of a clip, frame by frame, for
 //! its stabilizer (T18a): a job of the same kind, which `track.stop` stops and whose events are
@@ -63,6 +64,7 @@ use super::{
 use crate::proxy;
 
 mod fusion;
+mod planar;
 mod stabilize;
 
 /// How often the track so far is written into the window while it goes on, while it is short.
@@ -127,10 +129,12 @@ struct Start {
 
 /// What `track.start` takes, as it is written.
 const START_TAKES: &str = "{grade,node,window,revision,frame,direction,tracker?,components?} \
-     or {fusion:{timeline,clip,node,trackers?},revision,frame,direction}";
+     or {fusion:{timeline,clip,node,trackers?},revision,frame,direction} \
+     or {planar:{timeline,clip,node},revision,frame,direction}";
 
 /// `track.start` as it is written: a window (`grade`, `node` and `window`, with the settings of
-/// its tracker) or the patterns of a Tracker of a composition (`fusion`), one of the two.
+/// its tracker), the patterns of a Tracker of a composition (`fusion`) or the region of a Planar
+/// Tracker (`planar`), one of the three.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -142,6 +146,8 @@ struct Request {
     window: Option<String>,
     #[serde(default)]
     fusion: Option<fusion::Aim>,
+    #[serde(default)]
+    planar: Option<planar::Aim>,
     revision: u64,
     frame: i64,
     direction: Direction,
@@ -155,32 +161,37 @@ struct Request {
 enum Asked {
     Window(Start),
     Fusion(fusion::Start),
+    Planar(planar::Start),
 }
 
-/// A track checked against the project, to be started: the plan of a window or of a Tracker.
+/// A track checked against the project, to be started: the plan of a window, of a Tracker or of
+/// a Planar Tracker.
 enum Launch {
     Window(Box<Plan>),
     Fusion(Box<fusion::Plan>),
+    Planar(Box<planar::Plan>),
 }
 
 impl Request {
     /// The revision that it was asked at, and what it asks to track; refused where it gives
-    /// both a window and `fusion`, neither of them whole, or the settings of the tracker of a
-    /// window with `fusion`.
+    /// more than one of a window, `fusion` and `planar`, none of them whole, or the settings of
+    /// the tracker of a window with `fusion` or `planar`.
     fn asked(self) -> Result<(u64, Asked), Fault> {
         let Request {
             grade,
             node,
             window,
             fusion,
+            planar,
             revision,
             frame,
             direction,
             tracker,
             components,
         } = self;
-        let asked = match (fusion, grade, node, window) {
-            (None, Some(grade), Some(node), Some(window)) => Asked::Window(Start {
+        let of_a_window = tracker.is_some() || components.is_some();
+        let asked = match (fusion, planar, grade, node, window) {
+            (None, None, Some(grade), Some(node), Some(window)) => Asked::Window(Start {
                 grade,
                 node,
                 window,
@@ -189,18 +200,21 @@ impl Request {
                 tracker: tracker.unwrap_or_default(),
                 components: components.unwrap_or_default(),
             }),
-            (Some(aim), None, None, None) if tracker.is_none() && components.is_none() => {
-                Asked::Fusion(fusion::Start {
-                    aim,
-                    frame,
-                    direction,
-                })
-            }
+            (Some(aim), None, None, None, None) if !of_a_window => Asked::Fusion(fusion::Start {
+                aim,
+                frame,
+                direction,
+            }),
+            (None, Some(aim), None, None, None) if !of_a_window => Asked::Planar(planar::Start {
+                aim,
+                frame,
+                direction,
+            }),
             _ => {
                 return Err(Fault::params(
-                    "track.start tracks a window, given by grade, node and window, or the \
-                     patterns of a Tracker, given by fusion: one of the two, and tracker and \
-                     components with a window alone",
+                    "track.start tracks a window, given by grade, node and window, the patterns \
+                     of a Tracker, given by fusion, or the region of a Planar Tracker, given by \
+                     planar: one of the three, and tracker and components with a window alone",
                 )
                 .with_data(json!({"reason": "fusion"})));
             }
@@ -1067,6 +1081,10 @@ pub(super) async fn call(
                         "trackers":plan.followed});
                     (answer, Launch::Fusion(Box::new(plan)))
                 }
+                Asked::Planar(request) => {
+                    let plan = planar::plan(project, &request, connection.id, kind, job.clone())?;
+                    (planar::answer(&plan), Launch::Planar(Box::new(plan)))
+                }
             };
             let gesture = state.begin_owned_gesture(connection.id, revision)?;
             let stop = Arc::new(AtomicBool::new(false));
@@ -1084,6 +1102,11 @@ pub(super) async fn call(
                 Launch::Fusion(plan) => {
                     tokio::task::spawn_blocking(move || {
                         fusion::run(&shared, &plan, gesture, &stop);
+                    });
+                }
+                Launch::Planar(plan) => {
+                    tokio::task::spawn_blocking(move || {
+                        planar::run(&shared, &plan, gesture, &stop);
                     });
                 }
             }

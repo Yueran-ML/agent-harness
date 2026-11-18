@@ -276,8 +276,8 @@ _ENGINE = (
     mutant(
         "the answer to a render's start goes with a caller that gives up",
         ENGINE,
-        "said: object = await asyncio.shield(asked.answer)",
-        "said: object = await asked.answer",
+        "leaving it running.\n                said: object = await asyncio.shield(asked.answer)",
+        "leaving it running.\n                said: object = await asked.answer",
     ),
     mutant(
         "video editing is taken to run on every platform",
